@@ -1,0 +1,738 @@
+// Copyright (C) 2026 nelisp-skk-ime contributors
+//
+// This program is free software: you can redistribute it and/or
+// modify it under the terms of the GNU General Public License as
+// published by the Free Software Foundation, either version 3 of
+// the License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be
+// useful, but WITHOUT ANY WARRANTY; without even the implied
+// warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+// PURPOSE.  See the GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+#include "text_service.h"
+
+#include <new>
+#include <shellapi.h>
+#include <utility>
+
+namespace {
+class StateEditSession final : public ITfEditSession {
+ public:
+  StateEditSession(TextService* service, ITfContext* context,
+                   ddskk::EngineState state)
+      : service_(service), context_(context), state_(std::move(state)) {
+    service_->AddRef();
+    context_->AddRef();
+  }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+    if (object == nullptr) return E_POINTER;
+    *object = nullptr;
+    if (iid != IID_IUnknown && iid != IID_ITfEditSession) return E_NOINTERFACE;
+    *object = static_cast<ITfEditSession*>(this);
+    AddRef();
+    return S_OK;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    return InterlockedIncrement(&ref_count_);
+  }
+  ULONG STDMETHODCALLTYPE Release() override {
+    const ULONG count = InterlockedDecrement(&ref_count_);
+    if (count == 0) delete this;
+    return count;
+  }
+  HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie edit_cookie) override {
+    return service_->ApplyEngineState(edit_cookie, context_, state_);
+  }
+
+ private:
+  ~StateEditSession() {
+    context_->Release();
+    service_->Release();
+  }
+  LONG ref_count_ = 1;
+  TextService* service_;
+  ITfContext* context_;
+  ddskk::EngineState state_;
+};
+}  // namespace
+
+LONG g_object_count = 0;
+LONG g_lock_count = 0;
+
+TextService::TextService() { InterlockedIncrement(&g_object_count); }
+
+TextService::~TextService() {
+  if (candidate_context_ != nullptr) candidate_context_->Release();
+  if (candidate_ui_ != nullptr) candidate_ui_->Release();
+  if (composition_ != nullptr) composition_->Release();
+  UnadviseKeySink();
+  InterlockedDecrement(&g_object_count);
+}
+
+HRESULT TextService::QueryInterface(REFIID iid, void** object) {
+  if (object == nullptr) return E_POINTER;
+  *object = nullptr;
+  if (iid == IID_IUnknown || iid == IID_ITfTextInputProcessor) {
+    *object = static_cast<ITfTextInputProcessor*>(this);
+  } else if (iid == IID_ITfKeyEventSink) {
+    *object = static_cast<ITfKeyEventSink*>(this);
+  } else if (iid == IID_ITfDisplayAttributeProvider) {
+    *object = static_cast<ITfDisplayAttributeProvider*>(this);
+  } else if (iid == IID_ITfFunctionProvider) {
+    *object = static_cast<ITfFunctionProvider*>(this);
+  } else if (iid == IID_ITfFunction || iid == IID_ITfFnConfigure) {
+    *object = static_cast<ITfFnConfigure*>(this);
+  } else {
+    return E_NOINTERFACE;
+  }
+  AddRef();
+  return S_OK;
+}
+
+ULONG TextService::AddRef() { return InterlockedIncrement(&ref_count_); }
+
+ULONG TextService::Release() {
+  const ULONG count = InterlockedDecrement(&ref_count_);
+  if (count == 0) delete this;
+  return count;
+}
+
+HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
+                              TfClientId client_id) {
+  if (thread_manager == nullptr) return E_INVALIDARG;
+  thread_manager_ = thread_manager;
+  thread_manager_->AddRef();
+  client_id_ = client_id;
+  EnsureEngineHost();
+  LoadSettings();
+
+  ITfKeystrokeMgr* keystroke_manager = nullptr;
+  const HRESULT query = thread_manager_->QueryInterface(
+      IID_ITfKeystrokeMgr, reinterpret_cast<void**>(&keystroke_manager));
+  if (FAILED(query)) {
+    UnadviseKeySink();
+    return query;
+  }
+  const HRESULT advise = keystroke_manager->AdviseKeyEventSink(client_id_, this, TRUE);
+  keystroke_manager->Release();
+  if (FAILED(advise)) {
+    UnadviseKeySink();
+    return advise;
+  }
+  return AddLangBarButton();
+}
+
+HRESULT TextService::Deactivate() {
+  RemoveLangBarButton();
+  engine_.Disconnect();
+  committed_length_ = 0;
+  if (composition_ != nullptr) {
+    composition_->Release();
+    composition_ = nullptr;
+  }
+  if (candidate_ui_id_ != TF_INVALID_UIELEMENTID && thread_manager_ != nullptr) {
+    ITfUIElementMgr* manager = nullptr;
+    if (SUCCEEDED(thread_manager_->QueryInterface(
+            IID_ITfUIElementMgr, reinterpret_cast<void**>(&manager)))) {
+      manager->EndUIElement(candidate_ui_id_);
+      manager->Release();
+    }
+    candidate_ui_id_ = TF_INVALID_UIELEMENTID;
+  }
+  if (candidate_context_ != nullptr) {
+    candidate_context_->Release();
+    candidate_context_ = nullptr;
+  }
+  UnadviseKeySink();
+  return S_OK;
+}
+
+HRESULT TextService::AddLangBarButton() {
+  if (settings_button_ != nullptr) return S_OK;
+  ITfLangBarItemMgr* manager = nullptr;
+  HRESULT result = CoCreateInstance(CLSID_TF_LangBarItemMgr, nullptr,
+      CLSCTX_INPROC_SERVER, IID_ITfLangBarItemMgr,
+      reinterpret_cast<void**>(&manager));
+  if (FAILED(result)) return result;
+  settings_button_ = new (std::nothrow) LangBarSettingsButton(this);
+  if (settings_button_ == nullptr) result = E_OUTOFMEMORY;
+  else result = manager->AddItem(settings_button_);
+  manager->Release();
+  if (FAILED(result) && settings_button_ != nullptr) {
+    settings_button_->Release(); settings_button_ = nullptr;
+  }
+  return result;
+}
+
+void TextService::RemoveLangBarButton() {
+  if (settings_button_ == nullptr) return;
+  ITfLangBarItemMgr* manager = nullptr;
+  if (SUCCEEDED(CoCreateInstance(CLSID_TF_LangBarItemMgr, nullptr,
+      CLSCTX_INPROC_SERVER, IID_ITfLangBarItemMgr,
+      reinterpret_cast<void**>(&manager)))) {
+    manager->RemoveItem(settings_button_); manager->Release();
+  }
+  settings_button_->Release(); settings_button_ = nullptr;
+}
+
+void TextService::UnadviseKeySink() {
+  if (thread_manager_ != nullptr) {
+    ITfKeystrokeMgr* keystroke_manager = nullptr;
+    if (SUCCEEDED(thread_manager_->QueryInterface(
+            IID_ITfKeystrokeMgr,
+            reinterpret_cast<void**>(&keystroke_manager)))) {
+      keystroke_manager->UnadviseKeyEventSink(client_id_);
+      keystroke_manager->Release();
+    }
+    thread_manager_->Release();
+    thread_manager_ = nullptr;
+  }
+  client_id_ = TF_CLIENTID_NULL;
+}
+
+HRESULT TextService::OnSetFocus(BOOL) { return S_OK; }
+
+// Only claim printable keys while the out-of-process engine is reachable.
+HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
+                                   BOOL* eaten) {
+  if (eaten == nullptr) return E_POINTER;
+  const bool ctrl_j = wparam == 'J' && (GetKeyState(VK_CONTROL) & 0x8000);
+  if (!ddskk_engine_) {
+    *eaten = FALSE;
+    return S_OK;
+  }
+  if (ctrl_j) {
+    *eaten = engine_.Connect(1500);
+    return S_OK;
+  }
+  if (!kana_mode_) {
+    *eaten = FALSE;
+    return S_OK;
+  }
+  // Backspace / Enter / Escape belong to the IME only while a composition
+  // or a pending romaji prefix is actually in flight; otherwise they must
+  // fall through to the application (matches CorvusSKK's key ownership).
+  const bool composing = composition_ != nullptr || engine_pending_;
+  const bool handled = (wparam >= 0x20 && wparam <= 0x7e) ||
+                       ((wparam == VK_BACK || wparam == VK_RETURN ||
+                         wparam == VK_ESCAPE) && composing);
+  *eaten = handled && engine_.Connect(1500);
+  return S_OK;
+}
+
+void TextService::SelectInputEngine(bool ddskk) {
+  if (engine_.SelectEngine(ddskk ? "ddskk" : "passthrough", 1000)) {
+    ddskk_engine_ = ddskk;
+    if (!ddskk) {
+      kana_mode_ = false;
+      engine_pending_ = false;
+    }
+    // No ITfContext is available from this langbar-triggered path; the
+    // indicator falls back to the mouse cursor position.
+    MaybeShowModeIndicator(nullptr, nullptr);
+  }
+}
+
+void TextService::ToggleInputMode() {
+  if (ddskk_engine_ && engine_.Connect(1000)) {
+    kana_mode_ = !kana_mode_;
+    if (!kana_mode_) engine_pending_ = false;
+    MaybeShowModeIndicator(nullptr, nullptr);
+  }
+}
+
+void TextService::ShowSettings() {
+  wchar_t module_path[MAX_PATH]{};
+  GetModuleFileNameW(g_module, module_path, MAX_PATH);
+  std::wstring path(module_path);
+  path.replace(path.find_last_of(L"\\/") + 1, std::wstring::npos,
+               L"ddskk-ime-config.exe");
+  ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void TextService::LoadSettings() {
+  HKEY key = nullptr;
+  wchar_t engine[32] = L"ddskk";
+  DWORD bytes = sizeof(engine), kana = 1, kana_bytes = sizeof(kana);
+  DWORD indicator_ms = 3000, indicator_ms_bytes = sizeof(indicator_ms);
+  DWORD indicator_enabled = 1, indicator_enabled_bytes = sizeof(indicator_enabled);
+  DWORD indicator_scale = 100, indicator_scale_bytes = sizeof(indicator_scale);
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0,
+                    KEY_READ, &key) == ERROR_SUCCESS) {
+    RegQueryValueExW(key, L"Engine", nullptr, nullptr,
+                     reinterpret_cast<BYTE*>(engine), &bytes);
+    RegQueryValueExW(key, L"InitialKanaMode", nullptr, nullptr,
+                     reinterpret_cast<BYTE*>(&kana), &kana_bytes);
+    RegQueryValueExW(key, L"ModeIndicatorMs", nullptr, nullptr,
+                     reinterpret_cast<BYTE*>(&indicator_ms), &indicator_ms_bytes);
+    RegQueryValueExW(key, L"ModeIndicator", nullptr, nullptr,
+                     reinterpret_cast<BYTE*>(&indicator_enabled),
+                     &indicator_enabled_bytes);
+    RegQueryValueExW(key, L"ModeIndicatorScale", nullptr, nullptr,
+                     reinterpret_cast<BYTE*>(&indicator_scale),
+                     &indicator_scale_bytes);
+
+    // Per-mode indicator colors, CorvusSKK's "入力モードの色" equivalent.
+    // Each is an optional 0x00BBGGRR COLORREF; a value that is absent
+    // leaves ModeIndicatorColors()'s built-in default for that mode in
+    // place (see ModeIndicator::SetPaletteOverride()).
+    auto read_color_override = [key, this](const wchar_t* name, const wchar_t* label) {
+      DWORD value = 0, value_bytes = sizeof(value);
+      if (RegQueryValueExW(key, name, nullptr, nullptr,
+                           reinterpret_cast<BYTE*>(&value), &value_bytes) ==
+          ERROR_SUCCESS) {
+        mode_indicator_.SetPaletteOverride(label, static_cast<COLORREF>(value));
+      }
+    };
+    read_color_override(L"ModeColorKana", L"かな");
+    read_color_override(L"ModeColorKatakana", L"カナ");
+    read_color_override(L"ModeColorLatin", L"英数");
+    read_color_override(L"ModeColorWideLatin", L"全英");
+    read_color_override(L"ModeColorAbbrev", L"Abbrev");
+
+    RegCloseKey(key);
+  }
+  ddskk_engine_ = wcscmp(engine, L"passthrough") != 0;
+  kana_mode_ = ddskk_engine_ && kana != 0;
+  engine_pending_ = false;
+  engine_.SelectEngine(ddskk_engine_ ? "ddskk" : "passthrough", 1000);
+
+  // CorvusSKK documents a [1, 60000] ms range for its equivalent setting.
+  if (indicator_ms < 1) indicator_ms = 1;
+  if (indicator_ms > 60000) indicator_ms = 60000;
+  mode_indicator_.SetDurationMs(indicator_ms);
+  mode_indicator_enabled_ = indicator_enabled != 0;
+
+  // ModeIndicatorScale is a percentage of the built-in font/padding size.
+  if (indicator_scale < 50) indicator_scale = 50;
+  if (indicator_scale > 300) indicator_scale = 300;
+  mode_indicator_.SetScalePercent(indicator_scale);
+
+  // Seed the baseline label without popping the indicator, so only a
+  // real subsequent transition (not this initial load) shows the popup.
+  last_mode_label_ = ModeIndicatorLabel(kana_mode_, L"hiragana");
+}
+
+void TextService::EnsureEngineHost() {
+  if (engine_.Connect(1)) return;
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0,
+                    KEY_READ, &key) != ERROR_SUCCESS) return;
+  auto read = [key](const wchar_t* name) {
+    wchar_t value[32768]{}; DWORD bytes = sizeof(value);
+    if (RegQueryValueExW(key, name, nullptr, nullptr,
+        reinterpret_cast<BYTE*>(value), &bytes) != ERROR_SUCCESS) return std::wstring{};
+    return std::wstring(value);
+  };
+  const std::wstring host = read(L"EngineHost");
+  std::wstring executable = read(L"EngineExecutable");
+  if (executable.empty()) executable = read(L"NeLisp");
+  const std::wstring repository = read(L"Repository");
+  RegCloseKey(key);
+  if (host.empty() || executable.empty()) return;
+  std::wstring command = L"\"" + host + L"\" \"" + executable + L"\"";
+  if (!repository.empty()) command += L" \"" + repository + L"\"";
+  STARTUPINFOW startup{}; startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
+  PROCESS_INFORMATION process{};
+  if (CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
+      0, nullptr, repository.empty() ? nullptr : repository.c_str(),
+      &startup, &process)) {
+    CloseHandle(process.hThread); CloseHandle(process.hProcess);
+  }
+}
+HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
+                               BOOL* eaten) {
+  if (eaten == nullptr) return E_POINTER;
+  *eaten = FALSE;
+  if (context == nullptr) return E_INVALIDARG;
+  std::optional<ddskk::EngineState> state;
+  if (wparam == 'J' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+    kana_mode_ = !kana_mode_;
+    if (!kana_mode_)
+      state = engine_.SendControl(ddskk::EngineControl::kCommit, 1500);
+    else
+      state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
+    if (!state) return S_OK;
+  } else if (!kana_mode_) {
+    return S_OK;
+  } else if (wparam == VK_BACK) {
+    // Backspace belongs to the IME only while something is actually being
+    // composed; otherwise let the application handle it (e.g. delete the
+    // previous character in the document).
+    if (composition_ == nullptr && !engine_pending_) return S_OK;
+    state = engine_.SendControl(ddskk::EngineControl::kBackspace, 1500);
+  } else if (wparam == VK_SPACE) {
+    // NOTE: Space conversion ownership is deliberately left unguarded here;
+    // it has a separate, known engine-side bug that is out of scope for
+    // this fix.
+    state = engine_.SendControl(ddskk::EngineControl::kConvert, 1500);
+  } else if (wparam == VK_RETURN) {
+    if (composition_ == nullptr && !engine_pending_) return S_OK;
+    state = engine_.SendControl(ddskk::EngineControl::kCommit, 1500);
+  } else if (wparam == VK_ESCAPE) {
+    if (composition_ == nullptr && !engine_pending_) return S_OK;
+    state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
+  } else {
+    const auto codepoint = TranslateKey(wparam, lparam);
+    if (!codepoint) return S_OK;
+    state = engine_.SendKey(*codepoint, 1500);
+  }
+  if (!state) return S_OK;
+  // Single point of truth for engine_pending_: every branch above that
+  // reaches here (including the Ctrl+J toggle) has just obtained a fresh
+  // state from the engine, so this always reflects the latest reality.
+  engine_pending_ = state->composition_start >= 0 || !state->pending_romaji.empty();
+  UpdateCandidateUI(context, *state);
+  auto* edit_session = new (std::nothrow) StateEditSession(this, context, *state);
+  if (edit_session == nullptr) return E_OUTOFMEMORY;
+  HRESULT edit_result = E_FAIL;
+  const HRESULT request = context->RequestEditSession(
+      client_id_, edit_session, TF_ES_SYNC | TF_ES_READWRITE, &edit_result);
+  edit_session->Release();
+  if (SUCCEEDED(request) && SUCCEEDED(edit_result)) *eaten = TRUE;
+  // Covers both the Ctrl+J toggle above and every SendKey-driven mode
+  // change (l / L / q / / etc.) below it: by this point `state` always
+  // holds the latest engine state, regardless of which branch produced
+  // it. This never influences *eaten, which was already decided above.
+  MaybeShowModeIndicator(context, &*state);
+  return S_OK;
+}
+
+void TextService::UpdateCandidateUI(ITfContext* context,
+                                    const ddskk::EngineState& state) {
+  if (thread_manager_ == nullptr) return;
+  ITfUIElementMgr* manager = nullptr;
+  if (FAILED(thread_manager_->QueryInterface(
+          IID_ITfUIElementMgr, reinterpret_cast<void**>(&manager)))) return;
+  if (state.candidates.empty()) {
+    if (candidate_ui_id_ != TF_INVALID_UIELEMENTID) {
+      manager->EndUIElement(candidate_ui_id_);
+      candidate_ui_id_ = TF_INVALID_UIELEMENTID;
+    }
+  } else {
+    if (candidate_ui_ == nullptr) candidate_ui_ = new (std::nothrow) CandidateUI(this);
+    if (candidate_context_ != context) {
+      if (candidate_context_ != nullptr) candidate_context_->Release();
+      candidate_context_ = context;
+      candidate_context_->AddRef();
+    }
+    candidate_index_ = state.candidate_index;
+    candidate_count_ = state.candidates.size();
+    ITfDocumentMgr* document = nullptr;
+    context->GetDocumentMgr(&document);
+    if (candidate_ui_ != nullptr) candidate_ui_->Update(state, document);
+    if (document != nullptr) document->Release();
+    if (candidate_ui_ != nullptr) {
+      if (candidate_ui_id_ == TF_INVALID_UIELEMENTID) {
+        BOOL show = TRUE;
+        manager->BeginUIElement(candidate_ui_, &show, &candidate_ui_id_);
+      } else {
+        manager->UpdateUIElement(candidate_ui_id_);
+      }
+    }
+  }
+  manager->Release();
+}
+
+HRESULT TextService::SelectCandidate(UINT index) {
+  if (candidate_context_ == nullptr || candidate_index_ < 0 ||
+      index >= candidate_count_) return E_INVALIDARG;
+  std::optional<ddskk::EngineState> state;
+  size_t attempts = 0;
+  while (candidate_index_ < static_cast<int>(index) && attempts++ < candidate_count_) {
+    const int previous = candidate_index_;
+    state = engine_.SendControl(ddskk::EngineControl::kConvert, 1000);
+    if (!state || state->candidate_index == previous) return E_FAIL;
+    candidate_index_ = state->candidate_index;
+  }
+  attempts = 0;
+  while (candidate_index_ > static_cast<int>(index) && attempts++ < candidate_count_) {
+    const int previous = candidate_index_;
+    state = engine_.SendControl(ddskk::EngineControl::kPrevious, 1000);
+    if (!state || state->candidate_index == previous) return E_FAIL;
+    candidate_index_ = state->candidate_index;
+  }
+  if (candidate_index_ != static_cast<int>(index)) return E_FAIL;
+  return state ? RequestStateEdit(*state) : S_OK;
+}
+
+HRESULT TextService::FinalizeCandidate() {
+  if (candidate_context_ == nullptr) return E_UNEXPECTED;
+  const auto state = engine_.SendControl(ddskk::EngineControl::kCommit, 1000);
+  return state ? RequestStateEdit(*state) : E_FAIL;
+}
+
+HRESULT TextService::AbortCandidate() {
+  if (candidate_context_ == nullptr) return E_UNEXPECTED;
+  const auto state = engine_.SendControl(ddskk::EngineControl::kCancel, 1000);
+  return state ? RequestStateEdit(*state) : E_FAIL;
+}
+
+HRESULT TextService::RequestStateEdit(const ddskk::EngineState& state) {
+  if (candidate_context_ == nullptr) return E_UNEXPECTED;
+  // Mirrors the OnKeyDown update: SelectCandidate / FinalizeCandidate /
+  // AbortCandidate all apply engine states through this helper, so it must
+  // keep engine_pending_ current too (e.g. FinalizeCandidate committing the
+  // composition must clear it).
+  engine_pending_ = state.composition_start >= 0 || !state.pending_romaji.empty();
+  UpdateCandidateUI(candidate_context_, state);
+  auto* edit_session =
+      new (std::nothrow) StateEditSession(this, candidate_context_, state);
+  if (edit_session == nullptr) return E_OUTOFMEMORY;
+  HRESULT edit_result = E_FAIL;
+  const HRESULT request = candidate_context_->RequestEditSession(
+      client_id_, edit_session, TF_ES_ASYNC | TF_ES_READWRITE, &edit_result);
+  edit_session->Release();
+  return request;
+}
+HRESULT TextService::OnTestKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* eaten) {
+  if (eaten == nullptr) return E_POINTER;
+  *eaten = FALSE;
+  return S_OK;
+}
+HRESULT TextService::OnKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* eaten) {
+  if (eaten == nullptr) return E_POINTER;
+  *eaten = FALSE;
+  return S_OK;
+}
+HRESULT TextService::OnPreservedKey(ITfContext*, REFGUID, BOOL* eaten) {
+  if (eaten == nullptr) return E_POINTER;
+  *eaten = FALSE;
+  return S_OK;
+}
+
+HRESULT TextService::EnumDisplayAttributeInfo(
+    IEnumTfDisplayAttributeInfo** enumerator) {
+  if (enumerator == nullptr) return E_POINTER;
+  *enumerator = nullptr;
+  return E_NOTIMPL;
+}
+
+HRESULT TextService::GetDisplayAttributeInfo(
+    REFGUID guid, ITfDisplayAttributeInfo** info) {
+  if (info == nullptr) return E_POINTER;
+  *info = nullptr;
+  if (guid != GUID_DdskkPreeditAttribute &&
+      guid != GUID_DdskkCandidateAttribute) return E_INVALIDARG;
+  *info = CreateDisplayAttributeInfo(guid);
+  return *info ? S_OK : E_OUTOFMEMORY;
+}
+
+HRESULT TextService::GetType(GUID* guid) {
+  if (guid == nullptr) return E_POINTER;
+  *guid = CLSID_DdskkTextService;
+  return S_OK;
+}
+
+HRESULT TextService::GetDescription(BSTR* description) {
+  if (description == nullptr) return E_POINTER;
+  *description = SysAllocString(L"DDSKK (NeLisp) settings");
+  return *description ? S_OK : E_OUTOFMEMORY;
+}
+
+HRESULT TextService::GetFunction(REFGUID, REFIID iid, IUnknown** function) {
+  if (function == nullptr) return E_POINTER;
+  return QueryInterface(iid, reinterpret_cast<void**>(function));
+}
+
+HRESULT TextService::GetDisplayName(BSTR* name) {
+  return GetDescription(name);
+}
+
+HRESULT TextService::Show(HWND, LANGID, REFGUID) {
+  ShowSettings();
+  return S_OK;
+}
+
+std::optional<char32_t> TextService::TranslateKey(WPARAM wparam,
+                                                  LPARAM lparam) {
+  BYTE keyboard_state[256]{};
+  if (!GetKeyboardState(keyboard_state)) return std::nullopt;
+  WCHAR text[4]{};
+  const UINT scan_code = (static_cast<UINT>(lparam) >> 16) & 0xff;
+  const int count = ToUnicodeEx(static_cast<UINT>(wparam), scan_code,
+                                keyboard_state, text, 4, 0,
+                                GetKeyboardLayout(0));
+  if (count == 1) return static_cast<char32_t>(text[0]);
+  if (count == 2 && IS_HIGH_SURROGATE(text[0]) && IS_LOW_SURROGATE(text[1]))
+    return static_cast<char32_t>(0x10000 +
+        ((text[0] - 0xd800) << 10) + (text[1] - 0xdc00));
+  return std::nullopt;
+}
+
+HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
+                                      ITfContext* context,
+                                      const ddskk::EngineState& state) {
+  const bool direct_commit = state.composition_start < 0 &&
+                             state.pending_romaji.empty() &&
+                             composition_ == nullptr;
+  const size_t composition_start =
+      state.composition_start < 0
+          ? state.text.size()
+          : min(static_cast<size_t>(state.composition_start), state.text.size());
+  if (composition_start < committed_length_) committed_length_ = 0;
+  const std::wstring committed = direct_commit
+      ? state.text
+      : state.text.substr(committed_length_, composition_start - committed_length_);
+  const std::wstring preedit = state.composition_start < 0 && composition_ != nullptr
+                                   ? state.text.substr(committed_length_)
+                                   : state.text.substr(composition_start);
+  ITfRange* range = nullptr;
+  if (composition_ != nullptr) {
+    const HRESULT get_range = composition_->GetRange(&range);
+    if (FAILED(get_range)) return get_range;
+  } else {
+    TF_SELECTION selection{};
+    ULONG fetched = 0;
+    const HRESULT get_selection =
+        context->GetSelection(edit_cookie, TF_DEFAULT_SELECTION, 1, &selection,
+                              &fetched);
+    if (FAILED(get_selection) || fetched != 1) return FAILED(get_selection)
+                                                        ? get_selection
+                                                        : E_FAIL;
+    range = selection.range;
+    if (!committed.empty()) {
+      const HRESULT commit = range->SetText(
+          edit_cookie, 0, committed.data(), static_cast<LONG>(committed.size()));
+      if (FAILED(commit)) {
+        range->Release();
+        return commit;
+      }
+      range->Collapse(edit_cookie, TF_ANCHOR_END);
+      committed_length_ = direct_commit ? 0 : composition_start;
+      TF_SELECTION caret{};
+      caret.range = range;
+      caret.style.ase = TF_AE_NONE;
+      caret.style.fInterimChar = FALSE;
+      const HRESULT select = context->SetSelection(edit_cookie, 1, &caret);
+      if (FAILED(select)) {
+        range->Release();
+        return select;
+      }
+    }
+    if (preedit.empty()) {
+      CaptureCaretRect(edit_cookie, context, range);
+      range->Release();
+      return S_OK;
+    }
+    ITfContextComposition* composition_context = nullptr;
+    HRESULT result = context->QueryInterface(
+        IID_ITfContextComposition,
+        reinterpret_cast<void**>(&composition_context));
+    if (SUCCEEDED(result)) {
+      result = composition_context->StartComposition(
+          edit_cookie, range, nullptr, &composition_);
+      composition_context->Release();
+    }
+    if (FAILED(result)) {
+      range->Release();
+      return result;
+    }
+  }
+  const HRESULT set_text = range->SetText(
+      edit_cookie, 0, preedit.data(), static_cast<LONG>(preedit.size()));
+  if (SUCCEEDED(set_text)) {
+    ApplyDisplayAttribute(edit_cookie, context, range,
+        state.mode == L"candidate" ? GUID_DdskkCandidateAttribute
+                                    : GUID_DdskkPreeditAttribute);
+    ITfRange* caret = nullptr;
+    if (SUCCEEDED(range->Clone(&caret))) {
+      const size_t absolute_cursor = min(
+          state.cursor < 0 ? size_t{0} : static_cast<size_t>(state.cursor),
+          state.text.size());
+      const LONG relative_cursor = static_cast<LONG>(
+          absolute_cursor > composition_start ? absolute_cursor - composition_start
+                                              : 0);
+      LONG moved = 0;
+      caret->Collapse(edit_cookie, TF_ANCHOR_START);
+      caret->ShiftEnd(edit_cookie, relative_cursor, &moved, nullptr);
+      caret->Collapse(edit_cookie, TF_ANCHOR_END);
+      TF_SELECTION selection{};
+      selection.range = caret;
+      selection.style.ase = TF_AE_NONE;
+      selection.style.fInterimChar = FALSE;
+      context->SetSelection(edit_cookie, 1, &selection);
+      CaptureCaretRect(edit_cookie, context, caret);
+      caret->Release();
+    }
+  }
+  range->Release();
+  if (FAILED(set_text)) return set_text;
+  if (state.composition_start < 0 && composition_ != nullptr) {
+    const HRESULT end = composition_->EndComposition(edit_cookie);
+    composition_->Release();
+    composition_ = nullptr;
+    committed_length_ = state.text.size();
+    return end;
+  }
+  return S_OK;
+}
+
+// Reads the on-screen extent of `range` (typically the current caret
+// position) while a document lock is already held, and caches it for
+// MaybeShowModeIndicator to consume afterward. Never fails loudly: any
+// failure just leaves last_caret_valid_ false so the caller falls back to
+// the mouse cursor position.
+void TextService::CaptureCaretRect(TfEditCookie edit_cookie, ITfContext* context,
+                                   ITfRange* range) {
+  last_caret_valid_ = false;
+  if (context == nullptr || range == nullptr) return;
+  ITfContextView* view = nullptr;
+  if (FAILED(context->GetActiveView(&view)) || view == nullptr) return;
+  RECT rect{};
+  BOOL clipped = FALSE;
+  const HRESULT result = view->GetTextExt(edit_cookie, range, &rect, &clipped);
+  view->Release();
+  if (FAILED(result)) return;
+  last_caret_rect_ = rect;
+  last_caret_valid_ = true;
+}
+
+// Pops the mode indicator when the computed label actually changes.
+// `context` may be null (langbar-triggered calls have no associated
+// context); `state` may be null when no fresh engine state is available
+// (the label then falls back to kana_mode_ alone). This never touches
+// *eaten, the composition, or any edit session result -- it is purely a
+// side effect observed after the fact.
+void TextService::MaybeShowModeIndicator(ITfContext* context,
+                                         const ddskk::EngineState* state) {
+  if (!mode_indicator_enabled_) return;
+  const std::wstring engine_mode = state != nullptr ? state->mode : std::wstring();
+  const std::wstring label = ModeIndicatorLabel(kana_mode_, engine_mode);
+  if (label == last_mode_label_) return;
+  last_mode_label_ = label;
+
+  POINT anchor{};
+  if (context != nullptr && last_caret_valid_) {
+    anchor.x = last_caret_rect_.left;
+    anchor.y = last_caret_rect_.bottom;
+  } else {
+    GetCursorPos(&anchor);
+  }
+  mode_indicator_.Show(label, anchor);
+}
+
+HRESULT TextService::ApplyDisplayAttribute(TfEditCookie edit_cookie,
+                                           ITfContext* context, ITfRange* range,
+                                           REFGUID guid) {
+  ITfCategoryMgr* categories = nullptr;
+  HRESULT result = CoCreateInstance(CLSID_TF_CategoryMgr, nullptr,
+      CLSCTX_INPROC_SERVER, IID_ITfCategoryMgr,
+      reinterpret_cast<void**>(&categories));
+  TfGuidAtom atom = TF_INVALID_GUIDATOM;
+  if (SUCCEEDED(result)) result = categories->RegisterGUID(guid, &atom);
+  if (categories != nullptr) categories->Release();
+  ITfProperty* property = nullptr;
+  if (SUCCEEDED(result)) result = context->GetProperty(GUID_PROP_ATTRIBUTE, &property);
+  if (SUCCEEDED(result)) {
+    VARIANT value; VariantInit(&value); value.vt = VT_I4; value.lVal = atom;
+    result = property->SetValue(edit_cookie, range, &value);
+    property->Release();
+  }
+  return result;
+}

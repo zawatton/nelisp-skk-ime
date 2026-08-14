@@ -1,0 +1,11 @@
+# CMake / Visual Studio build output
+/build/
+/build-*/
+.vs/
+
+# NeLisp / DDSKK engine host runtime logs
+*.log
+.nelisp-host-helper.log.*
+
+# Editor / OS cruft
+*.*~

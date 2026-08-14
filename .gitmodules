@@ -1,0 +1,3 @@
+[submodule "vendor/ddskk"]
+	path = vendor/ddskk
+	url = https://github.com/zawatton/ddskk-test.git
