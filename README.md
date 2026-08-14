@@ -1,7 +1,8 @@
 # nelisp-skk-ime
 
 A Windows Text Services Framework (TSF) input method that runs the real
-DDSKK (Daredevil SKK) conversion engine on top of the [NeLisp](../nelisp)
+DDSKK (Daredevil SKK) conversion engine on top of the
+[NeLisp](https://github.com/zawatton/nelisp)
 runtime, in-process with a C++ TSF host. Dictionary lookups are relayed by
 the C++ host to a running SKK dictionary server (skkserv-compatible) rather
 than performed inside the engine process.
@@ -27,6 +28,18 @@ repository's root, so every `(load ...)` path inside `engine/` and `test/`
 is resolved relative to the repository root.
 
 ## Build
+
+DDSKK is a submodule, so clone recursively (or run `git submodule update
+--init` in an existing checkout) — without it `vendor/ddskk` is empty and
+the engine cannot load:
+
+```powershell
+git clone --recursive https://github.com/zawatton/nelisp-skk-ime.git
+```
+
+The engine also needs a built NeLisp runtime; the C++ host is pointed at
+its executable through the per-user settings described in
+`windows/README.md`.
 
 From a Visual Studio 2022 Developer PowerShell:
 

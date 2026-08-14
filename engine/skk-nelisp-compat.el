@@ -131,6 +131,21 @@ POSITION may be an integer or a marker."
            (<= pos (nelisp-point-max))
            (aref (nelisp-buffer-substring (1- pos) pos) 0))))
 
+  ;; Not part of the original char-charset request, but the very next
+  ;; void-function once `char-charset' (below) unblocks the okurigana
+  ;; keystroke: `skk-set-okurigana' (skk.el:1476-1506) calls this
+  ;; unconditionally before it ever reaches `skk-okurigana-prefix':
+  ;;   (unless (eq (following-char) ?*) (insert-and-inherit "*"))
+  ;; Real Emacs's `following-char' is `char-after' at point, except it
+  ;; returns 0 (not nil) at the end of the accessible buffer -- matched
+  ;; here for the same reason `char-after' above documents its own nil
+  ;; case: callers compare the result against a specific character code.
+  (defun following-char ()
+    "Return the character following point, as this runtime's `char-after' does.
+Returns 0 at the end of the accessible buffer, matching real Emacs
+\(where `char-after' returns nil there but `following-char' returns 0)."
+    (or (char-after) 0))
+
   (defun forward-char (&optional n)
     "Move point forward N characters (default 1).
 Clamped to the accessible region via `nelisp-goto-char' rather than
@@ -195,8 +210,37 @@ has no host `copy-marker'."
          (eq buffer (gethash (nelisp-buffer-name buffer)
                              nelisp-buffer--registry))))
 
+  ;; Real Emacs `set-marker' accepts POSITION as an integer, a marker
+  ;; (using ITS position), or nil (which detaches MARKER from its
+  ;; buffer) -- `skk-set-marker' (skk-macs.el) forwards straight to
+  ;; this, and `skk-set-okurigana' (skk.el:1480) calls it with a
+  ;; MARKER as POSITION:
+  ;;   (skk-set-marker skk-henkan-end-point skk-okurigana-start-point)
+  ;; `nelisp-set-marker' (dev/nelisp/src/nelisp-buffer.el:439-463)
+  ;; stores POS with a bare `(setf (nelisp-marker-position marker)
+  ;; pos)' at the end of its non-nil branch -- no arithmetic anywhere
+  ;; on that path, so none of the runtime's marker-in-arithmetic
+  ;; coercion (see the commentary above `skk-nelisp--pos') ever runs
+  ;; here, and a marker POSITION would be stored as the marker object
+  ;; itself instead of its buffer position.  That corrupted end point
+  ;; is what made `skk-set-okurigana' -> `buffer-substring-no-properties'
+  ;; read back "か*く" instead of "か" for the okurigana midasi, so the
+  ;; wrong search key ("か*くk") was sent to `SERVER' instead of the
+  ;; correct "かk".
+  ;;
+  ;; `skk-nelisp--pos' already returns a nil VALUE unchanged (`recordp'
+  ;; of nil is nil, so it falls through to the `value' branch below),
+  ;; so routing POSITION through it here also preserves the
+  ;; nil-detaches-the-marker behaviour DDSKK's cleanup paths rely on
+  ;; (`skk-set-marker ... nil' appears in `skk-kakutei-cleanup-buffer'
+  ;; and friends) -- no separate nil guard is needed.
   (defun set-marker (marker position &optional buffer)
-    (nelisp-set-marker marker position (or buffer (nelisp-current-buffer))))
+    "Set MARKER's position to POSITION in BUFFER (default current buffer).
+POSITION may be an integer, a marker (coerced to its buffer position
+via `skk-nelisp--pos'), or nil (detaches MARKER from its buffer, per
+`nelisp-set-marker')."
+    (nelisp-set-marker marker (skk-nelisp--pos position)
+                        (or buffer (nelisp-current-buffer))))
 
   (defmacro with-current-buffer (buffer &rest body)
     `(nelisp-with-buffer ,buffer ,@body))
@@ -348,6 +392,208 @@ read terminates the whole engine process.")
 
   (defun characterp (object) (integerp object))
 
+  ;; `char-charset' and its two callees below (`encode-char',
+  ;; `charset-dimension') exist because DDSKK classifies characters through
+  ;; Mule's charset system, which this UTF-8-only runtime does not have.
+  ;;
+  ;; Call-site evidence (all unmodified vendor code, quoted verbatim):
+  ;;   - `skk-ascii-char-p'  (skk-macs.el:243)
+  ;;       (eq (char-charset char skk-charset-list) 'ascii)
+  ;;   - `skk-jisx0208-p'    (skk-macs.el:246)
+  ;;       (eq (char-charset char skk-charset-list) 'japanese-jisx0208)
+  ;;   - `skk-jisx0213-p'    (skk-macs.el:248-251) tests for
+  ;;       'japanese-jisx0213-1/-2/.2004-1 symbols.  Its only callers in the
+  ;;       whole tree are in skk-viper.el (following-char/preceding-char/
+  ;;       char-after/char-before guards), and `engine/ddskk-engine.el' never
+  ;;       loads skk-viper.el (only skk-vars.el, skk-macs.el, skk-emacs.el
+  ;;       and skk.el are loaded) -- so this predicate is unreachable here
+  ;;       and it does not matter that our mapping below never returns a
+  ;;       jisx0213 symbol.
+  ;;   - `skk-split-char'    (skk-macs.el:255-268) builds a (CHARSET . BYTES)
+  ;;       list by calling `char-charset', then `encode-char' and
+  ;;       `charset-dimension' on the result, unconditionally, before its
+  ;;       byte-unpacking loop ever looks at those values.
+  ;;   - `skk-char-octet'    (skk-macs.el:309-313)
+  ;;       (or (nth (if n (1+ n) 1) (skk-split-char ch)) 0)
+  ;;
+  ;; The actual first crash on the traced okurigana keystroke ("K a k U"
+  ;; etc.) is NOT inside `skk-okurigana-prefix' -- it is
+  ;; `skk-set-henkan-point' (skk.el:2984-3110), the handler DDSKK runs for
+  ;; every capitalised self-insert.  Around skk.el:3037-3039 it tests
+  ;; whether the character before point continues a full-width "#0"-"#9"
+  ;; marker:
+  ;;     (and (skk-jisx0208-p p)
+  ;;          (= (skk-char-octet p 0) 35)          ;?#
+  ;;          (<= 48 (skk-char-octet p 1)) (<= (skk-char-octet p 1) 57))
+  ;;   where P = (char-before) -- the hiragana reading character just typed
+  ;;   (e.g. "か").  `skk-jisx0208-p' calls `char-charset' directly, and
+  ;;   that is what void-functions first, before `skk-okurigana-prefix' is
+  ;;   ever reached.  Once `char-charset' answers, `skk-char-octet' needs a
+  ;;   working `skk-split-char', hence `encode-char' and `charset-dimension'
+  ;;   are needed too.
+  ;;
+  ;; `skk-okurigana-prefix' itself (skk.el:5018-5037) is reached next, once
+  ;; `skk-set-henkan-point' hands off through `skk-kana-input' to
+  ;; `skk-set-okurigana'.  It repeats the same `skk-char-octet' call on the
+  ;; first okurigana kana -- the actual reason this fix exists (see
+  ;; skk-okurigana-prefix's `(t (aref skk-kana-rom-vector (- (skk-char-octet
+  ;; headchar 1) 33)))' branch) -- guarded by
+  ;; `(skk-string<= "ぁ" headchar)' / `(skk-string<= headchar "ん")', which
+  ;; do not call `char-charset' at all.
+  ;;
+  ;; `skk-charset-list' (skk-vars.el:2200-2201, default nil) is only ever
+  ;; populated by `skk-setup-charset-list' (skk.el:354-368), which filters a
+  ;; fixed symbol list through `charsetp'.  The sole caller of that setup
+  ;; function is `skk-mode-invoke' (skk.el:327), and this engine never calls
+  ;; `skk-mode-invoke' -- `skk-ime-session--initialize-native-buffer'
+  ;; (engine/ddskk-engine.el) sets up each session's buffer-local state
+  ;; directly instead.  So `skk-charset-list' stays nil for the life of this
+  ;; process, the RESTRICTION argument below is always nil, and `charsetp'
+  ;; is never called -- it is deliberately NOT defined here.
+  ;;
+  ;; Ranges chosen for `char-charset', all standard Unicode blocks:
+  ;;   ascii              < U+0080
+  ;;   japanese-jisx0208   U+3000-303F  CJK punctuation/symbols
+  ;;                       U+3040-309F  Hiragana
+  ;;                       U+30A0-30FF  Katakana
+  ;;                       U+4E00-9FFF  CJK Unified Ideographs
+  ;;                       U+FF00-FFEF  Halfwidth and Fullwidth Forms
+  ;;   unicode             everything else (catch-all; DDSKK's predicates
+  ;;                       above never test for this symbol, so it reads as
+  ;;                       "neither ascii nor jisx0208" wherever it appears)
+  ;;
+  ;; This mapping is coarser than real Mule -- e.g. it buckets full-width
+  ;; digits/`#' and every CJK ideograph together with hiragana/katakana --
+  ;; but that only matters to a caller that also runs `skk-char-octet' on
+  ;; one of those characters, and see `encode-char' below for why the two
+  ;; reachable callers still get exact answers.
+  (defun char-charset (char &optional _restriction)
+    "Return a charset symbol for CHAR, derived from its code point.
+This runtime is UTF-8 only and has no charset registry; DDSKK uses this
+to classify a character, chiefly through `skk-ascii-char-p'/`skk-jisx0208-p'
+on the okurigana and digit-continuation paths, so the distinctions that
+matter here are ASCII vs Japanese.  RESTRICTION (DDSKK always passes
+`skk-charset-list', which never leaves its nil default in this engine --
+see the commentary above) is ignored: the answer is already the single
+charset the code point belongs to."
+    (cond
+     ((< char #x80) 'ascii)
+     ((or (<= #x3000 char #x303f)   ; CJK punctuation/symbols
+          (<= #x3040 char #x309f)   ; Hiragana
+          (<= #x30a0 char #x30ff)   ; Katakana
+          (<= #x4e00 char #x9fff)   ; CJK Unified Ideographs
+          (<= #xff00 char #xffef))  ; Halfwidth and Fullwidth Forms
+      'japanese-jisx0208)
+     (t 'unicode)))
+
+  (defun charset-dimension (charset)
+    "Return the byte-width `skk-split-char' should unpack for CHARSET.
+Only `ascii' (1 byte) and `japanese-jisx0208' (2 bytes, JIS X 0208's real
+row/column code space) are ever consumed on a call path reachable in this
+engine; see `encode-char'.  `unicode' is this file's catch-all charset and
+is never actually split by a reachable caller (see `encode-char'), but is
+given 1 anyway so `skk-split-char''s loop still terminates if it ever is."
+    (if (eq charset 'japanese-jisx0208) 2 1))
+
+  (defun encode-char (char charset)
+    "Return CHAR's code point within CHARSET, as `skk-split-char' expects.
+For `ascii' this is CHAR itself.
+
+For `japanese-jisx0208', hiragana (U+3041-3093, ぁ..ん) and katakana
+(U+30A1-30F3, ァ..ン) get the REAL JIS X 0208 row/column (ku/ten) GL byte
+pair: row 4 for hiragana, row 5 for katakana, GL-encoded as (row + #x20)
+in the high byte.  Unicode's block order for both ranges is identical to
+their JIS X 0208 row order, so column = (CHAR - block-start) + 1, GL-coded
+as (column + #x20) in the low byte.  This is exactly what the two
+reachable callers need:
+  - `skk-set-henkan-point' (skk.el:3037-3039) tests the row byte of the
+    reading kana just typed against 35 (= 3 + #x20, JIS row 3, the
+    digit/`#' row) to decide whether it continues a full-width number --
+    hiragana's row byte is 36 (row 4), so this correctly reads false.
+  - `skk-okurigana-prefix' (skk.el:5018-5037) indexes
+    `skk-kana-rom-vector' with (column-byte - 33), i.e. the okurigana
+    kana's offset from ぁ -- which this formula reproduces exactly, since
+    the (+ 33) here and the (- 33) there cancel out.
+
+Every other character this file's `char-charset' also classifies as
+`japanese-jisx0208' (CJK ideographs, full-width forms, CJK punctuation)
+has no real JIS X 0208 table here -- building one from scratch is out of
+scope, and no path reachable from `skk-start-henkan'/`skk-kakutei' ever
+runs `skk-char-octet' on one of them while its answer is actually
+consulted -- so those get a bounded but not standards-accurate row/column
+pair, purely so `skk-split-char' always has integers to shift instead of
+ever signalling.
+
+`unicode' (this file's catch-all charset) returns CHAR itself.  As shown
+in the call-site evidence above, `skk-jisx0208-p' guards every reachable
+`skk-char-octet' call, so a `unicode'-classified CHAR can only reach here
+through code this engine does not exercise; this exists purely so
+`skk-split-char' cannot signal if that ever changes."
+    (cond
+     ((eq charset 'ascii) char)
+     ((eq charset 'japanese-jisx0208)
+      (cond
+       ((<= #x3041 char #x3093)         ; hiragana ぁ..ん, JIS row 4
+        (+ (ash #x24 8) (+ (- char #x3041) 33)))
+       ((<= #x30a1 char #x30f3)         ; katakana ァ..ン, JIS row 5
+        (+ (ash #x25 8) (+ (- char #x30a1) 33)))
+       (t
+        ;; No real JIS X 0208 table for this range here (see docstring
+        ;; above); derive a bounded, deterministic GL row/column pair from
+        ;; CHAR's low bits so the arithmetic in `skk-split-char' never sees
+        ;; anything outside the GL byte range and never signals.
+        (+ (ash (+ 33 (mod (ash char -6) 94)) 8)
+           (+ 33 (mod char 94))))))
+     (t char)))
+
+  ;; Not part of the char-charset family above, but the next void-function
+  ;; on the same okurigana keystroke once `char-charset'/`following-char'
+  ;; unblock it: `skk-okurigana-prefix' (skk.el:5018-5037) opens with
+  ;;     (skk-string<= "ぁ" headchar)
+  ;;     (skk-string<= headchar "ん")
+  ;; `skk-string<=' (skk-macs.el:586-589) is `(or (skk-string< str1 str2)
+  ;; (string= str1 str2))', and `skk-string<' (skk-macs.el:575-584) always
+  ;; goes through `skk-string-lessp-in-coding-system' (skk-macs.el:571-573):
+  ;;     (string< (encode-coding-string str1 coding-system)
+  ;;              (encode-coding-string str2 coding-system))
+  ;; called with CODING-SYSTEM = 'emacs-mule (skk-string<'s own docstring:
+  ;; comparison is done on the emacs-mule-encoded byte string, precisely to
+  ;; give Japanese characters a stable ordering independent of Emacs's
+  ;; internal representation).  This runtime's `encode-coding-string' is a
+  ;; NeLisp stdlib stub (lisp/nelisp-stdlib-misc.el, `unless (fboundp ...)')
+  ;; that only accepts CODING = `utf-8' and signals `error' for anything
+  ;; else -- confirmed directly:
+  ;;     (encode-coding-string "a" 'emacs-mule)
+  ;;       => (error "encode-coding-string stub: only utf-8 supported, got emacs-mule")
+  ;; which is exactly the `ERR KEY error encode-coding-string stub: ...'
+  ;; this call site produces before this override is loaded.
+  ;;
+  ;; This runtime has only one string representation (NeLisp strings are
+  ;; internally UTF-8, i.e. Unicode scalar sequences -- the stdlib stub's
+  ;; own comment confirms this), so there is no separate "emacs-mule
+  ;; encoded" byte string to produce here, and none is needed: `string<'
+  ;; already compares Emacs strings character-by-character by Unicode
+  ;; scalar value, which is exactly the ordering
+  ;; `skk-string-lessp-in-coding-system' is trying to obtain via the
+  ;; emacs-mule round-trip on real Emacs.  For the only two characters this
+  ;; call site ever actually compares against -- the fixed bounds "ぁ"
+  ;; (U+3041) and "ん" (U+3093) -- and any headchar reachable from
+  ;; `skk-set-okurigana'/`skk-set-char-before-as-okurigana', a bare
+  ;; codepoint comparison already gives the correct answer, so returning
+  ;; the string unchanged for every CODING (not just `utf-8') is sufficient
+  ;; and correct here; it also still gives byte-identical results to the
+  ;; existing stub for CODING = `utf-8', which is the coding every other
+  ;; reachable caller uses (`skk-emacs.el' lines 336/345, both already
+  ;; `'utf-8'), so nothing that worked before this override changes.
+  (defun encode-coding-string (str &optional _coding _nocopy)
+    "Return STR unchanged, regardless of the requested CODING.
+NeLisp strings have exactly one representation (UTF-8 / Unicode scalar
+sequences), so there is no separate encoded byte string to build; see the
+commentary above for why this is sufficient for every caller reachable
+from the okurigana path (and does not change behaviour for the `utf-8'
+callers that already worked)."
+    str)
+
   ;; `skk-insert-new-word' -- the function that actually splices a
   ;; dictionary candidate into the buffer, reached unconditionally on every
   ;; successful SPACE-conversion (`skk-henkan' -> `skk-henkan-1' returning
@@ -398,23 +644,21 @@ its minor-mode maps leave unbound -- that fall-through is what makes
   ;; 5x per-keystroke latency and several hundred MB (every arithmetic call
   ;; in DDSKK routed through an interpreted wrapper lambda).
   ;;
-  ;; `1+' and `1-' are NOT covered by the runtime fix, discovered when
-  ;; removing every wrapper broke `CONTROL CONVERT' (candidates always
-  ;; empty, mode stuck on "hiragana" instead of "candidate" --
-  ;; scratchpad/test-conversion-skkime.ps1 went from PASS with all ten
-  ;; wrappers to FAIL with none of them).  Root cause, isolated with
-  ;; scratchpad/probe-marker-coercion-full.el against the raw runtime (no
-  ;; Elisp wrapper loaded): `(1+ m)' and `(1- m)' read the marker as a raw
-  ;; Record heap pointer instead of coercing it, returning an
-  ;; address-sized integer (e.g. 1149766769) instead of 3.  This is not a
-  ;; theoretical gap: `skk-change-marker' (skk.el:3333, directly on the
-  ;; SPACE-conversion path documented above -- `skk-start-henkan' ->
-  ;; `skk-henkan' -> `skk-change-marker') unconditionally calls
-  ;; `(goto-char (1- skk-henkan-start-point))', so with `1-' unwrapped,
-  ;; CONVERT jumps to a garbage position and the search silently returns
-  ;; zero candidates.  So these two wrappers stay -- removing them was the
-  ;; part of the original premise ("runtime now coerces, so the whole
-  ;; wrapper layer is dead weight") that direct measurement shows is false.
+  ;; `1+' and `1-' were the last two arithmetic ops still wrapped here: the
+  ;; NeLisp standalone runtime's dispatch table now coerces a marker operand
+  ;; through `wf_num_word' for `1+'/`1-' directly (same fix already applied
+  ;; to `<' `>' `<=' `>=' `=' `/=' `+' `-'), confirmed against
+  ;; nelisp-markerfix2.exe with a marker at buffer position 2:
+  ;; `(1+ m)' -> 3, `(1- m)' -> 1 (previously an address-sized garbage
+  ;; integer, e.g. 1149766769).  `skk-change-marker' (skk.el:3333, directly
+  ;; on the SPACE-conversion path -- `skk-start-henkan' -> `skk-henkan' ->
+  ;; `skk-change-marker') unconditionally calls
+  ;; `(goto-char (1- skk-henkan-start-point))', so this was load-bearing for
+  ;; CONVERT; the runtime fix removes the need for the wrapper.
+  ;;
+  ;; `skk-nelisp--pos' itself stays: it still backs `looking-back',
+  ;; `char-after', `char-before' below, none of which route through the
+  ;; runtime's arithmetic dispatch table.
   (defun skk-nelisp--pos (value)
     "Return VALUE, or its buffer position when VALUE is a marker.
 Tests the record type tag directly (`recordp' + `nelisp--record-type' +
@@ -422,15 +666,7 @@ Tests the record type tag directly (`recordp' + `nelisp--record-type' +
 `nelisp-marker-p' and `nelisp-cl-macros--struct-isa' as well."
     (if (and (recordp value) (eq (nelisp--record-type value) 'nelisp-marker))
         (nelisp-marker-position value)
-      value))
-
-  (defvar skk-nelisp--orig-1+ (symbol-function '1+))
-  (fset '1+
-        (lambda (a) (funcall skk-nelisp--orig-1+ (skk-nelisp--pos a))))
-
-  (defvar skk-nelisp--orig-1- (symbol-function '1-))
-  (fset '1-
-        (lambda (a) (funcall skk-nelisp--orig-1- (skk-nelisp--pos a)))))
+      value)))
 
 (provide 'skk-nelisp-compat)
 

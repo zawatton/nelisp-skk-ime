@@ -190,13 +190,25 @@ implementation grew a result string with `concat' (quadratic) and called
             (index 0)
             (offset 0))
         (while (< index count)
-          (let ((code (aref string index))
-                (digit 5))
-            (while (>= digit 0)
-              (aset out (+ offset digit)
-                    (aref ddskk-engine--hex-digits (logand code 15)))
-              (setq code (ash code -4))
-              (setq digit (1- digit))))
+          ;; `make-string' already filled every position with ?0, so only the
+          ;; significant nibbles need writing.  Almost every character an IME
+          ;; handles is in the BMP, where the top two digits stay "00":
+          ;; writing four instead of six drops a third of the inner loop, and
+          ;; each iteration here is four interpreted calls in this runtime.
+          (let ((code (aref string index)))
+            (if (< code 65536)
+                (let ((digit 5))
+                  (while (>= digit 2)
+                    (aset out (+ offset digit)
+                          (aref ddskk-engine--hex-digits (logand code 15)))
+                    (setq code (ash code -4))
+                    (setq digit (1- digit))))
+              (let ((digit 5))
+                (while (>= digit 0)
+                  (aset out (+ offset digit)
+                        (aref ddskk-engine--hex-digits (logand code 15)))
+                  (setq code (ash code -4))
+                  (setq digit (1- digit))))))
           (setq index (1+ index))
           (setq offset (+ offset 6)))
         out))))
