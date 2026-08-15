@@ -1,35 +1,58 @@
-# sumi-ui — SKK mode indicator (Sumi app, Phase 2 MVP)
+# sumi-ui — SKK mode indicator + settings window (Sumi app)
 
-Implements Phase 2 ("indicator MVP") of
+Implements Phase 2 ("indicator MVP") and Phase 3 ("settings tabs") of
 [`docs/design/sumi-indicator-settings.md`](../docs/design/sumi-indicator-settings.md):
 a small always-on-top window that shows the current DDSKK input mode
 (color + glyph, CorvusSKK-style) and lets the user switch modes from a
 click menu, talking to the shared engine session over the same
-`\\.\pipe\ddskk-ime-v1` named pipe the TSF DLL uses.
+`\\.\pipe\ddskk-ime-v1` named pipe the TSF DLL uses; plus a settings
+window (right-click the pill, or launch with `--settings`) that reads
+and writes the same `HKCU\Software\NativeIME` registry key the DLL's
+`LoadSettings()` reads, across the design doc's four tabs (動作/表示/
+辞書/調整).
 
 ## Structure and why
 
-One executable, `indicator/main.c` + `indicator/mode-logic.el`, built by
-`build.el` into `target/sumi-skk-ui.exe`:
+One executable, built by `build.el` into `target/sumi-skk-ui.exe` from
+four translation units plus one NeLisp AOT object:
 
 - **`indicator/main.c`** — hand-authored C. Owns everything that is
-  I/O or a rendering primitive: the Win32 named-pipe client
-  (`CreateFileW` + `SetNamedPipeHandleState(PIPE_READMODE_MESSAGE)` +
-  overlapped `WriteFile`/`ReadFile` bounded by a timeout, mirroring
-  `windows/src/engine_client.cpp`'s own transaction shape), the GTK4
-  window/widgets, Cairo/Pango drawing, and the one piece of
+  I/O, registry access, or a rendering/widget primitive: the GTK4
+  pill window and settings window, Cairo/Pango drawing, the
+  `--settings`/`--settings-selftest` CLI dispatch, and the one piece of
   Windows-specific "always on top" glue GTK4 no longer exposes
   portably (see "Substrate limitations" below).
+- **`indicator/pipe-client.h`/`.c`** (Phase 3, split out of Phase 2's
+  main.c) — the Win32 named-pipe client (`CreateFileW` +
+  `SetNamedPipeHandleState(PIPE_READMODE_MESSAGE)` + overlapped
+  `WriteFile`/`ReadFile` bounded by a timeout, mirroring
+  `windows/src/engine_client.cpp`'s own transaction shape). Split out
+  so the settings window's "engine restart" button can reuse the exact
+  same transaction code the pill's STATUS polling uses, rather than a
+  second copy.
+- **`indicator/settings.h`/`.c`** (Phase 3) — `Settings` struct +
+  registry I/O (`settings_load`/`settings_save`/`settings_defaults`)
+  and the headless `settings_selftest()` the `--settings-selftest` CLI
+  flag runs. No GTK dependency at all — pure Win32
+  `RegGetValueW`/`RegSetKeyValueW`/`RegDeleteTreeW`, directly testable
+  without a window (see "Verification").
 - **`indicator/mode-logic.el`** — a NeLisp AOT source module in the
   same restricted dialect as `dev/nelisp-sumi/src/*.el` (a `seq` of
   `defun` forms). Compiled by `build.el` with
   `nelisp-aot-compile-to-object` (`:format 'coff`) straight to a COFF
-  `.o` and linked into the same executable as `main.o`. It owns every
-  *decision*: mode → color, mode → label, whether the mode-switch menu
-  should be offered, and what a menu selection sends. `main.c` never
-  hardcodes a color or a mode→label rule; it only calls into this
-  object's exported functions (plain `int64_t`-in/`int64_t`-out C
-  symbols — see "How the AOT object and main.c actually link").
+  `.o` and linked into the same executable as the other three objects.
+  It owns every *decision*: mode → color, mode → label, whether the
+  mode-switch menu should be offered, and what a menu selection sends.
+  `main.c` never hardcodes a color or a mode→label rule; it only calls
+  into this object's exported functions (plain `int64_t`-in/`int64_t`-
+  out C symbols — see "How the AOT object and main.c actually link").
+  Phase 3 extended this without moving the decision into C: `main.c`
+  reads the five configurable colors from the registry (via
+  `settings.c`) into a small packed array and hands that array's
+  *pointer* to `skkui_color_for_configured(mode, previous_base,
+  colors_ptr)`, which still decides which slot applies — see
+  mode-logic.el's header comment for the full COLORS_PTR contract, and
+  "Why COLORS_PTR is a pointer, not five arguments" below for why.
 
 ### Why not build the whole window in the frame-v1 restricted dialect
 
@@ -110,6 +133,30 @@ at all: a throwaway C program (`long long skkui_base_color(long long
 m)` etc., declared `extern` and called directly) linked against
 `mode-logic.o` and printed the exact expected values for every mode.
 
+### Why COLORS_PTR is a pointer, not five arguments
+
+Phase 3's `skkui_color_for_configured` needs to choose among five
+registry-configurable colors (かな/カナ/全英/SKK/Abbrev) plus MODE and
+PREVIOUS_BASE — seven logical inputs. It does not take seven
+parameters. `nelisp-aot-compiler.el`'s COFF/Win64 object-mode path
+binds the *real* Win64 calling convention (four GP argument registers
+— RCX/RDX/R8/R9 — not SysV's six), and this project never needed to
+exercise whatever stack-argument support exists for functions beyond
+that (the doc comment above 5+-argument extern-calls only mentions a
+"SysV stack-argument path"). Rather than be the first thing in this
+codebase to test 5+-argument Win64 object-mode calls, `main.c` packs
+the five colors into a small `int64_t[7]` array (indices 0/1/2/3/6 —
+hiragana/katakana/wide-latin/latin/abbrev; see mode-logic.el's
+COLORS_PTR contract) and passes its address as a single `int64_t`
+(the same "pointer smuggled as an integer" pattern
+`dev/nelisp-sumi/src/nelisp-sumi-move.el`'s `ctx`/`eventbuf` params
+already use), so the function stays at 3 parameters. `mode-logic.el`
+reads the array with `ptr-read-u64` — a primitive already proven in
+object-mode-compiled code by that same nelisp-sumi module. The
+decision of *which* slot to use for a given MODE/PREVIOUS_BASE is
+still entirely NeLisp's; `main.c` only decides what a slot's bytes
+say (`RegGetValueW`'s DWORD, or a design-doc default).
+
 ## Build
 
 ```
@@ -117,13 +164,16 @@ $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"   # only needed if `emacs` is not 
 emacs -Q --batch -l build.el
 ```
 
-Produces `target/sumi-skk-ui.exe`, `target/mode-logic.o`,
-`target/main.o`. Requires (all available via the existing MSYS2
-mingw64 install this repo already uses for `dev/sumi`):
-`pkg-config`, `gtk4`, `pangocairo`, `gcc`, and a real Emacs (not
-NeLisp — `nelisp-aot-compiler.el` is itself an ordinary-Elisp meta-
-compiler, run under GNU Emacs, the same way every other Sumi/NeLisp-
-Sumi `build.el`/`build-live.el` runs it).
+Produces `target/sumi-skk-ui.exe` plus one `.o` per translation unit:
+`mode-logic.o` (NeLisp AOT), `pipe-client.o`, `settings.o`, `main.o`.
+Requires (all available via the existing MSYS2 mingw64 install this
+repo already uses for `dev/sumi`): `pkg-config`, `gtk4`, `pangocairo`,
+`gcc`, and a real Emacs (not NeLisp — `nelisp-aot-compiler.el` is
+itself an ordinary-Elisp meta-compiler, run under GNU Emacs, the same
+way every other Sumi/NeLisp-Sumi `build.el`/`build-live.el` runs it).
+`settings.c`'s registry calls link against `advapi32` (added
+explicitly in `build.el`'s link step — not pulled in transitively by
+`gtk4`/`pangocairo`'s own `pkg-config --libs` output).
 
 ### Env var overrides
 
@@ -132,6 +182,8 @@ Sumi `build.el`/`build-live.el` runs it).
 | `NELISP_ROOT` | `../../nelisp` (sibling of this repo under `dev/`) | Where `nelisp-aot-compiler.el` (and its `lisp`/`src` load-path) lives. This project's only real build-time dependency on another `dev/` checkout — see "Why not build the whole window..." above for why there is no `SUMI_ROOT`/`NELISP_SUMI_ROOT`: no source from either is loaded. |
 | `MINGW_BIN` | `C:/msys64/mingw64/bin` | Prepended to `PATH` for `gcc`/`pkg-config`/DLL loading. |
 | `PKG_CONFIG_PATH` | `/c/msys64/mingw64/lib/pkgconfig` | Passed to `pkg-config`. |
+| `DDSKK_PIPE_NAME` | `\\.\pipe\ddskk-ime-v1` | *Runtime*, not build-time: which named pipe the pill/settings-window "engine restart" button talk to. See `windows/src/engine_client.cpp`'s own use of the same variable. |
+| `DDSKK_SETTINGS_KEY` | `Software\NativeIME` | *Runtime*, not build-time: the HKCU-relative registry key `settings.c`'s `settings_load`/`settings_save`/`settings_delete_all` all resolve through. `verify/verify-settings.ps1` always overrides this to a disposable key (`Software\NativeIME-PhaseThreeTest`), and `settings_selftest()` itself refuses to run at all unless this is set to something non-empty — see "Verification". |
 
 ### Substrate limitation hit during the build: pkg-config's self-relocation
 
@@ -184,14 +236,125 @@ fix is applied unconditionally rather than investigated further.
   project, since text/color primitives are called from real C, but
   worth recording as the reason `sumi-cairo.el`'s pure-elisp path was
   not used.
-- **`abbrev` has no assigned indicator color yet.** The design doc's
-  own "Tab 表示" registry-defaults table lists `ModeColorAbbrev` with
-  default `—` (undecided). `mode-logic.el`'s `skkui_base_color`
-  reuses the same `#808080` gray as the "pipe unreachable/ERR" bucket
-  for `abbrev` rather than inventing an unspec'd seventh color; the
-  label still reads `Ab` (not `――`) so it is visually distinguishable
-  from a real connectivity error. Revisit once Phase 3 gives
-  `ModeColorAbbrev` a real default and wires registry overrides.
+- **`abbrev` still has no design-doc-assigned indicator color.** The
+  design doc's "Tab 表示" registry-defaults table lists
+  `ModeColorAbbrev` with default `—` (undecided) — Phase 3 wires
+  `ModeColorAbbrev` fully into the registry (it is readable, writable,
+  and has its own `GtkColorDialogButton` in the settings window's 表示
+  tab), but `settings.c`'s `settings_defaults()` still has to supply
+  *some* value for a first run before the user has ever picked one,
+  and reuses the same `#808080` gray Phase 2 used for the "pipe
+  unreachable/ERR" bucket rather than inventing an unspec'd color the
+  design doc never chose. The label still reads `Ab` (not `――`) so
+  it stays visually distinguishable from a real connectivity error.
+  This is a "no real default value" gap, not a "not configurable" gap
+  any more — the user can already override it via the settings window.
+- **`ModeIndicatorScale` is stored and round-trips, but is not yet
+  wired to the drawn pill size**, and Phase 3's text-color logic does
+  not yet flip to dark text for a pale user-chosen override color (see
+  `draw_indicator()`'s comment). Both are settings-window/rendering
+  polish, not registry-I/O gaps; tracked here rather than silently
+  left out.
+- **Spawning this GTK app through Windows PowerShell 5.1
+  (`powershell.exe`) was unreliable in this development environment**
+  (child process starts but produces no output at all, even via
+  `Start-Process -RedirectStandardOutput`) while PowerShell 7 (`pwsh`)
+  was reliable for the identical invocation. All verification here
+  runs through `pwsh` for that reason. This reads as host/session
+  flakiness rather than anything `sumi-skk-ui.exe` does differently
+  per PowerShell version — the same build, run enough times under
+  `pwsh`, reliably produces full trace output every time (including a
+  once-observed multi-second stall in `gtk_window_present()` that did
+  not reproduce on retry) — but it is recorded here in case it recurs:
+  if a launch produces truly zero output under automation, suspect the
+  launcher/session before the binary.
+
+## Settings window (Phase 3)
+
+Two entry points, both building the same window (`open_settings_window()`
+in `main.c`):
+
+- **Right-click the pill** — a second `GtkGestureClick` on the
+  drawing area, bound to `GDK_BUTTON_SECONDARY`, alongside the
+  existing left-click mode-switch-menu gesture.
+- **`sumi-skk-ui.exe --settings`** — skips creating the pill/STATUS
+  polling entirely and opens only the settings window; closing it
+  quits the process. Intended for a future Start-menu shortcut (task
+  brief), so a user who never wants the persistent pill running can
+  still reach settings.
+
+Four tabs (`GtkNotebook`), field-for-field the design doc's schema
+tables — see `settings.h`'s `Settings` struct for the exact
+registry-value-name/type/default mapping the UI reads and writes:
+
+| Tab | 日本語 | Controls |
+|---|---|---|
+| 動作 | behavior | エンジン (read-only label); 初期入力モード (two `GtkCheckButton`s in a `gtk_check_button_set_group` radio group — かな/英数) |
+| 表示 | display | 入力モードを表示する (checkbox); 表示時間・表示倍率 (`GtkSpinButton`); five mode colors (`GtkColorDialogButton`, one per `ModeColor*` value) |
+| 辞書 | dictionary | 辞書サーバを使用する (checkbox); ホスト (`GtkEntry`); ポート (`GtkSpinButton`); ユーザー辞書パス (`GtkEntry` + 参照 button opening a `GtkFileDialog`); 保存間隔 (`GtkSpinButton`) |
+| 調整 | maintenance | アイドルGC間隔 (`GtkSpinButton`); デバッグログ (checkbox) |
+
+Widget choices vs. the original Phase 1 "UI design" section's sumi-
+sprite-vocabulary language (label/checkbox/number-field/text-field/
+color-swatch): the task brief that authorized Phase 3 supersedes that
+section's widget-kind wording with concrete GTK4 widget choices, which
+is what got built. Two calls worth recording:
+
+- **`GtkColorDialogButton`, not the deprecated `GtkColorButton`.**
+  This GTK4 install is 4.22.4, well past GTK 4.10 where
+  `GtkColorDialogButton`/`GtkFileDialog` (both used here) landed as
+  the non-deprecated replacements for `GtkColorButton`+
+  `GtkColorChooserDialog` and `GtkFileChooserDialog`. No reason to
+  write against a deprecated API on a toolchain this current.
+- **The 辞書 tab's ユーザー辞書パス is a live, editable `GtkEntry`**,
+  not the original UI-design section's "read-only display +
+  エクスプローラで開く/既定に戻す" pattern (that wording predates the
+  Phase 3 brief, which explicitly asks for "entry + 参照 file-chooser
+  button"). The brief's instruction is the more specific and more
+  recent authority here, so it is what got built.
+
+Behavior:
+
+- **On open**, every control is populated from `settings_load()` —
+  registry values where present, `settings_defaults()` (the design
+  doc's own defaults) for anything absent.
+- **適用 (Apply)** reads every control back into a `Settings` struct
+  and calls `settings_save()`, which writes everything **except**
+  `Engine` (read-only per the design doc's Tab 動作 table — this UI
+  does not own that value). Shows the CorvusSKK-style note 反映には
+  IME の切替（またはエンジン再起動）が必要です on success, or a
+  distinct failure message if any individual registry write failed
+  (best-effort: every field is still attempted). The running pill's
+  colors/visibility update immediately from the just-applied values
+  regardless of persistence success, so what the user set is what they
+  see right away; only the label's wording depends on whether it
+  actually reached the registry.
+- **エンジン再起動 (restart engine)** sends a literal `SHUTDOWN\n`
+  over the same pipe-client machinery the pill's STATUS polling uses.
+  Confirmed by reading `windows/host/main.cpp`'s `ServeClient()`
+  directly (not assumed): it accepts `"SHUTDOWN"` from *any* connected
+  client (trailing `\n`/`\r` stripped before the comparison), replies
+  `"OK"`, and tears down the whole host + engine child process — the
+  TSF DLL respawns the host lazily on its own next keystroke, already
+  picking up whatever was just written to the registry (see the design
+  doc's Architecture section). This app only requests the shutdown; it
+  does not orchestrate the respawn itself. A client-triggerable
+  shutdown verb does exist, so — per the task brief's own fallback
+  instruction — the button was kept rather than dropped.
+- **閉じる (Close)** and the window's own close button both go through
+  `close_settings_window()`, which destroys the window and (only in
+  `--settings`-launched, no-pill mode) quits the application.
+- **`ModeIndicator = 0` hides the pill.** `app_sync_pill_visibility()`
+  runs after the initial load and after every Apply: it calls
+  `gtk_window_present()` when `ModeIndicator` is truthy or
+  `gtk_widget_set_visible(window, FALSE)` when it is not. The process
+  keeps running either way (`--settings` still works, and the pill can
+  reappear on a later Apply); the STATUS-poll cadence itself drops from
+  500 ms to 2000 ms while hidden (`schedule_poll()` is a self-
+  rescheduling one-shot timer — `on_poll_tick` always returns
+  `G_SOURCE_REMOVE` and arms its own next tick — specifically so the
+  interval can change between ticks whenever `ModeIndicator` changes,
+  which a single fixed `g_timeout_add()` cannot do).
 
 ## Verification
 
@@ -215,13 +378,62 @@ host; `Stop-Process` by PID for the indicator).
 
 `sumi-skk-ui.exe` is linked with `-mwindows` (no console subsystem,
 same as `dev/nelisp-sumi/build.el`'s own executable) so it never
-flashes a console for a normal user, but `stdout` still flows through
-an explicitly redirected handle exactly like any other process's — no
-special flag is needed to make the verification script's redirection
-work.
+flashes a console for a normal user. `stdout`/`stderr` still flow
+through an explicitly redirected handle exactly like any other
+process's **only when the parent supplies one via
+`Start-Process -RedirectStandardOutput/-RedirectStandardError`** (both
+verification scripts do this). Plain `& exe args 2>&1` pipeline
+capture does **not** reliably work for this binary — confirmed
+empirically while writing `verify-settings.ps1`: it silently returned
+`$null` instead of the self-test's PASS/FAIL lines, even though the
+process itself ran and exited normally. Both scripts use
+`Start-Process` with file redirection for exactly this reason; if you
+write a new verification script against this exe, do the same rather
+than capturing `& exe` output into a variable.
 
-## Configuring against the real pipe
+### Settings I/O verification: `verify/verify-settings.ps1`
+
+Runs the headless `sumi-skk-ui.exe --settings-selftest` entry point
+(`settings_selftest()` in `settings.c`) against a disposable registry
+key and asserts every check passed. Full GUI interaction (opening the
+settings window, clicking through its four tabs) is not required for
+this verification — the task brief's own bar is "compile-clean +
+selftest PASS + the existing indicator verify still PASS" — but the
+headless path exercises exactly the same `settings_load()`/
+`settings_save()` functions the settings window's Apply button and
+initial load use.
+
+`settings_selftest()`:
+
+1. Saves `settings_defaults()`, reloads, asserts equality.
+2. Mutates every field (every registry type this schema uses — DWORD
+   bool, DWORD int, DWORD packed color, SZ string), saves, reloads,
+   asserts equality — exercising `settings_save()`/`settings_load()`
+   for each type, not just the defaults path.
+3. Deletes the whole key, reloads, asserts every field falls back to
+   `settings_defaults()`.
+4. Deletes the key again unconditionally (belt-and-suspenders), then
+   prints `SELFTEST-PASS (0 failures)` or `SELFTEST-FAIL (N failures)`.
+
+Safety (task brief: "do NOT write the real registry key from any
+automated test"): `DDSKK_SETTINGS_KEY` is set to a disposable key
+(`Software\NativeIME-PhaseThreeTest`) by `verify-settings.ps1` *before*
+invoking `--settings-selftest`, and independently,
+`settings_selftest()` itself **refuses to run at all** — prints an
+error to stderr, returns 1 — unless `DDSKK_SETTINGS_KEY` is set to a
+non-empty value, so the destructive self-test cannot mutate or delete
+the real `HKCU\Software\NativeIME` even if invoked directly by
+mistake. Verified directly: `HKCU\Software\NativeIME` (the real,
+already-populated production key — `EngineHost`/`EngineExecutable`/
+`Repository`/`InitialKanaMode`/etc., written by this IME's own
+installer/config, not by anything in this repo) was read before and
+after every self-test run in this session and was unchanged throughout
+development.
+
+## Configuring against the real pipe / real registry key
 
 No configuration needed for the default case: with `DDSKK_PIPE_NAME`
-unset, `sumi-skk-ui.exe` talks to `\\.\pipe\ddskk-ime-v1`, the same
-default the TSF DLL and `windows/src/engine_client.cpp` use.
+and `DDSKK_SETTINGS_KEY` both unset, `sumi-skk-ui.exe` talks to
+`\\.\pipe\ddskk-ime-v1` and `HKCU\Software\NativeIME` — the same
+defaults the TSF DLL, `windows/src/engine_client.cpp`, and the
+installer/config tool use.

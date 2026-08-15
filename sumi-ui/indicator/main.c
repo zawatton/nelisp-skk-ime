@@ -1,4 +1,5 @@
-/* main.c -- sumi-skk-ui: CorvusSKK-style mode indicator for nelisp-skk-ime.
+/* main.c -- sumi-skk-ui: CorvusSKK-style mode indicator + settings window
+ * for nelisp-skk-ime.
  *
  * Copyright (C) 2026 nelisp-skk-ime contributors
  *
@@ -15,20 +16,23 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
- * Hand-authored GTK4/Cairo/Win32 glue for the sumi-indicator-settings.md
- * Phase 2 "indicator MVP" (see docs/design/sumi-indicator-settings.md).
- * This is the "acceptable MVP simplification" the design brief itself
- * offers: a real GTK4 C program, built with the same MSYS2 toolchain
+ * Hand-authored GTK4/Cairo/Win32 glue for docs/design/sumi-indicator-
+ * settings.md's Phase 2 "indicator MVP" and Phase 3 "settings tabs".
+ * This is the "acceptable MVP simplification" the Phase 2 design brief
+ * offered: a real GTK4 C program, built with the same MSYS2 toolchain
  * dev/sumi and dev/nelisp-sumi use, rather than authoring the whole
- * window in the frame-v1 restricted dialect. sumi-ui/README.md explains
- * why that full-protocol path was judged disproportionate for a ~120x40
- * status pill. All *decision logic* -- mode-to-color, mode-to-label,
- * whether/what the mode-switch menu sends -- still lives in the Sumi/
- * NeLisp AOT pattern: indicator/mode-logic.el compiles with the same
- * `nelisp-aot-compile-to-object' (:format 'coff) build-live.el and
+ * window in the frame-v1 restricted dialect (see sumi-ui/README.md for
+ * the full rationale). All *decision logic* -- mode-to-color, mode-to-
+ * label, whether/what the mode-switch menu sends -- still lives in the
+ * Sumi/NeLisp AOT pattern: indicator/mode-logic.el compiles with the
+ * same `nelisp-aot-compile-to-object' (:format 'coff) build-live.el and
  * build.el use, and links directly into this executable (see build.el).
- * This file owns only I/O (the named-pipe protocol, GTK/Cairo/Pango
- * rendering primitives) -- never a mode/color/label decision.
+ * This file owns I/O and rendering primitives (the named-pipe protocol,
+ * registry settings I/O via settings.c, GTK/Cairo/Pango widgets) --
+ * never a mode/color/label decision; Phase 3 extends that boundary to
+ * cover *which* colors are available (read from the registry via
+ * settings.c) without moving the *choice* among them out of NeLisp --
+ * see mode-logic.el's header comment for the COLORS_PTR contract.
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -43,18 +47,21 @@
 #include <string.h>
 #include <wchar.h>
 
+#include "pipe-client.h"
+#include "settings.h"
+
 /* ------------------------------------------------------------------ */
 /* Decision logic, compiled from indicator/mode-logic.el by build.el's
  * `nelisp-aot-compile-to-object' call and linked in as mode-logic.o.
- * Every symbol below is a plain SysV-shaped... no -- Win64-ABI-shaped
- * (see nelisp-aot-compiler.el: COFF/x86_64 output binds --abi to
- * 'win64) C function taking/returning int64_t, exactly like any other
- * extern C function; there is nothing NeLisp-specific about the call
- * site here. See mode-logic.el's own header comment for the full
- * MODE/PREVIOUS_BASE contract these implement. */
-extern int64_t skkui_base_color(int64_t mode);
+ * Every symbol below is a plain Win64-ABI-shaped (see nelisp-aot-
+ * compiler.el: COFF/x86_64 output binds --abi to 'win64) C function
+ * taking/returning int64_t, exactly like any other extern C function;
+ * there is nothing NeLisp-specific about the call site here. See mode-
+ * logic.el's own header comment for the full MODE/PREVIOUS_BASE/
+ * COLORS_PTR contract these implement. */
+extern int64_t skkui_color_for_configured(int64_t mode, int64_t previous_base,
+                                          int64_t colors_ptr);
 extern int64_t skkui_base_label(int64_t mode);
-extern int64_t skkui_color_for(int64_t mode, int64_t previous_base);
 extern int64_t skkui_label_for(int64_t mode, int64_t previous_base);
 extern int64_t skkui_composing_marker(int64_t mode);
 extern int64_t skkui_menu_visible(int64_t mode);
@@ -88,11 +95,11 @@ static int is_base_mode(int64_t m) {
   return m != MODE_PREEDIT && m != MODE_CANDIDATE && m != MODE_UNREACHABLE;
 }
 
-/* Names used only for the stdout transition log (Phase 2 verification
- * harness reads these; see sumi-ui/verify/verify.ps1). Independent of
- * the glyphs drawn on screen (draw_indicator() below), which come from
- * skkui_*_label()/UTF-8 glyph tables so the NeLisp module stays the
- * single source of truth for what the user sees. */
+/* Names used only for the stdout transition log (verify/verify.ps1
+ * reads these). Independent of the glyphs drawn on screen
+ * (draw_indicator() below), which come from skkui_*_label()/UTF-8 glyph
+ * tables so the NeLisp module stays the single source of truth for what
+ * the user sees. */
 static const char *mode_log_name(int64_t m) {
   switch (m) {
     case MODE_HIRAGANA: return "hiragana";
@@ -110,9 +117,10 @@ static const char *mode_log_name(int64_t m) {
  * return (0..5; see mode-logic.el's header comment). Kept here, not in
  * NeLisp, because these are literal string constants and object-mode
  * AOT compilation rejects any defun body that references one (see
- * nelisp-aot-compiler.el's `:object-mode-no-strings' gate) -- exactly
- * the split the task brief calls for: NeLisp decides *which* label
- * (an integer), main.c owns the literal glyph (a rendering primitive). */
+ * nelisp-aot-compiler.el's `:object-mode-no-strings' gate) -- NeLisp
+ * decides *which* label (an integer), main.c owns the literal glyph (a
+ * rendering primitive). Labels are not registry-configurable (no such
+ * column in the design doc's schema tables). */
 static const char *label_glyph(int64_t label_code) {
   switch (label_code) {
     case 0: return "\xe3\x81\x82";             /* U+3042 あ */
@@ -133,163 +141,44 @@ static const char *marker_glyph(int64_t marker_code) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Named-pipe client. Mirrors windows/src/engine_client.cpp's overlapped
- * write-then-read transaction shape (same reasons: plain blocking
- * ReadFile/WriteFile ignore any timeout, so overlapped I/O + a bounded
- * WaitForSingleObject is the only way a hung host doesn't freeze this
- * process) but trimmed to what the indicator actually needs: STATUS
- * polling and the two-step CONTROL CANCEL [+ KEY n] mode switch. Task
- * brief step 2 asks for this over CreateFileW + SetNamedPipeHandleState
- * directly (Windows-specific host-side code, "which is fine in the glue
- * layer -- the same place GTK signal handlers live"). */
+/* UTF-8 <-> UTF-16 helpers for the settings window's text entries
+ * (Settings' string fields are wchar_t[] for direct registry I/O;
+ * GtkEditable's text is always UTF-8). Cast wchar_t* <-> gunichar2* is
+ * safe on Windows: both are 16-bit UTF-16 code units there. */
 
-#define SKKUI_DEFAULT_PIPE_NAME L"\\\\.\\pipe\\ddskk-ime-v1"
-#define SKKUI_TRANSACT_TIMEOUT_MS 300
-#define SKKUI_POLL_INTERVAL_MS 500
-/* Reconnect backoff, in poll-interval ticks: 1 tick (500 ms) after the
- * first failure, doubling up to a cap of 8 ticks (4 s) so a host that
- * is merely slow to come up is retried quickly while a host that is
- * genuinely gone does not spin the pipe open/close cycle needlessly. */
-#define SKKUI_BACKOFF_CAP_TICKS 8
-
-typedef struct {
-  HANDLE handle;
-  wchar_t name[512];
-  unsigned backoff_step_ticks;   /* 0 = not backed off */
-  unsigned backoff_ticks_left;
-} PipeClient;
-
-static void pipe_client_init(PipeClient *pc) {
-  pc->handle = INVALID_HANDLE_VALUE;
-  wchar_t override[512];
-  const DWORD n = GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", override, 512);
-  if (n > 0 && n < 512) {
-    wcsncpy(pc->name, override, 511);
-    pc->name[511] = L'\0';
+static void utf8_to_wide(const char *utf8, wchar_t *out, size_t out_cap) {
+  glong written = 0;
+  gunichar2 *wide = g_utf8_to_utf16(utf8, -1, NULL, &written, NULL);
+  if (wide) {
+    size_t n = (size_t)written < out_cap - 1 ? (size_t)written : out_cap - 1;
+    memcpy(out, wide, n * sizeof(wchar_t));
+    out[n] = L'\0';
+    g_free(wide);
   } else {
-    wcsncpy(pc->name, SKKUI_DEFAULT_PIPE_NAME, 511);
-    pc->name[511] = L'\0';
-  }
-  pc->backoff_step_ticks = 0;
-  pc->backoff_ticks_left = 0;
-}
-
-static void pipe_client_disconnect(PipeClient *pc) {
-  if (pc->handle != INVALID_HANDLE_VALUE) {
-    CloseHandle(pc->handle);
-    pc->handle = INVALID_HANDLE_VALUE;
+    out[0] = L'\0';
   }
 }
 
-/* Registers a failure and (re)starts the backoff countdown. Called
- * whenever a connect or transact attempt fails; on success the caller
- * clears backoff_step_ticks back to 0 directly. */
-static void pipe_client_note_failure(PipeClient *pc) {
-  pipe_client_disconnect(pc);
-  pc->backoff_step_ticks =
-      pc->backoff_step_ticks == 0 ? 1 : pc->backoff_step_ticks * 2;
-  if (pc->backoff_step_ticks > SKKUI_BACKOFF_CAP_TICKS)
-    pc->backoff_step_ticks = SKKUI_BACKOFF_CAP_TICKS;
-  pc->backoff_ticks_left = pc->backoff_step_ticks;
-}
-
-/* Returns TRUE if a connect attempt should be skipped this tick because
- * a previous failure's backoff has not yet elapsed. Always decrements
- * the countdown so it eventually reaches 0 and the next tick retries. */
-static gboolean pipe_client_in_backoff(PipeClient *pc) {
-  if (pc->backoff_ticks_left == 0) return FALSE;
-  pc->backoff_ticks_left--;
-  return TRUE;
-}
-
-static gboolean pipe_client_connect(PipeClient *pc) {
-  if (pc->handle != INVALID_HANDLE_VALUE) return TRUE;
-  HANDLE h = CreateFileW(pc->name, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
-                         NULL);
-  if (h == INVALID_HANDLE_VALUE) return FALSE;
-  DWORD mode = PIPE_READMODE_MESSAGE;
-  if (!SetNamedPipeHandleState(h, &mode, NULL, NULL)) {
-    CloseHandle(h);
-    return FALSE;
-  }
-  pc->handle = h;
-  return TRUE;
-}
-
-/* One write-then-read transaction, bounded by SKKUI_TRANSACT_TIMEOUT_MS
- * in each direction. REQUEST must include its trailing "\n" (matching
- * windows/src/engine_protocol.cpp's EncodeKeyRequest/EncodeControlRequest
- * convention). Returns the reply in RESPONSE (bounded, NUL-terminated)
- * and TRUE on success; on any failure this disconnects and starts the
- * caller's backoff via pipe_client_note_failure() -- callers must not
- * call that a second time themselves. */
-static gboolean pipe_client_transact(PipeClient *pc, const char *request,
-                                     char *response, size_t response_cap) {
-  if (!pipe_client_connect(pc)) {
-    pipe_client_note_failure(pc);
-    return FALSE;
-  }
-
-  OVERLAPPED ov;
-  memset(&ov, 0, sizeof(ov));
-  ov.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
-  if (ov.hEvent == NULL) {
-    pipe_client_note_failure(pc);
-    return FALSE;
-  }
-
-  const DWORD req_len = (DWORD)strlen(request);
-  DWORD written = 0;
-  gboolean ok = TRUE;
-  if (!WriteFile(pc->handle, request, req_len, &written, &ov) &&
-      GetLastError() != ERROR_IO_PENDING) {
-    ok = FALSE;
-  } else if (WaitForSingleObject(ov.hEvent, SKKUI_TRANSACT_TIMEOUT_MS) != WAIT_OBJECT_0 ||
-             !GetOverlappedResult(pc->handle, &ov, &written, FALSE) ||
-             written != req_len) {
-    CancelIoEx(pc->handle, &ov);
-    DWORD ignored = 0;
-    GetOverlappedResult(pc->handle, &ov, &ignored, TRUE);
-    ok = FALSE;
-  }
-
-  DWORD read = 0;
-  if (ok) {
-    ResetEvent(ov.hEvent);
-    if (!ReadFile(pc->handle, response, (DWORD)(response_cap - 1), &read, &ov) &&
-        GetLastError() != ERROR_IO_PENDING) {
-      ok = FALSE;
-    } else if (WaitForSingleObject(ov.hEvent, SKKUI_TRANSACT_TIMEOUT_MS) != WAIT_OBJECT_0 ||
-               !GetOverlappedResult(pc->handle, &ov, &read, FALSE)) {
-      CancelIoEx(pc->handle, &ov);
-      DWORD ignored = 0;
-      GetOverlappedResult(pc->handle, &ov, &ignored, TRUE);
-      ok = FALSE;
-    }
-  }
-  CloseHandle(ov.hEvent);
-
-  if (!ok) {
-    pipe_client_note_failure(pc);
-    return FALSE;
-  }
-  response[read] = '\0';
-  pc->backoff_step_ticks = 0;
-  return TRUE;
+static char *wide_to_utf8_alloc(const wchar_t *wide) {
+  char *utf8 = g_utf16_to_utf8((const gunichar2 *)wide, -1, NULL, NULL, NULL);
+  return utf8 ? utf8 : g_strdup("");
 }
 
 /* ------------------------------------------------------------------ */
 /* App state. */
 
 typedef struct {
-  GtkWidget *window;
+  GtkApplication *gtk_app;
+  GtkWidget *window;          /* the indicator pill; NULL in --settings-only mode */
   GtkWidget *drawing_area;
   GtkWidget *popover;
+  GtkWidget *settings_window; /* NULL when no settings window is open */
   PipeClient pipe;
+  Settings settings;
   int64_t mode;           /* last mode this process observed, incl. 7 */
   int64_t previous_base;  /* last *base* mode (never 4/5/7) */
   gboolean have_state;     /* FALSE until the first poll completes */
+  gboolean settings_only;  /* TRUE when launched with --settings: no pill, no poll */
   PangoFontDescription *label_font;
 } App;
 
@@ -315,9 +204,8 @@ static void app_apply_mode(App *app, int64_t new_mode) {
 /* Parses a "STATE <mode> ..." reply (windows/src/engine_protocol.cpp's
  * ParseStateResponse documents the full 8-field grammar; the indicator
  * only needs field 1). Any other reply (an "ERR ..." token, or garbage)
- * maps to MODE_UNREACHABLE -- the task brief's "pipe unreachable or ERR"
- * bucket makes no distinction between the two from the display's point
- * of view. */
+ * maps to MODE_UNREACHABLE -- the "pipe unreachable or ERR" bucket makes
+ * no distinction between the two from the display's point of view. */
 static int64_t mode_from_state_reply(const char *reply) {
   if (strncmp(reply, "STATE ", 6) != 0) return MODE_UNREACHABLE;
   const char *field = reply + 6;
@@ -355,25 +243,45 @@ static void draw_centered_pango(cairo_t *cr, PangoFontDescription *desc,
   g_object_unref(layout);
 }
 
+/* Fills OUT (7 slots, see mode-logic.el's COLORS_PTR contract) from the
+ * currently loaded Settings. Slots 4/5/7 (preedit/candidate/
+ * unreachable) are left at 0 -- mode-logic.el's skkui_base_color_configured
+ * never reads them (preedit/candidate are redirected to previous_base
+ * before indexing, and unreachable/ERR keeps its own hardcoded #808080). */
+static void fill_configured_colors(const Settings *s, int64_t out[7]) {
+  out[0] = s->color_kana;
+  out[1] = s->color_katakana;
+  out[2] = s->color_wide_latin;
+  out[3] = s->color_latin;
+  out[4] = 0;
+  out[5] = 0;
+  out[6] = s->color_abbrev;
+}
+
 static void draw_indicator(GtkDrawingArea *area, cairo_t *cr, int width,
                            int height, gpointer user_data) {
   (void)area;
   App *app = (App *)user_data;
   const int64_t mode = app->have_state ? app->mode : MODE_UNREACHABLE;
   const int64_t prev = app->previous_base;
-  const int64_t rgb = skkui_color_for(mode, prev);
+
+  int64_t colors[7];
+  fill_configured_colors(&app->settings, colors);
+  const int64_t rgb = skkui_color_for_configured(mode, prev, (int64_t)(intptr_t)colors);
   const int64_t label_code = skkui_label_for(mode, prev);
   const int64_t marker_code = skkui_composing_marker(mode);
 
   set_source_from_rgb24(cr, rgb);
   cairo_paint(cr);
 
-  /* Text color: near-white on every one of this app's backgrounds (all
-   * spec'd colors -- red/green/purple/blue/gray -- are dark/mid-
-   * saturation), matching mode_indicator.cpp's own default for the
-   * same palette family. No luminance flip is needed here (unlike
-   * mode_indicator.cpp, which must also handle arbitrary user-chosen
-   * override colors from the registry -- out of scope until Phase 3). */
+  /* Text color: near-white on every one of this app's default backgrounds
+   * (red/green/purple/blue/gray are all dark/mid-saturation), matching
+   * mode_indicator.cpp's own default for the same palette family. A
+   * user-chosen pale override color from Phase 3's color pickers could
+   * make white text hard to read -- unlike mode_indicator.cpp, this MVP
+   * does not yet flip to dark text for pale overrides; noted in
+   * README.md as a follow-up alongside ModeIndicatorScale (also not
+   * wired to the drawn size yet). */
   const char *glyph = label_glyph(label_code);
   const char *marker = marker_glyph(marker_code);
 
@@ -430,7 +338,7 @@ static void ensure_popover(App *app) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Click-to-open-menu / suppressed-while-composing (task brief step 4). */
+/* Click-to-open-menu / suppressed-while-composing. */
 
 static void on_click_released(GtkGestureClick *gesture, int n_press, double x,
                               double y, gpointer user_data) {
@@ -448,33 +356,456 @@ static void on_click_released(GtkGestureClick *gesture, int n_press, double x,
 }
 
 /* ------------------------------------------------------------------ */
-/* Polling timer. */
+/* Settings window (Phase 3). */
+
+typedef struct {
+  App *app;
+  GtkWidget *window;
+
+  /* Tab 動作 */
+  GtkWidget *radio_hiragana;
+  GtkWidget *radio_latin;
+
+  /* Tab 表示 */
+  GtkWidget *check_mode_indicator;
+  GtkWidget *spin_indicator_ms;
+  GtkWidget *spin_indicator_scale;
+  GtkWidget *color_kana;
+  GtkWidget *color_katakana;
+  GtkWidget *color_wide_latin;
+  GtkWidget *color_latin;
+  GtkWidget *color_abbrev;
+
+  /* Tab 辞書 */
+  GtkWidget *check_skkserv_enable;
+  GtkWidget *entry_skkserv_host;
+  GtkWidget *spin_skkserv_port;
+  GtkWidget *entry_jisyo_path;
+  GtkWidget *spin_jisyo_batch;
+
+  /* Tab 調整 */
+  GtkWidget *spin_idle_gc_ms;
+  GtkWidget *check_dll_debug;
+
+  GtkWidget *status_label;
+} SettingsWindow;
+
+static void packed_to_rgba(int64_t packed, GdkRGBA *out) {
+  out->red = ((packed >> 16) & 0xff) / 255.0;
+  out->green = ((packed >> 8) & 0xff) / 255.0;
+  out->blue = (packed & 0xff) / 255.0;
+  out->alpha = 1.0;
+}
+
+static int64_t rgba_to_packed(GtkColorDialogButton *btn) {
+  const GdkRGBA *rgba = gtk_color_dialog_button_get_rgba(btn);
+  const int r = (int)(rgba->red * 255.0 + 0.5);
+  const int g = (int)(rgba->green * 255.0 + 0.5);
+  const int b = (int)(rgba->blue * 255.0 + 0.5);
+  return ((int64_t)r << 16) | ((int64_t)g << 8) | (int64_t)b;
+}
+
+static GtkWidget *make_color_button(int64_t packed) {
+  GdkRGBA rgba;
+  packed_to_rgba(packed, &rgba);
+  GtkWidget *btn = gtk_color_dialog_button_new(gtk_color_dialog_new());
+  gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(btn), &rgba);
+  return btn;
+}
+
+/* Appends a label + control row to GRID at ROW. Used for every setting
+ * except the three standalone checkboxes (ModeIndicator/SkkServEnable/
+ * DllDebug), whose own label text is the checkbox's own label. */
+static void grid_add_row(GtkGrid *grid, int row, const char *label_text, GtkWidget *control) {
+  GtkWidget *label = gtk_label_new(label_text);
+  gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+  gtk_widget_set_hexpand(control, TRUE);
+  gtk_grid_attach(grid, label, 0, row, 1, 1);
+  gtk_grid_attach(grid, control, 1, row, 1, 1);
+}
+
+static GtkWidget *build_tab_behavior(SettingsWindow *sw) {
+  GtkWidget *grid = gtk_grid_new();
+  gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+  gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+  gtk_widget_set_margin_top(grid, 12);
+  gtk_widget_set_margin_bottom(grid, 12);
+  gtk_widget_set_margin_start(grid, 12);
+  gtk_widget_set_margin_end(grid, 12);
+
+  char *engine_utf8 = wide_to_utf8_alloc(sw->app->settings.engine);
+  GtkWidget *engine_label = gtk_label_new(engine_utf8);
+  gtk_label_set_xalign(GTK_LABEL(engine_label), 0.0);
+  g_free(engine_utf8);
+  grid_add_row(GTK_GRID(grid), 0, "\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3" /* エンジン */, engine_label);
+
+  GtkWidget *radio_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+  sw->radio_hiragana = gtk_check_button_new_with_label("\xe3\x81\x8b\xe3\x81\xaa" /* かな */);
+  sw->radio_latin = gtk_check_button_new_with_label("\xe8\x8b\xb1\xe6\x95\xb0" /* 英数 */);
+  gtk_check_button_set_group(GTK_CHECK_BUTTON(sw->radio_latin), GTK_CHECK_BUTTON(sw->radio_hiragana));
+  gtk_check_button_set_active(
+      GTK_CHECK_BUTTON(sw->app->settings.initial_kana_mode ? sw->radio_hiragana : sw->radio_latin), TRUE);
+  gtk_box_append(GTK_BOX(radio_box), sw->radio_hiragana);
+  gtk_box_append(GTK_BOX(radio_box), sw->radio_latin);
+  grid_add_row(GTK_GRID(grid), 1, "\xe5\x88\x9d\xe6\x9c\x9f\xe5\x85\xa5\xe5\x8a\x9b\xe3\x83\xa2\xe3\x83\xbc\xe3\x83\x89" /* 初期入力モード */, radio_box);
+
+  return grid;
+}
+
+static GtkWidget *build_tab_display(SettingsWindow *sw) {
+  GtkWidget *grid = gtk_grid_new();
+  gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+  gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+  gtk_widget_set_margin_top(grid, 12);
+  gtk_widget_set_margin_bottom(grid, 12);
+  gtk_widget_set_margin_start(grid, 12);
+  gtk_widget_set_margin_end(grid, 12);
+  int row = 0;
+
+  sw->check_mode_indicator = gtk_check_button_new_with_label(
+      "\xe5\x85\xa5\xe5\x8a\x9b\xe3\x83\xa2\xe3\x83\xbc\xe3\x83\x89\xe3\x82\x92\xe8\xa1\xa8\xe7\xa4\xba\xe3\x81\x99\xe3\x82\x8b" /* 入力モードを表示する */);
+  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_mode_indicator), sw->app->settings.mode_indicator != 0);
+  gtk_grid_attach(GTK_GRID(grid), sw->check_mode_indicator, 0, row, 2, 1);
+  row++;
+
+  sw->spin_indicator_ms = gtk_spin_button_new_with_range(1, 60000, 100);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_indicator_ms), sw->app->settings.mode_indicator_ms);
+  grid_add_row(GTK_GRID(grid), row++, "\xe8\xa1\xa8\xe7\xa4\xba\xe6\x99\x82\xe9\x96\x93 (ms)" /* 表示時間 (ms) */, sw->spin_indicator_ms);
+
+  sw->spin_indicator_scale = gtk_spin_button_new_with_range(50, 300, 5);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_indicator_scale), sw->app->settings.mode_indicator_scale);
+  grid_add_row(GTK_GRID(grid), row++, "\xe8\xa1\xa8\xe7\xa4\xba\xe5\x80\x8d\xe7\x8e\x87 (%)" /* 表示倍率 (%) */, sw->spin_indicator_scale);
+
+  sw->color_kana = make_color_button(sw->app->settings.color_kana);
+  grid_add_row(GTK_GRID(grid), row++, "\xe3\x81\x8b\xe3\x81\xaa\xe8\x89\xb2" /* かな色 */, sw->color_kana);
+
+  sw->color_katakana = make_color_button(sw->app->settings.color_katakana);
+  grid_add_row(GTK_GRID(grid), row++, "\xe3\x82\xab\xe3\x83\x8a\xe8\x89\xb2" /* カナ色 */, sw->color_katakana);
+
+  sw->color_wide_latin = make_color_button(sw->app->settings.color_wide_latin);
+  grid_add_row(GTK_GRID(grid), row++, "\xe5\x85\xa8\xe8\x8b\xb1\xe8\x89\xb2" /* 全英色 */, sw->color_wide_latin);
+
+  sw->color_latin = make_color_button(sw->app->settings.color_latin);
+  grid_add_row(GTK_GRID(grid), row++, "SKK(\xe8\x8b\xb1\xe6\x95\xb0)\xe8\x89\xb2" /* SKK(英数)色 */, sw->color_latin);
+
+  sw->color_abbrev = make_color_button(sw->app->settings.color_abbrev);
+  grid_add_row(GTK_GRID(grid), row++, "Abbrev\xe8\x89\xb2" /* Abbrev色 */, sw->color_abbrev);
+
+  return grid;
+}
+
+static void on_jisyo_chosen(GObject *source, GAsyncResult *result, gpointer user_data) {
+  GtkEntry *entry = GTK_ENTRY(user_data);
+  GError *error = NULL;
+  GFile *file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, &error);
+  if (file) {
+    char *path = g_file_get_path(file);
+    if (path) {
+      gtk_editable_set_text(GTK_EDITABLE(entry), path);
+      g_free(path);
+    }
+    g_object_unref(file);
+  }
+  g_clear_error(&error);
+}
+
+static void on_jisyo_browse_clicked(GtkButton *button, gpointer user_data) {
+  GtkEntry *entry = GTK_ENTRY(user_data);
+  GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(button));
+  GtkFileDialog *dialog = gtk_file_dialog_new();
+  gtk_file_dialog_set_title(dialog,
+      "\xe3\x83\xa6\xe3\x83\xbc\xe3\x82\xb6\xe3\x83\xbc\xe8\xbe\x9e\xe6\x9b\xb8\xe3\x83\x95\xe3\x82\xa1\xe3\x82\xa4\xe3\x83\xab\xe3\x82\x92\xe9\x81\xb8\xe6\x8a\x9e" /* ユーザー辞書ファイルを選択 */);
+  gtk_file_dialog_open(dialog, GTK_WINDOW(root), NULL, on_jisyo_chosen, entry);
+  g_object_unref(dialog);
+}
+
+static GtkWidget *build_tab_dictionary(SettingsWindow *sw) {
+  GtkWidget *grid = gtk_grid_new();
+  gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+  gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+  gtk_widget_set_margin_top(grid, 12);
+  gtk_widget_set_margin_bottom(grid, 12);
+  gtk_widget_set_margin_start(grid, 12);
+  gtk_widget_set_margin_end(grid, 12);
+  int row = 0;
+
+  sw->check_skkserv_enable = gtk_check_button_new_with_label(
+      "\xe8\xbe\x9e\xe6\x9b\xb8\xe3\x82\xb5\xe3\x83\xbc\xe3\x83\x90\xe3\x82\x92\xe4\xbd\xbf\xe7\x94\xa8\xe3\x81\x99\xe3\x82\x8b" /* 辞書サーバを使用する */);
+  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_skkserv_enable), sw->app->settings.skkserv_enable != 0);
+  gtk_grid_attach(GTK_GRID(grid), sw->check_skkserv_enable, 0, row, 2, 1);
+  row++;
+
+  sw->entry_skkserv_host = gtk_entry_new();
+  {
+    char *host_utf8 = wide_to_utf8_alloc(sw->app->settings.skkserv_host);
+    gtk_editable_set_text(GTK_EDITABLE(sw->entry_skkserv_host), host_utf8);
+    g_free(host_utf8);
+  }
+  grid_add_row(GTK_GRID(grid), row++, "\xe3\x83\x9b\xe3\x82\xb9\xe3\x83\x88" /* ホスト */, sw->entry_skkserv_host);
+
+  sw->spin_skkserv_port = gtk_spin_button_new_with_range(1, 65535, 1);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_skkserv_port), sw->app->settings.skkserv_port);
+  grid_add_row(GTK_GRID(grid), row++, "\xe3\x83\x9d\xe3\x83\xbc\xe3\x83\x88" /* ポート */, sw->spin_skkserv_port);
+
+  GtkWidget *jisyo_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+  sw->entry_jisyo_path = gtk_entry_new();
+  gtk_widget_set_hexpand(sw->entry_jisyo_path, TRUE);
+  {
+    char *path_utf8 = wide_to_utf8_alloc(sw->app->settings.user_jisyo_path);
+    gtk_editable_set_text(GTK_EDITABLE(sw->entry_jisyo_path), path_utf8);
+    g_free(path_utf8);
+  }
+  GtkWidget *browse_button = gtk_button_new_with_label("\xe5\x8f\x82\xe7\x85\xa7" /* 参照 */);
+  g_signal_connect(browse_button, "clicked", G_CALLBACK(on_jisyo_browse_clicked), sw->entry_jisyo_path);
+  gtk_box_append(GTK_BOX(jisyo_box), sw->entry_jisyo_path);
+  gtk_box_append(GTK_BOX(jisyo_box), browse_button);
+  grid_add_row(GTK_GRID(grid), row++, "\xe3\x83\xa6\xe3\x83\xbc\xe3\x82\xb6\xe3\x83\xbc\xe8\xbe\x9e\xe6\x9b\xb8\xe3\x83\x91\xe3\x82\xb9" /* ユーザー辞書パス */, jisyo_box);
+
+  sw->spin_jisyo_batch = gtk_spin_button_new_with_range(1, 100, 1);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_jisyo_batch), sw->app->settings.user_jisyo_batch);
+  grid_add_row(GTK_GRID(grid), row++, "\xe4\xbf\x9d\xe5\xad\x98\xe9\x96\x93\xe9\x9a\x94 (\xe7\xa2\xba\xe5\xae\x9a\xe6\x95\xb0)" /* 保存間隔 (確定数) */, sw->spin_jisyo_batch);
+
+  return grid;
+}
+
+static GtkWidget *build_tab_maintenance(SettingsWindow *sw) {
+  GtkWidget *grid = gtk_grid_new();
+  gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+  gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+  gtk_widget_set_margin_top(grid, 12);
+  gtk_widget_set_margin_bottom(grid, 12);
+  gtk_widget_set_margin_start(grid, 12);
+  gtk_widget_set_margin_end(grid, 12);
+  int row = 0;
+
+  sw->spin_idle_gc_ms = gtk_spin_button_new_with_range(100, 60000, 100);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_idle_gc_ms), sw->app->settings.idle_gc_ms);
+  grid_add_row(GTK_GRID(grid), row++, "\xe3\x82\xa2\xe3\x82\xa4\xe3\x83\x89\xe3\x83\xabGC\xe9\x96\x93\xe9\x9a\x94 (ms)" /* アイドルGC間隔 (ms) */, sw->spin_idle_gc_ms);
+
+  sw->check_dll_debug = gtk_check_button_new_with_label("\xe3\x83\x87\xe3\x83\x90\xe3\x83\x83\xe3\x82\xb0\xe3\x83\xad\xe3\x82\xb0" /* デバッグログ */);
+  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_dll_debug), sw->app->settings.dll_debug != 0);
+  gtk_grid_attach(GTK_GRID(grid), sw->check_dll_debug, 0, row, 2, 1);
+
+  return grid;
+}
+
+static void settings_read_from_widgets(SettingsWindow *sw, Settings *out) {
+  *out = sw->app->settings; /* preserves `engine' (read-only, never exposed as a control) */
+
+  out->initial_kana_mode = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->radio_hiragana)) ? 1 : 0;
+
+  out->mode_indicator = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_mode_indicator)) ? 1 : 0;
+  out->mode_indicator_ms = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_indicator_ms));
+  out->mode_indicator_scale = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_indicator_scale));
+  out->color_kana = rgba_to_packed(GTK_COLOR_DIALOG_BUTTON(sw->color_kana));
+  out->color_katakana = rgba_to_packed(GTK_COLOR_DIALOG_BUTTON(sw->color_katakana));
+  out->color_wide_latin = rgba_to_packed(GTK_COLOR_DIALOG_BUTTON(sw->color_wide_latin));
+  out->color_latin = rgba_to_packed(GTK_COLOR_DIALOG_BUTTON(sw->color_latin));
+  out->color_abbrev = rgba_to_packed(GTK_COLOR_DIALOG_BUTTON(sw->color_abbrev));
+
+  out->skkserv_enable = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_skkserv_enable)) ? 1 : 0;
+  utf8_to_wide(gtk_editable_get_text(GTK_EDITABLE(sw->entry_skkserv_host)), out->skkserv_host, SETTINGS_STR_LEN);
+  out->skkserv_port = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_skkserv_port));
+  utf8_to_wide(gtk_editable_get_text(GTK_EDITABLE(sw->entry_jisyo_path)), out->user_jisyo_path, SETTINGS_STR_LEN);
+  out->user_jisyo_batch = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_jisyo_batch));
+
+  out->idle_gc_ms = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_idle_gc_ms));
+  out->dll_debug = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_dll_debug)) ? 1 : 0;
+}
+
+/* Shows/hides the indicator pill to match the just-applied (or just-
+ * loaded) ModeIndicator setting. No-op in --settings-only mode, where
+ * there is no pill (app->window is NULL). */
+static void app_sync_pill_visibility(App *app) {
+  if (!app->window) return;
+  if (app->settings.mode_indicator) {
+    gtk_window_present(GTK_WINDOW(app->window));
+  } else {
+    gtk_widget_set_visible(app->window, FALSE);
+  }
+}
+
+static void on_apply_clicked(GtkButton *button, gpointer user_data) {
+  (void)button;
+  SettingsWindow *sw = user_data;
+  Settings s;
+  settings_read_from_widgets(sw, &s);
+  const gboolean ok = settings_save(&s);
+  /* Reflect the just-applied values in the running app (pill color/
+   * visibility, poll cadence) regardless of whether persistence fully
+   * succeeded, so what the user just set is what they see immediately;
+   * the status label is honest about persistence separately. */
+  sw->app->settings = s;
+  app_sync_pill_visibility(sw->app);
+  if (sw->app->drawing_area) gtk_widget_queue_draw(sw->app->drawing_area);
+  gtk_label_set_text(
+      GTK_LABEL(sw->status_label),
+      ok ? "\xe5\x8f\x8d\xe6\x98\xa0\xe3\x81\xab\xe3\x81\xaf IME \xe3\x81\xae\xe5\x88\x87\xe6\x9b\xbf\xef\xbc\x88\xe3\x81\xbe\xe3\x81\x9f\xe3\x81\xaf\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe5\x86\x8d\xe8\xb5\xb7\xe5\x8b\x95\xef\xbc\x89\xe3\x81\x8c\xe5\xbf\x85\xe8\xa6\x81\xe3\x81\xa7\xe3\x81\x99"
+         /* 反映には IME の切替（またはエンジン再起動）が必要です */
+         : "\xe4\xb8\x80\xe9\x83\xa8\xe3\x81\xae\xe8\xa8\xad\xe5\xae\x9a\xe3\x81\xae\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\xab\xe5\xa4\xb1\xe6\x95\x97\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x97\xe3\x81\x9f"
+         /* 一部の設定の保存に失敗しました */);
+}
+
+/* windows/host/main.cpp's ServeClient() accepts a literal "SHUTDOWN"
+ * request (trailing \n/\r are stripped before the comparison) from any
+ * connected client, answers "OK", and tears the whole host + engine
+ * child process down; the TSF DLL respawns the host lazily on its own
+ * next keystroke with the (by then already-written) new registry
+ * values -- see docs/design/sumi-indicator-settings.md's Architecture
+ * section. This app does not need to orchestrate that respawn itself,
+ * only request the shutdown. */
+static void on_restart_engine_clicked(GtkButton *button, gpointer user_data) {
+  (void)button;
+  SettingsWindow *sw = user_data;
+  char response[64];
+  pipe_client_transact(&sw->app->pipe, "SHUTDOWN\n", response, sizeof(response));
+  gtk_label_set_text(GTK_LABEL(sw->status_label),
+                     "\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe3\x81\xab\xe5\x86\x8d\xe8\xb5\xb7\xe5\x8b\x95\xe3\x82\x92\xe8\xa6\x81\xe6\xb1\x82\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x97\xe3\x81\x9f"
+                     /* エンジンに再起動を要求しました */);
+}
+
+static void close_settings_window(App *app) {
+  if (!app->settings_window) return;
+  const gboolean settings_only = app->settings_only;
+  GtkWidget *window = app->settings_window;
+  app->settings_window = NULL; /* clear before destroy: destroy may re-enter via close-request */
+  gtk_window_destroy(GTK_WINDOW(window));
+  if (settings_only && app->gtk_app) g_application_quit(G_APPLICATION(app->gtk_app));
+}
+
+static void on_close_clicked(GtkButton *button, gpointer user_data) {
+  (void)button;
+  SettingsWindow *sw = user_data;
+  close_settings_window(sw->app);
+}
+
+static gboolean on_settings_close_request(GtkWindow *window, gpointer user_data) {
+  (void)window;
+  SettingsWindow *sw = user_data;
+  close_settings_window(sw->app);
+  return TRUE; /* handled: suppress the default close/destroy */
+}
+
+static void open_settings_window(App *app) {
+  if (app->settings_window) {
+    gtk_window_present(GTK_WINDOW(app->settings_window));
+    return;
+  }
+
+  SettingsWindow *sw = g_new0(SettingsWindow, 1);
+  sw->app = app;
+
+  GtkWidget *window = app->settings_only && app->gtk_app
+                          ? gtk_application_window_new(app->gtk_app)
+                          : gtk_window_new();
+  sw->window = window;
+  app->settings_window = window;
+  gtk_window_set_title(GTK_WINDOW(window), "SKK \xe8\xa8\xad\xe5\xae\x9a" /* SKK 設定 */);
+  gtk_window_set_default_size(GTK_WINDOW(window), 480, 360);
+  g_object_set_data_full(G_OBJECT(window), "sw", sw, g_free);
+  g_signal_connect(window, "close-request", G_CALLBACK(on_settings_close_request), sw);
+
+  GtkWidget *root_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_window_set_child(GTK_WINDOW(window), root_box);
+
+  GtkWidget *notebook = gtk_notebook_new();
+  gtk_widget_set_vexpand(notebook, TRUE);
+  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_behavior(sw),
+                           gtk_label_new("\xe5\x8b\x95\xe4\xbd\x9c" /* 動作 */));
+  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_display(sw),
+                           gtk_label_new("\xe8\xa1\xa8\xe7\xa4\xba" /* 表示 */));
+  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_dictionary(sw),
+                           gtk_label_new("\xe8\xbe\x9e\xe6\x9b\xb8" /* 辞書 */));
+  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_maintenance(sw),
+                           gtk_label_new("\xe8\xaa\xbf\xe6\x95\xb4" /* 調整 */));
+  gtk_box_append(GTK_BOX(root_box), notebook);
+
+  sw->status_label = gtk_label_new("");
+  gtk_widget_set_margin_start(sw->status_label, 12);
+  gtk_widget_set_margin_end(sw->status_label, 12);
+  gtk_label_set_wrap(GTK_LABEL(sw->status_label), TRUE);
+  gtk_box_append(GTK_BOX(root_box), sw->status_label);
+
+  GtkWidget *button_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_widget_set_halign(button_box, GTK_ALIGN_END);
+  gtk_widget_set_margin_top(button_box, 6);
+  gtk_widget_set_margin_bottom(button_box, 12);
+  gtk_widget_set_margin_start(button_box, 12);
+  gtk_widget_set_margin_end(button_box, 12);
+
+  GtkWidget *restart_button = gtk_button_new_with_label(
+      "\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe5\x86\x8d\xe8\xb5\xb7\xe5\x8b\x95" /* エンジン再起動 */);
+  g_signal_connect(restart_button, "clicked", G_CALLBACK(on_restart_engine_clicked), sw);
+  GtkWidget *apply_button = gtk_button_new_with_label("\xe9\x81\xa9\xe7\x94\xa8" /* 適用 */);
+  g_signal_connect(apply_button, "clicked", G_CALLBACK(on_apply_clicked), sw);
+  GtkWidget *close_button = gtk_button_new_with_label("\xe9\x96\x89\xe3\x81\x98\xe3\x82\x8b" /* 閉じる */);
+  g_signal_connect(close_button, "clicked", G_CALLBACK(on_close_clicked), sw);
+
+  gtk_box_append(GTK_BOX(button_box), restart_button);
+  gtk_box_append(GTK_BOX(button_box), apply_button);
+  gtk_box_append(GTK_BOX(button_box), close_button);
+  gtk_box_append(GTK_BOX(root_box), button_box);
+
+  gtk_window_present(GTK_WINDOW(window));
+}
+
+static void on_right_click_released(GtkGestureClick *gesture, int n_press, double x,
+                                    double y, gpointer user_data) {
+  (void)x; (void)y;
+  if (n_press != 1) return;
+  App *app = (App *)user_data;
+  gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+  open_settings_window(app);
+}
+
+/* ------------------------------------------------------------------ */
+/* Polling timer: 500 ms while the pill is shown (ModeIndicator != 0),
+ * 2 s while it is hidden -- task brief: "Poll cadence may drop to 2 s
+ * while hidden." Self-rescheduling (on_poll_tick always returns
+ * G_SOURCE_REMOVE and arms the next tick itself) rather than a fixed
+ * g_timeout_add() so the interval can change between ticks whenever
+ * app->settings.mode_indicator changes (Apply, or the initial load). */
+
+#define SKKUI_POLL_INTERVAL_MS 500
+#define SKKUI_HIDDEN_POLL_INTERVAL_MS 2000
+
+static gboolean on_poll_tick(gpointer user_data);
+
+static void schedule_poll(App *app) {
+  const guint interval = app->settings.mode_indicator ? SKKUI_POLL_INTERVAL_MS
+                                                       : SKKUI_HIDDEN_POLL_INTERVAL_MS;
+  g_timeout_add(interval, on_poll_tick, app);
+}
 
 static gboolean on_poll_tick(gpointer user_data) {
   App *app = (App *)user_data;
   if (pipe_client_in_backoff(&app->pipe)) {
     if (!app->have_state || app->mode != MODE_UNREACHABLE)
       app_apply_mode(app, MODE_UNREACHABLE);
-    return G_SOURCE_CONTINUE;
+    schedule_poll(app);
+    return G_SOURCE_REMOVE;
   }
   char response[8192];
   if (!pipe_client_transact(&app->pipe, "STATUS\n", response, sizeof(response))) {
     app_apply_mode(app, MODE_UNREACHABLE);
-    return G_SOURCE_CONTINUE;
+    schedule_poll(app);
+    return G_SOURCE_REMOVE;
   }
   app_apply_mode(app, mode_from_state_reply(response));
-  return G_SOURCE_CONTINUE;
+  schedule_poll(app);
+  return G_SOURCE_REMOVE;
 }
 
 /* ------------------------------------------------------------------ */
 /* Window chrome: always-on-top (GTK4 dropped the portable
  * gtk_window_set_keep_above() API; SetWindowPos(HWND_TOPMOST) on the
  * GDK win32 surface's native HWND is the Windows-specific replacement,
- * the same kind of "host-side glue" the task brief already sanctions
- * for the named-pipe I/O) and draggable-by-drag-anywhere (GtkWindowHandle,
- * GTK4's own widget for exactly this: consumes a press-drag as an
- * interactive move, passes an undragged click through to descendants --
- * here, the GtkGestureClick on drawing_area that opens the menu). */
+ * the same kind of "host-side glue" already used for the named-pipe
+ * I/O) and draggable-by-drag-anywhere (GtkWindowHandle, GTK4's own
+ * widget for exactly this: consumes a press-drag as an interactive
+ * move, passes an undragged click through to descendants -- here, the
+ * GtkGestureClick handlers on drawing_area that open the mode menu /
+ * settings window). */
 
 static void apply_always_on_top(GtkWidget *window) {
   GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(window));
@@ -491,10 +822,8 @@ static void on_realize(GtkWidget *window, gpointer user_data) {
 
 /* ------------------------------------------------------------------ */
 
-static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
-  App *app = (App *)user_data;
-
-  app->window = gtk_application_window_new(gtk_app);
+static void build_pill(App *app) {
+  app->window = gtk_application_window_new(app->gtk_app);
   gtk_window_set_title(GTK_WINDOW(app->window), "SKK");
   gtk_window_set_default_size(GTK_WINDOW(app->window), 120, 40);
   gtk_window_set_resizable(GTK_WINDOW(app->window), FALSE);
@@ -511,24 +840,60 @@ static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
   g_signal_connect(click, "released", G_CALLBACK(on_click_released), app);
   gtk_widget_add_controller(app->drawing_area, GTK_EVENT_CONTROLLER(click));
 
+  GtkGesture *right_click = gtk_gesture_click_new();
+  gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(right_click), GDK_BUTTON_SECONDARY);
+  g_signal_connect(right_click, "released", G_CALLBACK(on_right_click_released), app);
+  gtk_widget_add_controller(app->drawing_area, GTK_EVENT_CONTROLLER(right_click));
+
   GtkWidget *handle = gtk_window_handle_new();
   gtk_window_handle_set_child(GTK_WINDOW_HANDLE(handle), app->drawing_area);
   gtk_window_set_child(GTK_WINDOW(app->window), handle);
 
   g_signal_connect(app->window, "realize", G_CALLBACK(on_realize), NULL);
+}
 
-  gtk_window_present(GTK_WINDOW(app->window));
+static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
+  App *app = (App *)user_data;
+  app->gtk_app = gtk_app;
 
-  g_timeout_add(SKKUI_POLL_INTERVAL_MS, on_poll_tick, app);
+  settings_load(&app->settings);
+
+  if (app->settings_only) {
+    /* --settings: a short-lived launcher for a future Start-menu
+     * shortcut (task brief). No pill, no STATUS polling -- just the
+     * settings window, and the process exits when it is closed (see
+     * close_settings_window()). */
+    open_settings_window(app);
+    return;
+  }
+
+  build_pill(app);
+  app_sync_pill_visibility(app);
+  schedule_poll(app);
 }
 
 int main(int argc, char **argv) {
+  /* --settings-selftest runs entirely headless, before any GTK/pipe
+   * initialization, and exits immediately -- see settings.h's
+   * settings_selftest() docstring for the DDSKK_SETTINGS_KEY safety
+   * guard this requires the caller to set. */
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--settings-selftest") == 0) return settings_selftest();
+  }
+
+  gboolean settings_only = FALSE;
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--settings") == 0) settings_only = TRUE;
+  }
+
   App app;
   memset(&app, 0, sizeof(app));
   pipe_client_init(&app.pipe);
   app.mode = MODE_UNREACHABLE;
   app.previous_base = MODE_HIRAGANA;
   app.have_state = FALSE;
+  app.settings_only = settings_only;
+  settings_defaults(&app.settings); /* overwritten by settings_load() in on_activate() */
   app.label_font = pango_font_description_from_string("Sans 14");
 
   GtkApplication *gtk_app =

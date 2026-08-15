@@ -1,6 +1,6 @@
 ;;; build.el --- Build sumi-skk-ui.exe -*- lexical-binding: t; -*-
 ;;
-;; Orchestrates the two-part build described in sumi-ui/README.md:
+;; Orchestrates the build described in sumi-ui/README.md:
 ;;
 ;;   1. indicator/mode-logic.el (NeLisp restricted-dialect decision
 ;;      logic) -> mode-logic.o, via `nelisp-aot-compile-to-object'
@@ -9,13 +9,16 @@
 ;;      `sumi-build-compile-to-object' makes, and the exact object-mode
 ;;      contract dev/nelisp-sumi/build.el's own helper modules
 ;;      (src/nelisp-sumi-move.el etc.) are written against.
-;;   2. indicator/main.c (hand-authored GTK4/Cairo/Pango/Win32 glue) ->
-;;      main.o, via plain `gcc -c'.
+;;   2. indicator/pipe-client.c, indicator/settings.c, indicator/main.c
+;;      (hand-authored GTK4/Cairo/Pango/Win32 glue, split across three
+;;      translation units since Phase 3 -- pipe-client.c/settings.c
+;;      have no GTK dependency and are directly reusable/testable, see
+;;      settings.h's docstring) -> one .o each, via plain `gcc -c'.
 ;;
-;; Both objects are then linked together with `gcc' into one
+;; All four objects are then linked together with `gcc' into one
 ;; sumi-skk-ui.exe -- the same "AOT object + gcc link" step
-;; build-live.el and dev/nelisp-sumi/build.el use, just with a second,
-;; ordinarily-compiled object added to the link line. See
+;; build-live.el and dev/nelisp-sumi/build.el use, just with three more,
+;; ordinarily-compiled objects added to the link line. See
 ;; sumi-ui/README.md for why this project does not compile main.c's
 ;; window/GTK/pipe logic through the NeLisp AOT compiler itself the way
 ;; dev/nelisp-sumi/build.el compiles its whole program that way.
@@ -111,18 +114,18 @@ before the flag ever reaches gcc."
        (princ (format "MODE-LOGIC-OBJ-ERR %S\n" err))
        (kill-emacs 1)))))
 
-(defun sumi-ui-compile-main-c (obj cflags)
-  "Compile indicator/main.c to object OBJ using CFLAGS."
-  (let* ((src (expand-file-name "main.c" sumi-ui-indicator-dir)))
+(defun sumi-ui-compile-c (stem obj cflags)
+  "Compile indicator/STEM.c to object OBJ using CFLAGS."
+  (let* ((src (expand-file-name (concat stem ".c") sumi-ui-indicator-dir)))
     (princ (format "=== gcc -c %s -> %s ===\n" src obj))
     (with-temp-buffer
       (let ((status (apply #'call-process "gcc" nil t nil "-c" "-Wall" "-Wextra" src
                            (append cflags (list "-o" obj)))))
         (princ (buffer-string)) ; always show warnings, not just on failure
         (unless (eq status 0)
-          (princ "MAIN-C-OBJ-ERR\n")
+          (princ (format "%s-OBJ-ERR\n" (upcase stem)))
           (kill-emacs 1))))
-    (princ "MAIN-C-OBJ-OK\n")))
+    (princ (format "%s-OBJ-OK\n" (upcase stem)))))
 
 (defun sumi-ui-link (objs exe libs)
   "Link OBJS into EXE with LIBS.
@@ -149,16 +152,29 @@ mode-transition log."
   (make-directory (getenv "HOME") t)
   (make-directory sumi-ui-target-dir t)
   (let* ((mode-logic-obj (expand-file-name "mode-logic.o" sumi-ui-target-dir))
+         (pipe-client-obj (expand-file-name "pipe-client.o" sumi-ui-target-dir))
+         (settings-obj (expand-file-name "settings.o" sumi-ui-target-dir))
          (main-obj (expand-file-name "main.o" sumi-ui-target-dir))
          (exe (expand-file-name "sumi-skk-ui.exe" sumi-ui-target-dir))
          (gtk-cflags (sumi-ui-pkg-config-flags "--cflags" "gtk4"))
          (pango-cflags (sumi-ui-pkg-config-flags "--cflags" "pangocairo"))
          (gtk-libs (sumi-ui-pkg-config-flags "--libs" "gtk4"))
-         (pango-libs (sumi-ui-pkg-config-flags "--libs" "pangocairo")))
+         (pango-libs (sumi-ui-pkg-config-flags "--libs" "pangocairo"))
+         (all-cflags (append gtk-cflags pango-cflags)))
     (sumi-ui-compile-mode-logic mode-logic-obj)
-    (sumi-ui-compile-main-c main-obj (append gtk-cflags pango-cflags))
-    (sumi-ui-link (list main-obj mode-logic-obj) exe
-                  (cl-remove-duplicates (append gtk-libs pango-libs) :test #'string=))
+    ;; pipe-client.c/settings.c only need glib.h (for `gboolean') plus
+    ;; plain <windows.h> -- gtk4's own cflags already cover glib's
+    ;; include path, so reuse ALL-CFLAGS rather than pkg-config'ing glib
+    ;; separately.
+    (sumi-ui-compile-c "pipe-client" pipe-client-obj all-cflags)
+    (sumi-ui-compile-c "settings" settings-obj all-cflags)
+    (sumi-ui-compile-c "main" main-obj all-cflags)
+    (sumi-ui-link (list main-obj mode-logic-obj pipe-client-obj settings-obj) exe
+                  ;; advapi32 for settings.c's RegGetValueW/RegSetKeyValueW/
+                  ;; RegDeleteTreeW (Phase 3) -- not pulled in transitively
+                  ;; by gtk4/pangocairo's own pkg-config libs.
+                  (append (cl-remove-duplicates (append gtk-libs pango-libs) :test #'string=)
+                          (list "-ladvapi32")))
     (princ (format "SUMI-UI-BUILD-OK %s\n" exe))))
 
 (when noninteractive

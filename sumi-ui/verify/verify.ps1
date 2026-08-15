@@ -177,8 +177,13 @@ try {
   # first driven KEY and the initial "MODE hiragana" observation is lost
   # (not an indicator bug: it always reports whatever the engine's actual
   # current state is at poll time; this is purely pacing this script's own
-  # driver against that 500 ms cadence with a comfortable margin).
-  Start-Sleep -Milliseconds 2000
+  # driver against that 500 ms cadence with a comfortable margin). Phase 3
+  # added a settings_load() registry read (~17 values) to on_activate()
+  # before the first poll is scheduled, so this needs more headroom than
+  # Phase 2's original 2000 ms -- bumped to 3500 ms after observing an
+  # occasional miss of the initial "hiragana" line at 2000 ms following
+  # the Phase 3 settings-window changes.
+  Start-Sleep -Milliseconds 3500
 
   Write-Host "verify: driving mode transitions as a second pipe client..."
   # hiragana (initial) -> katakana -> latin -> hiragana -> wide-latin ->

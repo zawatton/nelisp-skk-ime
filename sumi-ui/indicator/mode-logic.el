@@ -4,21 +4,35 @@
 ;; dev/nelisp-sumi/src/*.el: a `seq' of `defun' forms, compiled with
 ;; `nelisp-aot-compile-to-object' (see sumi-ui/build.el) directly to a
 ;; COFF `.o' and linked into indicator/main.c's executable.  Every
-;; function here is a pure, side-effect-free integer function -- no
-;; `extern-call', no pointers, no strings -- so it stays inside the
-;; parts of the dialect object-mode compilation is known to support
-;; (see nelisp/lisp/nelisp-aot-compiler.el's `:object-mode-no-strings'
-;; gate, which this module never touches because it never references a
-;; string literal).
+;; function here is a pure, side-effect-free function -- no
+;; `extern-call', no strings -- so it stays inside the parts of the
+;; dialect object-mode compilation is known to support (see
+;; nelisp/lisp/nelisp-aot-compiler.el's `:object-mode-no-strings' gate,
+;; which this module never touches because it never references a
+;; string literal). `skkui_base_color_configured'/`skkui_color_for_configured'
+;; use `ptr-read-u64' (Phase 3) -- the same primitive
+;; dev/nelisp-sumi/src/nelisp-sumi-move.el's `nsum_move_note' etc.
+;; already exercise in object-mode-compiled code -- to read a caller-
+;; owned array rather than take 5+ separate color arguments: Win64 COFF
+;; object-mode functions are called with the real Win64 ABI (4 GP
+;; argument registers, not SysV's 6), and every function below stays at
+;; 2-3 params specifically to avoid depending on 5+-argument stack-
+;; argument support this module never needed to test.
 ;;
 ;; Division of labour with main.c (per docs/design/sumi-indicator-
-;; settings.md and the Phase 2 task brief): main.c owns I/O (named-pipe
-;; transactions, GTK/cairo rendering primitives) and reduces the wire
-;; reply's mode token to a small integer via plain C `strcmp'; this
-;; module owns the *decisions* -- mode -> color, mode -> label, whether
-;; the mode-switch menu should be offered, and which key code a menu
-;; selection sends -- so the CorvusSKK-style behaviour table lives in
-;; one auditable place instead of scattered through C.
+;; settings.md and the Phase 2/3 task briefs): main.c owns I/O (named-
+;; pipe transactions, registry reads, GTK/cairo rendering primitives)
+;; and reduces the wire reply's mode token to a small integer via plain
+;; C `strcmp'; this module owns the *decisions* -- mode -> color, mode
+;; -> label, whether the mode-switch menu should be offered, and which
+;; key code a menu selection sends -- so the CorvusSKK-style behaviour
+;; table lives in one auditable place instead of scattered through C.
+;; Phase 3 extends this without moving any decision into C: main.c now
+;; reads the five configurable colors from the registry (or the same
+;; design-doc defaults, when a value is absent -- see settings.c), but
+;; this module still decides *which* of those colors applies to a given
+;; MODE/PREVIOUS_BASE pair, exactly as it decided among the hardcoded
+;; Phase 2 constants before.
 ;;
 ;; Mode encoding (MODE arg, shared with main.c's `SkkMode' enum):
 ;;   0 hiragana   1 katakana   2 wide-latin   3 latin
@@ -37,26 +51,48 @@
 ;; preedit/candidate color.  main.c is responsible for only updating
 ;; its stored previous-base value when a fresh STATUS reply's mode is
 ;; itself a base mode; this module just consumes whatever it is given.
+;;
+;; COLORS_PTR (new in Phase 3) points at a caller-owned, 7-slot,
+;; 8-byte-per-slot (56-byte) array of packed 0xRRGGBB values that main.c
+;; fills in from the current Settings (registry values, or the design-
+;; doc default for any value absent from the registry -- see
+;; settings.c's settings_defaults()). Only slots 0/1/2/3/6 (hiragana/
+;; katakana/wide-latin/latin/abbrev -- the five registry-configurable
+;; colors: ModeColorKana/Katakana/WideLatin/Latin/Abbrev) are ever read;
+;; slots 4/5/7 exist only so the array can be indexed directly by MODE/
+;; PREVIOUS_BASE without a remapping step, and main.c never has to
+;; populate them. Mode 7 (unreachable/ERR) is deliberately NOT
+;; configurable -- there is no ModeColorUnreachable in the design doc's
+;; schema table -- so it keeps the Phase 2 hardcoded #808080 rather
+;; than reading slot 7.
 (seq
 
- ;; The four spec'd colors (docs/design/sumi-indicator-settings.md's
- ;; "Tab 表示" registry defaults, echoed verbatim in the task brief) plus
- ;; two MVP fallbacks: abbrev has no assigned color yet in that table
- ;; (`ModeColorAbbrev' default is literally "--"/TBD), and 7
- ;; (unreachable/ERR) is the brief's own #808080 "――" bucket. Reusing
- ;; #808080 for both keeps the palette to what is actually spec'd
- ;; today rather than inventing a seventh color no design doc asked
- ;; for; sumi-ui/README.md calls this out as a Phase 3 follow-up once
- ;; ModeColorAbbrev gets a real default.
- (defun skkui_base_color (m)
+ ;; Reads COLORS_PTR[M] (an 8-byte-per-slot array; see the COLORS_PTR
+ ;; paragraph above) for the four registry-configurable base colors
+ ;; plus abbrev, falling back to the Phase 2 #808080 gray for mode 7
+ ;; (unreachable/ERR -- never configurable, see above) or any other
+ ;; unrecognized value.
+ (defun skkui_base_color_configured (m colors_ptr)
    (cond
-    ((= m 0) #xC02020)  ; hiragana - red
-    ((= m 1) #x00C000)  ; katakana - green
-    ((= m 2) #x8000C0)  ; wide-latin - purple
-    ((= m 3) #x1E5AA8)  ; latin - blue
-    (t #x808080)))       ; abbrev (6) or anything else - gray
+    ((= m 0) (ptr-read-u64 colors_ptr 0))    ; hiragana  (ModeColorKana)
+    ((= m 1) (ptr-read-u64 colors_ptr 8))    ; katakana  (ModeColorKatakana)
+    ((= m 2) (ptr-read-u64 colors_ptr 16))   ; wide-latin (ModeColorWideLatin)
+    ((= m 3) (ptr-read-u64 colors_ptr 24))   ; latin     (ModeColorLatin)
+    ((= m 6) (ptr-read-u64 colors_ptr 48))   ; abbrev    (ModeColorAbbrev)
+    (t #x808080)))                            ; unreachable/ERR (7) or unknown
+
+ ;; preedit(4)/candidate(5) resolve to whichever base mode was active
+ ;; before the composition started, exactly like Phase 2's
+ ;; skkui_color_for; every other mode (including 7, which is never a
+ ;; "previous base") resolves to itself.
+ (defun skkui_color_for_configured (mode previous_base colors_ptr)
+   (if (or (= mode 4) (= mode 5))
+       (skkui_base_color_configured previous_base colors_ptr)
+     (skkui_base_color_configured mode colors_ptr)))
 
  ;; Label codes main.c maps to glyphs: 0=あ 1=ア 2=Ａ 3=SKK 4=―― 5=Ab.
+ ;; Labels are not registry-configurable (no such column in the design
+ ;; doc's schema tables), so these stay exactly as Phase 2 had them.
  (defun skkui_base_label (m)
    (cond
     ((= m 0) 0)
@@ -69,16 +105,11 @@
  ;; preedit(4)/candidate(5) resolve to whatever base mode was active
  ;; before the composition started; every other mode (including 7,
  ;; unreachable/ERR, which is never a "previous base") resolves to
- ;; itself. Two thin wrappers around the base tables above rather than
- ;; one self-recursive function: object-mode compilation only supports
- ;; calling a *previously* defun'd function (see
+ ;; itself. A thin wrapper around the base label table above rather
+ ;; than a self-recursive function: object-mode compilation only
+ ;; supports calling a *previously* defun'd function (see
  ;; nelisp-aot-compiler.el's "(NAME ARG...) -> call previously-defun'd
  ;; function"), so a defun calling itself is avoided on principle here.
- (defun skkui_color_for (mode previous_base)
-   (if (or (= mode 4) (= mode 5))
-       (skkui_base_color previous_base)
-     (skkui_base_color mode)))
-
  (defun skkui_label_for (mode previous_base)
    (if (or (= mode 4) (= mode 5))
        (skkui_base_label previous_base)
