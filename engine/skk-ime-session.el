@@ -133,6 +133,14 @@ instead of kana."
   (unless (characterp key)
     (signal 'wrong-type-argument (list 'characterp key)))
   (skk-ime-session--with-buffer session
+    ;; Point-at-end invariant -- see the comment above `skk-ime-session-
+    ;; control' for the full explanation.  Normalizing here, before KEY is
+    ;; interpreted at all, is what actually closes the bug: the previous
+    ;; request (any KEY or CONTROL) may have left point stale mid-buffer,
+    ;; and this is the earliest point in THIS request where correcting it
+    ;; cannot disturb DDSKK's own point sequencing for the key about to be
+    ;; dispatched.
+    (goto-char (point-max))
     (let* ((previous (skk-ime-session-last-command session))
            (map (skk-ime-session--active-keymap))
            (command (and map (lookup-key map (string key)))))
@@ -157,8 +165,34 @@ instead of kana."
 (defun skk-ime-session-control (session control)
   "Apply native CONTROL to SESSION and return its state snapshot.
 
-CONTROL is one of `backspace', `convert', `previous', `commit', or `cancel'."
+CONTROL is one of `backspace', `convert', `previous', `commit', or `cancel'.
+
+Point-at-end invariant: this client never moves the caret inside a
+composition -- the TSF layer claims no arrow keys and the wire protocol
+has no in-composition cursor command -- so point at the START of every
+dispatched request (this function and `skk-ime-session-feed-key', the
+two entry points that hand a request off to DDSKK) may always be
+normalized to `point-max' before the request is interpreted.  This is
+not optional bookkeeping: this runtime's markers
+(`nelisp-set-marker' in `dev/nelisp/src/nelisp-buffer.el') store STATIC
+positions with no Emacs-style automatic adjustment on insert/delete, so
+point and marker-derived positions go stale after any length-changing
+buffer edit earlier than them -- and a length-changing edit is exactly
+what an okuri-ari henkan replacement is (e.g. かな, 2 characters,
+replaced by 悲, 1 character).  Concretely, without this: after typing
+the reading for 悲しみ and its okurigana kana, DDSKK's own auto-convert
+leaves the session at mode=candidate, text=\"▼悲し\", but point stuck at
+its PRE-replacement offset -- between 悲 and し, not at the end.  The
+NEXT key (completing み) then inserts at that stale point, producing
+\"悲みし\" instead of \"悲しみ\".  Normalizing point to `point-max' at
+the entry of the request that follows is what fixes it: by the time
+DDSKK itself decides where to search from, point already reflects
+reality again.  This is deliberately entry-only -- it must never run a
+second time in the middle of a single dispatch, since kakutei/insert
+sequencing WITHIN one key or CONTROL relies on point exactly as DDSKK
+itself leaves it while that one request is still being processed."
   (skk-ime-session--with-buffer session
+    (goto-char (point-max))
     (pcase control
       ('backspace
        (cond

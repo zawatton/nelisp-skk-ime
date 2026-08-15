@@ -926,23 +926,18 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
                                     : GUID_DdskkPreeditAttribute);
     ITfRange* caret = nullptr;
     if (SUCCEEDED(range->Clone(&caret))) {
-      // state.cursor is already in episode coordinates with base 0 (see
-      // the model comment on this function), so it maps onto `display'
-      // directly -- no per-call offset subtraction needed. Clamp against
-      // state.text.size() first (the wire's own bound), then clamp the
-      // result against display.size() too before handing it to ShiftEnd
-      // below (display is always >= state.text.size() here, so this is a
-      // belt-and-suspenders bound rather than a live case).
-      const size_t absolute_cursor = min(
-          state.cursor < 0 ? size_t{0} : static_cast<size_t>(state.cursor),
-          state.text.size());
-      // A non-empty pending_romaji has no cursor position of its own on
-      // the wire -- it is always at the insertion point in DDSKK -- so the
-      // caret belongs at the end of `display', past both the resolved
-      // text and the pending prefix.
-      const LONG relative_cursor = !state.pending_romaji.empty()
-          ? static_cast<LONG>(display.size())
-          : static_cast<LONG>(min(absolute_cursor, display.size()));
+      // The caret always goes to the END of the display. This IME never
+      // moves the caret inside a composition (arrow keys are deliberately
+      // unclaimed and fall through to the application), and DDSKK's own
+      // point is at the insertion end throughout ▽/▼/pending states and
+      // after every kakutei. The engine's state.cursor field is NOT a
+      // reliable display position across all flows: on the okuri-ari
+      // commit ("KanaSimi" -> 悲し + み) it points inside the committed
+      // text at the okurigana boundary, which parked the caret between
+      // 悲 and し so the trailing み landed in the middle ("悲みし").
+      // Deriving the caret from display.size() alone removes that whole
+      // bug class.
+      const LONG relative_cursor = static_cast<LONG>(display.size());
       LONG moved = 0;
       caret->Collapse(edit_cookie, TF_ANCHOR_START);
       caret->ShiftEnd(edit_cookie, relative_cursor, &moved, nullptr);
