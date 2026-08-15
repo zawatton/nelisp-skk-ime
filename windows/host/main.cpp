@@ -94,6 +94,52 @@ bool ReadLine(HANDLE handle, std::string* line) {
   }
 }
 
+// The settings UI (docs/design/sumi-indicator-settings.md, the 辞書 tab)
+// stores the user dictionary path and save-batch size as
+// HKCU\Software\NativeIME\UserJisyoPath (REG_SZ) and \UserJisyoBatch
+// (REG_DWORD); engine/skk-user-jisyo.el instead reads them from the
+// engine child's own environment, as DDSKK_USER_JISYO and
+// DDSKK_USER_JISYO_SAVE_BATCH_SIZE. This bridges registry -> env right
+// before the child is spawned (CreateProcessW below inherits this
+// process's environment when lpEnvironment is nullptr, which it is), but
+// only fills in a variable that is not already set: every existing test
+// harness sets these env vars directly for private-jisyo isolation, and
+// leaving an already-set value alone keeps every one of them working
+// unchanged.
+void ApplyUserJisyoEnvFromRegistry() {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0, KEY_READ,
+                    &key) != ERROR_SUCCESS) return;
+
+  // GetEnvironmentVariableW(name, nullptr, 0) returns 0 only when the
+  // variable is absent (a present-but-empty value still needs a 1-char
+  // buffer for the terminating null, so it returns 1); this is a pure
+  // presence check, no probe buffer required.
+  if (GetEnvironmentVariableW(L"DDSKK_USER_JISYO", nullptr, 0) == 0) {
+    wchar_t path[32768]{};
+    DWORD path_bytes = sizeof(path);
+    if (RegQueryValueExW(key, L"UserJisyoPath", nullptr, nullptr,
+                         reinterpret_cast<BYTE*>(path), &path_bytes) ==
+            ERROR_SUCCESS &&
+        path[0] != L'\0') {
+      SetEnvironmentVariableW(L"DDSKK_USER_JISYO", path);
+    }
+  }
+
+  if (GetEnvironmentVariableW(L"DDSKK_USER_JISYO_SAVE_BATCH_SIZE", nullptr,
+                              0) == 0) {
+    DWORD batch = 0, batch_bytes = sizeof(batch);
+    if (RegQueryValueExW(key, L"UserJisyoBatch", nullptr, nullptr,
+                         reinterpret_cast<BYTE*>(&batch), &batch_bytes) ==
+        ERROR_SUCCESS) {
+      SetEnvironmentVariableW(L"DDSKK_USER_JISYO_SAVE_BATCH_SIZE",
+                              std::to_wstring(batch).c_str());
+    }
+  }
+
+  RegCloseKey(key);
+}
+
 bool StartChild(const std::wstring& engine, const std::wstring& repository,
                 Child* child) {
   SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
@@ -119,6 +165,7 @@ bool StartChild(const std::wstring& engine, const std::wstring& repository,
   }
   const wchar_t* working_directory =
       repository.empty() ? nullptr : repository.c_str();
+  ApplyUserJisyoEnvFromRegistry();
   const BOOL started = CreateProcessW(
       nullptr, command.data(), nullptr, nullptr, TRUE, 0, nullptr,
       working_directory, &startup, &process);
