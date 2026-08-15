@@ -51,4 +51,41 @@ int main() {
   auto empty = ddskk::ParseStateResponse("STATE hiragana 0 -1 - - -1 -");
   assert(empty && empty->text.empty() && empty->pending_romaji.empty());
   assert(!ddskk::ParseStateResponse("ERR REQUEST"));
+
+  // Regression coverage for the DLL-side mode-desync bug: TextService's
+  // kana_mode_ must be derived from the engine's own EngineState::mode on
+  // every keystroke, never tracked as an independently-updated local
+  // flag. Feed a sequence of parsed states -- exactly what OnKeyDown sees
+  // across a run of keystrokes, including a real transition into "latin"
+  // -- and confirm the derived flag follows the engine every time instead
+  // of sticking at whatever it last was.
+  auto hiragana = ddskk::ParseStateResponse("STATE hiragana 0 -1 - - -1 -");
+  assert(hiragana && ddskk::DeriveKanaMode(*hiragana));
+
+  auto latin = ddskk::ParseStateResponse("STATE latin 0 -1 - - -1 -");
+  assert(latin && !ddskk::DeriveKanaMode(*latin));
+
+  // A subsequent preedit state (e.g. the user pressed Ctrl+J, or typed an
+  // uppercase letter after returning to kana) must flip the derived flag
+  // back to kana, not leave it stuck at the "latin" reading above.
+  auto preedit = ddskk::ParseStateResponse(
+      "STATE preedit 3 1 0025bd00304b00306a 00006e -1 -");
+  assert(preedit && ddskk::DeriveKanaMode(*preedit));
+
+  auto katakana = ddskk::ParseStateResponse("STATE katakana 0 -1 - - -1 -");
+  assert(katakana && ddskk::DeriveKanaMode(*katakana));
+
+  auto wide_latin = ddskk::ParseStateResponse("STATE wide-latin 0 -1 - - -1 -");
+  assert(wide_latin && ddskk::DeriveKanaMode(*wide_latin));
+
+  auto abbrev = ddskk::ParseStateResponse("STATE abbrev 0 -1 - - -1 -");
+  assert(abbrev && ddskk::DeriveKanaMode(*abbrev));
+
+  auto candidate = ddskk::ParseStateResponse(
+      "STATE candidate 2 1 0025bc004eee00540d - 0 004eee00540d,00304b00306a");
+  assert(candidate && ddskk::DeriveKanaMode(*candidate));
+
+  // And back to latin again, to confirm this isn't a one-shot transition.
+  auto latin_again = ddskk::ParseStateResponse("STATE latin 0 -1 - - -1 -");
+  assert(latin_again && !ddskk::DeriveKanaMode(*latin_again));
 }

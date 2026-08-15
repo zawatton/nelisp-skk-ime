@@ -95,4 +95,6 @@ std::optional<EngineState> ParseStateResponse(const std::string& line) {
   }
   return state;
 }
+
+bool DeriveKanaMode(const EngineState& state) { return state.mode != L"latin"; }
 }  // namespace ddskk

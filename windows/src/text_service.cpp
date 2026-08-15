@@ -225,24 +225,59 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
 }
 
 void TextService::SelectInputEngine(bool ddskk) {
-  if (engine_.SelectEngine(ddskk ? "ddskk" : "passthrough", 1000)) {
-    ddskk_engine_ = ddskk;
-    if (!ddskk) {
-      kana_mode_ = false;
-      engine_pending_ = false;
-    }
-    // No ITfContext is available from this langbar-triggered path; the
-    // indicator falls back to the mouse cursor position.
-    MaybeShowModeIndicator(nullptr, nullptr);
+  if (!engine_.SelectEngine(ddskk ? "ddskk" : "passthrough", 1000)) return;
+  const bool was_ddskk = ddskk_engine_;
+  ddskk_engine_ = ddskk;
+  if (!ddskk) {
+    // Passthrough makes OnTestKeyDown/OnKeyDown bail out unconditionally
+    // (their `!ddskk_engine_' early-outs), so kana_mode_ no longer
+    // affects key-claiming at all once this branch runs; it only feeds
+    // MaybeShowModeIndicator's label, which should read as
+    // latin/direct-input while the IME is disengaged. Forcing it false
+    // here is therefore setting a known-correct value, not a stale guess.
+    kana_mode_ = false;
+    engine_pending_ = false;
+  } else if (!was_ddskk) {
+    // Resuming DDSKK from passthrough. Passthrough never sends the engine
+    // anything (see above), so the out-of-process session's own mode is
+    // exactly what it was when we left -- but the wire protocol has no
+    // passive "what's your current mode" query, only mutating verbs, so
+    // trusting whatever stale value kana_mode_ was left at (forced false
+    // above, the last time we switched away) would just reintroduce the
+    // same kind of guess this whole fix removes. Force a known state
+    // instead: the same unconditional-kana CONTROL CANCEL Ctrl+J uses
+    // above. It is a safe no-op on the document here, because passthrough
+    // guarantees no composition was ever started while it was active.
+    const auto state = engine_.SendControl(ddskk::EngineControl::kCancel, 1000);
+    if (state) kana_mode_ = ddskk::DeriveKanaMode(*state);
   }
+  // No ITfContext is available from this langbar-triggered path; the
+  // indicator falls back to the mouse cursor position.
+  MaybeShowModeIndicator(nullptr, nullptr);
 }
 
 void TextService::ToggleInputMode() {
-  if (ddskk_engine_ && engine_.Connect(1000)) {
-    kana_mode_ = !kana_mode_;
-    if (!kana_mode_) engine_pending_ = false;
-    MaybeShowModeIndicator(nullptr, nullptr);
-  }
+  // A langbar click has no ITfContext to flush a document edit through,
+  // unlike OnKeyDown/SelectCandidate/FinalizeCandidate/AbortCandidate.
+  // Refuse to touch the engine while a composition (or a pending romaji
+  // prefix) is in flight: doing so could change what the engine thinks
+  // the document holds with no way to reconcile that here.
+  if (!ddskk_engine_ || engine_pending_) return;
+  // kana_mode_ is kept in sync with the engine's own mode on every other
+  // path now (see OnKeyDown), so it is trustworthy here as "what the
+  // engine is currently doing." Drive the actual transition through the
+  // engine instead of just flipping a local flag the way this used to:
+  // `l' is the real DDSKK key for leaving kana (matches the ordinary
+  // OnKeyDown SendKey path for a typed `l'), and CONTROL CANCEL is the
+  // same unconditional-kana command Ctrl+J uses above. Neither produces
+  // visible text while nothing is composing (guaranteed by the
+  // engine_pending_ check above), so no document edit is needed either.
+  const auto state = kana_mode_
+      ? engine_.SendKey(U'l', 1000)
+      : engine_.SendControl(ddskk::EngineControl::kCancel, 1000);
+  if (!state) return;
+  kana_mode_ = ddskk::DeriveKanaMode(*state);
+  MaybeShowModeIndicator(nullptr, nullptr);
 }
 
 void TextService::ShowSettings() {
@@ -290,7 +325,7 @@ void TextService::LoadSettings() {
     };
     read_color_override(L"ModeColorKana", L"かな");
     read_color_override(L"ModeColorKatakana", L"カナ");
-    read_color_override(L"ModeColorLatin", L"英数");
+    read_color_override(L"ModeColorLatin", L"SKK");
     read_color_override(L"ModeColorWideLatin", L"全英");
     read_color_override(L"ModeColorAbbrev", L"Abbrev");
 
@@ -352,11 +387,24 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   if (context == nullptr) return E_INVALIDARG;
   std::optional<ddskk::EngineState> state;
   if (wparam == 'J' && (GetKeyState(VK_CONTROL) & 0x8000)) {
-    kana_mode_ = !kana_mode_;
-    if (!kana_mode_)
-      state = engine_.SendControl(ddskk::EngineControl::kCommit, 1500);
-    else
-      state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
+    // C-j is not a toggle in DDSKK. `skk-kakutei' (bound to C-j via
+    // `skk-kakutei-key' in every mode map -- skk.el:942-948, :456-457,
+    // :508-509, :521-522) always ends up in kana submode: its docstring
+    // says so directly ("`\C-j' returns to hiragana submode from either
+    // ASCII submode", skk.el:120-123), and its own tail `cond'
+    // (skk.el:2787-2806) ends with `((not (or skk-j-mode
+    // skk-jisx0201-mode)) (skk-j-mode-on skk-katakana))', which fires
+    // unconditionally whenever the current submode is not already kana
+    // -- and is simply a no-op when it is. CONTROL CANCEL already
+    // reproduces exactly this: its `cancel' branch in
+    // engine/skk-ime-session.el ends with an unconditional
+    // `(skk-j-mode-on (and skk-katakana))' regardless of what came
+    // before, and that file even documents the intent: "The native host
+    // sends `cancel' for Ctrl+J when returning to kana input." So there
+    // is nothing to toggle here -- always send CANCEL, and let the
+    // common tail below derive kana_mode_ from whatever the engine
+    // actually reports afterward.
+    state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
     if (!state) return S_OK;
   } else if (!kana_mode_) {
     return S_OK;
@@ -383,10 +431,16 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     state = engine_.SendKey(*codepoint, 1500);
   }
   if (!state) return S_OK;
-  // Single point of truth for engine_pending_: every branch above that
-  // reaches here (including the Ctrl+J toggle) has just obtained a fresh
-  // state from the engine, so this always reflects the latest reality.
+  // Single point of truth for engine_pending_ and kana_mode_: every branch
+  // above that reaches here (including the Ctrl+J case) has just obtained
+  // a fresh state from the engine, so this always reflects the latest
+  // reality instead of a locally-tracked guess. Deriving kana_mode_ here
+  // is the actual fix for the mode-desync bug: previously it was only
+  // ever written by LoadSettings/Ctrl+J/ToggleInputMode, so a plain key
+  // like `l' that silently switched the engine's own mode left it stale,
+  // and OnTestKeyDown kept claiming keys the engine no longer wanted.
   engine_pending_ = state->composition_start >= 0 || !state->pending_romaji.empty();
+  kana_mode_ = ddskk::DeriveKanaMode(*state);
   UpdateCandidateUI(context, *state);
   auto* edit_session = new (std::nothrow) StateEditSession(this, context, *state);
   if (edit_session == nullptr) return E_OUTOFMEMORY;

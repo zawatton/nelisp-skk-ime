@@ -28,9 +28,9 @@ namespace {
 // wired up in TextService::LoadSettings()) without a rebuild. Border and
 // text colors are always derived from the background (see Darken() and
 // TextColorFor() below), so only the backgrounds are listed here.
-constexpr COLORREF kColorKanaBackground = RGB(0x1E, 0x5A, 0xA8);       // blue
+constexpr COLORREF kColorKanaBackground = RGB(0xC0, 0x20, 0x20);      // red
 constexpr COLORREF kColorKatakanaBackground = RGB(0x1B, 0x7F, 0x3B);  // green
-constexpr COLORREF kColorLatinBackground = RGB(0x55, 0x55, 0x55);     // grey
+constexpr COLORREF kColorLatinBackground = RGB(0x1E, 0x5A, 0xA8);     // blue
 constexpr COLORREF kColorWideLatinBackground = RGB(0xB0, 0x5A, 0x00); // amber
 constexpr COLORREF kColorAbbrevBackground = RGB(0x6A, 0x2C, 0x91);    // purple
 
@@ -103,10 +103,10 @@ UINT GetWindowDpiOrDefault(HWND hwnd) {
 }  // namespace
 
 std::wstring ModeIndicatorLabel(bool kana_mode, const std::wstring& engine_mode) {
-  if (!kana_mode) return L"英数";
+  if (!kana_mode) return L"SKK";
   if (engine_mode == L"hiragana") return L"かな";
   if (engine_mode == L"katakana") return L"カナ";
-  if (engine_mode == L"latin") return L"英数";
+  if (engine_mode == L"latin") return L"SKK";
   if (engine_mode == L"wide-latin") return L"全英";
   if (engine_mode == L"abbrev") return L"Abbrev";
   // preedit/candidate: a conversion in progress is still kana input, and
@@ -116,12 +116,12 @@ std::wstring ModeIndicatorLabel(bool kana_mode, const std::wstring& engine_mode)
 }
 
 ModeIndicatorPalette ModeIndicatorColors(const std::wstring& label) {
-  COLORREF background = kColorLatinBackground;  // fallback: same as 英数
+  COLORREF background = kColorLatinBackground;  // fallback: same as SKK
   if (label == L"かな") {
     background = kColorKanaBackground;
   } else if (label == L"カナ") {
     background = kColorKatakanaBackground;
-  } else if (label == L"英数") {
+  } else if (label == L"SKK") {
     background = kColorLatinBackground;
   } else if (label == L"全英") {
     background = kColorWideLatinBackground;

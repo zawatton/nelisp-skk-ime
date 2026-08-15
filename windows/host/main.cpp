@@ -25,8 +25,13 @@
 #include <windows.h>
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <mutex>
 #include <string>
+#include <thread>
 
 namespace {
 constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\ddskk-ime-v1";
@@ -359,6 +364,268 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
     return true;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Multi-client serving.
+//
+// The named pipe is created with PIPE_UNLIMITED_INSTANCES so more than one
+// application can hold an open connection at once. Previously it was
+// created with nMaxInstances = 1: a single client that connected and never
+// disconnected (observed in practice as a background process's embedded
+// browser control activating the text service and never deactivating it)
+// permanently held the only instance, so every other application's
+// EngineClient::Connect() failed and its keystrokes fell through
+// untranslated. Each connected instance is now accepted on the main thread
+// and handed off to its own detached worker thread in ServeClient().
+//
+// All connections share exactly one `g_child` NeLisp process, which holds a
+// single SKK session (composition state, kana mode, the session buffer) --
+// two clients interleaving requests would corrupt it. `g_engine_mutex`
+// makes each client's request/response transaction atomic with respect to
+// the others: it is held for the entire Dispatch() call, which already
+// contains the nested "SERVER " dictionary-lookup sub-exchange loop (and
+// therefore LookupDictionary()'s cached socket in g_dictionary_server), so
+// a dictionary round trip can never be interleaved with another client's
+// request either. The same mutex is held while tearing the child down on
+// shutdown (see wmain), so its pipes are never closed out from under a
+// worker thread that is still mid-transaction.
+// ---------------------------------------------------------------------------
+Child g_child;
+std::mutex g_engine_mutex;
+std::atomic<bool> g_stopping{false};
+std::wstring g_pipe_name;  // Set once in wmain before any thread starts.
+
+// Forward declaration: defined below (just above ServeClient()), used by
+// IdleGcLoop() immediately below this point.
+void RequestStop();
+
+// ---------------------------------------------------------------------------
+// Idle-triggered GC.
+//
+// The NeLisp engine has no automatic collector (`gc-cons-threshold' is
+// unbound in this standalone runtime), so ddskk-engine.el used to run an
+// explicit `garbage-collect' at every confirmed-word boundary. That kept
+// memory flat but cost ~180 ms extra on every single CONTROL COMMIT (this
+// runtime's collector is a semispace copier whose cost tracks the ~311 MB
+// live heap, not the amount of garbage produced) -- unacceptable for an
+// IME. The fix implemented here moves that same collection off the
+// request/response critical path entirely: this host now decides WHEN to
+// collect, based on when its own named pipe goes quiet, and asks the
+// engine to do it via an explicit "GC" protocol line (see the "GC
+// scheduling" comment in engine/ddskk-engine.el) that the engine answers
+// like any other request.
+//
+// Ordering argument for why an incoming keystroke can never queue up
+// behind a GC that had not yet started:
+//
+//   `NoteActivity()' stamps `g_last_activity_tick' the instant a
+//   request's `ReadFile()' returns in `ServeClient()' -- BEFORE that
+//   request even tries to acquire `g_engine_mutex', let alone before it
+//   is dispatched. `IdleGcLoop()' below only ever attempts a collection
+//   after independently observing, itself, that the pipe has been quiet
+//   for `IdleGcIntervalMs()' -- and it re-checks that observation a
+//   SECOND time immediately after acquiring `g_engine_mutex' (a real
+//   request may have been dispatched, and thus called `NoteActivity()',
+//   while this thread was waiting for the lock). So the moment any
+//   keystroke's `ReadFile()' returns, `g_last_activity_tick' is already
+//   fresh, and every subsequent freshness check this loop makes -- both
+//   the cheap one before taking the lock and the authoritative one after
+//   -- will see that and decline to fire. The ONLY way a keystroke can
+//   still be delayed is if this thread has ALREADY taken
+//   `g_engine_mutex' and is already inside `Dispatch(g_child, "GC", ...)'
+//   at the moment the keystroke's own `Dispatch()' call tries to acquire
+//   that same mutex -- i.e. a GC that had genuinely already started, not
+//   one merely decided upon or pending. That one case is unavoidable
+//   (the whole point of sharing `g_engine_mutex' is that a GC and a real
+//   request can never interleave, so once a GC has actually started
+//   something has to wait), and it is exactly the case the task
+//   description itself carves out as acceptable.
+//
+// Only one GC per idle period: `g_gc_pending' is cleared (via
+// `exchange') the moment a collection actually runs, and is only set
+// back to true by the next `NoteActivity()' call, i.e. the next real
+// request. `IdleGcLoop()' polls on a plain `sleep_for' rather than a
+// condition variable -- at a 100 ms tick this is not a busy spin (it
+// sleeps essentially all the time), and it bounds shutdown latency
+// exactly the same way `StopChild()''s existing 500 ms
+// `WaitForSingleObject' timeout already does elsewhere in this file, so
+// `g_stopping' is never invisible to this thread for more than one tick.
+constexpr DWORD kIdleGcPollMs = 100;
+constexpr DWORD kDefaultIdleGcMs = 800;
+
+std::atomic<uint64_t> g_last_activity_tick{0};
+std::atomic<bool> g_gc_pending{false};
+// True once at least one real client transaction has completed. Gates
+// `IdleGcLoop()' so it can never fire while DDSKK is still doing its own
+// multi-second synchronous load at process startup (before any client has
+// ever connected, there is nothing to collect and no reason to contend
+// for `g_engine_mutex' against the first real client's own request).
+std::atomic<bool> g_engine_active{false};
+
+void NoteActivity() {
+  g_last_activity_tick.store(GetTickCount64(), std::memory_order_release);
+  g_gc_pending.store(true, std::memory_order_release);
+  g_engine_active.store(true, std::memory_order_release);
+}
+
+// Mirrors LoadDictionaryServerConfig()'s idiom exactly: env var checked
+// first (lets a benchmarking harness override the interval per-run
+// without touching the registry, matching PipeName()/UseNativeEntry()'s
+// env-first pattern above), then the registry, then the measured default.
+// Result is cached after the first call -- this is read on every 100 ms
+// poll tick, so it must not hit the registry that often.
+DWORD IdleGcIntervalMs() {
+  static DWORD cached_ms = 0;
+  if (cached_ms != 0) return cached_ms;
+
+  wchar_t env_value[16]{};
+  const DWORD env_size =
+      GetEnvironmentVariableW(L"DDSKK_ENGINE_IDLE_GC_MS", env_value, 16);
+  if (env_size > 0 && env_size < 16) {
+    const int parsed = _wtoi(env_value);
+    if (parsed > 0) {
+      cached_ms = static_cast<DWORD>(parsed);
+      return cached_ms;
+    }
+  }
+
+  HKEY key = nullptr;
+  DWORD interval = kDefaultIdleGcMs, interval_bytes = sizeof(interval);
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0, KEY_READ,
+                    &key) == ERROR_SUCCESS) {
+    RegQueryValueExW(key, L"IdleGcMs", nullptr, nullptr,
+                     reinterpret_cast<BYTE*>(&interval), &interval_bytes);
+    RegCloseKey(key);
+  }
+  cached_ms = interval > 0 ? interval : kDefaultIdleGcMs;
+  return cached_ms;
+}
+
+// Runs for the lifetime of the process on its own detached thread (started
+// once in wmain, never joined -- same discipline as the per-client
+// ServeClient() threads; see the accept-loop comment below for why
+// detached threads never block shutdown). See the block comment above for
+// the full ordering argument.
+void IdleGcLoop() {
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(kIdleGcPollMs));
+    if (g_stopping.load(std::memory_order_relaxed)) return;
+    if (!g_engine_active.load(std::memory_order_acquire)) continue;
+
+    const DWORD idle_ms = IdleGcIntervalMs();
+    const uint64_t last = g_last_activity_tick.load(std::memory_order_acquire);
+    if (GetTickCount64() - last < idle_ms) continue;
+    if (!g_gc_pending.load(std::memory_order_acquire)) continue;
+
+    {
+      std::lock_guard<std::mutex> lock(g_engine_mutex);
+      // Re-validate now that the lock is held: a real request may have
+      // been dispatched -- and thus called NoteActivity() -- while this
+      // thread was waiting to acquire g_engine_mutex.
+      if (GetTickCount64() - g_last_activity_tick.load(std::memory_order_acquire) <
+          idle_ms) {
+        continue;
+      }
+      if (!g_gc_pending.exchange(false, std::memory_order_acq_rel)) continue;
+
+      std::string response;
+      if (!Dispatch(g_child, "GC", &response)) {
+        // Mirrors ServeClient()'s own "child appears to have exited"
+        // check below: whichever thread notices first is the one that
+        // requests the full shutdown.
+        if (g_child.process == nullptr ||
+            WaitForSingleObject(g_child.process, 0) != WAIT_TIMEOUT) {
+          RequestStop();
+        }
+      }
+      // response is intentionally discarded: the host does not need the
+      // engine's "OK GC" / "ERR GC ..." payload, only that the request/
+      // response cycle completed (or, on failure, that it noticed).
+    }
+  }
+}
+// ---------------------------------------------------------------------------
+
+HANDLE CreatePipeInstance() {
+  return CreateNamedPipeW(
+      g_pipe_name.c_str(), PIPE_ACCESS_DUPLEX,
+      PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+      PIPE_UNLIMITED_INSTANCES, 8192, 8192, 0, nullptr);
+}
+
+// Wakes the main thread out of a blocked ConnectNamedPipe() call so it can
+// notice g_stopping and exit the accept loop. ConnectNamedPipe only returns
+// when a client connects (or the instance is torn down from under it), so
+// flipping the flag alone would leave the main thread waiting forever for
+// an application that may never come -- this opens and immediately closes
+// a throwaway connection to the same pipe name, which is exactly the event
+// the blocked call is waiting for. If no instance happens to be listening
+// at that exact moment (another RequestStop() call, or a genuine client,
+// already claimed the one spare instance), the throwaway connect harmlessly
+// fails: the main thread is either already awake because that other
+// connection woke it, or it will see g_stopping the next time it checks,
+// before it would block again -- see the loop in wmain.
+void RequestStop() {
+  g_stopping.store(true, std::memory_order_relaxed);
+  HANDLE wake = CreateFileW(g_pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE,
+                            0, nullptr, OPEN_EXISTING, 0, nullptr);
+  if (wake != INVALID_HANDLE_VALUE) CloseHandle(wake);
+}
+
+// Services one already-connected pipe instance until its client
+// disconnects, the child dies, or a "SHUTDOWN" request arrives. Runs on its
+// own detached thread; the pipe handle passed in belongs to this thread
+// alone. Everything else it touches (g_child, g_engine_mutex, g_stopping,
+// g_pipe_name) is shared with other worker threads and the main thread,
+// and is only ever touched through the synchronization documented above.
+void ServeClient(HANDLE pipe) {
+  bool connected = true;
+  while (connected) {
+    std::array<char, 8192> request_buffer{};
+    DWORD read = 0;
+    if (!ReadFile(pipe, request_buffer.data(),
+                  static_cast<DWORD>(request_buffer.size()), &read, nullptr)) break;
+    // Stamped the instant a real request arrives, before it is parsed,
+    // dispatched, or even attempts to acquire g_engine_mutex -- this is
+    // what lets IdleGcLoop() always see fresh activity ahead of trying to
+    // acquire that same mutex itself; see the ordering argument in the
+    // block comment above IdleGcLoop().
+    NoteActivity();
+    std::string request(request_buffer.data(), read);
+    while (!request.empty() && (request.back() == '\n' || request.back() == '\r'))
+      request.pop_back();
+    std::string response;
+    const bool is_shutdown = request == "SHUTDOWN";
+    if (is_shutdown) {
+      response = "OK";
+    } else {
+      // Locked for the whole transaction, including any nested "SERVER "
+      // dictionary exchanges inside Dispatch() -- see the block comment
+      // above.
+      std::lock_guard<std::mutex> lock(g_engine_mutex);
+      if (!Dispatch(g_child, request, &response)) { connected = false; break; }
+    }
+    DWORD written = 0;
+    connected = WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()),
+                          &written, nullptr) && written == response.size();
+    if (is_shutdown) {
+      connected = false;
+      RequestStop();
+    }
+  }
+  FlushFileBuffers(pipe);
+  DisconnectNamedPipe(pipe);
+  CloseHandle(pipe);
+  // Mirrors the pre-multithreading behaviour: once the underlying NeLisp
+  // child has exited, the whole host stops (it has nothing left to relay
+  // to). Any client's worker thread may be the one to notice this first.
+  // Locked so this never races StopChild()'s handle teardown in wmain.
+  std::lock_guard<std::mutex> lock(g_engine_mutex);
+  if (g_child.process == nullptr ||
+      WaitForSingleObject(g_child.process, 0) != WAIT_TIMEOUT) {
+    RequestStop();
+  }
+}
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -367,53 +634,71 @@ int wmain(int argc, wchar_t** argv) {
                   L"usage: ddskk-engine-host ENGINE_EXE [REPOSITORY]\n");
     return 2;
   }
-  Child child;
   const std::wstring repository = argc == 3 ? argv[2] : L"";
-  if (!StartChild(argv[1], repository, &child)) {
-    StopChild(child);
+  if (!StartChild(argv[1], repository, &g_child)) {
+    StopChild(g_child);
     return 3;
   }
-  const std::wstring pipe_name = PipeName();
-  HANDLE pipe = CreateNamedPipeW(
-      pipe_name.c_str(), PIPE_ACCESS_DUPLEX,
-      PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-      1, 8192, 8192, 0, nullptr);
+  g_pipe_name = PipeName();
+  HANDLE pipe = CreatePipeInstance();
   if (pipe == INVALID_HANDLE_VALUE) {
-    StopChild(child);
+    StopChild(g_child);
     return 4;
   }
-  bool stopping = false;
-  while (!stopping) {
-    if (!ConnectNamedPipe(pipe, nullptr) && GetLastError() != ERROR_PIPE_CONNECTED)
+  // Started once, detached, never joined -- same discipline as the
+  // per-client ServeClient() threads below (see the accept-loop comment):
+  // on shutdown this thread simply notices g_stopping within one 100 ms
+  // poll tick and returns, and the process exiting reaps it regardless.
+  std::thread(IdleGcLoop).detach();
+  // Accept loop: each iteration blocks in ConnectNamedPipe() on `pipe` (the
+  // one spare, not-yet-connected instance), then immediately opens the next
+  // spare instance before handing the newly connected one to its own
+  // detached ServeClient() thread -- so a second application can connect
+  // right away instead of queuing behind whatever the first client's
+  // transaction takes. Worker threads are never joined: on shutdown this
+  // function returns (see below) without waiting for them, which is what
+  // lets a squatting client -- one that connected but never sends
+  // anything, permanently blocked in its own ReadFile() -- never block
+  // shutdown. The process exiting (ExitProcess, via the CRT's normal
+  // post-wmain path) reaps any such thread; it holds no engine-side state
+  // outside of a Dispatch() call, and Dispatch() calls always hold
+  // g_engine_mutex, which StopChild() below also waits for.
+  while (!g_stopping.load(std::memory_order_relaxed)) {
+    if (!ConnectNamedPipe(pipe, nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) {
+      CloseHandle(pipe);
+      pipe = INVALID_HANDLE_VALUE;
       break;
-    bool connected = true;
-    while (connected) {
-      std::array<char, 8192> request_buffer{};
-      DWORD read = 0;
-      if (!ReadFile(pipe, request_buffer.data(),
-                    static_cast<DWORD>(request_buffer.size()), &read, nullptr)) break;
-      std::string request(request_buffer.data(), read);
-      while (!request.empty() && (request.back() == '\n' || request.back() == '\r'))
-        request.pop_back();
-      std::string response;
-      if (request == "SHUTDOWN") {
-        response = "OK";
-        stopping = true;
-      } else if (!Dispatch(child, request, &response)) {
-        connected = false;
-        break;
-      }
-      DWORD written = 0;
-      connected = WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()),
-                            &written, nullptr) && written == response.size();
-      if (stopping) connected = false;
     }
-    FlushFileBuffers(pipe);
-    DisconnectNamedPipe(pipe);
-    if (WaitForSingleObject(child.process, 0) != WAIT_TIMEOUT) break;
+    if (g_stopping.load(std::memory_order_relaxed)) {
+      // Almost certainly RequestStop()'s own throwaway wakeup connection
+      // (or, rarely, a real client that raced in right as shutdown began);
+      // either way the host is stopping, so it is never handed to a
+      // worker thread.
+      DisconnectNamedPipe(pipe);
+      CloseHandle(pipe);
+      pipe = INVALID_HANDLE_VALUE;
+      break;
+    }
+    HANDLE connected_pipe = pipe;
+    pipe = CreatePipeInstance();
+    std::thread(ServeClient, connected_pipe).detach();
+    if (pipe == INVALID_HANDLE_VALUE) {
+      // Out of resources for further instances: the client just accepted
+      // above is still served (thread already started); just stop taking
+      // new ones.
+      break;
+    }
   }
-  CloseHandle(pipe);
-  StopChild(child);
+  if (pipe != INVALID_HANDLE_VALUE) CloseHandle(pipe);
+  // Holding g_engine_mutex here waits for any worker thread currently
+  // mid-transaction to finish first, so the child's pipes are never closed
+  // out from under an in-flight read/write. A worker that acquires the
+  // mutex afterward simply finds the now-closed handles and fails its
+  // Dispatch() call, which it already treats as an ordinary disconnect.
+  {
+    std::lock_guard<std::mutex> lock(g_engine_mutex);
+    StopChild(g_child);
+  }
   ShutdownDictionaryServer();
   return 0;
 }

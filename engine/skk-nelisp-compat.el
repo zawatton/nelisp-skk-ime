@@ -69,6 +69,71 @@
     "Return non-nil when point is at the beginning of the accessible buffer text."
     (= (nelisp-point) (nelisp-point-min)))
 
+  ;; --- Gap-aware accessors: looking-at / looking-back / char-after /
+  ;; char-before ---------------------------------------------------------
+  ;;
+  ;; `nelisp-buffer-string' / `nelisp-buffer-substring'
+  ;; (dev/nelisp/src/nelisp-buffer.el:172-181, read-only from this repo)
+  ;; both go through
+  ;;   (concat (nelisp-buffer-before-gap b) (nelisp-buffer-after-gap b))
+  ;; i.e. a full copy of the ENTIRE buffer, on EVERY call -- `substring'
+  ;; on top of that for `nelisp-buffer-substring'.  DDSKK's ▽-composition
+  ;; path calls `looking-at' several times per keystroke (skk.el:3294-
+  ;; 3301, :3334, :3349, :3371, :3376), and `ddskk-engine--maybe-truncate-
+  ;; session' (engine/ddskk-engine.el) only erases the session buffer
+  ;; when `(and (null skk-henkan-mode) (equal skk-prefix ""))' -- both
+  ;; conditions fail for the ENTIRE duration of a ▽ composition -- so the
+  ;; buffer keeps growing, uncapped, for as long as the user keeps typing
+  ;; without committing.  Every additional character therefore makes every
+  ;; subsequent keystroke's full-buffer copies bigger AND there are more
+  ;; of them (several `looking-at' calls per key): measured 22.6 ms/key at
+  ;; composition length 0 rising to ~60 ms/key at length 300, working set
+  ;; ballooning past 500 MB, past the point where the Windows TSF DLL's
+  ;; ~1500 ms `SendKey' timeout stops claiming the key and starts leaking
+  ;; it into the document as raw ASCII -- exactly the reported "▽Ka "
+  ;; instead of "▽か".
+  ;;
+  ;; The gap-buffer struct (`nelisp-buffer', nelisp-buffer.el:30-41) --
+  ;;   (cl-defstruct (nelisp-buffer ...) name (before-gap "") (after-gap "") ...)
+  ;; -- already stores the text split exactly where these four functions
+  ;; need it, and `nelisp-goto-char' (nelisp-buffer.el:293-304) maintains
+  ;; the split on every point move by re-slicing the full text at point:
+  ;;   (setf (nelisp-buffer-before-gap b) (substring total 0 idx))
+  ;;   (setf (nelisp-buffer-after-gap b) (substring total idx))
+  ;; so as an invariant, whenever point is settled:
+  ;;   - `before-gap' IS the buffer text for [point-min-of-1, point) --
+  ;;     `nelisp-point' is literally defined as
+  ;;     `(1+ (length (nelisp-buffer-before-gap b)))' (nelisp-buffer.el:
+  ;;     155-158), i.e. point == (length before-gap) + 1.
+  ;;   - `after-gap' IS the buffer text for [point, unrestricted-end).
+  ;; Reading straight out of these slots -- a `cl-defstruct' accessor
+  ;; (O(1), a field read) plus `length'/`aref'/`substring' bounded by the
+  ;; size of the piece actually needed -- replaces the current full-buffer
+  ;; `concat' (an unbounded copy on every single call, growing with total
+  ;; composition length) with work bounded by the requested slice, and in
+  ;; the common case (`looking-at', and `char-after'/`char-before' AT
+  ;; point) with no copy at all.
+  ;;
+  ;; `skk-nelisp--char-at' below is the one piece of shared index algebra:
+  ;; given a 1-based absolute buffer position POS and BEFORE = (before-gap
+  ;; B) of length LB, POS falls in `before-gap' (index POS-1) when POS <=
+  ;; LB, and in `after-gap' (index POS-LB-1, i.e. POS - point) when POS >
+  ;; LB.  This holds for ANY position, not just point itself, so a
+  ;; POSITION argument to `char-after'/`char-before' that is not point (an
+  ;; explicit integer, or a marker coerced via `skk-nelisp--pos') is still
+  ;; answered in O(1) from whichever half contains it -- never a
+  ;; whole-buffer copy either.
+  (defun skk-nelisp--char-at (pos before b)
+    "Return the character at 1-based absolute position POS in B.
+BEFORE must already be `(nelisp-buffer-before-gap B)' (passed in so
+callers that fetched it for another reason do not fetch it twice).  POS
+must lie within B's unrestricted [1, buffer-size]; callers are
+responsible for the point-min/point-max accessibility check."
+    (let ((lb (length before)))
+      (if (<= pos lb)
+          (aref before (1- pos))
+        (aref (nelisp-buffer-after-gap b) (- pos lb 1)))))
+
   (defun looking-at (regexp)
     "Return non-nil when text at point matches REGEXP.
 Anchors REGEXP at point by matching against the buffer text from point
@@ -77,17 +142,31 @@ over strings.
 
 This sets match data as a side effect of the underlying `string-match'
 call, exactly like real `looking-at' does -- but because the match runs
-against the extracted TAIL substring rather than the buffer itself,
-`match-beginning'/`match-end' read afterwards are offsets into TAIL
-\(0 = point), NOT absolute buffer positions.  Checked against every
-caller reachable from `skk-start-henkan'/`skk-kakutei'
-\(`skk-change-marker', `skk-delete-henkan-markers', `skk-what-char-type'):
-none of them read match-data after calling `looking-at', they only test
-its return value, so this divergence is safe on that path today.  A
-caller that started reading `match-beginning'/`match-end' after
-`looking-at' would get TAIL-relative, not buffer-relative, numbers and
-must be fixed at the call site -- do not silently paper over that here."
-    (let ((tail (nelisp-buffer-substring (nelisp-point) (nelisp-point-max))))
+against the after-gap string (or a bounded prefix of it, when the buffer
+is narrowed) rather than the buffer itself, `match-beginning'/`match-end'
+read afterwards are offsets into that string \(0 = point), NOT absolute
+buffer positions.  Checked against every caller reachable from
+`skk-start-henkan'/`skk-kakutei' \(`skk-change-marker',
+`skk-delete-henkan-markers', `skk-what-char-type'): none of them read
+match-data after calling `looking-at', they only test its return value,
+so this divergence is safe on that path today.  A caller that started
+reading `match-beginning'/`match-end' after `looking-at' would get
+tail-relative, not buffer-relative, numbers and must be fixed at the call
+site -- do not silently paper over that here.
+
+Reads `after-gap' directly (see the gap-aware accessors note above) --
+no full-buffer copy, and in the unnarrowed case (the only case this
+compat layer's reachable callers ever produce: narrowing is only used by
+vendor/ddskk/maint and skk-tut.el, neither loaded by
+engine/ddskk-engine.el) no copy at all.  When the buffer IS narrowed
+\(`point-max' short of the unrestricted end), only the visible prefix of
+`after-gap' is sliced off, still never the whole buffer."
+    (let* ((b (nelisp-buffer--ambient nil))
+           (after (nelisp-buffer-after-gap b))
+           (visible (- (nelisp-point-max b) (nelisp-point b)))
+           (tail (if (= visible (length after))
+                     after
+                   (substring after 0 visible))))
       (eq 0 (string-match regexp tail))))
 
   (defun looking-back (regexp &optional limit _greedy)
@@ -101,10 +180,18 @@ No caller reachable from `skk-start-henkan'/`skk-kakutei' calls this
 today -- grepping skk.el finds only a commented-out mention at
 skk.el:4555 (`;(looking-back \">\")') -- so this is a best-effort
 implementation, not a verified port; re-check it if a real caller
-appears."
-    (let* ((end (nelisp-point))
-           (start (skk-nelisp--pos (or limit (nelisp-point-min))))
-           (head (nelisp-buffer-substring start end))
+appears.
+
+Reads `before-gap' directly (see the gap-aware accessors note above):
+`before-gap' IS the buffer text for [point-min-of-1, point), so the
+window [LIMIT, point) this function needs is always a plain `substring'
+of `before-gap' alone -- bounded by that window's own size, never a
+full-buffer copy, and `after-gap' is never even touched."
+    (let* ((b (nelisp-buffer--ambient nil))
+           (end (nelisp-point b))
+           (before (nelisp-buffer-before-gap b))
+           (start (skk-nelisp--pos (or limit (nelisp-point-min b))))
+           (head (substring before (1- start) (length before)))
            (len (length head))
            (i 0)
            (found nil))
@@ -117,19 +204,31 @@ appears."
 
   (defun char-after (&optional position)
     "Return the character at POSITION (default point), or nil past the end.
-POSITION may be an integer or a marker."
-    (let ((pos (if position (skk-nelisp--pos position) (nelisp-point))))
-      (and (>= pos (nelisp-point-min))
-           (< pos (nelisp-point-max))
-           (aref (nelisp-buffer-substring pos (1+ pos)) 0))))
+POSITION may be an integer or a marker.
+
+Reads directly out of the gap halves via `skk-nelisp--char-at' (see the
+gap-aware accessors note above) instead of building a 1-character
+substring through a full-buffer copy; at point (the common case) this is
+just the first character of `after-gap'."
+    (let* ((b (nelisp-buffer--ambient nil))
+           (pos (if position (skk-nelisp--pos position) (nelisp-point b))))
+      (and (>= pos (nelisp-point-min b))
+           (< pos (nelisp-point-max b))
+           (skk-nelisp--char-at pos (nelisp-buffer-before-gap b) b))))
 
   (defun char-before (&optional position)
     "Return the character before POSITION (default point), or nil at the start.
-POSITION may be an integer or a marker."
-    (let ((pos (if position (skk-nelisp--pos position) (nelisp-point))))
-      (and (> pos (nelisp-point-min))
-           (<= pos (nelisp-point-max))
-           (aref (nelisp-buffer-substring (1- pos) pos) 0))))
+POSITION may be an integer or a marker.
+
+Reads directly out of the gap halves via `skk-nelisp--char-at' (see the
+gap-aware accessors note above) instead of building a 1-character
+substring through a full-buffer copy; at point (the common case) this is
+just the last character of `before-gap'."
+    (let* ((b (nelisp-buffer--ambient nil))
+           (pos (if position (skk-nelisp--pos position) (nelisp-point b))))
+      (and (> pos (nelisp-point-min b))
+           (<= pos (nelisp-point-max b))
+           (skk-nelisp--char-at (1- pos) (nelisp-buffer-before-gap b) b))))
 
   ;; Not part of the original char-charset request, but the very next
   ;; void-function once `char-charset' (below) unblocks the okurigana

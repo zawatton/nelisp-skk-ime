@@ -33,12 +33,12 @@ HMODULE g_module = nullptr;
 int main() {
   // kana_mode_ false always means the DLL is passing keys through,
   // regardless of what the engine last reported.
-  assert(ModeIndicatorLabel(false, L"hiragana") == L"英数");
-  assert(ModeIndicatorLabel(false, L"") == L"英数");
+  assert(ModeIndicatorLabel(false, L"hiragana") == L"SKK");
+  assert(ModeIndicatorLabel(false, L"") == L"SKK");
 
   assert(ModeIndicatorLabel(true, L"hiragana") == L"かな");
   assert(ModeIndicatorLabel(true, L"katakana") == L"カナ");
-  assert(ModeIndicatorLabel(true, L"latin") == L"英数");
+  assert(ModeIndicatorLabel(true, L"latin") == L"SKK");
   assert(ModeIndicatorLabel(true, L"wide-latin") == L"全英");
   assert(ModeIndicatorLabel(true, L"abbrev") == L"Abbrev");
 
@@ -55,7 +55,7 @@ int main() {
   // a glance without needing to read the label text itself.
   const ModeIndicatorPalette kana = ModeIndicatorColors(L"かな");
   const ModeIndicatorPalette katakana = ModeIndicatorColors(L"カナ");
-  const ModeIndicatorPalette latin = ModeIndicatorColors(L"英数");
+  const ModeIndicatorPalette latin = ModeIndicatorColors(L"SKK");
   const ModeIndicatorPalette wide_latin = ModeIndicatorColors(L"全英");
   const ModeIndicatorPalette abbrev = ModeIndicatorColors(L"Abbrev");
 
@@ -70,7 +70,22 @@ int main() {
   assert(latin.background != abbrev.background);
   assert(wide_latin.background != abbrev.background);
 
-  // An unrecognized label falls back to the same (grey) palette as 英数.
+  // かな (kana) is red and SKK (latin/direct-input) is blue, per the
+  // user-requested palette: red channel dominates kana's background, blue
+  // channel dominates latin's.
+  assert(GetRValue(kana.background) > GetGValue(kana.background));
+  assert(GetRValue(kana.background) > GetBValue(kana.background));
+  assert(GetBValue(latin.background) > GetRValue(latin.background));
+  assert(GetBValue(latin.background) > GetGValue(latin.background));
+
+  // The indicator derives its text color from background luminance
+  // (white on a dark/mid background, near-black on a pale one); both new
+  // colors must still land on the dark side of that threshold so the
+  // label stays legible without a registry override.
+  assert(kana.text == RGB(0xFF, 0xFF, 0xFF));
+  assert(latin.text == RGB(0xFF, 0xFF, 0xFF));
+
+  // An unrecognized label falls back to the same (blue/SKK) palette.
   const ModeIndicatorPalette unknown = ModeIndicatorColors(L"???");
   assert(unknown.background == latin.background);
   assert(unknown.border == latin.border);

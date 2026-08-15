@@ -130,6 +130,7 @@
 (defun skk-henkan-in-minibuff () nil)
 
 (load "engine/skk-ime-session.el")
+(load "engine/skk-user-jisyo.el")
 
 (defun skk-ime-session--initialize-native-buffer ()
   ;; On this machine, learning and the personal dictionary live on the SKK
@@ -142,13 +143,39 @@
   ;; clean no-op, not a signal.  `skk-save-jisyo-instantly' already defaults
   ;; to nil and is untouched by this file, so `skk-update-jisyo'
   ;; (skk.el:4216) never calls `skk-save-jisyo' either.
+  ;;
+  ;; `skk-henkan-key' / `skk-henkan-list' / `skk-henkan-count' /
+  ;; `skk-kakutei-flag' / `skk-kakutei-henkan-flag' / `skk-undo-kakutei-flag'
+  ;; / `skk-okuri-char' / `skk-okuri-index-min' / `skk-okuri-index-max' /
+  ;; `skk-exit-show-candidates' / `skk-henkan-okurigana' /
+  ;; `skk-current-search-prog-list' are reset here to the exact values
+  ;; `skk-kakutei-initialize' (skk.el:2839-2882) resets them to on a normal
+  ;; COMMIT.  Without this, `RESET' issued while a conversion is mid-flight
+  ;; (CONVERT already ran, no COMMIT yet -- a real scenario: e.g. the native
+  ;; host resets on a focus change during composition) leaves a stale
+  ;; `skk-henkan-list'/`skk-henkan-key' behind.  The NEXT conversion's first
+  ;; search then does `(setq skk-henkan-list (skk-nunion skk-henkan-list
+  ;; (skk-search)))' (skk.el:1763) with that stale list as X: `skk-nunion'
+  ;; only APPENDS non-duplicate Y-elements to X, it never clears X, so the
+  ;; previous conversion's candidate leaks into the front of the new one's
+  ;; candidate list -- reproduced concretely as converting かんじ, resetting
+  ;; without committing, then converting the unrelated okuri-ari word かk
+  ;; and getting "感じ" (かんじ's own candidate) prepended ahead of
+  ;; かk's actual candidates.  `skk-ime-session-control's `cancel' branch
+  ;; already avoids this by calling `skk-kakutei-initialize' directly when
+  ;; `skk-henkan-mode' is non-nil; `RESET' had no equivalent.
   (setq skk-mode t skk-j-mode t skk-abbrev-mode nil skk-latin-mode nil
         skk-jisx0208-latin-mode nil skk-jisx0201-mode nil skk-katakana nil
         skk-echo nil skk-prefix "" skk-current-rule-tree nil
         skk-henkan-mode nil skk-henkan-start-point nil skk-henkan-end-point nil
         skk-kana-start-point nil skk-okurigana nil skk-insert-keysequence nil
         buffer-undo-list t overwrite-mode nil auto-fill-function nil
-        current-prefix-arg nil skk-jisyo nil)
+        current-prefix-arg nil skk-jisyo nil
+        skk-henkan-key nil skk-henkan-list nil skk-henkan-count -1
+        skk-kakutei-flag nil skk-kakutei-henkan-flag nil
+        skk-undo-kakutei-flag nil skk-okuri-char nil skk-okuri-index-min -1
+        skk-okuri-index-max -1 skk-exit-show-candidates nil
+        skk-henkan-okurigana nil skk-current-search-prog-list nil)
   (unless skk-rule-tree
     (setq skk-rule-tree
           (skk-compile-rule-list skk-rom-kana-base-rule-list
@@ -164,6 +191,44 @@ the resident IME, but that also hides real defects.  Setting the
 `DDSKK_ENGINE_DEBUG' environment variable makes each handler report
 `ERR <TOKEN> <error-symbol>' instead of its silent fallback, so a probe
 harness can see what actually failed.")
+
+;; --- GC scheduling -------------------------------------------------------
+;; An earlier version of this file ran `garbage-collect' from
+;; `ddskk-engine--maybe-truncate-session' itself, at every confirmed-word
+;; boundary (gated by a `ddskk-engine--gc-every-boundaries' counter,
+;; overridable via a `DDSKK_ENGINE_GC_EVERY' env var). That fixed the
+;; runtime's unbounded ~1.6 MB/keystroke growth completely -- flat working
+;; set across 0/25/50/100/200 confirmed words -- but at a cost that is not
+;; acceptable for an IME: every single CONTROL COMMIT paid the collector's
+;; full price (this runtime's collector is a semispace copier whose cost
+;; tracks LIVE heap size, and the live heap here is ~311 MB of loaded
+;; DDSKK + compat layer + runtime), which measured at a steady ~306 ms
+;; median / ~468 ms worst case on every confirmed word, versus ~127 ms
+;; median with no GC at all (and growing unboundedly from there).
+;;
+;; This runtime's collector cost cannot be reduced by generating less
+;; garbage, and `nelisp-gc-inner-collect' (the generational entry point in
+;; dev/nelisp/src/nelisp-gc-inner.el) is not `fboundp' in this standalone
+;; binary, so a cheap minor collection is not available either. The fix
+;; is therefore not "collect less garbage" or "collect more cheaply" but
+;; "collect at a moment nobody is waiting on a keystroke": the `GC'
+;; protocol line below lets the host (windows/host/main.cpp) request a
+;; collection explicitly, and the host only ever sends that line after its
+;; pipe has sat idle for a while -- see that file's `IdleGcLoop' for the
+;; idle-interval measurement and the ordering argument for why a real
+;; keystroke can never queue up behind a GC that had not yet started.
+;; `ddskk-engine--maybe-truncate-session' no longer calls a collector at
+;; all; truncation and collection are now on two entirely different
+;; triggers (a clean DDSKK boundary vs. host-observed pipe idleness).
+;;
+;; `DDSKK_ENGINE_GC_EVERY' (and the boundary counter it used to space out)
+;; is removed rather than kept as a dead knob: it controlled how many
+;; confirmed-word boundaries passed between GCs, but there is no longer
+;; any boundary-triggered call site for it to space out -- keeping the
+;; variable would just be configuration pointing at nothing. GC frequency
+;; is now controlled entirely on the host side, by the idle interval
+;; (`DDSKK_ENGINE_IDLE_GC_MS' env var / `HKCU\Software\NativeIME\IdleGcMs'
+;; registry value), which is the new single point of control.
 
 (defun ddskk-engine-start ()
   (unless (skk-ime-session-live-p ddskk-engine--session)
@@ -231,13 +296,18 @@ The native host never sends RESET, so the session buffer would otherwise
 grow for the lifetime of the IME: every request re-encodes the whole
 buffer, and the Windows adapter re-commits it.  Truncating only when
 DDSKK has no active conversion and no pending romaji prefix keeps every
-marker-bearing state untouched."
+marker-bearing state untouched.
+
+This function no longer runs a collector itself -- see the \"GC
+scheduling\" comment above `ddskk-engine-start' for why that was moved
+to an explicit, host-triggered `GC' protocol line instead of running
+here on every confirmed word."
   (when (skk-ime-session-live-p ddskk-engine--session)
     (with-current-buffer (skk-ime-session-buffer ddskk-engine--session)
       (when (and (null skk-henkan-mode)
-                 (equal skk-prefix "")
-                 (> (point-max) (point-min)))
-        (erase-buffer)))))
+                 (equal skk-prefix ""))
+        (when (> (point-max) (point-min))
+          (erase-buffer))))))
 
 (defun ddskk-engine--error-datum-string (value)
   "Render one error datum element of an Elisp error condition as a string.
@@ -339,6 +409,19 @@ The data carries the missing symbol name for `void-variable' /
           response)
       (error (ddskk-engine--error-token "ERR CANCEL" err))))
    ((equal line "QUIT") "OK BYE")
+   ((equal line "GC")
+    ;; Explicit maintenance request from the host's idle timer (see
+    ;; `IdleGcLoop' in windows/host/main.cpp) -- sent only after the pipe
+    ;; has sat idle for a while, never on the per-keystroke or
+    ;; per-confirmed-word critical path (see the "GC scheduling" comment
+    ;; above `ddskk-engine-start').  A signal here must not kill the
+    ;; resident engine, so degrade to an error response like the
+    ;; neighbouring arms do.
+    (condition-case err
+        (progn
+          (when (fboundp 'garbage-collect) (garbage-collect))
+          "OK GC")
+      (error (ddskk-engine--error-token "ERR GC" err))))
    ((string-match "^KEY \\([0-9]+\\)$" line)
     (let ((codepoint (string-to-number (match-string 1 line))))
       (if (or (< codepoint 0) (> codepoint 1114111)) "ERR CODEPOINT"
@@ -452,7 +535,24 @@ midasi before evaluating each element of that list."
 
 ;; DDSKK's stock `skk-search-prog-list' references file/CDB/server search
 ;; functions that cannot run on this runtime (no buffer search primitive).
-;; The host performs the lookup instead, so one entry is enough.
-(setq skk-search-prog-list '((ddskk-engine-server-search)))
+;; The host performs the shared-dictionary lookup; `ddskk-user-jisyo-search'
+;; (engine/skk-user-jisyo.el) is listed FIRST so a previously-confirmed
+;; candidate for this midasi is offered before the shared dictionary is
+;; even asked -- see that file for the personal-dictionary learning
+;; machinery and for why listing it first does not produce duplicate
+;; candidates once the server's own results are merged in on a later SPC
+;; (`skk-nunion' in skk-macs.el already dedups by `equal').
+(setq skk-search-prog-list '((ddskk-user-jisyo-search)
+                              (ddskk-engine-server-search)))
+
+;; Learning: DDSKK's own file-backed jisyo machinery is disabled (`skk-jisyo'
+;; is nil -- see the comment above `skk-ime-session--initialize-native-
+;; buffer'), but `skk-update-jisyo' (skk.el:4216-4217) still calls through
+;; the `skk-update-jisyo-function' indirection on every confirmed candidate
+;; regardless of `skk-jisyo'.  Redirect it at the client-side personal
+;; dictionary instead of the stock `skk-update-jisyo-original', which would
+;; silently no-op here.
+(setq skk-update-jisyo-function #'ddskk-user-jisyo--update)
+(ddskk-user-jisyo-load)
 
 (ddskk-engine-start)

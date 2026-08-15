@@ -43,13 +43,13 @@ struct ModeIndicatorPalette {
 };
 
 // Returns the built-in default palette for `label` (one of the strings
-// ModeIndicatorLabel() can return: "かな", "カナ", "英数", "全英",
+// ModeIndicatorLabel() can return: "かな", "カナ", "SKK", "全英",
 // "Abbrev"). This is the same idea as CorvusSKK's "入力モードの色"
 // setting -- a distinct color per input mode, chosen for quick
 // discrimination at a glance -- with sensible built-in defaults;
 // TextService::LoadSettings() can override any of them from the registry
 // via ModeIndicator::SetPaletteOverride() without a rebuild. Any other
-// (unrecognized) label falls back to the same palette as "英数". Pure and
+// (unrecognized) label falls back to the same palette as "SKK". Pure and
 // testable without any window/GDI dependency, mirroring
 // ModeIndicatorLabel().
 ModeIndicatorPalette ModeIndicatorColors(const std::wstring& label);

@@ -36,4 +36,21 @@ enum class EngineControl { kBackspace, kConvert, kPrevious, kCommit, kCancel };
 std::string EncodeControlRequest(EngineControl control);
 std::optional<EngineState> ParseStateResponse(const std::string& line);
 
+// Whether the DLL should currently treat input as kana (composing) rather
+// than plain latin/direct-input passthrough, given the engine's own
+// self-reported EngineState::mode. Every mode string except "latin" is a
+// kana state: "hiragana"/"katakana" are direct kana input, "wide-latin"/
+// "abbrev" are DDSKK submodes only reachable and only leavable via
+// kana-mode key handling, and "preedit"/"candidate" mean a conversion is
+// already in progress (also kana input).
+//
+// This is the single source of truth TextService::OnKeyDown uses to keep
+// its own kana_mode_ flag from drifting out of sync with the
+// out-of-process engine: previously kana_mode_ was a locally-tracked
+// boolean that nothing updated when a plain keystroke (e.g. `l') silently
+// changed the engine's own mode, so it could disagree with both the
+// engine and with ModeIndicatorLabel() (which reads the engine's mode
+// directly). Deriving it fresh from every EngineState closes that gap.
+bool DeriveKanaMode(const EngineState& state);
+
 }  // namespace ddskk
