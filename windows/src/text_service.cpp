@@ -17,6 +17,7 @@
 
 #include <new>
 #include <shellapi.h>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -108,6 +109,22 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
   thread_manager_->AddRef();
   client_id_ = client_id;
   EnsureEngineHost();
+  // The engine's cold load was measured at 3.4 s. Pay that cost here, on a
+  // detached background thread at activation, instead of on the user's
+  // first keystroke -- that removes the first-key freeze. This thread
+  // constructs its own EngineClient and never touches engine_, which is
+  // UI-thread-only.
+  std::thread([] {
+    ddskk::EngineClient warm_up_client;
+    const ULONGLONG deadline = GetTickCount64() + 20000;
+    while (GetTickCount64() < deadline) {
+      if (warm_up_client.Connect(2000)) {
+        warm_up_client.Ping(15000);
+        return;
+      }
+      Sleep(250);
+    }
+  }).detach();
   LoadSettings();
 
   ITfKeystrokeMgr* keystroke_manager = nullptr;
@@ -217,10 +234,36 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
   // or a pending romaji prefix is actually in flight; otherwise they must
   // fall through to the application (matches CorvusSKK's key ownership).
   const bool composing = composition_ != nullptr || engine_pending_;
-  const bool handled = (wparam >= 0x20 && wparam <= 0x7e) ||
-                       ((wparam == VK_BACK || wparam == VK_RETURN ||
-                         wparam == VK_ESCAPE) && composing);
-  *eaten = handled && engine_.Connect(1500);
+  // wparam here is a VK code, not an ASCII/character code: the old
+  // `wparam >= 0x20 && wparam <= 0x7e' range claimed far more than
+  // printable keys -- VK_PRIOR/VK_NEXT/VK_END/VK_HOME/arrows/VK_INSERT/
+  // VK_DELETE (0x21-0x2E), VK_LWIN/VK_RWIN/VK_APPS (0x5B-0x5D), the
+  // numpad (0x60-0x6F) and F1..F15 (0x70-0x7E) all fall inside it.
+  // Navigation keys, F-keys, numpad and Win keys must fall through to the
+  // application; an idle space must insert a plain space (the engine's
+  // KEY 32 path errors and CorvusSKK passes it through too).
+  const bool handled =
+      (wparam >= 'A' && wparam <= 'Z') ||             // letters
+      (wparam >= '0' && wparam <= '9') ||              // top-row digits
+      (wparam >= VK_OEM_1 && wparam <= VK_OEM_3) ||    // 0xBA-0xC0 punctuation
+      (wparam >= VK_OEM_4 && wparam <= VK_OEM_8) ||    // 0xDB-0xDF punctuation
+      wparam == VK_OEM_102 ||                          // 0xE2 JIS backslash
+      (wparam == VK_SPACE && composing) ||             // space converts only mid-composition
+      ((wparam == VK_BACK || wparam == VK_RETURN ||
+        wparam == VK_ESCAPE) && composing);
+  if (!handled) {
+    *eaten = FALSE;
+    return S_OK;
+  }
+  if (!engine_.Connect(1500)) {
+    // Leaking romaji into the document is strictly worse than swallowing a
+    // key for one round-trip while the host respawns: OnKeyDown swallows
+    // any key this function claimed but can't complete (see its "never
+    // leak a claimed key" failure paths), and the respawned host is
+    // reachable by the next keystroke.
+    EnsureEngineHost();
+  }
+  *eaten = TRUE;
   return S_OK;
 }
 
@@ -405,7 +448,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     // common tail below derive kana_mode_ from whatever the engine
     // actually reports afterward.
     state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
-    if (!state) return S_OK;
+    if (!state) {
+      // OnTestKeyDown already claimed Ctrl+J; letting it fall through here
+      // would leak the raw keystroke into the document instead of just
+      // swallowing it for this one failed round-trip.
+      *eaten = TRUE;
+      return S_OK;
+    }
   } else if (!kana_mode_) {
     return S_OK;
   } else if (wparam == VK_BACK) {
@@ -415,9 +464,10 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     if (composition_ == nullptr && !engine_pending_) return S_OK;
     state = engine_.SendControl(ddskk::EngineControl::kBackspace, 1500);
   } else if (wparam == VK_SPACE) {
-    // NOTE: Space conversion ownership is deliberately left unguarded here;
-    // it has a separate, known engine-side bug that is out of scope for
-    // this fix.
+    // Space belongs to the IME only while something is actually being
+    // composed; otherwise let the application insert a plain space
+    // (OnTestKeyDown now only claims VK_SPACE mid-composition too).
+    if (composition_ == nullptr && !engine_pending_) return S_OK;
     state = engine_.SendControl(ddskk::EngineControl::kConvert, 1500);
   } else if (wparam == VK_RETURN) {
     if (composition_ == nullptr && !engine_pending_) return S_OK;
@@ -427,10 +477,22 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
   } else {
     const auto codepoint = TranslateKey(wparam, lparam);
-    if (!codepoint) return S_OK;
+    if (!codepoint) {
+      // OnTestKeyDown's claim set only claims VK codes TranslateKey should
+      // be able to resolve; if it still can't, swallow rather than leak a
+      // key the application never got a chance to see coming.
+      *eaten = TRUE;
+      return S_OK;
+    }
     state = engine_.SendKey(*codepoint, 1500);
   }
-  if (!state) return S_OK;
+  if (!state) {
+    // OnTestKeyDown already claimed this key, so letting it fall through
+    // here would leak the raw keystroke into the document instead of just
+    // swallowing it for this one failed round-trip.
+    *eaten = TRUE;
+    return S_OK;
+  }
   // Single point of truth for engine_pending_ and kana_mode_: every branch
   // above that reaches here (including the Ctrl+J case) has just obtained
   // a fresh state from the engine, so this always reflects the latest
@@ -636,6 +698,11 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
   const std::wstring preedit = state.composition_start < 0 && composition_ != nullptr
                                    ? state.text.substr(committed_length_)
                                    : state.text.substr(composition_start);
+  // The wire protocol carries `text' and `pending_romaji' as separate
+  // STATE fields; render both together so a pending-only romaji prefix
+  // (e.g. text empty, pending_romaji "k" before it resolves to a kana)
+  // is actually visible instead of silently dropped.
+  const std::wstring display = preedit + state.pending_romaji;
   ITfRange* range = nullptr;
   if (composition_ != nullptr) {
     const HRESULT get_range = composition_->GetRange(&range);
@@ -669,7 +736,7 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
         return select;
       }
     }
-    if (preedit.empty()) {
+    if (display.empty()) {
       CaptureCaretRect(edit_cookie, context, range);
       range->Release();
       return S_OK;
@@ -689,7 +756,7 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
     }
   }
   const HRESULT set_text = range->SetText(
-      edit_cookie, 0, preedit.data(), static_cast<LONG>(preedit.size()));
+      edit_cookie, 0, display.data(), static_cast<LONG>(display.size()));
   if (SUCCEEDED(set_text)) {
     ApplyDisplayAttribute(edit_cookie, context, range,
         state.mode == L"candidate" ? GUID_DdskkCandidateAttribute
@@ -699,9 +766,16 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       const size_t absolute_cursor = min(
           state.cursor < 0 ? size_t{0} : static_cast<size_t>(state.cursor),
           state.text.size());
-      const LONG relative_cursor = static_cast<LONG>(
-          absolute_cursor > composition_start ? absolute_cursor - composition_start
-                                              : 0);
+      // A non-empty pending_romaji has no cursor position of its own on
+      // the wire -- it is always at the insertion point in DDSKK -- so the
+      // caret belongs at the end of `display', past both the resolved
+      // text and the pending prefix.
+      const LONG relative_cursor = !state.pending_romaji.empty()
+          ? static_cast<LONG>(display.size())
+          : static_cast<LONG>(
+                absolute_cursor > composition_start
+                    ? absolute_cursor - composition_start
+                    : 0);
       LONG moved = 0;
       caret->Collapse(edit_cookie, TF_ANCHOR_START);
       caret->ShiftEnd(edit_cookie, relative_cursor, &moved, nullptr);
@@ -717,7 +791,15 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
   }
   range->Release();
   if (FAILED(set_text)) return set_text;
-  if (state.composition_start < 0 && composition_ != nullptr) {
+  // A pending-only state (composition_start < 0 but pending_romaji still
+  // non-empty) must keep the composition alive: `display' above already
+  // rendered the pending prefix inside it, so ending the composition here
+  // too would commit that unresolved romaji straight into the document.
+  // The composition only ends once a later state reports the pending
+  // prefix has resolved (pending_romaji empty) with no new composition
+  // start.
+  if (state.composition_start < 0 && state.pending_romaji.empty() &&
+      composition_ != nullptr) {
     const HRESULT end = composition_->EndComposition(edit_cookie);
     composition_->Release();
     composition_ = nullptr;

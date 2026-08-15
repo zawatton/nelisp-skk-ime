@@ -34,8 +34,12 @@ bool EngineClient::Connect(DWORD timeout_ms) {
   if (pipe_ != INVALID_HANDLE_VALUE) return true;
   const std::wstring pipe_name = PipeName();
   if (!WaitNamedPipeW(pipe_name.c_str(), timeout_ms)) return false;
+  // FILE_FLAG_OVERLAPPED is required so Transact()/RawTransact() can bound
+  // WriteFile/ReadFile with timeout_ms via WaitForSingleObject; without it
+  // both calls block indefinitely regardless of any timeout passed here.
   pipe_ = CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                      OPEN_EXISTING,
+                      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
   if (pipe_ == INVALID_HANDLE_VALUE) return false;
   DWORD mode = PIPE_READMODE_MESSAGE;
   if (!SetNamedPipeHandleState(pipe_, &mode, nullptr, nullptr)) {
@@ -55,21 +59,89 @@ void EngineClient::Disconnect() {
 std::optional<std::string> EngineClient::Transact(const std::string& request,
                                                   DWORD timeout_ms) {
   if (!Connect(timeout_ms)) return std::nullopt;
+  if (needs_resync_) {
+    // A previous transaction on an earlier connection may have timed out
+    // (or hit an I/O error) after the request had already reached the
+    // host; the host can still be processing it and mutate the shared
+    // engine session after we stopped listening for the reply. RESET on
+    // this fresh connection forces the session back to a known-empty
+    // state first, so the display here and the engine's actual state
+    // can't silently diverge. Only clear needs_resync_ once RESET itself
+    // is confirmed to have gone through -- if it fails too, RawTransact()
+    // has already disconnected us again and the flag stays set for the
+    // next attempt.
+    const auto reset = RawTransact("RESET\n", timeout_ms);
+    if (!reset) return std::nullopt;
+    needs_resync_ = false;
+  }
+  return RawTransact(request, timeout_ms);
+}
+
+std::optional<std::string> EngineClient::RawTransact(const std::string& request,
+                                                      DWORD timeout_ms) {
+  OVERLAPPED overlapped{};
+  overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (overlapped.hEvent == nullptr) return std::nullopt;
+
+  // Cancels whatever is still in flight and waits for the cancellation (or
+  // a late completion) to actually land -- CancelIoEx is asynchronous, and
+  // the OVERLAPPED/response buffers must outlive it -- before
+  // disconnecting and flagging the session for a resync on the next
+  // Transact(). Only valid once an operation has actually been queued to
+  // the driver (WriteFile/ReadFile returned TRUE, or FALSE with
+  // ERROR_IO_PENDING); otherwise there is nothing pending to cancel and
+  // GetOverlappedResult(..., TRUE) below would block forever waiting on a
+  // completion event nobody will ever signal.
+  const auto cancel_pending_and_fail = [this, &overlapped] {
+    CancelIoEx(pipe_, &overlapped);
+    DWORD ignored = 0;
+    GetOverlappedResult(pipe_, &overlapped, &ignored, TRUE);
+    CloseHandle(overlapped.hEvent);
+    Disconnect();
+    needs_resync_ = true;
+  };
+  // Used when WriteFile/ReadFile failed outright (anything other than
+  // ERROR_IO_PENDING): nothing was queued, so skip the cancel/wait dance
+  // above -- it would hang on the never-to-be-signaled event.
+  const auto fail_immediately = [this, &overlapped] {
+    CloseHandle(overlapped.hEvent);
+    Disconnect();
+    needs_resync_ = true;
+  };
+
   DWORD written = 0;
   if (!WriteFile(pipe_, request.data(), static_cast<DWORD>(request.size()),
-                 &written, nullptr) || written != request.size()) {
-    Disconnect();
+                 &written, &overlapped) &&
+      GetLastError() != ERROR_IO_PENDING) {
+    fail_immediately();
     return std::nullopt;
   }
+  // Whether WriteFile completed synchronously or is still pending, the
+  // event is signaled on completion either way, so waiting here is safe
+  // (and returns immediately in the synchronous case).
+  if (WaitForSingleObject(overlapped.hEvent, timeout_ms) != WAIT_OBJECT_0 ||
+      !GetOverlappedResult(pipe_, &overlapped, &written, FALSE) ||
+      written != request.size()) {
+    cancel_pending_and_fail();
+    return std::nullopt;
+  }
+
+  ResetEvent(overlapped.hEvent);
   std::array<char, 8192> response{};
   DWORD read = 0;
   if (!ReadFile(pipe_, response.data(), static_cast<DWORD>(response.size() - 1),
-                &read, nullptr)) {
-    Disconnect();
+               &read, &overlapped) &&
+      GetLastError() != ERROR_IO_PENDING) {
+    fail_immediately();
     return std::nullopt;
   }
-  std::string result(response.data(), read);
-  return result;
+  if (WaitForSingleObject(overlapped.hEvent, timeout_ms) != WAIT_OBJECT_0 ||
+      !GetOverlappedResult(pipe_, &overlapped, &read, FALSE)) {
+    cancel_pending_and_fail();
+    return std::nullopt;
+  }
+  CloseHandle(overlapped.hEvent);
+  return std::string(response.data(), read);
 }
 
 std::optional<EngineState> EngineClient::SendKey(char32_t codepoint,
@@ -108,6 +180,10 @@ bool EngineClient::SelectEngine(const std::string& engine_id, DWORD timeout_ms) 
       std::string::npos) return false;
   const auto response = Transact("ENGINE SET " + engine_id + "\n", timeout_ms);
   return response && *response == "OK ENGINE " + engine_id;
+}
+
+bool EngineClient::Ping(DWORD timeout_ms) {
+  return Transact("GC\n", timeout_ms).has_value();
 }
 
 }  // namespace ddskk
