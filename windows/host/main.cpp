@@ -94,19 +94,24 @@ bool ReadLine(HANDLE handle, std::string* line) {
   }
 }
 
-// The settings UI (docs/design/sumi-indicator-settings.md, the 辞書 tab)
-// stores the user dictionary path and save-batch size as
-// HKCU\Software\NativeIME\UserJisyoPath (REG_SZ) and \UserJisyoBatch
-// (REG_DWORD); engine/skk-user-jisyo.el instead reads them from the
-// engine child's own environment, as DDSKK_USER_JISYO and
-// DDSKK_USER_JISYO_SAVE_BATCH_SIZE. This bridges registry -> env right
-// before the child is spawned (CreateProcessW below inherits this
-// process's environment when lpEnvironment is nullptr, which it is), but
-// only fills in a variable that is not already set: every existing test
-// harness sets these env vars directly for private-jisyo isolation, and
-// leaving an already-set value alone keeps every one of them working
-// unchanged.
-void ApplyUserJisyoEnvFromRegistry() {
+// The settings UI (docs/design/sumi-indicator-settings.md, the 辞書 and
+// behavior-flag tabs) stores the user dictionary path/save-batch size and
+// several engine behavior flags under HKCU\Software\NativeIME:
+// UserJisyoPath (REG_SZ), and UserJisyoBatch / BehaviorOkuriStrictly /
+// BehaviorDeleteOkuriOnCancel / BehaviorAddKatakanaCand /
+// BehaviorLearnDisabled (all REG_DWORD). engine/skk-user-jisyo.el and the
+// corresponding behavior-flag Elisp instead read all of these from the
+// engine child's own environment (DDSKK_USER_JISYO,
+// DDSKK_USER_JISYO_SAVE_BATCH_SIZE, DDSKK_OKURI_STRICTLY,
+// DDSKK_DELETE_OKURI_ON_CANCEL, DDSKK_SEARCH_KATAKANA,
+// DDSKK_LEARN_DISABLED). This bridges registry -> env right before the
+// child is spawned (CreateProcessW below inherits this process's
+// environment when lpEnvironment is nullptr, which it is), but only fills
+// in a variable that is not already set: every existing test harness sets
+// these env vars directly for isolation (private jisyo, specific behavior
+// flags under test, etc.), and leaving an already-set value alone keeps
+// every one of them working unchanged.
+void ApplyEngineEnvFromRegistry() {
   HKEY key = nullptr;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0, KEY_READ,
                     &key) != ERROR_SUCCESS) return;
@@ -126,14 +131,29 @@ void ApplyUserJisyoEnvFromRegistry() {
     }
   }
 
-  if (GetEnvironmentVariableW(L"DDSKK_USER_JISYO_SAVE_BATCH_SIZE", nullptr,
-                              0) == 0) {
-    DWORD batch = 0, batch_bytes = sizeof(batch);
-    if (RegQueryValueExW(key, L"UserJisyoBatch", nullptr, nullptr,
-                         reinterpret_cast<BYTE*>(&batch), &batch_bytes) ==
+  // Every remaining bridge is registry REG_DWORD -> env var set to its
+  // decimal string, so a small table drives all of them instead of
+  // repeating the same read/format/set sequence per value. Adding another
+  // REG_DWORD behavior flag in the future is just one more row here.
+  struct DwordBridge {
+    const wchar_t* registry_name;
+    const wchar_t* env_name;
+  };
+  static constexpr DwordBridge kDwordBridges[] = {
+      {L"UserJisyoBatch", L"DDSKK_USER_JISYO_SAVE_BATCH_SIZE"},
+      {L"BehaviorOkuriStrictly", L"DDSKK_OKURI_STRICTLY"},
+      {L"BehaviorDeleteOkuriOnCancel", L"DDSKK_DELETE_OKURI_ON_CANCEL"},
+      {L"BehaviorAddKatakanaCand", L"DDSKK_SEARCH_KATAKANA"},
+      {L"BehaviorLearnDisabled", L"DDSKK_LEARN_DISABLED"},
+  };
+  for (const DwordBridge& bridge : kDwordBridges) {
+    if (GetEnvironmentVariableW(bridge.env_name, nullptr, 0) != 0) continue;
+    DWORD value = 0, value_bytes = sizeof(value);
+    if (RegQueryValueExW(key, bridge.registry_name, nullptr, nullptr,
+                         reinterpret_cast<BYTE*>(&value), &value_bytes) ==
         ERROR_SUCCESS) {
-      SetEnvironmentVariableW(L"DDSKK_USER_JISYO_SAVE_BATCH_SIZE",
-                              std::to_wstring(batch).c_str());
+      SetEnvironmentVariableW(bridge.env_name,
+                              std::to_wstring(value).c_str());
     }
   }
 
@@ -165,7 +185,7 @@ bool StartChild(const std::wstring& engine, const std::wstring& repository,
   }
   const wchar_t* working_directory =
       repository.empty() ? nullptr : repository.c_str();
-  ApplyUserJisyoEnvFromRegistry();
+  ApplyEngineEnvFromRegistry();
   const BOOL started = CreateProcessW(
       nullptr, command.data(), nullptr, nullptr, TRUE, 0, nullptr,
       working_directory, &startup, &process);

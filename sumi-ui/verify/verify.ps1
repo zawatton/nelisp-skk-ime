@@ -169,9 +169,20 @@ try {
   Start-Sleep -Seconds $ColdLoadSleepSec
 
   Write-Host "verify: starting indicator: $IndicatorExe"
+  # DDSKK_ALLOW_MULTIPLE_INSTANCES: GApplication uniqueness is scoped to
+  # the app ID for the whole user session, so a plain launch while any
+  # other sumi-skk-ui instance (pill or --settings window) is already
+  # running would otherwise get silently absorbed into it -- it exits
+  # in under a second with status 0 and never runs its own on_activate/
+  # STATUS-poll/logging code, producing an empty stdout log
+  # indistinguishable from a hang. Confirmed directly while developing
+  # this. Setting this lets the test coexist with whatever a developer
+  # already has open, without touching those processes.
+  $env:DDSKK_ALLOW_MULTIPLE_INSTANCES = "1"
   $indicatorProcess = Start-Process -FilePath $IndicatorExe `
     -RedirectStandardOutput $indicatorOut -RedirectStandardError $indicatorErr `
     -WindowStyle Hidden -PassThru
+  Remove-Item Env:\DDSKK_ALLOW_MULTIPLE_INSTANCES -ErrorAction SilentlyContinue
   # Let the window come up and at least one 500 ms STATUS poll land before
   # driving any transitions -- otherwise the very first poll can race the
   # first driven KEY and the initial "MODE hiragana" observation is lost

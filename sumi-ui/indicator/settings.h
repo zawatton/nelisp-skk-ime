@@ -46,6 +46,15 @@ typedef struct {
   /* Tab 動作 (behavior) */
   wchar_t engine[SETTINGS_STR_LEN];   /* Engine, SZ -- read-only display, never written by settings_save() */
   int32_t initial_kana_mode;          /* InitialKanaMode, DWORD: 1=かな(hiragana) 0=英数(latin) */
+  /* CorvusSKK-modeled behavior toggles, DWORD 0/1, default 0. These take
+   * effect only via engine restart (the host bridges them to the
+   * engine's env at spawn -- see engine-restart handling in main.c's
+   * on_restart_engine_clicked()), same as any other registry value here;
+   * they are not read live by the running engine session. */
+  int32_t behavior_okuri_strictly;    /* BehaviorOkuriStrictly: 送り仮名が一致した候補を優先する */
+  int32_t behavior_delete_okuri_on_cancel; /* BehaviorDeleteOkuriOnCancel: 取消のとき送り仮名を削除する */
+  int32_t behavior_add_katakana_cand; /* BehaviorAddKatakanaCand: 候補に片仮名変換を追加する */
+  int32_t behavior_learn_disabled;    /* BehaviorLearnDisabled: 学習しない（プライベートモード） */
 
   /* Tab 表示 (display) */
   int32_t mode_indicator;             /* ModeIndicator, DWORD 0/1 */

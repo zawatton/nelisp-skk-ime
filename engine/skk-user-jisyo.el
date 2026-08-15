@@ -272,6 +272,22 @@ SUCCESSFUL save -- see that function's docstring for why a failed save
 must not also discard the one record (the journal) that could recover
 the pending confirmations.")
 
+(defvar ddskk-user-jisyo-learning-disabled
+  (equal (getenv "DDSKK_LEARN_DISABLED") "1")
+  "Non-nil disables `ddskk-user-jisyo--update' entirely.
+Registry: BehaviorLearnDisabled (docs/design/sumi-indicator-
+settings.md \"Tab 動作\").  Mirrors CorvusSKK's private-mode semantics
+-- \"変換は続くが学習しない\" (conversion keeps working, nothing new is
+learned): `ddskk-user-jisyo-search' (lookups against whatever is
+already loaded, including anything learned before this flag was turned
+on) and `ddskk-user-jisyo-load' (the base dictionary and any
+not-yet-compacted journal) are both completely unaffected -- only
+RECORDING a new confirmation is suppressed.  Read once here at module
+load, same pattern as `ddskk-user-jisyo-save-batch-size' above; the
+settings window's エンジン再起動 button is what makes a changed
+registry value actually take effect, since the engine process is not
+watching the registry itself.")
+
 ;; --- Path resolution --------------------------------------------------
 
 (defun ddskk-user-jisyo--default-path ()
@@ -687,16 +703,24 @@ runs from `ddskk-user-jisyo-compact', invoked out of band by the
 engine's `COMPACT' wire verb; see the \"v2 (current)\" architecture
 note at the top of this file for why that replaced the old save-every-
 `ddskk-user-jisyo-save-batch-size'-confirmations trigger that used to
-live in this function."
-  (when (and (boundp 'skk-henkan-key) (stringp skk-henkan-key) (stringp word))
-    (if purge
-        (progn
-          (ddskk-user-jisyo-purge skk-henkan-key word)
-          (ddskk-user-jisyo-flush))
-      (ddskk-user-jisyo-record skk-henkan-key word)
-      (ddskk-user-jisyo--journal-append skk-henkan-key)
-      (setq ddskk-user-jisyo--journal-pending
-            (1+ ddskk-user-jisyo--journal-pending)))))
+live in this function.
+
+The entire body below is a no-op when `ddskk-user-jisyo-learning-
+disabled' is non-nil -- no table update, no journal append, and (since
+PURGE also routes through here) no purge either.  Lookups
+(`ddskk-user-jisyo-search') and whatever is already loaded stay fully
+usable; this function is the sole write path into the learned
+dictionary, so gating it here is sufficient on its own."
+  (unless ddskk-user-jisyo-learning-disabled
+    (when (and (boundp 'skk-henkan-key) (stringp skk-henkan-key) (stringp word))
+      (if purge
+          (progn
+            (ddskk-user-jisyo-purge skk-henkan-key word)
+            (ddskk-user-jisyo-flush))
+        (ddskk-user-jisyo-record skk-henkan-key word)
+        (ddskk-user-jisyo--journal-append skk-henkan-key)
+        (setq ddskk-user-jisyo--journal-pending
+              (1+ ddskk-user-jisyo--journal-pending))))))
 
 (provide 'skk-user-jisyo)
 

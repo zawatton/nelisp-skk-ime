@@ -44,6 +44,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
 
@@ -365,6 +366,10 @@ typedef struct {
   /* Tab 動作 */
   GtkWidget *radio_hiragana;
   GtkWidget *radio_latin;
+  GtkWidget *check_okuri_strictly;
+  GtkWidget *check_delete_okuri_on_cancel;
+  GtkWidget *check_add_katakana_cand;
+  GtkWidget *check_learn_disabled;
 
   /* Tab 表示 */
   GtkWidget *check_mode_indicator;
@@ -448,6 +453,42 @@ static GtkWidget *build_tab_behavior(SettingsWindow *sw) {
   gtk_box_append(GTK_BOX(radio_box), sw->radio_hiragana);
   gtk_box_append(GTK_BOX(radio_box), sw->radio_latin);
   grid_add_row(GTK_GRID(grid), 1, "\xe5\x88\x9d\xe6\x9c\x9f\xe5\x85\xa5\xe5\x8a\x9b\xe3\x83\xa2\xe3\x83\xbc\xe3\x83\x89" /* 初期入力モード */, radio_box);
+
+  /* CorvusSKK-modeled behavior toggles (BehaviorOkuriStrictly/
+   * BehaviorDeleteOkuriOnCancel/BehaviorAddKatakanaCand/
+   * BehaviorLearnDisabled -- see settings.h). These take effect via
+   * engine restart, same as every other value on this tab; the shared
+   * status_label below the notebook (not tab-scoped) already shows the
+   * CorvusSKK-style "反映には..." note after Apply regardless of which
+   * tab is active, so no separate note is needed here. */
+  int row = 2;
+  sw->check_okuri_strictly = gtk_check_button_new_with_label(
+      "\xe9\x80\x81\xe3\x82\x8a\xe4\xbb\xae\xe5\x90\x8d\xe3\x81\x8c\xe4\xb8\x80\xe8\x87\xb4\xe3\x81\x97\xe3\x81\x9f\xe5\x80\x99\xe8\xa3\x9c\xe3\x82\x92\xe5\x84\xaa\xe5\x85\x88\xe3\x81\x99\xe3\x82\x8b"
+      /* 送り仮名が一致した候補を優先する */);
+  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_okuri_strictly),
+                              sw->app->settings.behavior_okuri_strictly != 0);
+  gtk_grid_attach(GTK_GRID(grid), sw->check_okuri_strictly, 0, row++, 2, 1);
+
+  sw->check_delete_okuri_on_cancel = gtk_check_button_new_with_label(
+      "\xe5\x8f\x96\xe6\xb6\x88\xe3\x81\xae\xe3\x81\xa8\xe3\x81\x8d\xe9\x80\x81\xe3\x82\x8a\xe4\xbb\xae\xe5\x90\x8d\xe3\x82\x92\xe5\x89\x8a\xe9\x99\xa4\xe3\x81\x99\xe3\x82\x8b"
+      /* 取消のとき送り仮名を削除する */);
+  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_delete_okuri_on_cancel),
+                              sw->app->settings.behavior_delete_okuri_on_cancel != 0);
+  gtk_grid_attach(GTK_GRID(grid), sw->check_delete_okuri_on_cancel, 0, row++, 2, 1);
+
+  sw->check_add_katakana_cand = gtk_check_button_new_with_label(
+      "\xe5\x80\x99\xe8\xa3\x9c\xe3\x81\xab\xe7\x89\x87\xe4\xbb\xae\xe5\x90\x8d\xe5\xa4\x89\xe6\x8f\x9b\xe3\x82\x92\xe8\xbf\xbd\xe5\x8a\xa0\xe3\x81\x99\xe3\x82\x8b"
+      /* 候補に片仮名変換を追加する */);
+  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_add_katakana_cand),
+                              sw->app->settings.behavior_add_katakana_cand != 0);
+  gtk_grid_attach(GTK_GRID(grid), sw->check_add_katakana_cand, 0, row++, 2, 1);
+
+  sw->check_learn_disabled = gtk_check_button_new_with_label(
+      "\xe5\xad\xa6\xe7\xbf\x92\xe3\x81\x97\xe3\x81\xaa\xe3\x81\x84\xef\xbc\x88\xe3\x83\x97\xe3\x83\xa9\xe3\x82\xa4\xe3\x83\x99\xe3\x83\xbc\xe3\x83\x88\xe3\x83\xa2\xe3\x83\xbc\xe3\x83\x89\xef\xbc\x89"
+      /* 学習しない（プライベートモード） */);
+  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_learn_disabled),
+                              sw->app->settings.behavior_learn_disabled != 0);
+  gtk_grid_attach(GTK_GRID(grid), sw->check_learn_disabled, 0, row++, 2, 1);
 
   return grid;
 }
@@ -593,6 +634,12 @@ static void settings_read_from_widgets(SettingsWindow *sw, Settings *out) {
   *out = sw->app->settings; /* preserves `engine' (read-only, never exposed as a control) */
 
   out->initial_kana_mode = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->radio_hiragana)) ? 1 : 0;
+  out->behavior_okuri_strictly = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_okuri_strictly)) ? 1 : 0;
+  out->behavior_delete_okuri_on_cancel =
+      gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_delete_okuri_on_cancel)) ? 1 : 0;
+  out->behavior_add_katakana_cand =
+      gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_add_katakana_cand)) ? 1 : 0;
+  out->behavior_learn_disabled = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_learn_disabled)) ? 1 : 0;
 
   out->mode_indicator = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_mode_indicator)) ? 1 : 0;
   out->mode_indicator_ms = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_indicator_ms));
@@ -902,10 +949,28 @@ int main(int argc, char **argv) {
    * settings_only is FALSE) and exit, so no settings window ever
    * appeared. The settings window is a short-lived secondary surface;
    * letting it be its own process alongside the pill is the simple,
-   * correct behavior. */
+   * correct behavior.
+   *
+   * DDSKK_ALLOW_MULTIPLE_INSTANCES additionally forces NON_UNIQUE for a
+   * plain (non-`--settings') launch too -- default off, so ordinary use
+   * keeps the single-pill behavior. Exists because GApplication
+   * uniqueness is scoped to the app ID for the whole user session: a
+   * second plain launch while any instance (pill OR a `--settings'
+   * window, since GTK's uniqueness applies per app ID regardless of
+   * which flags registered it first) is already running otherwise gets
+   * silently absorbed into that pre-existing instance -- it exits
+   * almost immediately with status 0 and never runs its own
+   * on_activate()/STATUS-poll/logging code at all, which looks
+   * indistinguishable from a hang or a crash from the outside (an empty
+   * stdout log, confirmed directly: a plain launch next to an
+   * already-running pill exits in under a second with no output).
+   * verify/verify.ps1 sets this so it can test a freshly built exe
+   * without disturbing whatever pill/settings instances a developer
+   * already has open. */
+  const gboolean allow_multiple = getenv("DDSKK_ALLOW_MULTIPLE_INSTANCES") != NULL;
   GtkApplication *gtk_app = gtk_application_new(
       "dev.nelisp-skk-ime.sumi-ui",
-      settings_only ? G_APPLICATION_NON_UNIQUE : G_APPLICATION_DEFAULT_FLAGS);
+      (settings_only || allow_multiple) ? G_APPLICATION_NON_UNIQUE : G_APPLICATION_DEFAULT_FLAGS);
   g_signal_connect(gtk_app, "activate", G_CALLBACK(on_activate), &app);
   /* Do NOT hand our own flags to GTK: GApplication parses the command
    * line itself and aborts on options it does not know ("--settings は

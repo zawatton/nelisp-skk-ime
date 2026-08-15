@@ -84,10 +84,14 @@ work, not rendered as dead controls.
 
 ### Tab 動作 (behavior)
 
-| Setting              | Registry value    | Type  | Default | CorvusSKK analog |
-|----------------------|-------------------|-------|---------|------------------|
-| エンジン             | `Engine`          | SZ    | ddskk   | —                |
-| 初期入力モード       | `InitialKanaMode` | DWORD | 1       | ValueDefaultMode |
+| Setting                        | Registry value                | Type  | Default | CorvusSKK analog |
+|--------------------------------|--------------------------------|-------|---------|------------------|
+| エンジン                       | `Engine`                       | SZ    | ddskk   | —                |
+| 初期入力モード                 | `InitialKanaMode`              | DWORD | 1       | ValueDefaultMode |
+| 送り仮名が一致した候補を優先する | `BehaviorOkuriStrictly`        | DWORD | 0       | ValuePrecedeOkuri |
+| 取消のとき送り仮名を削除する   | `BehaviorDeleteOkuriOnCancel`  | DWORD | 0       | ValueDelOkuriCncl |
+| 候補に片仮名変換を追加する     | `BehaviorAddKatakanaCand`      | DWORD | 0       | ValueAddCandKtkn |
+| プライベートモード (学習しない) | `BehaviorLearnDisabled`        | DWORD | 0       | private mode     |
 
 ### Tab 表示 (display)
 
@@ -125,11 +129,10 @@ the engine — a small host change bundled with Phase 3.)
 
 ### Future work (CorvusSKK features without engine support yet)
 
-Okuri behavior toggles (動作1 tab), completion (動作2), candidate-window
-fonts/colors/paging (表示1), display attributes (▽表示/▼表示), selection
-keys, key maps, conversion-point and kana tables, private mode, dictionary
-list management. Each needs engine-side support first; the schema above
-deliberately stays honest about what works today.
+Completion (動作2), candidate-window fonts/colors/paging (表示1), display
+attributes (▽表示/▼表示), selection keys, key maps, conversion-point and
+kana tables, dictionary list management. Each needs engine-side support
+first; the schema above deliberately stays honest about what works today.
 
 ## UI design (Sumi)
 

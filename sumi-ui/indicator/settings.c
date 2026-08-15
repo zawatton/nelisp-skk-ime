@@ -115,6 +115,10 @@ void settings_defaults(Settings *s) {
   wcsncpy(s->engine, L"ddskk", SETTINGS_STR_LEN - 1);
   s->engine[SETTINGS_STR_LEN - 1] = L'\0';
   s->initial_kana_mode = 1;
+  s->behavior_okuri_strictly = 0;
+  s->behavior_delete_okuri_on_cancel = 0;
+  s->behavior_add_katakana_cand = 0;
+  s->behavior_learn_disabled = 0;
 
   s->mode_indicator = 1;
   s->mode_indicator_ms = 3000;
@@ -147,6 +151,11 @@ gboolean settings_load(Settings *s) {
 
   reg_get_sz(key, L"Engine", d.engine, s->engine, SETTINGS_STR_LEN);
   reg_get_dword(key, L"InitialKanaMode", d.initial_kana_mode, &s->initial_kana_mode);
+  reg_get_dword(key, L"BehaviorOkuriStrictly", d.behavior_okuri_strictly, &s->behavior_okuri_strictly);
+  reg_get_dword(key, L"BehaviorDeleteOkuriOnCancel", d.behavior_delete_okuri_on_cancel,
+                &s->behavior_delete_okuri_on_cancel);
+  reg_get_dword(key, L"BehaviorAddKatakanaCand", d.behavior_add_katakana_cand, &s->behavior_add_katakana_cand);
+  reg_get_dword(key, L"BehaviorLearnDisabled", d.behavior_learn_disabled, &s->behavior_learn_disabled);
 
   reg_get_dword(key, L"ModeIndicator", d.mode_indicator, &s->mode_indicator);
   reg_get_dword(key, L"ModeIndicatorMs", d.mode_indicator_ms, &s->mode_indicator_ms);
@@ -179,6 +188,10 @@ gboolean settings_save(const Settings *s) {
   /* `engine' is deliberately NOT written -- read-only per the design
    * doc's Tab 動作 table; this UI does not own that value. */
   ok = reg_set_dword(key, L"InitialKanaMode", s->initial_kana_mode) && ok;
+  ok = reg_set_dword(key, L"BehaviorOkuriStrictly", s->behavior_okuri_strictly) && ok;
+  ok = reg_set_dword(key, L"BehaviorDeleteOkuriOnCancel", s->behavior_delete_okuri_on_cancel) && ok;
+  ok = reg_set_dword(key, L"BehaviorAddKatakanaCand", s->behavior_add_katakana_cand) && ok;
+  ok = reg_set_dword(key, L"BehaviorLearnDisabled", s->behavior_learn_disabled) && ok;
 
   ok = reg_set_dword(key, L"ModeIndicator", s->mode_indicator) && ok;
   ok = reg_set_dword(key, L"ModeIndicatorMs", s->mode_indicator_ms) && ok;
@@ -212,6 +225,10 @@ gboolean settings_delete_all(void) {
 gboolean settings_equal(const Settings *a, const Settings *b) {
   return wcscmp(a->engine, b->engine) == 0 &&
          a->initial_kana_mode == b->initial_kana_mode &&
+         a->behavior_okuri_strictly == b->behavior_okuri_strictly &&
+         a->behavior_delete_okuri_on_cancel == b->behavior_delete_okuri_on_cancel &&
+         a->behavior_add_katakana_cand == b->behavior_add_katakana_cand &&
+         a->behavior_learn_disabled == b->behavior_learn_disabled &&
          a->mode_indicator == b->mode_indicator &&
          a->mode_indicator_ms == b->mode_indicator_ms &&
          a->mode_indicator_scale == b->mode_indicator_scale &&
@@ -275,6 +292,10 @@ int settings_selftest(void) {
    * not just the defaults path. */
   Settings mutated = defaults;
   mutated.initial_kana_mode = 0;
+  mutated.behavior_okuri_strictly = 1;
+  mutated.behavior_delete_okuri_on_cancel = 1;
+  mutated.behavior_add_katakana_cand = 1;
+  mutated.behavior_learn_disabled = 1;
   mutated.mode_indicator = 0;
   mutated.mode_indicator_ms = 1234;
   mutated.mode_indicator_scale = 150;

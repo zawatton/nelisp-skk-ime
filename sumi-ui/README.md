@@ -175,6 +175,17 @@ way every other Sumi/NeLisp-Sumi `build.el`/`build-live.el` runs it).
 explicitly in `build.el`'s link step — not pulled in transitively by
 `gtk4`/`pangocairo`'s own `pkg-config --libs` output).
 
+**The output is not always `target/sumi-skk-ui.exe` itself.** Windows
+refuses to overwrite the image file of an already-running process
+("Permission denied" from `ld`), unlike POSIX's unlink-and-replace —
+and a pill and/or settings window left running across a rebuild is
+routine while iterating on this app. `sumi-ui-link` in `build.el`
+detects that specific failure and falls back to a sibling
+`target/sumi-skk-ui.new.exe`, printing which path it actually used
+(`SUMI-UI-BUILD-OK <path>`) — read that line rather than assuming the
+default name. Any other link failure (missing symbol, bad flag, ...)
+still aborts the build as before.
+
 ### Env var overrides
 
 | Var | Default | Meaning |
@@ -184,6 +195,7 @@ explicitly in `build.el`'s link step — not pulled in transitively by
 | `PKG_CONFIG_PATH` | `/c/msys64/mingw64/lib/pkgconfig` | Passed to `pkg-config`. |
 | `DDSKK_PIPE_NAME` | `\\.\pipe\ddskk-ime-v1` | *Runtime*, not build-time: which named pipe the pill/settings-window "engine restart" button talk to. See `windows/src/engine_client.cpp`'s own use of the same variable. |
 | `DDSKK_SETTINGS_KEY` | `Software\NativeIME` | *Runtime*, not build-time: the HKCU-relative registry key `settings.c`'s `settings_load`/`settings_save`/`settings_delete_all` all resolve through. `verify/verify-settings.ps1` always overrides this to a disposable key (`Software\NativeIME-PhaseThreeTest`), and `settings_selftest()` itself refuses to run at all unless this is set to something non-empty — see "Verification". |
+| `DDSKK_ALLOW_MULTIPLE_INSTANCES` | unset | *Runtime*, not build-time: forces `G_APPLICATION_NON_UNIQUE` for a plain (non-`--settings`) launch too. Default off (production keeps the single-pill behavior); `verify/verify.ps1` sets it so a freshly built exe can be tested without disturbing an already-running pill/settings instance — see "Substrate limitations". |
 
 ### Substrate limitation hit during the build: pkg-config's self-relocation
 
@@ -208,6 +220,18 @@ builds) apparently get the resolved form in their environment; this
 project depends on two pkg-config modules (`gtk4` and `pangocairo`)
 and hit the unresolved form consistently in this environment, so the
 fix is applied unconditionally rather than investigated further.
+
+**The rewrite is anchored** (`\`\(-[IL]\)?/mingw64/` — start of the
+flag, past an optional `-I`/`-L`), not a blanket
+`replace-regexp-in-string`: pkg-config does not consistently emit one
+form or the other even within a single invocation, and a flag that had
+*already* self-located to a real path like
+`-Ic:/msys64/mingw64/bin/../include` also contains the literal
+substring `/mingw64/` — mid-string, not at the start. An unanchored
+rewrite corrupted exactly that flag into
+`-Ic:/msys64C:/msys64/mingw64/bin/../include`, which is how a
+fully-resolved, individually-correct `-I` flag still made `gcc` fail
+to find `glib.h`: the corruption, not a missing/wrong path.
 
 ## Substrate limitations hit (functional, not just build-time)
 
@@ -268,6 +292,21 @@ fix is applied unconditionally rather than investigated further.
   not reproduce on retry) — but it is recorded here in case it recurs:
   if a launch produces truly zero output under automation, suspect the
   launcher/session before the binary.
+- **GApplication uniqueness silently absorbs a second plain launch.**
+  Discovered directly while verifying against a build left running for
+  interactive testing (an indicator pill + a `--settings` window):
+  launching a fresh, unmodified `sumi-skk-ui.exe` next to an
+  already-running pill exits in well under a second with status 0 and
+  produces zero stdout/stderr — GApplication's single-instance-per-app-
+  ID behavior hands the activation off to the *existing* process and
+  the new one never runs its own `on_activate()`/STATUS-poll code at
+  all. Indistinguishable from a hang from the outside, and easy to
+  mistake for the flakiness noted above (it produced the exact same
+  symptom: an empty indicator log) until reproduced twice in a row and
+  confirmed with a bare 3-second standalone run showing `HasExited`
+  true almost immediately. `DDSKK_ALLOW_MULTIPLE_INSTANCES` (see the
+  env var table) is the fix — `verify/verify.ps1` sets it so testing
+  never needs to touch a developer's already-running instances.
 
 ## Settings window (Phase 3)
 
@@ -281,7 +320,16 @@ in `main.c`):
   polling entirely and opens only the settings window; closing it
   quits the process. Intended for a future Start-menu shortcut (task
   brief), so a user who never wants the persistent pill running can
-  still reach settings.
+  still reach settings. Registered as `G_APPLICATION_NON_UNIQUE`
+  (plain pill launches stay the default unique-per-app-ID) — with the
+  default uniqueness, a `--settings` launch next to an already-running
+  pill would just hand off activation to that pill (whose
+  `settings_only` is `FALSE`) and exit, so no settings window would
+  ever appear. `argv` is not forwarded to `g_application_run()` beyond
+  `argv[0]` for the same reason in reverse: GApplication parses the
+  command line itself and rejects any option it does not recognize
+  (`--settings`/`--settings-selftest`, both already consumed before
+  `gtk_application_new()` runs).
 
 Four tabs (`GtkNotebook`), field-for-field the design doc's schema
 tables — see `settings.h`'s `Settings` struct for the exact
@@ -289,10 +337,20 @@ registry-value-name/type/default mapping the UI reads and writes:
 
 | Tab | 日本語 | Controls |
 |---|---|---|
-| 動作 | behavior | エンジン (read-only label); 初期入力モード (two `GtkCheckButton`s in a `gtk_check_button_set_group` radio group — かな/英数) |
+| 動作 | behavior | エンジン (read-only label); 初期入力モード (two `GtkCheckButton`s in a `gtk_check_button_set_group` radio group — かな/英数); four CorvusSKK-modeled behavior checkboxes — 送り仮名が一致した候補を優先する (`BehaviorOkuriStrictly`), 取消のとき送り仮名を削除する (`BehaviorDeleteOkuriOnCancel`), 候補に片仮名変換を追加する (`BehaviorAddKatakanaCand`), 学習しない（プライベートモード） (`BehaviorLearnDisabled`) — all DWORD 0/1, default 0 |
 | 表示 | display | 入力モードを表示する (checkbox); 表示時間・表示倍率 (`GtkSpinButton`); five mode colors (`GtkColorDialogButton`, one per `ModeColor*` value) |
 | 辞書 | dictionary | 辞書サーバを使用する (checkbox); ホスト (`GtkEntry`); ポート (`GtkSpinButton`); ユーザー辞書パス (`GtkEntry` + 参照 button opening a `GtkFileDialog`); 保存間隔 (`GtkSpinButton`) |
 | 調整 | maintenance | アイドルGC間隔 (`GtkSpinButton`); デバッグログ (checkbox) |
+
+The four 動作-tab behavior checkboxes take effect only via engine
+restart — the host bridges them to the engine child's environment at
+spawn, the same mechanism `UserJisyoPath`/`UserJisyoBatch` already use
+(see the 辞書 tab's design-doc note) — not read live by a running
+session. They share the tab strip's one status label (below the
+`GtkNotebook`, not per-tab) with every other setting, so the
+CorvusSKK-style 反映には IME の切替（またはエンジン再起動）が必要です
+note after 適用 already covers them; no separate note was needed on
+the 動作 tab specifically.
 
 Widget choices vs. the original Phase 1 "UI design" section's sumi-
 sprite-vocabulary language (label/checkbox/number-field/text-field/

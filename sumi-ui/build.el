@@ -137,21 +137,58 @@ is exactly how a fully-working toolchain still failed to find glib.h."
           (kill-emacs 1))))
     (princ (format "%s-OBJ-OK\n" (upcase stem)))))
 
+(defun sumi-ui-link-attempt (objs exe libs)
+  "One `gcc' link attempt into EXE.  Returns (STATUS . OUTPUT)."
+  (with-temp-buffer
+    (let ((status (apply #'call-process "gcc" nil t nil
+                         (append objs libs (list "-mwindows" "-o" exe)))))
+      (cons status (buffer-string)))))
+
 (defun sumi-ui-link (objs exe libs)
-  "Link OBJS into EXE with LIBS.
+  "Link OBJS into EXE with LIBS.  Returns the actual path linked to.
 -mwindows suppresses the console subsystem (this is a background GUI
 utility, same as dev/nelisp-sumi/build.el's nelisp-sumi.exe), which
 also means stdout is silently discarded unless a caller explicitly
 redirects it -- exactly what sumi-ui/verify/verify.ps1 does to read the
-mode-transition log."
+mode-transition log.
+
+Unlike POSIX (where an open-but-unlinked file just keeps its old
+content for existing readers), Windows refuses to overwrite the image
+file of a running process at all -- `gcc'/`ld' fails with \"Permission
+denied\". That is expected, not exceptional, while iterating on this
+app: an indicator pill and/or a settings window (launched via
+--settings) are routinely left running across rebuilds, and the task
+brief itself anticipates it (\"do NOT kill them\"). On that specific
+failure this falls back to a sibling `sumi-skk-ui.new.exe' next to EXE
+and links there instead, so a build can still succeed; the caller
+reports whichever path this returns. Any other link failure still
+aborts the build as before -- only a locked *output* file gets the
+fallback, not a genuine link error (missing symbol, bad flag, etc.)."
   (princ (format "=== link -> %s ===\n" exe))
-  (with-temp-buffer
-    (let ((status (apply #'call-process "gcc" nil t nil
-                         (append objs libs (list "-mwindows" "-o" exe)))))
-      (unless (eq status 0)
-        (princ (format "LINK-ERR: %s\n" (buffer-string)))
-        (kill-emacs 1))))
-  (princ "LINK-OK\n"))
+  (let* ((first (sumi-ui-link-attempt objs exe libs))
+         (status (car first))
+         (output (cdr first)))
+    (cond
+     ((eq status 0)
+      (princ "LINK-OK\n")
+      exe)
+     ((string-match-p "Permission denied" output)
+      (let* ((dir (file-name-directory exe))
+             (base (file-name-base exe))
+             (ext (file-name-extension exe))
+             (fallback (expand-file-name (concat base ".new." ext) dir))
+             (second (progn
+                       (princ (format "LINK-ERR (locked, likely a running instance): %s" output))
+                       (princ (format "=== retry link -> %s ===\n" fallback))
+                       (sumi-ui-link-attempt objs fallback libs))))
+        (unless (eq (car second) 0)
+          (princ (format "LINK-ERR: %s\n" (cdr second)))
+          (kill-emacs 1))
+        (princ (format "LINK-OK (fallback, %s was locked) %s\n" exe fallback))
+        fallback))
+     (t
+      (princ (format "LINK-ERR: %s\n" output))
+      (kill-emacs 1)))))
 
 (defun sumi-ui-main ()
   (unless (file-directory-p sumi-ui-nelisp-root)
@@ -179,13 +216,14 @@ mode-transition log."
     (sumi-ui-compile-c "pipe-client" pipe-client-obj all-cflags)
     (sumi-ui-compile-c "settings" settings-obj all-cflags)
     (sumi-ui-compile-c "main" main-obj all-cflags)
-    (sumi-ui-link (list main-obj mode-logic-obj pipe-client-obj settings-obj) exe
-                  ;; advapi32 for settings.c's RegGetValueW/RegSetKeyValueW/
-                  ;; RegDeleteTreeW (Phase 3) -- not pulled in transitively
-                  ;; by gtk4/pangocairo's own pkg-config libs.
-                  (append (cl-remove-duplicates (append gtk-libs pango-libs) :test #'string=)
-                          (list "-ladvapi32")))
-    (princ (format "SUMI-UI-BUILD-OK %s\n" exe))))
+    (let ((linked (sumi-ui-link
+                   (list main-obj mode-logic-obj pipe-client-obj settings-obj) exe
+                   ;; advapi32 for settings.c's RegGetValueW/RegSetKeyValueW/
+                   ;; RegDeleteTreeW (Phase 3) -- not pulled in transitively
+                   ;; by gtk4/pangocairo's own pkg-config libs.
+                   (append (cl-remove-duplicates (append gtk-libs pango-libs) :test #'string=)
+                           (list "-ladvapi32")))))
+      (princ (format "SUMI-UI-BUILD-OK %s\n" linked)))))
 
 (when noninteractive
   (sumi-ui-main))

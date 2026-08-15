@@ -579,6 +579,59 @@ midasi before evaluating each element of that list."
 (setq skk-search-prog-list '((ddskk-user-jisyo-search)
                               (ddskk-engine-server-search)))
 
+;; --- Behavior toggles (registry-driven; docs/design/sumi-indicator-
+;; settings.md "Tab 動作") -------------------------------------------------
+;;
+;; The settings UI writes these as DWORDs to HKCU\Software\NativeIME; the
+;; host bridges registry -> environment variable when it spawns this
+;; engine process (same precedent as `ApplyUserJisyoEnvFromRegistry' in
+;; windows/host/main.cpp), and the settings window's エンジン再起動 button
+;; is what makes a changed value actually take effect, since every one of
+;; these is read exactly once here at boot, never polled afterward.  Each
+;; is applied only when its env var is literally "1"; absent or any other
+;; value leaves the DDSKK default alone.  This has to run after `(load
+;; "vendor/ddskk/skk-vars.el")' above (its `defcustom' forms are what
+;; establish the nil defaults being overridden) and, for the katakana
+;; toggle specifically, after the `skk-search-prog-list' `setq' directly
+;; above -- exactly the same reasoning `(setq skk-use-face nil)' documents
+;; near the top of this file for why a plain `setq' at this point in the
+;; load, not a `defvar', is what makes an override stick.
+(when (equal (getenv "DDSKK_OKURI_STRICTLY") "1")
+  ;; Registry: BehaviorOkuriStrictly.  CorvusSKK "送り仮名が一致した候補を
+  ;; 優先する" -- among candidates for an okuri-ari reading, only offer the
+  ;; ones whose okurigana conjugation matches what was actually typed.
+  (setq skk-henkan-okuri-strictly t))
+
+(when (equal (getenv "DDSKK_DELETE_OKURI_ON_CANCEL") "1")
+  ;; Registry: BehaviorDeleteOkuriOnCancel.  CorvusSKK "取消のとき送り仮名
+  ;; を削除する" -- canceling an okuri-ari conversion also removes the
+  ;; already-typed okurigana kana, not just the kanji candidate (consulted
+  ;; by `skk-kakutei' in skk.el; wired through this engine's own CONTROL
+  ;; CANCEL path in `skk-ime-session-control').
+  (setq skk-delete-okuri-when-quit t))
+
+(when (equal (getenv "DDSKK_SEARCH_KATAKANA") "1")
+  ;; Registry: BehaviorAddKatakanaCand.  CorvusSKK "候補に片仮名変換を追加
+  ;; する".  `skk-search-katakana' (skk-vars.el:1462) exists in this
+  ;; vendored DDSKK, and its search function `skk-search-katakana-maybe'
+  ;; (skk.el:4536-4538) already gates on the variable internally -- but
+  ;; this engine replaces `skk-search-prog-list' wholesale, immediately
+  ;; above, with its own two-entry list (jisyo-search + server-search),
+  ;; which never carried over the stock default list's katakana entry
+  ;; (skk-vars.el:449).  Setting the variable alone would therefore be a
+  ;; silent no-op on this engine; appending the search function is what
+  ;; actually wires it in.  Appended LAST, exactly where upstream's own
+  ;; default list places it (after every dictionary search): `skk-search'
+  ;; stops at the first entry that returns a non-nil result, so this only
+  ;; contributes candidates once the jisyo/server searches are already
+  ;; exhausted for the current reading -- matching `skk-search-katakana''s
+  ;; own docstring ("単純にカタカナに変換したものを候補として返す"), an
+  ;; extra option at the end of the list, not a hit that would pre-empt a
+  ;; real dictionary match.
+  (setq skk-search-katakana t)
+  (setq skk-search-prog-list
+        (append skk-search-prog-list '((skk-search-katakana-maybe)))))
+
 ;; Learning: DDSKK's own file-backed jisyo machinery is disabled (`skk-jisyo'
 ;; is nil -- see the comment above `skk-ime-session--initialize-native-
 ;; buffer'), but `skk-update-jisyo' (skk.el:4216-4217) still calls through
