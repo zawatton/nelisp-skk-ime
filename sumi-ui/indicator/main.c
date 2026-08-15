@@ -896,10 +896,21 @@ int main(int argc, char **argv) {
   settings_defaults(&app.settings); /* overwritten by settings_load() in on_activate() */
   app.label_font = pango_font_description_from_string("Sans 14");
 
-  GtkApplication *gtk_app =
-      gtk_application_new("dev.nelisp-skk-ime.sumi-ui", G_APPLICATION_DEFAULT_FLAGS);
+  /* NON_UNIQUE when opening settings: with the default GApplication
+   * uniqueness, a second `sumi-skk-ui --settings` launch would merely
+   * re-activate the already-running indicator instance (whose
+   * settings_only is FALSE) and exit, so no settings window ever
+   * appeared. The settings window is a short-lived secondary surface;
+   * letting it be its own process alongside the pill is the simple,
+   * correct behavior. */
+  GtkApplication *gtk_app = gtk_application_new(
+      "dev.nelisp-skk-ime.sumi-ui",
+      settings_only ? G_APPLICATION_NON_UNIQUE : G_APPLICATION_DEFAULT_FLAGS);
   g_signal_connect(gtk_app, "activate", G_CALLBACK(on_activate), &app);
-  const int status = g_application_run(G_APPLICATION(gtk_app), argc, argv);
+  /* Do NOT hand our own flags to GTK: GApplication parses the command
+   * line itself and aborts on options it does not know ("--settings は
+   * 不明なオプションです"). Everything we accept was consumed above. */
+  const int status = g_application_run(G_APPLICATION(gtk_app), 1, argv);
   g_object_unref(gtk_app);
   pango_font_description_free(app.label_font);
   pipe_client_disconnect(&app.pipe);

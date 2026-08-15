@@ -87,8 +87,18 @@ meaningful inside an MSYS2 shell's automatic path translation) when
 as every real build here does. A native mingw64 gcc.exe (no MSYS
 runtime linkage) cannot resolve \"/mingw64/...\" at all, so every such
 prefix is rewritten back to the real, already-resolved mingw64 root
-before the flag ever reaches gcc."
-  (replace-regexp-in-string "/mingw64/" (concat sumi-ui-mingw-root "/") flag t t))
+before the flag ever reaches gcc.
+
+Anchored to the START of the path (after an optional -I/-L option
+prefix): pkg-config sometimes self-locates and emits real Windows
+paths like \"-Ic:/msys64/mingw64/bin/../include\" -- an unanchored
+replace corrupted those mid-string (\"c:/msys64C:/msys64/...\"), which
+is exactly how a fully-working toolchain still failed to find glib.h."
+  (if (string-match "\\`\\(-[IL]\\)?/mingw64/" flag)
+      (concat (or (match-string 1 flag) "")
+              sumi-ui-mingw-root "/"
+              (substring flag (match-end 0)))
+    flag))
 
 (defun sumi-ui-pkg-config-flags (flag module)
   "Return `pkg-config FLAG MODULE' output split into a flag list."
