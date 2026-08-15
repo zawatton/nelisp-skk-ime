@@ -32,6 +32,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\ddskk-ime-v1";
@@ -241,6 +242,19 @@ struct DictionaryServerConfig {
   std::wstring host = L"127.0.0.1";
   DWORD port = 1178;
   DWORD enabled = 1;
+  // Optional full command line (CreateProcessW-ready; used as-is, no shell
+  // interpretation) to spawn the dictionary server when it turns out to be
+  // unreachable. Field incident: after a re-logon, the external skkserv
+  // (an Emacs daemon on 127.0.0.1:1179) was not restarted by the user's
+  // own startup hooks; with no dictionary, every conversion returned
+  // nothing, compositions never closed, and even arrow keys got trapped
+  // behind the stuck composition at the application level. See
+  // TrySpawnSkkServ(), LookupDictionary(), and the startup probe in
+  // wmain(). Env DDSKK_SKKSERV_START_COMMAND takes precedence over the
+  // HKCU\Software\NativeIME\SkkServStartCommand registry value -- same
+  // env-first pattern as ApplyEngineEnvFromRegistry() above, so a test
+  // harness can exercise this without a registry write.
+  std::wstring start_command;
 };
 
 // Cached across lookups so a fresh TCP connection is not paid on every
@@ -265,6 +279,8 @@ void LoadDictionaryServerConfig(DictionaryServerConfig* config) {
   DWORD host_bytes = sizeof(host);
   DWORD port = 1178, port_bytes = sizeof(port);
   DWORD enabled = 1, enabled_bytes = sizeof(enabled);
+  wchar_t start_command[32768]{};
+  DWORD start_command_bytes = sizeof(start_command);
   if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0,
                     KEY_READ, &key) == ERROR_SUCCESS) {
     RegQueryValueExW(key, L"SkkServHost", nullptr, nullptr,
@@ -273,11 +289,22 @@ void LoadDictionaryServerConfig(DictionaryServerConfig* config) {
                      reinterpret_cast<BYTE*>(&port), &port_bytes);
     RegQueryValueExW(key, L"SkkServEnable", nullptr, nullptr,
                      reinterpret_cast<BYTE*>(&enabled), &enabled_bytes);
+    RegQueryValueExW(key, L"SkkServStartCommand", nullptr, nullptr,
+                     reinterpret_cast<BYTE*>(start_command), &start_command_bytes);
     RegCloseKey(key);
   }
   config->host = host;
   config->port = port;
   config->enabled = enabled;
+  config->start_command = start_command;
+
+  // Env wins over registry -- see DictionaryServerConfig::start_command.
+  wchar_t env_start_command[32768]{};
+  const DWORD env_size = GetEnvironmentVariableW(
+      L"DDSKK_SKKSERV_START_COMMAND", env_start_command, 32768);
+  if (env_size > 0 && env_size < 32768) {
+    config->start_command = env_start_command;
+  }
 }
 
 // The dictionary host name is read from the registry as UTF-16 (RegQueryValueExW)
@@ -353,6 +380,69 @@ SOCKET ConnectDictionaryServer(const DictionaryServerConfig& config) {
   return socket_handle;
 }
 
+// Guards TrySpawnSkkServ() below against spawning the dictionary server
+// repeatedly in a tight loop -- e.g. a burst of conversions each hitting
+// their own failed lookup, or a lookup failure arriving right after the
+// one-time startup probe in wmain() already tried. Shared by both call
+// sites; 0 means "never spawned yet". Not scoped inside
+// DictionaryServerState because the startup probe in wmain() runs before
+// (and independently of) any client connection, not just from
+// LookupDictionary()'s already-g_engine_mutex-serialized call path.
+std::atomic<uint64_t> g_last_skkserv_spawn_tick{0};
+constexpr uint64_t kSkkservSpawnCooldownMs = 30000;
+
+// Spawns `command` (DictionaryServerConfig::start_command, verbatim -- no
+// shell interpretation) detached and hidden, rate-limited to at most once
+// per kSkkservSpawnCooldownMs. Field incident and full rationale: see
+// DictionaryServerConfig::start_command above. Logs exactly one stderr
+// line either way (spawned, or CreateProcessW itself failed); returns
+// false without logging anything if there is no command configured or the
+// cooldown has not elapsed yet. Returns true only when a spawn was
+// actually attempted (regardless of whether CreateProcessW itself
+// succeeded) -- callers use that to decide whether it is worth pausing
+// for the dictionary server to come up before one bounded retry.
+bool TrySpawnSkkServ(const std::wstring& command) {
+  if (command.empty()) return false;
+
+  const uint64_t now = GetTickCount64();
+  const uint64_t last = g_last_skkserv_spawn_tick.load(std::memory_order_acquire);
+  if (last != 0 && now - last < kSkkservSpawnCooldownMs) return false;
+  g_last_skkserv_spawn_tick.store(now, std::memory_order_release);
+
+  // CreateProcessW's lpCommandLine must be a writable buffer -- it may
+  // rewrite embedded spaces/quotes in place -- so this makes a mutable
+  // copy rather than touching `command` (and thus the cached config).
+  std::vector<wchar_t> command_line(command.begin(), command.end());
+  command_line.push_back(L'\0');
+
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESHOWWINDOW;
+  startup.wShowWindow = SW_HIDE;
+  PROCESS_INFORMATION process{};
+  // No inherited handles (this is an unrelated helper process, not the
+  // engine child), CREATE_NO_WINDOW so a console-subsystem command line
+  // never flashes a window, detached (handles closed immediately below --
+  // this host does not track or wait on the dictionary server process).
+  const BOOL started = CreateProcessW(
+      nullptr, command_line.data(), nullptr, nullptr, FALSE,
+      CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+  if (started) {
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    std::fwprintf(stderr,
+                  L"ddskk-engine-host: dictionary server unreachable, spawned "
+                  L"SkkServStartCommand [%ls]\n",
+                  command.c_str());
+  } else {
+    std::fwprintf(stderr,
+                  L"ddskk-engine-host: SkkServStartCommand CreateProcessW "
+                  L"failed (%lu) for [%ls]\n",
+                  static_cast<unsigned long>(GetLastError()), command.c_str());
+  }
+  return true;
+}
+
 // Sends `request` in full and reads a single line (up to '\n', which is
 // consumed but not included in *raw_response; a trailing '\r' is stripped
 // too). Returns false on any send/recv error, timeout, graceful close, or
@@ -408,8 +498,26 @@ std::string LookupDictionary(const std::string& midasi) {
     // Up to two attempts total: reuse (or make) the cached connection, and
     // on any failure drop it and retry exactly once with a fresh one.
     for (int attempt = 0; attempt < 2; ++attempt) {
-      if (g_dictionary_server.socket == INVALID_SOCKET)
+      if (g_dictionary_server.socket == INVALID_SOCKET) {
         g_dictionary_server.socket = ConnectDictionaryServer(g_dictionary_server.config);
+        if (g_dictionary_server.socket == INVALID_SOCKET) {
+          // Self-heal the field incident this connect failure might be:
+          // the dictionary server may simply not be running. Spawn it
+          // (rate-limited by TrySpawnSkkServ's cooldown) and give it
+          // ~1.5s to come up for exactly one bounded extra retry here,
+          // rather than silently degrading every conversion for the rest
+          // of the session -- see DictionaryServerConfig::start_command.
+          // This adds at most one fixed sleep on top of the existing
+          // connect timeout; if the retry also fails, the loop below
+          // falls through to the unchanged "4" (not-found/unavailable)
+          // path exactly as before.
+          if (TrySpawnSkkServ(g_dictionary_server.config.start_command)) {
+            Sleep(1500);
+            g_dictionary_server.socket =
+                ConnectDictionaryServer(g_dictionary_server.config);
+          }
+        }
+      }
       if (g_dictionary_server.socket == INVALID_SOCKET) continue;
       if (SendAndReceive(g_dictionary_server.socket, request, &raw_response) &&
           !raw_response.empty()) {
@@ -842,6 +950,34 @@ int wmain(int argc, wchar_t** argv) {
     StopChild(g_child);
     return 3;
   }
+
+  // Self-heal the same SkkServStartCommand field incident this early,
+  // once, before any client can even attempt a lookup: if the dictionary
+  // server is not reachable and a start command is configured, spawn it
+  // here so it is usually already up well before the first real
+  // conversion, instead of only ever reacting the first time a lookup
+  // fails (see LookupDictionary()/TrySpawnSkkServ() above). Deliberately
+  // skipped when the dictionary server is disabled (SkkServEnable=0),
+  // matching LookupDictionary()'s own gate.
+  if (!g_dictionary_server.config_loaded) {
+    LoadDictionaryServerConfig(&g_dictionary_server.config);
+    g_dictionary_server.config_loaded = true;
+  }
+  if (g_dictionary_server.config.enabled != 0 &&
+      !g_dictionary_server.config.start_command.empty() && EnsureWinsock()) {
+    const SOCKET probe = ConnectDictionaryServer(g_dictionary_server.config);
+    if (probe == INVALID_SOCKET) {
+      TrySpawnSkkServ(g_dictionary_server.config.start_command);
+    } else {
+      // Just a reachability probe, not a connection to keep: closed
+      // immediately rather than cached into g_dictionary_server.socket,
+      // so the first real lookup (which may happen minutes later) always
+      // opens its own fresh connection instead of reusing one that could
+      // have gone stale by then.
+      closesocket(probe);
+    }
+  }
+
   // true: this is the first (and, per the mutex above, should be the
   // only) instance of this pipe name in the whole system -- see
   // CreatePipeInstance()'s own comment for what FILE_FLAG_FIRST_PIPE_INSTANCE
