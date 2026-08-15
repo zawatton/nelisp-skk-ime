@@ -422,6 +422,22 @@ The data carries the missing symbol name for `void-variable' /
           (when (fboundp 'garbage-collect) (garbage-collect))
           "OK GC")
       (error (ddskk-engine--error-token "ERR GC" err))))
+   ((equal line "STATUS")
+    ;; The mode-indicator UI (docs/design/sumi-indicator-settings.md) polls
+    ;; this verb to display the current input mode.  Until now every verb
+    ;; mutated the session -- KEY dispatches a keystroke, RESET
+    ;; reinitializes, CONTROL edits the buffer, GC collects -- so an
+    ;; observer had no safe way to look without also changing something.
+    ;; This reads via `skk-ime-session-snapshot', which performs no key
+    ;; dispatch, no truncation, and no jisyo learning, and formats the
+    ;; result with the exact same `ddskk-engine--state-line' helper the KEY
+    ;; arm uses (also the one `ddskk-engine--safe-state-line' already
+    ;; relies on for its degraded fallback), so the wire format can never
+    ;; drift between verbs.
+    (condition-case err
+        (ddskk-engine--state-line
+         (skk-ime-session-snapshot ddskk-engine--session))
+      (error (ddskk-engine--error-token "ERR STATUS" err))))
    ((string-match "^KEY \\([0-9]+\\)$" line)
     (let ((codepoint (string-to-number (match-string 1 line))))
       (if (or (< codepoint 0) (> codepoint 1114111)) "ERR CODEPOINT"
