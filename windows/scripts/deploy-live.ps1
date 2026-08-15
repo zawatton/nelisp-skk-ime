@@ -438,3 +438,8 @@ if ($Indicator) {
 }
 
 Write-Host "=== done $(if ($DryRun) { '(dry run -- nothing was changed)' }) ==="
+# Without this, the script's exit code is whatever the last native/cmdlet
+# call left in $LASTEXITCODE (observed: robocopy's success codes 1-7 leaked
+# through as apparent failure). Reaching this line means every step above
+# either succeeded or threw.
+exit 0
