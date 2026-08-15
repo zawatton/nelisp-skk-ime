@@ -87,6 +87,14 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   ~TextService();
   void UnadviseKeySink();
   static std::optional<char32_t> TranslateKey(WPARAM wparam, LPARAM lparam);
+  // Whether this VK would be part of OnTestKeyDown's claimed set, given
+  // `composing' (= composition_ != nullptr || engine_pending_, computed
+  // identically at every call site). Assumes ddskk_engine_ && kana_mode_
+  // are already established by the caller (matches where OnTestKeyDown's
+  // own claim logic runs); does not re-check either. Shared by
+  // OnTestKeyDown and OnKeyDown's direct-call fallback -- see both for
+  // why the two must ask the identical question.
+  bool WouldClaimKey(WPARAM wparam, bool composing) const;
   HRESULT RequestStateEdit(const ddskk::EngineState& state);
   HRESULT ApplyDisplayAttribute(TfEditCookie edit_cookie, ITfContext* context,
                                 ITfRange* range, REFGUID guid);

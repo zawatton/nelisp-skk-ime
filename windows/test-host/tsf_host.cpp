@@ -85,6 +85,58 @@ void PrintHrStr(const std::string& where, HRESULT hr) {
   std::printf("HR %s=%08lx\n", where.c_str(), static_cast<unsigned long>(hr));
 }
 
+// DDSKK_HARNESS_DLL_PATH, if set, loads the TIP directly from that DLL
+// file (LoadLibraryW + DllGetClassObject + IClassFactory::CreateInstance)
+// instead of the normal CoCreateInstance(CLSID_DdskkTextService, ...)
+// path below, which always resolves through the registered
+// HKCU\...\CLSID\{...}\InprocServer32 path -- a fixed, already-deployed
+// DLL copy this harness has no way to repoint without a registry write.
+// This exists purely for verifying a freshly built DLL (e.g. this
+// repository's own windows/build/Release/ddskk-ime.dll) that has not
+// been deployed over that registered path, especially when the
+// registered copy is locked (in use by some other already-running
+// process) and can't simply be overwritten in place either. Returns
+// nullptr (never touching the registry or CoCreateInstance itself) if
+// the env var is unset or anything along the way fails; the caller falls
+// back to the normal CoCreateInstance() path in that case.
+ITfTextInputProcessor* CreateTipFromDllPath() {
+  wchar_t dll_path[MAX_PATH]{};
+  const DWORD size =
+      GetEnvironmentVariableW(L"DDSKK_HARNESS_DLL_PATH", dll_path, MAX_PATH);
+  if (size == 0 || size >= MAX_PATH) return nullptr;
+
+  const HMODULE module = LoadLibraryW(dll_path);
+  if (module == nullptr) {
+    std::printf("HR LoadLibraryW(DDSKK_HARNESS_DLL_PATH)=%08lx\n",
+               static_cast<unsigned long>(HRESULT_FROM_WIN32(GetLastError())));
+    return nullptr;
+  }
+
+  using DllGetClassObjectFn = HRESULT(WINAPI*)(REFCLSID, REFIID, void**);
+  const auto get_class_object = reinterpret_cast<DllGetClassObjectFn>(
+      GetProcAddress(module, "DllGetClassObject"));
+  if (get_class_object == nullptr) return nullptr;
+
+  IClassFactory* factory = nullptr;
+  HRESULT hr = get_class_object(CLSID_DdskkTextService, IID_IClassFactory,
+                                reinterpret_cast<void**>(&factory));
+  if (FAILED(hr) || factory == nullptr) {
+    PrintHr("DllGetClassObject(DDSKK_HARNESS_DLL_PATH)", hr);
+    return nullptr;
+  }
+
+  ITfTextInputProcessor* tip = nullptr;
+  hr = factory->CreateInstance(nullptr, IID_ITfTextInputProcessor,
+                               reinterpret_cast<void**>(&tip));
+  factory->Release();
+  if (FAILED(hr)) {
+    PrintHr("IClassFactory::CreateInstance(DDSKK_HARNESS_DLL_PATH)", hr);
+    return nullptr;
+  }
+  std::printf("TIP_DIRECT loaded from DDSKK_HARNESS_DLL_PATH\n");
+  return tip;
+}
+
 std::string Utf8FromWide(const std::wstring& wide) {
   if (wide.empty()) return std::string();
   const int needed = WideCharToMultiByte(CP_UTF8, 0, wide.data(),
@@ -653,6 +705,27 @@ bool TokenToKey(const std::wstring& token, KeyEvent* out) {
   return false;
 }
 
+// DDSKK_HARNESS_DIRECT_KEYDOWN=1 makes SendScriptedKey() below skip
+// OnTestKeyDown/OnTestKeyUp entirely and call OnKeyDown/OnKeyUp directly
+// for every token, reproducing the call order many real host applications
+// actually use: ITfKeystrokeMgr::KeyDown for every key, without ever
+// consulting TestKeyDown first. The well-behaved default path this
+// harness normally takes (TestKeyDown -> only call KeyDown if claimed)
+// had been masking a field bug this validates the fix for: on the direct
+// call order, OnKeyDown's own TranslateKey()-miss fallback used to
+// unconditionally swallow the key, killing arrows/Home/End/Delete/F-keys
+// in exactly the applications that call KeyDown this way. See
+// TextService::WouldClaimKey()/OnKeyDown() in src/text_service.cpp.
+bool DirectKeyDownMode() {
+  static const bool direct = [] {
+    wchar_t value[8]{};
+    const DWORD size =
+        GetEnvironmentVariableW(L"DDSKK_HARNESS_DIRECT_KEYDOWN", value, 8);
+    return size > 0 && size < 8 && wcscmp(value, L"1") == 0;
+  }();
+  return direct;
+}
+
 constexpr DWORD kPumpMs = 15;
 
 void PumpMessages(DWORD duration_ms) {
@@ -703,6 +776,28 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
         ? key_sink->OnKeyDown(context, key.vk, lparam_down, e)
         : keystroke_mgr->KeyDown(key.vk, lparam_down, e);
   };
+
+  if (DirectKeyDownMode()) {
+    // Ill-behaved-app repro: call KeyDown directly, never consulting
+    // TestKeyDown at all, for every token -- see DirectKeyDownMode().
+    BOOL eaten = FALSE;
+    HRESULT hr = down(&eaten);
+    if (FAILED(hr)) PrintHr("KeyDown", hr);
+    std::printf("DIRECT KEYDOWN vk=%02X eaten=%d\n", key.vk, eaten);
+    std::fflush(stdout);
+    PumpMessages(kPumpMs);
+
+    const LPARAM lparam_up = lparam_down | (static_cast<LPARAM>(1) << 30) |
+                             (static_cast<LPARAM>(1) << 31);
+    BOOL eaten_up = FALSE;
+    hr = key_sink != nullptr
+        ? key_sink->OnKeyUp(context, key.vk, lparam_up, &eaten_up)
+        : keystroke_mgr->KeyUp(key.vk, lparam_up, &eaten_up);
+    if (FAILED(hr)) PrintHr("KeyUp", hr);
+    PumpMessages(kPumpMs);
+    SetKeyboardState(state_before);
+    return;
+  }
 
   BOOL eaten = FALSE;
   HRESULT hr = test_down(&eaten);
@@ -923,8 +1018,11 @@ int wmain(int argc, wchar_t** argv) {
     // AdviseKeyEventSink fails with E_INVALIDARG (sink slot taken); fall
     // back to routing keys through ITfKeystrokeMgr, which reaches TSF's
     // instance instead.
-    hr = CoCreateInstance(CLSID_DdskkTextService, nullptr, CLSCTX_INPROC_SERVER,
-                          IID_ITfTextInputProcessor,
+    tip = CreateTipFromDllPath();
+    hr = tip != nullptr
+        ? S_OK
+        : CoCreateInstance(CLSID_DdskkTextService, nullptr,
+                          CLSCTX_INPROC_SERVER, IID_ITfTextInputProcessor,
                           reinterpret_cast<void**>(&tip));
     std::printf("TIP_DIRECT create hr=%08lx\n", static_cast<unsigned long>(hr));
     if (SUCCEEDED(hr)) {

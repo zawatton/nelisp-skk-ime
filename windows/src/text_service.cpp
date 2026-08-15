@@ -259,6 +259,43 @@ void TextService::UnadviseKeySink() {
 
 HRESULT TextService::OnSetFocus(BOOL) { return S_OK; }
 
+// The full "would this key be part of the claimed set" predicate,
+// factored out of OnTestKeyDown so OnKeyDown's own direct-call fallback
+// (its final `else' branch, when TranslateKey() can't resolve a
+// character) can ask the identical question instead of assuming every
+// such VK was actually claimed -- see that call site's comment for the
+// field bug (dead arrow keys) this exists to fix. Assumes the caller has
+// already established ddskk_engine_ && kana_mode_ (this does not re-check
+// either); `composing' must be `composition_ != nullptr ||
+// engine_pending_', computed identically at every call site.
+//
+// wparam here is a VK code, not an ASCII/character code: the old
+// `wparam >= 0x20 && wparam <= 0x7e' range this replaced claimed far more
+// than printable keys -- VK_PRIOR/VK_NEXT/VK_END/VK_HOME/arrows/
+// VK_INSERT/VK_DELETE (0x21-0x2E), VK_LWIN/VK_RWIN/VK_APPS (0x5B-0x5D),
+// the numpad (0x60-0x6F) and F1..F15 (0x70-0x7E) all fall inside it.
+// Navigation keys, F-keys, numpad and Win keys must fall through to the
+// application; an idle space must insert a plain space (the engine's
+// KEY 32 path errors and CorvusSKK passes it through too).
+//
+// Ctrl+G is checked first and separately from the generic letters range
+// below, because 'G' alone (without Ctrl) already falls inside
+// `wparam >= 'A' && wparam <= 'Z'' -- without this, Ctrl+G would be
+// claimed exactly like a bare "G" keystroke regardless of composing
+// state. Ctrl+J is NOT handled here: it has its own always-claimed
+// branch in both OnTestKeyDown and OnKeyDown, independent of composing.
+bool TextService::WouldClaimKey(WPARAM wparam, bool composing) const {
+  if (wparam == 'G' && (GetKeyState(VK_CONTROL) & 0x8000)) return composing;
+  return (wparam >= 'A' && wparam <= 'Z') ||             // letters
+         (wparam >= '0' && wparam <= '9') ||              // top-row digits
+         (wparam >= VK_OEM_1 && wparam <= VK_OEM_3) ||    // 0xBA-0xC0 punctuation
+         (wparam >= VK_OEM_4 && wparam <= VK_OEM_8) ||    // 0xDB-0xDF punctuation
+         wparam == VK_OEM_102 ||                          // 0xE2 JIS backslash
+         (wparam == VK_SPACE && composing) ||             // space converts only mid-composition
+         ((wparam == VK_BACK || wparam == VK_RETURN ||
+           wparam == VK_ESCAPE) && composing);
+}
+
 // Only claim printable keys while the out-of-process engine is reachable.
 HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
                                    BOOL* eaten) {
@@ -270,11 +307,6 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
              static_cast<unsigned>(wparam), handled, connect, *eaten);
   };
   const bool ctrl_j = wparam == 'J' && (GetKeyState(VK_CONTROL) & 0x8000);
-  // DDSKK's standard keyboard-quit binding: Ctrl+G cancels an in-flight
-  // conversion/composition exactly like Esc. Detected here alongside
-  // ctrl_j, but (unlike ctrl_j, which is always claimed) its actual claim
-  // decision needs `composing`, computed further below -- see that branch.
-  const bool ctrl_g = wparam == 'G' && (GetKeyState(VK_CONTROL) & 0x8000);
   if (!ddskk_engine_) {
     *eaten = FALSE;
     debug_exit(-1, -1);
@@ -290,52 +322,13 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
     debug_exit(-1, -1);
     return S_OK;
   }
-  // Backspace / Enter / Escape belong to the IME only while a composition
-  // or a pending romaji prefix is actually in flight; otherwise they must
-  // fall through to the application (matches CorvusSKK's key ownership).
+  // Backspace / Enter / Escape / Ctrl+G belong to the IME only while a
+  // composition or a pending romaji prefix is actually in flight;
+  // otherwise they must fall through to the application (matches
+  // CorvusSKK's key ownership). See WouldClaimKey() for the full claim
+  // predicate, shared with OnKeyDown's direct-call fallback.
   const bool composing = composition_ != nullptr || engine_pending_;
-  // Ctrl+G's claim decision needs `composing`, just computed above, so it
-  // is handled here rather than alongside ctrl_j. Unlike ctrl_j (always
-  // claimed), Ctrl+G must fall through to the application when nothing is
-  // composing (many apps bind it to go-to-line etc.); it must ALSO be
-  // decided here, before the `handled` computation below, because 'G' is
-  // already unconditionally inside that computation's plain letters range
-  // (`wparam >= 'A' && wparam <= 'Z'`) -- without this early branch,
-  // Ctrl+G would be claimed exactly like a bare "G" keystroke regardless
-  // of composing state, which is the bug being fixed here. ddskk_engine_
-  // and kana_mode_ are already guaranteed true by the two early-outs
-  // above by the time this runs, but are kept explicit anyway so this
-  // branch's condition still reads correctly on its own.
-  if (ctrl_g) {
-    if (!(ddskk_engine_ && kana_mode_ && composing)) {
-      *eaten = FALSE;
-      debug_exit(-1, -1);
-      return S_OK;
-    }
-    const bool connected = engine_.Connect(1500);
-    if (!connected) EnsureEngineHost();  // see the `handled` block's identical comment below
-    *eaten = TRUE;
-    debug_exit(-1, connected ? 1 : 0);
-    return S_OK;
-  }
-  // wparam here is a VK code, not an ASCII/character code: the old
-  // `wparam >= 0x20 && wparam <= 0x7e' range claimed far more than
-  // printable keys -- VK_PRIOR/VK_NEXT/VK_END/VK_HOME/arrows/VK_INSERT/
-  // VK_DELETE (0x21-0x2E), VK_LWIN/VK_RWIN/VK_APPS (0x5B-0x5D), the
-  // numpad (0x60-0x6F) and F1..F15 (0x70-0x7E) all fall inside it.
-  // Navigation keys, F-keys, numpad and Win keys must fall through to the
-  // application; an idle space must insert a plain space (the engine's
-  // KEY 32 path errors and CorvusSKK passes it through too).
-  const bool handled =
-      (wparam >= 'A' && wparam <= 'Z') ||             // letters
-      (wparam >= '0' && wparam <= '9') ||              // top-row digits
-      (wparam >= VK_OEM_1 && wparam <= VK_OEM_3) ||    // 0xBA-0xC0 punctuation
-      (wparam >= VK_OEM_4 && wparam <= VK_OEM_8) ||    // 0xDB-0xDF punctuation
-      wparam == VK_OEM_102 ||                          // 0xE2 JIS backslash
-      (wparam == VK_SPACE && composing) ||             // space converts only mid-composition
-      ((wparam == VK_BACK || wparam == VK_RETURN ||
-        wparam == VK_ESCAPE) && composing);
-  if (!handled) {
+  if (!WouldClaimKey(wparam, composing)) {
     *eaten = FALSE;
     debug_exit(0, -1);
     return S_OK;
@@ -769,10 +762,25 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     branch = L"key";
     const auto codepoint = TranslateKey(wparam, lparam);
     if (!codepoint) {
-      // OnTestKeyDown's claim set only claims VK codes TranslateKey should
-      // be able to resolve; if it still can't, swallow rather than leak a
-      // key the application never got a chance to see coming.
-      *eaten = TRUE;
+      // FIELD BUG this branch used to cause: the harness (and any
+      // well-behaved host) only ever reaches OnKeyDown for a VK
+      // OnTestKeyDown already claimed, so unconditionally eating a
+      // TranslateKey() miss looked safe there. But many real applications
+      // call ITfKeyEventSink::KeyDown for EVERY key without ever
+      // consulting TestKeyDown first -- on that call order this branch
+      // saw arrows, Home/End/PageUp/PageDown/Delete/Insert, F-keys,
+      // numpad and Win keys too (none of them resolve through
+      // ToUnicodeEx), and unconditionally swallowing them here is exactly
+      // what killed caret movement and every other unclaimed key in those
+      // apps, even though OnTestKeyDown (when it did run) had always
+      // correctly left them unclaimed. Ask the identical claim predicate
+      // OnTestKeyDown itself uses instead of assuming: a VK the claim set
+      // never wanted passes through untouched (fixes the dead keys),
+      // while a VK it DOES want but that still fails to resolve a
+      // character is still swallowed, to avoid leaking raw ASCII the
+      // engine was never given a chance to process.
+      const bool composing = composition_ != nullptr || engine_pending_;
+      *eaten = WouldClaimKey(wparam, composing) ? TRUE : FALSE;
       debug_exit(*eaten);
       return S_OK;
     }
@@ -784,7 +792,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     // swallowing it for this one failed round-trip. Also closes any
     // candidate UI element rather than leaving it stranded open behind a
     // composition no later state will ever describe again -- see
-    // CloseCandidateUi().
+    // CloseCandidateUi(). Still correct under the direct-KeyDown-without-
+    // TestKeyDown call pattern too (see the `else' branch's comment
+    // above): every branch that can set `state' and reach here already
+    // matched an explicitly claimed VK on its own terms (Ctrl+J/Ctrl+G's
+    // own composing check, BACK/SPACE/RETURN/ESCAPE's composing check, or
+    // WouldClaimKey() itself just above), so this key was always meant to
+    // be ours regardless of which call order got us here.
     CloseCandidateUi();
     *eaten = TRUE;
     debug_exit(*eaten);
