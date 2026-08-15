@@ -120,3 +120,14 @@ if(NELISP_EXECUTABLE)
     "${CMAKE_SOURCE_DIR}/..")
   set_tests_properties(ddskk-engine-e2e-test PROPERTIES TIMEOUT 120)
 endif()
+
+# Minimal TSF host test harness: drives the real, already-registered
+# ddskk-ime text service end-to-end (key events in, document text out) for
+# automated testing, without touching src/ or the registry. See
+# test-host/tsf_host.cpp and test-host/run-harness.ps1.
+add_executable(tsf-host test-host/tsf_host.cpp)
+target_include_directories(tsf-host PRIVATE src)
+target_compile_features(tsf-host PRIVATE cxx_std_20)
+target_compile_definitions(tsf-host PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(tsf-host PRIVATE /W4 /permissive- /utf-8)
+target_link_libraries(tsf-host PRIVATE ole32 oleaut32 uuid user32)

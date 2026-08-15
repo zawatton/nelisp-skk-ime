@@ -30,6 +30,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
                           public ITfDisplayAttributeProvider,
                           public ITfFunctionProvider,
                           public ITfFnConfigure,
+                          public ITfCompositionSink,
                           public CandidateUIHandler,
                           public LangBarButtonHandler {
  public:
@@ -65,6 +66,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   HRESULT STDMETHODCALLTYPE GetDisplayName(BSTR* name) override;
   HRESULT STDMETHODCALLTYPE Show(HWND parent, LANGID language,
                                  REFGUID profile) override;
+  HRESULT STDMETHODCALLTYPE OnCompositionTerminated(
+      TfEditCookie ecWrite, ITfComposition* composition) override;
 
   HRESULT ApplyEngineState(TfEditCookie edit_cookie, ITfContext* context,
                            const ddskk::EngineState& state);
@@ -92,13 +95,16 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
                         ITfRange* range);
   void MaybeShowModeIndicator(ITfContext* context,
                               const ddskk::EngineState* state);
+  // Appends one line to %LOCALAPPDATA%\DDSKK\dll-debug.log when
+  // debug_log_ is set (HKCU\Software\NativeIME\DllDebug == 1). No-op
+  // otherwise, so this is safe to call unconditionally from hot paths.
+  void DebugLog(const wchar_t* format, ...);
 
   LONG ref_count_ = 1;
   ITfThreadMgr* thread_manager_ = nullptr;
   TfClientId client_id_ = TF_CLIENTID_NULL;
   ddskk::EngineClient engine_;
   ITfComposition* composition_ = nullptr;
-  size_t committed_length_ = 0;
   CandidateUI* candidate_ui_ = nullptr;
   DWORD candidate_ui_id_ = TF_INVALID_UIELEMENTID;
   ITfContext* candidate_context_ = nullptr;
@@ -109,6 +115,14 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // romaji prefix.  Backspace / Enter / Escape belong to the IME only in
   // that state; otherwise they must reach the application.
   bool engine_pending_ = false;
+  // Set by OnCompositionTerminated when the application ends a composition
+  // on its own (focus change, app-driven edit, etc.) without going through
+  // FinalizeCandidate/AbortCandidate/OnKeyDown. The DLL's own composition_
+  // pointer is cleared immediately at that point, but the out-of-process
+  // engine still thinks it owns half of that state; the next key must
+  // cancel the engine first (see OnKeyDown), or its stale text would
+  // re-render into a brand-new composition.
+  bool engine_needs_cancel_ = false;
   bool ddskk_engine_ = true;
   LangBarSettingsButton* settings_button_ = nullptr;
   ModeIndicator mode_indicator_;
@@ -116,6 +130,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   RECT last_caret_rect_{};
   bool last_caret_valid_ = false;
   bool mode_indicator_enabled_ = true;
+  // HKCU\Software\NativeIME\DllDebug == 1; gates DebugLog().
+  bool debug_log_ = false;
 };
 
 extern HMODULE g_module;

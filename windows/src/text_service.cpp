@@ -15,6 +15,8 @@
 
 #include "text_service.h"
 
+#include <cstdarg>
+#include <cstdio>
 #include <new>
 #include <shellapi.h>
 #include <thread>
@@ -87,6 +89,8 @@ HRESULT TextService::QueryInterface(REFIID iid, void** object) {
     *object = static_cast<ITfFunctionProvider*>(this);
   } else if (iid == IID_ITfFunction || iid == IID_ITfFnConfigure) {
     *object = static_cast<ITfFnConfigure*>(this);
+  } else if (iid == IID_ITfCompositionSink) {
+    *object = static_cast<ITfCompositionSink*>(this);
   } else {
     return E_NOINTERFACE;
   }
@@ -136,17 +140,23 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
   }
   const HRESULT advise = keystroke_manager->AdviseKeyEventSink(client_id_, this, TRUE);
   keystroke_manager->Release();
+  DebugLog(L"Activate advise=%X", static_cast<unsigned>(advise));
   if (FAILED(advise)) {
     UnadviseKeySink();
     return advise;
   }
-  return AddLangBarButton();
+  // The langbar settings button is cosmetic. Hosts without a language bar
+  // (console TSF hosts, some sandboxed apps) fail AddItem, and returning
+  // that failure here made TSF deactivate the whole text service -- no key
+  // sink, IME silently dead. Log and carry on instead.
+  const HRESULT langbar = AddLangBarButton();
+  DebugLog(L"Activate langbar=%X", static_cast<unsigned>(langbar));
+  return S_OK;
 }
 
 HRESULT TextService::Deactivate() {
   RemoveLangBarButton();
   engine_.Disconnect();
-  committed_length_ = 0;
   if (composition_ != nullptr) {
     composition_->Release();
     composition_ = nullptr;
@@ -217,17 +227,26 @@ HRESULT TextService::OnSetFocus(BOOL) { return S_OK; }
 HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
                                    BOOL* eaten) {
   if (eaten == nullptr) return E_POINTER;
+  // Logs (wparam, handled, connect result, final eaten) with -1 for
+  // whichever of handled/connect was never evaluated on this exit path.
+  const auto debug_exit = [&](int handled, int connect) {
+    DebugLog(L"OnTestKeyDown vk=%02X handled=%d connect=%d eaten=%d",
+             static_cast<unsigned>(wparam), handled, connect, *eaten);
+  };
   const bool ctrl_j = wparam == 'J' && (GetKeyState(VK_CONTROL) & 0x8000);
   if (!ddskk_engine_) {
     *eaten = FALSE;
+    debug_exit(-1, -1);
     return S_OK;
   }
   if (ctrl_j) {
     *eaten = engine_.Connect(1500);
+    debug_exit(-1, *eaten);
     return S_OK;
   }
   if (!kana_mode_) {
     *eaten = FALSE;
+    debug_exit(-1, -1);
     return S_OK;
   }
   // Backspace / Enter / Escape belong to the IME only while a composition
@@ -253,9 +272,11 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
         wparam == VK_ESCAPE) && composing);
   if (!handled) {
     *eaten = FALSE;
+    debug_exit(0, -1);
     return S_OK;
   }
-  if (!engine_.Connect(1500)) {
+  const bool connected = engine_.Connect(1500);
+  if (!connected) {
     // Leaking romaji into the document is strictly worse than swallowing a
     // key for one round-trip while the host respawns: OnKeyDown swallows
     // any key this function claimed but can't complete (see its "never
@@ -264,6 +285,7 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
     EnsureEngineHost();
   }
   *eaten = TRUE;
+  debug_exit(1, connected ? 1 : 0);
   return S_OK;
 }
 
@@ -339,10 +361,13 @@ void TextService::LoadSettings() {
   DWORD indicator_ms = 3000, indicator_ms_bytes = sizeof(indicator_ms);
   DWORD indicator_enabled = 1, indicator_enabled_bytes = sizeof(indicator_enabled);
   DWORD indicator_scale = 100, indicator_scale_bytes = sizeof(indicator_scale);
+  DWORD debug_log = 0, debug_log_bytes = sizeof(debug_log);
   if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0,
                     KEY_READ, &key) == ERROR_SUCCESS) {
     RegQueryValueExW(key, L"Engine", nullptr, nullptr,
                      reinterpret_cast<BYTE*>(engine), &bytes);
+    RegQueryValueExW(key, L"DllDebug", nullptr, nullptr,
+                     reinterpret_cast<BYTE*>(&debug_log), &debug_log_bytes);
     RegQueryValueExW(key, L"InitialKanaMode", nullptr, nullptr,
                      reinterpret_cast<BYTE*>(&kana), &kana_bytes);
     RegQueryValueExW(key, L"ModeIndicatorMs", nullptr, nullptr,
@@ -377,6 +402,7 @@ void TextService::LoadSettings() {
   ddskk_engine_ = wcscmp(engine, L"passthrough") != 0;
   kana_mode_ = ddskk_engine_ && kana != 0;
   engine_pending_ = false;
+  debug_log_ = debug_log == 1;
   engine_.SelectEngine(ddskk_engine_ ? "ddskk" : "passthrough", 1000);
 
   // CorvusSKK documents a [1, 60000] ms range for its equivalent setting.
@@ -423,13 +449,91 @@ void TextService::EnsureEngineHost() {
     CloseHandle(process.hThread); CloseHandle(process.hProcess);
   }
 }
+
+// Appends one line to %LOCALAPPDATA%\DDSKK\dll-debug.log: "<pid> <tick> "
+// followed by the caller's formatted message. Uses the truncating _s CRT
+// variants throughout so an over-long message or path never crashes the
+// host application -- this is diagnostic-only and must never be able to
+// bring down whatever process the DLL is loaded into. Opens, writes, and
+// closes the file on every call rather than keeping a handle open, so a
+// user can read/rotate/delete the log while the IME keeps running.
+void TextService::DebugLog(const wchar_t* format, ...) {
+  if (!debug_log_) return;
+
+  wchar_t message[512]{};
+  va_list args;
+  va_start(args, format);
+  _vsnwprintf_s(message, 512, _TRUNCATE, format, args);
+  va_end(args);
+
+  wchar_t line[640]{};
+  _snwprintf_s(line, 640, _TRUNCATE, L"%lu %llu %ls\r\n",
+              static_cast<unsigned long>(GetCurrentProcessId()),
+              static_cast<unsigned long long>(GetTickCount64()), message);
+
+  wchar_t local_app_data[MAX_PATH]{};
+  const DWORD local_app_data_len =
+      GetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data, MAX_PATH);
+  if (local_app_data_len == 0 || local_app_data_len >= MAX_PATH) return;
+  const std::wstring log_dir = std::wstring(local_app_data) + L"\\DDSKK";
+  CreateDirectoryW(log_dir.c_str(), nullptr);
+  const std::wstring log_path = log_dir + L"\\dll-debug.log";
+
+  const int utf8_len = WideCharToMultiByte(CP_UTF8, 0, line, -1, nullptr, 0,
+                                           nullptr, nullptr);
+  if (utf8_len <= 0) return;
+  std::string utf8(static_cast<size_t>(utf8_len) - 1, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, line, -1, utf8.data(), utf8_len, nullptr,
+                      nullptr);
+
+  const HANDLE file = CreateFileW(
+      log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+      nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return;
+  DWORD written = 0;
+  WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written,
+           nullptr);
+  CloseHandle(file);
+}
+
 HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
                                BOOL* eaten) {
   if (eaten == nullptr) return E_POINTER;
   *eaten = FALSE;
   if (context == nullptr) return E_INVALIDARG;
+  if (engine_needs_cancel_) {
+    // OnCompositionTerminated saw the application end the previous
+    // composition on its own (focus change, app-driven edit, etc.); the
+    // out-of-process engine still thinks it owns half of that state, so it
+    // must be cancelled before this key is sent, or its stale text would
+    // re-render into a brand-new composition. The result is ignored: a
+    // failure here gets resynced by EngineClient's own needs_resync_
+    // handling on the next transaction.
+    engine_needs_cancel_ = false;
+    engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
+  }
   std::optional<ddskk::EngineState> state;
+  const wchar_t* branch = L"?";
+  // Logs the outcome of this call using whatever `state'/`branch' hold at
+  // the point it runs; every return path below calls this exactly once,
+  // right before returning.
+  const auto debug_exit = [&](BOOL final_eaten, HRESULT request_hr = S_OK,
+                              HRESULT edit_hr = S_OK) {
+    if (state) {
+      DebugLog(L"OnKeyDown vk=%02X branch=%ls state=1 mode=%ls tlen=%zu "
+               L"plen=%zu req=%X edit=%X eaten=%d",
+               static_cast<unsigned>(wparam), branch, state->mode.c_str(),
+               state->text.size(), state->pending_romaji.size(),
+               static_cast<unsigned>(request_hr),
+               static_cast<unsigned>(edit_hr), final_eaten);
+    } else {
+      DebugLog(L"OnKeyDown vk=%02X branch=%ls state=0 mode=- tlen=0 plen=0 "
+               L"req=- edit=- eaten=%d",
+               static_cast<unsigned>(wparam), branch, final_eaten);
+    }
+  };
   if (wparam == 'J' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+    branch = L"ctrlj";
     // C-j is not a toggle in DDSKK. `skk-kakutei' (bound to C-j via
     // `skk-kakutei-key' in every mode map -- skk.el:942-948, :456-457,
     // :508-509, :521-522) always ends up in kana submode: its docstring
@@ -453,35 +557,56 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       // would leak the raw keystroke into the document instead of just
       // swallowing it for this one failed round-trip.
       *eaten = TRUE;
+      debug_exit(*eaten);
       return S_OK;
     }
   } else if (!kana_mode_) {
+    branch = L"nokana";
+    debug_exit(*eaten);
     return S_OK;
   } else if (wparam == VK_BACK) {
+    branch = L"back";
     // Backspace belongs to the IME only while something is actually being
     // composed; otherwise let the application handle it (e.g. delete the
     // previous character in the document).
-    if (composition_ == nullptr && !engine_pending_) return S_OK;
+    if (composition_ == nullptr && !engine_pending_) {
+      debug_exit(*eaten);
+      return S_OK;
+    }
     state = engine_.SendControl(ddskk::EngineControl::kBackspace, 1500);
   } else if (wparam == VK_SPACE) {
+    branch = L"space";
     // Space belongs to the IME only while something is actually being
     // composed; otherwise let the application insert a plain space
     // (OnTestKeyDown now only claims VK_SPACE mid-composition too).
-    if (composition_ == nullptr && !engine_pending_) return S_OK;
+    if (composition_ == nullptr && !engine_pending_) {
+      debug_exit(*eaten);
+      return S_OK;
+    }
     state = engine_.SendControl(ddskk::EngineControl::kConvert, 1500);
   } else if (wparam == VK_RETURN) {
-    if (composition_ == nullptr && !engine_pending_) return S_OK;
+    branch = L"return";
+    if (composition_ == nullptr && !engine_pending_) {
+      debug_exit(*eaten);
+      return S_OK;
+    }
     state = engine_.SendControl(ddskk::EngineControl::kCommit, 1500);
   } else if (wparam == VK_ESCAPE) {
-    if (composition_ == nullptr && !engine_pending_) return S_OK;
+    branch = L"escape";
+    if (composition_ == nullptr && !engine_pending_) {
+      debug_exit(*eaten);
+      return S_OK;
+    }
     state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
   } else {
+    branch = L"key";
     const auto codepoint = TranslateKey(wparam, lparam);
     if (!codepoint) {
       // OnTestKeyDown's claim set only claims VK codes TranslateKey should
       // be able to resolve; if it still can't, swallow rather than leak a
       // key the application never got a chance to see coming.
       *eaten = TRUE;
+      debug_exit(*eaten);
       return S_OK;
     }
     state = engine_.SendKey(*codepoint, 1500);
@@ -491,8 +616,14 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     // here would leak the raw keystroke into the document instead of just
     // swallowing it for this one failed round-trip.
     *eaten = TRUE;
+    debug_exit(*eaten);
     return S_OK;
   }
+  // The key was claimed in OnTestKeyDown and the engine has already
+  // consumed it; even if the edit session fails, letting the raw
+  // keystroke through would insert ASCII the engine also processed --
+  // this exact path produced the "▽Kana " leak.
+  *eaten = TRUE;
   // Single point of truth for engine_pending_ and kana_mode_: every branch
   // above that reaches here (including the Ctrl+J case) has just obtained
   // a fresh state from the engine, so this always reflects the latest
@@ -510,7 +641,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   const HRESULT request = context->RequestEditSession(
       client_id_, edit_session, TF_ES_SYNC | TF_ES_READWRITE, &edit_result);
   edit_session->Release();
-  if (SUCCEEDED(request) && SUCCEEDED(edit_result)) *eaten = TRUE;
+  debug_exit(*eaten, request, edit_result);
   // Covers both the Ctrl+J toggle above and every SendKey-driven mode
   // change (l / L / q / / etc.) below it: by this point `state` always
   // holds the latest engine state, regardless of which branch produced
@@ -665,6 +796,23 @@ HRESULT TextService::Show(HWND, LANGID, REFGUID) {
   return S_OK;
 }
 
+// TSF calls this when the application ends a composition on its own
+// (focus change, an app-driven edit, etc.) rather than through
+// FinalizeCandidate/AbortCandidate/OnKeyDown. Whatever was displayed is
+// now committed document text this DLL no longer owns, but the
+// out-of-process engine still thinks it owns its half of that state --
+// see engine_needs_cancel_'s declaration for how the next key resyncs it.
+HRESULT TextService::OnCompositionTerminated(TfEditCookie, ITfComposition*) {
+  DebugLog(L"OnCompositionTerminated comp=%d", composition_ != nullptr ? 1 : 0);
+  if (composition_ != nullptr) {
+    composition_->Release();
+    composition_ = nullptr;
+  }
+  engine_pending_ = false;
+  engine_needs_cancel_ = true;
+  return S_OK;
+}
+
 std::optional<char32_t> TextService::TranslateKey(WPARAM wparam,
                                                   LPARAM lparam) {
   BYTE keyboard_state[256]{};
@@ -681,31 +829,38 @@ std::optional<char32_t> TextService::TranslateKey(WPARAM wparam,
   return std::nullopt;
 }
 
+// Episode model (confirmed against the engine): it truncates its session
+// buffer at every commit boundary, so state.text always holds exactly the
+// current episode -- either a leading marker (state.text[0,
+// state.composition_start) is "▽"/"▼") plus the active segment, or, once
+// state.composition_start is -1, the episode's final committed result.
+// Nothing from an earlier episode ever carries over. So there is no
+// running commit offset to track across calls: `committed' is only ever
+// the whole state.text (direct_commit) or nothing, and `display' is the
+// whole episode text -- marker included, the way CorvusSKK renders it too
+// -- plus any still-unresolved romaji prefix. The composition itself only
+// closes once an episode ends with no pending romaji left (see the tail
+// below).
 HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
                                       ITfContext* context,
                                       const ddskk::EngineState& state) {
   const bool direct_commit = state.composition_start < 0 &&
                              state.pending_romaji.empty() &&
                              composition_ == nullptr;
-  const size_t composition_start =
-      state.composition_start < 0
-          ? state.text.size()
-          : min(static_cast<size_t>(state.composition_start), state.text.size());
-  if (composition_start < committed_length_) committed_length_ = 0;
-  const std::wstring committed = direct_commit
-      ? state.text
-      : state.text.substr(committed_length_, composition_start - committed_length_);
-  const std::wstring preedit = state.composition_start < 0 && composition_ != nullptr
-                                   ? state.text.substr(committed_length_)
-                                   : state.text.substr(composition_start);
+  const std::wstring committed = direct_commit ? state.text : std::wstring();
   // The wire protocol carries `text' and `pending_romaji' as separate
   // STATE fields; render both together so a pending-only romaji prefix
   // (e.g. text empty, pending_romaji "k" before it resolves to a kana)
   // is actually visible instead of silently dropped.
-  const std::wstring display = preedit + state.pending_romaji;
+  const std::wstring display =
+      direct_commit ? std::wstring() : state.text + state.pending_romaji;
+  DebugLog(L"ApplyEngineState entry comp=%d dlen=%zu",
+           composition_ != nullptr ? 1 : 0, display.size());
   ITfRange* range = nullptr;
   if (composition_ != nullptr) {
     const HRESULT get_range = composition_->GetRange(&range);
+    DebugLog(L"ApplyEngineState get_range hr=%X",
+             static_cast<unsigned>(get_range));
     if (FAILED(get_range)) return get_range;
   } else {
     TF_SELECTION selection{};
@@ -725,7 +880,6 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
         return commit;
       }
       range->Collapse(edit_cookie, TF_ANCHOR_END);
-      committed_length_ = direct_commit ? 0 : composition_start;
       TF_SELECTION caret{};
       caret.range = range;
       caret.style.ase = TF_AE_NONE;
@@ -746,9 +900,17 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
         IID_ITfContextComposition,
         reinterpret_cast<void**>(&composition_context));
     if (SUCCEEDED(result)) {
+      // `this' as the sink (instead of the previous nullptr) is what lets
+      // OnCompositionTerminated fire when the application ends this
+      // composition on its own; without it composition_ silently went
+      // stale and its rendered text stayed committed in the document,
+      // consistent with the "kかnな" leak.
       result = composition_context->StartComposition(
-          edit_cookie, range, nullptr, &composition_);
+          edit_cookie, range, static_cast<ITfCompositionSink*>(this),
+          &composition_);
       composition_context->Release();
+      DebugLog(L"ApplyEngineState start_composition hr=%X",
+               static_cast<unsigned>(result));
     }
     if (FAILED(result)) {
       range->Release();
@@ -757,12 +919,20 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
   }
   const HRESULT set_text = range->SetText(
       edit_cookie, 0, display.data(), static_cast<LONG>(display.size()));
+  DebugLog(L"ApplyEngineState set_text hr=%X", static_cast<unsigned>(set_text));
   if (SUCCEEDED(set_text)) {
     ApplyDisplayAttribute(edit_cookie, context, range,
         state.mode == L"candidate" ? GUID_DdskkCandidateAttribute
                                     : GUID_DdskkPreeditAttribute);
     ITfRange* caret = nullptr;
     if (SUCCEEDED(range->Clone(&caret))) {
+      // state.cursor is already in episode coordinates with base 0 (see
+      // the model comment on this function), so it maps onto `display'
+      // directly -- no per-call offset subtraction needed. Clamp against
+      // state.text.size() first (the wire's own bound), then clamp the
+      // result against display.size() too before handing it to ShiftEnd
+      // below (display is always >= state.text.size() here, so this is a
+      // belt-and-suspenders bound rather than a live case).
       const size_t absolute_cursor = min(
           state.cursor < 0 ? size_t{0} : static_cast<size_t>(state.cursor),
           state.text.size());
@@ -772,10 +942,7 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       // text and the pending prefix.
       const LONG relative_cursor = !state.pending_romaji.empty()
           ? static_cast<LONG>(display.size())
-          : static_cast<LONG>(
-                absolute_cursor > composition_start
-                    ? absolute_cursor - composition_start
-                    : 0);
+          : static_cast<LONG>(min(absolute_cursor, display.size()));
       LONG moved = 0;
       caret->Collapse(edit_cookie, TF_ANCHOR_START);
       caret->ShiftEnd(edit_cookie, relative_cursor, &moved, nullptr);
@@ -801,9 +968,10 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
   if (state.composition_start < 0 && state.pending_romaji.empty() &&
       composition_ != nullptr) {
     const HRESULT end = composition_->EndComposition(edit_cookie);
+    DebugLog(L"ApplyEngineState end_composition hr=%X",
+             static_cast<unsigned>(end));
     composition_->Release();
     composition_ = nullptr;
-    committed_length_ = state.text.size();
     return end;
   }
   return S_OK;
