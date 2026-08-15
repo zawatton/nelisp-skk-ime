@@ -525,19 +525,42 @@ std::string MergeBuiltinCandidates(const std::string& midasi) {
     const auto it = map.find(midasi);
     if (it == map.end()) continue;
     const std::string& raw = it->second;  // "/cand1/cand2;ann/cand3/"
+    // SKK-JISYO okuri-ari entries can carry a nested "[okurigana/cand.../]"
+    // block after the plain candidates -- keyed by okurigana, not itself a
+    // set of ordinary candidates. Example (the actual field bug): the
+    // okuri-ari reading "かなs" (roughly "kana" + okurigana "s") stores
+    // "/悲/哀/[し/悲/哀/]/" -- the bracket block repeats the candidates
+    // that apply specifically when the okurigana resolves to "し" (悲し/
+    // 哀しい etc.). Without this skip, splitting on top-level '/' alone
+    // surfaced "[し" itself as a bogus candidate ("▼[しし" in the live
+    // report) and could surface the block's inner repeats too. `in_bracket`
+    // is a straight-line stateful skip: true from the token that STARTS
+    // with '[' through the token that is exactly "]" inclusive, reset per
+    // file (each file's own raw string gets a fresh false). TODO: actually
+    // matching the resolved okurigana against the block to PROMOTE its
+    // candidates ahead of the plain ones -- what BehaviorOkuriStrictly
+    // implies -- is the fuller feature; today's fix only ensures a
+    // bracket-block token is never shown as a candidate at all.
+    bool in_bracket = false;
     size_t pos = 0;
     while (pos <= raw.size()) {
       size_t next = raw.find('/', pos);
       if (next == std::string::npos) next = raw.size();
       if (next > pos) {
         std::string candidate = raw.substr(pos, next - pos);
-        const size_t semicolon = candidate.find(';');
-        const std::string key = semicolon == std::string::npos
-            ? candidate : candidate.substr(0, semicolon);
-        if (std::find(seen_keys.begin(), seen_keys.end(), key) ==
-            seen_keys.end()) {
-          seen_keys.push_back(key);
-          ordered_candidates.push_back(std::move(candidate));
+        if (in_bracket) {
+          if (candidate == "]") in_bracket = false;
+        } else if (!candidate.empty() && candidate.front() == '[') {
+          in_bracket = true;
+        } else {
+          const size_t semicolon = candidate.find(';');
+          const std::string key = semicolon == std::string::npos
+              ? candidate : candidate.substr(0, semicolon);
+          if (std::find(seen_keys.begin(), seen_keys.end(), key) ==
+              seen_keys.end()) {
+            seen_keys.push_back(key);
+            ordered_candidates.push_back(std::move(candidate));
+          }
         }
       }
       if (next >= raw.size()) break;
