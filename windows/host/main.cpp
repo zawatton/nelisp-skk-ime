@@ -450,6 +450,19 @@ void RequestStop();
 // exactly the same way `StopChild()''s existing 500 ms
 // `WaitForSingleObject' timeout already does elsewhere in this file, so
 // `g_stopping' is never invisible to this thread for more than one tick.
+//
+// Composition-in-progress suppression: measured GC cost on the live
+// engine is 523-920 ms per collection, and the single worst moment for
+// one to start is right after the user pauses on a candidate (SPACE) to
+// read it before pressing Enter -- that Enter is the very next request,
+// and without this check it would queue up behind a GC that just started
+// (observed in the wild as a consistent ~1.4 s stall, twice, in the DLL
+// debug log). `g_session_composing' tracks whether the last STATE reply
+// on the ServeClient() request path reported mode "preedit" or
+// "candidate" (see ServeClient()); IdleGcLoop() below refuses to collect
+// at all while it is true, checked both before and after acquiring
+// `g_engine_mutex' for the same "may have changed while this thread
+// waited for the lock" reason as the idle-freshness re-check.
 constexpr DWORD kIdleGcPollMs = 100;
 constexpr DWORD kDefaultIdleGcMs = 800;
 
@@ -461,6 +474,12 @@ std::atomic<bool> g_gc_pending{false};
 // ever connected, there is nothing to collect and no reason to contend
 // for `g_engine_mutex' against the first real client's own request).
 std::atomic<bool> g_engine_active{false};
+// True when the last STATE reply on the ServeClient() request path
+// reported mode "preedit" or "candidate" -- i.e. DDSKK is mid-composition
+// and the user may be reading a candidate before their next keystroke.
+// See the "Composition-in-progress suppression" paragraph in the block
+// comment above IdleGcLoop() for why this gates collection.
+std::atomic<bool> g_session_composing{false};
 
 void NoteActivity() {
   g_last_activity_tick.store(GetTickCount64(), std::memory_order_release);
@@ -516,6 +535,7 @@ void IdleGcLoop() {
     const uint64_t last = g_last_activity_tick.load(std::memory_order_acquire);
     if (GetTickCount64() - last < idle_ms) continue;
     if (!g_gc_pending.load(std::memory_order_acquire)) continue;
+    if (g_session_composing.load(std::memory_order_acquire)) continue;
 
     {
       std::lock_guard<std::mutex> lock(g_engine_mutex);
@@ -526,6 +546,10 @@ void IdleGcLoop() {
           idle_ms) {
         continue;
       }
+      // Same re-validation for composition state: a keystroke that
+      // entered preedit/candidate mode while this thread waited for the
+      // lock must also suppress the collection.
+      if (g_session_composing.load(std::memory_order_acquire)) continue;
       if (!g_gc_pending.exchange(false, std::memory_order_acq_rel)) continue;
 
       std::string response;
@@ -604,6 +628,21 @@ void ServeClient(HANDLE pipe) {
       // above.
       std::lock_guard<std::mutex> lock(g_engine_mutex);
       if (!Dispatch(g_child, request, &response)) { connected = false; break; }
+      // Track composition state from this reply for IdleGcLoop() (see its
+      // "Composition-in-progress suppression" comment). Only STATE lines
+      // carry a mode; OK/ERR/ENGINES/... replies leave the flag as-is.
+      // This lives only on the ServeClient() request path -- IdleGcLoop's
+      // own "GC" request always gets back "OK GC", never "STATE ...", so
+      // it can never affect this flag.
+      if (response.compare(0, 6, "STATE ") == 0) {
+        const size_t mode_start = 6;
+        const size_t mode_end = response.find(' ', mode_start);
+        const std::string mode = mode_end == std::string::npos
+            ? response.substr(mode_start)
+            : response.substr(mode_start, mode_end - mode_start);
+        g_session_composing.store(mode == "preedit" || mode == "candidate",
+                                  std::memory_order_release);
+      }
     }
     DWORD written = 0;
     connected = WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()),
