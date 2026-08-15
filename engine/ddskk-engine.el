@@ -408,6 +408,21 @@ The data carries the missing symbol name for `void-variable' /
           (ddskk-engine--maybe-truncate-session)
           response)
       (error (ddskk-engine--error-token "ERR CANCEL" err))))
+   ((equal line "CONTROL QUIT")
+    ;; DDSKK keyboard-quit semantics (see the long comment on the `quit'
+    ;; case in `skk-ime-session-control', skk-ime-session.el) -- distinct
+    ;; from `CONTROL CANCEL' above (Ctrl+J's unconditional "back to plain
+    ;; kana"): graduated, mode-dependent dismissal that the ▼/▽ paths route
+    ;; through real DDSKK functions (`skk-henkan-inactivate' /
+    ;; `skk-henkan-off-by-quit'), each of which can in principle signal on
+    ;; this runtime the same way `CONTROL CONVERT'/`CONTROL PREVIOUS' can.
+    ;; Degrade to an error response rather than take down the resident IME.
+    (condition-case err
+        (let ((response (ddskk-engine--state-line
+                         (skk-ime-session-control ddskk-engine--session 'quit))))
+          (ddskk-engine--maybe-truncate-session)
+          response)
+      (error (ddskk-engine--error-token "ERR QUIT" err))))
    ((equal line "QUIT") "OK BYE")
    ((equal line "GC")
     ;; Explicit maintenance request from the host's idle timer (see

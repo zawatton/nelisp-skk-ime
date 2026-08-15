@@ -32,7 +32,14 @@ struct EngineState {
 };
 
 std::string EncodeKeyRequest(char32_t codepoint);
-enum class EngineControl { kBackspace, kConvert, kPrevious, kCommit, kCancel };
+// kQuit is DDSKK's stepwise keyboard-quit ("CONTROL QUIT"): ▼->▽ with the
+// reading restored, ▽->clear, a pending romaji prefix->drop the last
+// syllable, idle->no-op. Distinct from kCancel, which is skk-kakutei's
+// unconditional return-to-kana semantics (see the Ctrl+J comment in
+// TextService::OnKeyDown) -- Esc and Ctrl+G both send kQuit, not kCancel;
+// see that same comment for why.
+enum class EngineControl { kBackspace, kConvert, kPrevious, kCommit, kCancel,
+                           kQuit };
 std::string EncodeControlRequest(EngineControl control);
 std::optional<EngineState> ParseStateResponse(const std::string& line);
 

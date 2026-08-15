@@ -62,6 +62,7 @@ std::string EncodeControlRequest(EngineControl control) {
     case EngineControl::kPrevious: return "CONTROL PREVIOUS\n";
     case EngineControl::kCommit: return "CONTROL COMMIT\n";
     case EngineControl::kCancel: return "CONTROL CANCEL\n";
+    case EngineControl::kQuit: return "CONTROL QUIT\n";
   }
   return {};
 }

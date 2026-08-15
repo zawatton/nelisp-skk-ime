@@ -165,7 +165,8 @@ instead of kana."
 (defun skk-ime-session-control (session control)
   "Apply native CONTROL to SESSION and return its state snapshot.
 
-CONTROL is one of `backspace', `convert', `previous', `commit', or `cancel'.
+CONTROL is one of `backspace', `convert', `previous', `commit', `cancel',
+or `quit'.
 
 Point-at-end invariant: this client never moves the caret inside a
 composition -- the TSF layer claims no arrow keys and the wire protocol
@@ -222,6 +223,38 @@ itself leaves it while that one request is still being processed."
        ;; out of sync with the host's own flag.
        (when (fboundp 'skk-j-mode-on)
          (skk-j-mode-on (and (boundp 'skk-katakana) skk-katakana))))
+      ('quit
+       ;; DDSKK's own keyboard-quit semantics (skk.el:5176-5197, the
+       ;; `keyboard-quit' advice), also cross-checked against CorvusSKK
+       ;; (KeyHandlerControl.cpp:609-671) -- graduated, mode-dependent
+       ;; dismissal, unlike `cancel' above (Ctrl+J's unconditional "back to
+       ;; plain kana", which the mode indicator also relies on and which
+       ;; this branch must not touch):
+       ;;   - ▼ (`active'): `skk-henkan-inactivate' (skk.el:5149-5157) drops
+       ;;     back to ▽ with the READING intact, via `skk-previous-
+       ;;     candidate' at candidate-index 0 (its `(0 ...)' cl-case arm
+       ;;     reverts the ▼ display to the plain reading and calls
+       ;;     `skk-change-marker-to-white').  It honors `skk-delete-okuri-
+       ;;     when-quit' (the BehaviorDeleteOkuriOnCancel toggle in
+       ;;     `ddskk-engine.el'): nil (default) keeps the okurigana merged
+       ;;     into the restored reading -- skk-vars.el:1420-1428's own
+       ;;     docstring example is exactly this: "▽な*く -> ▼泣く ->
+       ;;     [keyboard-quit] -> ▽なく" -- non-nil deletes it instead
+       ;;     ("-> ▽な").
+       ;;   - ▽ (`on'): `skk-henkan-off-by-quit' (skk.el:5159-5173)
+       ;;     unconditionally discards the reading back to plain kana --
+       ;;     contrast `skk-henkan-inactivate' above, which never discards.
+       ;;   - Otherwise, an incomplete romaji prefix (the same
+       ;;     `(skk-get-prefix skk-current-rule-tree)' test the vendored
+       ;;     advice itself uses) is cleared via `(skk-erase-prefix
+       ;;     'clean)', mirroring `cancel''s own use of the same primitive.
+       ;;   - Idle (no mode, no prefix): a deliberate no-op, matching
+       ;;     CorvusSKK's behaviour when Escape/quit has nothing to do.
+       (cond
+        ((eq skk-henkan-mode 'active) (skk-henkan-inactivate))
+        ((eq skk-henkan-mode 'on) (skk-henkan-off-by-quit))
+        ((skk-get-prefix skk-current-rule-tree) (skk-erase-prefix 'clean))
+        (t nil)))
       (_ (error "Unknown DDSKK IME control: %S" control)))
     (setf (skk-ime-session-last-command session) control)
     (skk-ime-session-snapshot session)))

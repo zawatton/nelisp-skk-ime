@@ -679,7 +679,11 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     // sends `cancel' for Ctrl+J when returning to kana input." So there
     // is nothing to toggle here -- always send CANCEL, and let the
     // common tail below derive kana_mode_ from whatever the engine
-    // actually reports afterward.
+    // actually reports afterward. This stays kCancel, not the stepwise
+    // kQuit that Esc/Ctrl+G now send below: skk-kakutei's unconditional
+    // return-to-kana is a different operation from keyboard-quit's
+    // stepwise ▼->▽->clear/pending-drop, even though both happen to look
+    // like "cancel" from outside.
     state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
     if (!state) {
       // OnTestKeyDown already claimed Ctrl+J; letting it fall through here
@@ -730,21 +734,37 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       debug_exit(*eaten);
       return S_OK;
     }
-    state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
+    // kQuit, not kCancel: DDSKK's actual keyboard-quit is stepwise (▼->▽
+    // with the reading restored, ▽->clear, a pending romaji prefix->drop
+    // the last syllable, idle->no-op), not skk-kakutei's unconditional
+    // return-to-kana that Ctrl+J above still uses -- see that branch's
+    // comment. Research confirmed CorvusSKK dispatches both Esc and
+    // Ctrl+G to the identical cancel function code (imcrvtip.h:42, and
+    // its README key table lists them as equivalent); DDSKK's C-g-only
+    // keyboard-quit binding is an Emacs implementation artifact (Escape
+    // was never free there), not a deliberate behavioral difference
+    // between the two keys, so both get the same stepwise quit here. If
+    // the connected engine predates the QUIT verb it replies with an ERR
+    // line, which ParseStateResponse() turns into std::nullopt exactly
+    // like any other transaction failure -- the existing `if (!state)'
+    // swallow-on-failure path below already handles that with no special
+    // casing needed.
+    state = engine_.SendControl(ddskk::EngineControl::kQuit, 1500);
   } else if (wparam == 'G' && (GetKeyState(VK_CONTROL) & 0x8000)) {
     branch = L"ctrlg";
-    // DDSKK's standard keyboard-quit binding: cancels exactly like Esc
-    // above. This condition mirrors OnTestKeyDown's ctrl_g branch exactly
-    // so claim and handling agree -- when nothing is composing,
-    // OnTestKeyDown already left this key unclaimed (*eaten stays FALSE,
-    // its top-of-function default), so this early-return is only ever
-    // reached in practice if that invariant somehow didn't hold; it is
-    // still made explicit here so this function is correct on its own.
+    // Same stepwise keyboard-quit as Esc above (kQuit, not kCancel) --
+    // see that branch's comment for the CorvusSKK research this is based
+    // on. This condition mirrors OnTestKeyDown's ctrl_g branch exactly so
+    // claim and handling agree -- when nothing is composing, OnTestKeyDown
+    // already left this key unclaimed (*eaten stays FALSE, its
+    // top-of-function default), so this early-return is only ever reached
+    // in practice if that invariant somehow didn't hold; it is still made
+    // explicit here so this function is correct on its own.
     if (composition_ == nullptr && !engine_pending_) {
       debug_exit(*eaten);
       return S_OK;
     }
-    state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
+    state = engine_.SendControl(ddskk::EngineControl::kQuit, 1500);
   } else {
     branch = L"key";
     const auto codepoint = TranslateKey(wparam, lparam);
