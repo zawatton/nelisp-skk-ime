@@ -202,6 +202,83 @@ full-buffer copy, and `after-gap' is never even touched."
         (setq i (1+ i)))
       found))
 
+  ;; --- `re-search-forward' ------------------------------------------------
+  ;;
+  ;; Void-function on the ▽-mode `q'/C-q path: `skk-toggle-characters'
+  ;; (skk.el:944-982) converts the henkan-region kana to the other kana type
+  ;; via `skk-katakana-region'/`skk-hiragana-region' (skk.el:4745-4772),
+  ;; both of which call `skk-search-and-replace' (skk.el:4791-4810), and
+  ;; THAT calls `(re-search-forward regexp end \\='noerror)' in a loop -- a
+  ;; buffer-aware, POINT-relative regexp search this runtime never
+  ;; implemented (only `string-match' over strings exists, same gap
+  ;; documented above `looking-at').  Confirmed as the exact and ONLY
+  ;; failure on this path by a live probe with `DDSKK_ENGINE_DEBUG=1':
+  ;; typing K-a-n-A then `q' returned \"ERR KEY void-function
+  ;; re-search-forward\", not any marker/point-related signal -- the
+  ;; STATIC, non-adjusting markers this runtime uses elsewhere (see the
+  ;; commentary above `set-marker') are NOT the culprit here: `goto-char'
+  ;; with a marker argument (both `skk-toggle-characters' and
+  ;; `skk-search-and-replace' pass one) already works correctly today,
+  ;; because `nelisp-goto-char''s `(1- clamped)' step coerces whatever
+  ;; `min'/`max' handed it back (per the commentary above `skk-nelisp--pos'
+  ;; on the runtime's own marker-arithmetic coercion) into a real integer
+  ;; before it is ever used to slice the buffer.
+  ;;
+  ;; Implements exactly the subset the sole reachable caller needs: REGEXP
+  ;; searched forward from point, bounded by BOUND (required here --
+  ;; `skk-search-and-replace' always passes one, a marker it just created
+  ;; -- but nil is accepted too, defaulting to `point-max', for signature
+  ;; completeness), NOERROR non-nil returns nil on failure instead of
+  ;; signalling (every non-nil value collapses to the same behaviour here;
+  ;; no reachable caller inspects point after a failed bounded search
+  ;; inside a `while' loop that simply stops), and COUNT other than nil/1
+  ;; is rejected rather than silently ignored, since nothing here needs it.
+  ;;
+  ;; Like `looking-at' above, this searches the `after-gap' string, not
+  ;; the buffer itself -- so `string-match''s own match-data is, at first,
+  ;; offsets into THAT string (0 = point), exactly `looking-at''s
+  ;; documented divergence.  Unlike `looking-at', whose only callers on
+  ;; the reachable path merely test its boolean return, `skk-search-and-
+  ;; replace' reads `(match-beginning 0)'/`(match-end 0)' immediately
+  ;; AFTER this returns and uses them as absolute buffer positions
+  ;; (`(goto-char beg0)', `(delete-region (+ beg0 ...) (+ end0 ...))').
+  ;; So, on a match, this rebases the regexp engine's own match-data
+  ;; vector (`nlre--last-caps', generated into the runtime by
+  ;; lisp/nelisp-stdlib-regexp.el -- the same vector `match-beginning' /
+  ;; `match-end' / `match-data' all read) from tail-relative to absolute
+  ;; buffer positions IN PLACE via `aset', before returning -- not by
+  ;; redefining `match-beginning'/`match-end' themselves, which would
+  ;; wrongly change `looking-back''s already-correct tail-relative reading
+  ;; above.
+  (defun re-search-forward (regexp &optional bound noerror count)
+    "Search forward from point for REGEXP, bounded by BOUND (default
+`point-max'), moving point to the end of the match on success and
+returning the new point.  NOERROR non-nil returns nil instead of
+signalling `search-failed' when no match is found.  COUNT, if given,
+must be 1 -- repeat counts are not supported."
+    (when (and count (/= count 1))
+      (error "re-search-forward: COUNT other than 1 is not supported on this runtime"))
+    (let* ((b (nelisp-buffer--ambient nil))
+           (start (nelisp-point b))
+           (limit (if bound (skk-nelisp--pos bound) (nelisp-point-max b)))
+           (after (nelisp-buffer-after-gap b))
+           (visible (max 0 (- limit start)))
+           (tail (cond ((<= visible 0) "")
+                       ((= visible (length after)) after)
+                       (t (substring after 0 visible)))))
+      (if (string-match regexp tail)
+          (let ((rel-end (match-end 0))
+                (caps nlre--last-caps))
+            (when (vectorp caps)
+              (let ((i 0) (n (length caps)))
+                (while (< i n)
+                  (let ((c (aref caps i)))
+                    (when (consp c)
+                      (aset caps i (cons (+ start (car c)) (+ start (cdr c))))))
+                  (setq i (1+ i)))))
+            (nelisp-goto-char (+ start rel-end) b))
+        (if noerror nil (signal 'search-failed (list regexp))))))
+
   (defun char-after (&optional position)
     "Return the character at POSITION (default point), or nil past the end.
 POSITION may be an integer or a marker.
