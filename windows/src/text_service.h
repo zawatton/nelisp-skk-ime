@@ -79,6 +79,9 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   void SelectInputEngine(bool ddskk) override;
   void ToggleInputMode() override;
   void ShowSettings() override;
+  void SelectInputMode(const std::wstring& label) override;
+  std::wstring CurrentModeLabel() const override;
+  ModeIndicatorPalette CurrentModePalette() const override;
 
  private:
   ~TextService();
@@ -124,9 +127,19 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // re-render into a brand-new composition.
   bool engine_needs_cancel_ = false;
   bool ddskk_engine_ = true;
-  LangBarSettingsButton* settings_button_ = nullptr;
+  LangBarButton* settings_button_ = nullptr;
+  // GUID_LBI_INPUTMODE: the item Windows 10/11's taskbar "A/あ" input
+  // indicator renders. See AddLangBarButton()/RemoveLangBarButton().
+  LangBarButton* input_mode_button_ = nullptr;
   ModeIndicator mode_indicator_;
   std::wstring last_mode_label_;
+  // The most recent ddskk::EngineState::mode string MaybeShowModeIndicator
+  // observed (or empty if none yet). Paired with kana_mode_ everywhere the
+  // latter is written from a fresh state, so CurrentModeLabel() can derive
+  // the same label MaybeShowModeIndicator would without needing its own
+  // ITfContext/EngineState -- used by the input-mode langbar item's
+  // GetIcon()/OnClick().
+  std::wstring last_engine_mode_;
   RECT last_caret_rect_{};
   bool last_caret_valid_ = false;
   bool mode_indicator_enabled_ = true;

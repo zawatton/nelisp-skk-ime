@@ -70,7 +70,10 @@ target_include_directories(ddskk-langbar-button-test PRIVATE src)
 target_compile_features(ddskk-langbar-button-test PRIVATE cxx_std_20)
 target_compile_definitions(ddskk-langbar-button-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(ddskk-langbar-button-test PRIVATE /W4 /permissive- /utf-8)
-target_link_libraries(ddskk-langbar-button-test PRIVATE oleaut32 uuid)
+# gdi32/user32: langbar_button.cpp's mode-aware icon synthesis (DIB
+# section, GDI text/fill, CreateIconIndirect) and menu handling now pull
+# in both.
+target_link_libraries(ddskk-langbar-button-test PRIVATE oleaut32 uuid gdi32 user32)
 add_test(NAME ddskk-langbar-button-test COMMAND ddskk-langbar-button-test)
 
 add_executable(ddskk-mode-indicator-test
@@ -92,6 +95,17 @@ target_compile_features(ddskk-registration-probe PRIVATE cxx_std_20)
 target_compile_definitions(ddskk-registration-probe PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(ddskk-registration-probe PRIVATE /W4 /permissive- /utf-8)
 target_link_libraries(ddskk-registration-probe PRIVATE ole32 uuid)
+
+# Standalone operator tool: applies just the two GUID_TFCAT_TIPCAP_*
+# category registrations dllmain.cpp's RegisterCategories() also performs
+# as part of DllRegisterServer -- which is never run against the live
+# installation on this machine. See windows/tools/register-categories.cpp.
+add_executable(register-categories tools/register-categories.cpp)
+target_include_directories(register-categories PRIVATE src)
+target_compile_features(register-categories PRIVATE cxx_std_20)
+target_compile_definitions(register-categories PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(register-categories PRIVATE /W4 /permissive- /utf-8)
+target_link_libraries(register-categories PRIVATE ole32 uuid)
 
 add_executable(ddskk-ime-config WIN32 config/main.cpp)
 target_compile_features(ddskk-ime-config PRIVATE cxx_std_20)

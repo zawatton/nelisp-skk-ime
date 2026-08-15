@@ -101,13 +101,18 @@ class ModeIndicator final {
   // Hides the popup immediately, if shown.
   void Hide();
 
+  // Resolves `label` to a palette, applying any override registered via
+  // SetPaletteOverride() (falling back to ModeIndicatorColors()'s built-in
+  // default otherwise). Public so callers that need the exact colors this
+  // indicator would paint -- without re-reading the registry themselves --
+  // can reuse it directly; see TextService::CurrentModePalette(), threaded
+  // through to the input-mode langbar item's dynamically drawn icon.
+  ModeIndicatorPalette PaletteForLabel(const std::wstring& label) const;
+
  private:
   bool EnsureWindow();
   void Reposition(const POINT& anchor);
   HFONT EnsureFont(UINT dpi);
-  // Resolves `label` to a palette, applying any override registered via
-  // SetPaletteOverride().
-  ModeIndicatorPalette PaletteForLabel(const std::wstring& label) const;
   // Recreates background_brush_ only when `palette.background` differs
   // from the currently cached brush's color, so repeated Show() calls for
   // the same mode reuse it instead of leaking a fresh GDI object each

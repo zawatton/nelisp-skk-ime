@@ -176,6 +176,24 @@ HRESULT RegisterCategories() {
         CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
         CLSID_DdskkTextService);
   }
+  // Needed for the Windows 10/11 taskbar host to treat this TIP as
+  // tray-capable and actually render its langbar items (specifically
+  // GUID_LBI_INPUTMODE -- see TextService::AddLangBarButton()) in the
+  // taskbar input-indicator area rather than only the floating language
+  // bar. NOTE: this whole RegisterCategories()/DllRegisterServer() path
+  // is never run against the live installation on this machine; these
+  // two categories are also applied standalone by
+  // windows/tools/register-categories.cpp for exactly that reason.
+  if (SUCCEEDED(result)) {
+    result = categories->RegisterCategory(
+        CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+        CLSID_DdskkTextService);
+  }
+  if (SUCCEEDED(result)) {
+    result = categories->RegisterCategory(
+        CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
+        CLSID_DdskkTextService);
+  }
   categories->Release();
   return result;
 }
@@ -193,6 +211,15 @@ void UnregisterCategories() {
         CLSID_DdskkTextService);
     categories->UnregisterCategory(
         CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+        CLSID_DdskkTextService);
+    // Harmless if these were never registered (e.g. an older install);
+    // UnregisterCategory on an absent registration is a no-op failure
+    // this function already ignores, matching every other entry here.
+    categories->UnregisterCategory(
+        CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+        CLSID_DdskkTextService);
+    categories->UnregisterCategory(
+        CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
         CLSID_DdskkTextService);
     categories->Release();
   }

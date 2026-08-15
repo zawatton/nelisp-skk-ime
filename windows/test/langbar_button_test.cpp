@@ -27,21 +27,52 @@ class Handler final : public LangBarButtonHandler {
  public: void SelectInputEngine(bool ddskk) override { selected = ddskk; }
   void ToggleInputMode() override { toggled = true; }
   void ShowSettings() override { settings = true; }
+  void SelectInputMode(const std::wstring& label) override { selected_mode = label; }
+  std::wstring CurrentModeLabel() const override { return L"かな"; }
+  ModeIndicatorPalette CurrentModePalette() const override {
+    return ModeIndicatorPalette{RGB(0xC0, 0x20, 0x20), RGB(0x88, 0x16, 0x16),
+                                RGB(0xFF, 0xFF, 0xFF)};
+  }
   bool selected = false;
   bool toggled = false;
   bool settings = false;
+  std::wstring selected_mode;
 };
 int main() {
   Handler handler;
-  auto* button = new LangBarSettingsButton(&handler);
+  auto* settings_button = new LangBarButton(
+      &handler, GUID_DdskkSettingsButton,
+      TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAYONLY,
+      L"DDSKK settings", LangBarButton::Kind::kSettings);
   TF_LANGBARITEMINFO info{};
-  assert(SUCCEEDED(button->GetInfo(&info)));
+  assert(SUCCEEDED(settings_button->GetInfo(&info)));
   assert((info.dwStyle & TF_LBI_STYLE_SHOWNINTRAYONLY) != 0);
   assert((info.dwStyle & TF_LBI_STYLE_BTN_BUTTON) != 0);
   DWORD status = 0;
-  assert(SUCCEEDED(button->GetStatus(&status)) && status == 0);
-  assert(SUCCEEDED(button->Show(FALSE)));
-  assert(SUCCEEDED(button->GetStatus(&status)) &&
+  assert(SUCCEEDED(settings_button->GetStatus(&status)) && status == 0);
+  assert(SUCCEEDED(settings_button->Show(FALSE)));
+  assert(SUCCEEDED(settings_button->GetStatus(&status)) &&
          (status & TF_LBI_STATUS_HIDDEN) != 0);
-  button->Release();
+  settings_button->Release();
+
+  // The input-mode item: GUID_LBI_INPUTMODE/TF_LBI_STYLE_SHOWNINTRAY (not
+  // the settings item's ...ONLY variant), a mode-aware GetIcon(), and a
+  // real ITfSource (AdviseSink/UnadviseSink/NotifyUpdate).
+  auto* input_mode_button = new LangBarButton(
+      &handler, GUID_LBI_INPUTMODE,
+      TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY,
+      L"DDSKK input mode", LangBarButton::Kind::kInputMode);
+  assert(SUCCEEDED(input_mode_button->GetInfo(&info)));
+  assert((info.dwStyle & TF_LBI_STYLE_SHOWNINTRAY) != 0);
+  HICON icon = nullptr;
+  assert(SUCCEEDED(input_mode_button->GetIcon(&icon)) && icon != nullptr);
+  DestroyIcon(icon);
+
+  ITfSource* source = nullptr;
+  assert(SUCCEEDED(input_mode_button->QueryInterface(
+      IID_ITfSource, reinterpret_cast<void**>(&source))));
+  assert(source != nullptr);
+  source->Release();
+
+  input_mode_button->Release();
 }

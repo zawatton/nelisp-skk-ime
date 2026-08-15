@@ -178,32 +178,80 @@ HRESULT TextService::Deactivate() {
   return S_OK;
 }
 
+// The langbar button had never actually registered anywhere in any
+// process: AddItem returned E_FAIL every time, because both this function
+// and RemoveLangBarButton() acquired their ITfLangBarItemMgr via
+// CoCreateInstance(CLSID_TF_LangBarItemMgr, ...) -- a freestanding manager
+// instance with no linkage to the live taskbar/langbar session, so AddItem
+// had nothing to attach to. The correct pattern (CorvusSKK
+// LanguageBar.cpp:606) is QueryInterface on the ITfThreadMgr TSF itself
+// handed to Activate(): that manager instance IS the one wired to this
+// session's langbar.
 HRESULT TextService::AddLangBarButton() {
-  if (settings_button_ != nullptr) return S_OK;
+  if (thread_manager_ == nullptr) return E_UNEXPECTED;
   ITfLangBarItemMgr* manager = nullptr;
-  HRESULT result = CoCreateInstance(CLSID_TF_LangBarItemMgr, nullptr,
-      CLSCTX_INPROC_SERVER, IID_ITfLangBarItemMgr,
-      reinterpret_cast<void**>(&manager));
+  HRESULT result = thread_manager_->QueryInterface(
+      IID_ITfLangBarItemMgr, reinterpret_cast<void**>(&manager));
   if (FAILED(result)) return result;
-  settings_button_ = new (std::nothrow) LangBarSettingsButton(this);
-  if (settings_button_ == nullptr) result = E_OUTOFMEMORY;
-  else result = manager->AddItem(settings_button_);
-  manager->Release();
-  if (FAILED(result) && settings_button_ != nullptr) {
-    settings_button_->Release(); settings_button_ = nullptr;
+
+  HRESULT settings_result = S_OK;
+  if (settings_button_ == nullptr) {
+    settings_button_ = new (std::nothrow) LangBarButton(
+        this, GUID_DdskkSettingsButton,
+        TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAYONLY,
+        L"DDSKK settings", LangBarButton::Kind::kSettings);
+    settings_result = settings_button_ == nullptr
+        ? E_OUTOFMEMORY : manager->AddItem(settings_button_);
+    if (FAILED(settings_result) && settings_button_ != nullptr) {
+      settings_button_->Release();
+      settings_button_ = nullptr;
+    }
   }
-  return result;
+
+  HRESULT input_mode_result = S_OK;
+  if (input_mode_button_ == nullptr) {
+    // GUID_LBI_INPUTMODE is the well-known item Windows 10/11's taskbar
+    // "A/あ" indicator renders; TF_LBI_STYLE_SHOWNINTRAY (not the
+    // ...ONLY variant the settings item uses) is what makes it eligible
+    // for the taskbar itself rather than only the floating language bar
+    // (also needs the two GUID_TFCAT_TIPCAP_* categories -- see
+    // dllmain.cpp's RegisterCategories() and
+    // windows/tools/register-categories.cpp).
+    input_mode_button_ = new (std::nothrow) LangBarButton(
+        this, GUID_LBI_INPUTMODE,
+        TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY,
+        L"DDSKK input mode", LangBarButton::Kind::kInputMode);
+    input_mode_result = input_mode_button_ == nullptr
+        ? E_OUTOFMEMORY : manager->AddItem(input_mode_button_);
+    if (FAILED(input_mode_result) && input_mode_button_ != nullptr) {
+      input_mode_button_->Release();
+      input_mode_button_ = nullptr;
+    }
+  }
+  manager->Release();
+  return FAILED(settings_result) ? settings_result : input_mode_result;
 }
 
 void TextService::RemoveLangBarButton() {
-  if (settings_button_ == nullptr) return;
+  if (settings_button_ == nullptr && input_mode_button_ == nullptr) return;
+  // See AddLangBarButton(): the manager must be the one TSF handed us via
+  // thread_manager_, not a freestanding CoCreateInstance() instance.
   ITfLangBarItemMgr* manager = nullptr;
-  if (SUCCEEDED(CoCreateInstance(CLSID_TF_LangBarItemMgr, nullptr,
-      CLSCTX_INPROC_SERVER, IID_ITfLangBarItemMgr,
-      reinterpret_cast<void**>(&manager)))) {
-    manager->RemoveItem(settings_button_); manager->Release();
+  if (thread_manager_ != nullptr &&
+      SUCCEEDED(thread_manager_->QueryInterface(
+          IID_ITfLangBarItemMgr, reinterpret_cast<void**>(&manager)))) {
+    if (settings_button_ != nullptr) manager->RemoveItem(settings_button_);
+    if (input_mode_button_ != nullptr) manager->RemoveItem(input_mode_button_);
+    manager->Release();
   }
-  settings_button_->Release(); settings_button_ = nullptr;
+  if (settings_button_ != nullptr) {
+    settings_button_->Release();
+    settings_button_ = nullptr;
+  }
+  if (input_mode_button_ != nullptr) {
+    input_mode_button_->Release();
+    input_mode_button_ = nullptr;
+  }
 }
 
 void TextService::UnadviseKeySink() {
@@ -301,6 +349,7 @@ void TextService::SelectInputEngine(bool ddskk) {
     // latin/direct-input while the IME is disengaged. Forcing it false
     // here is therefore setting a known-correct value, not a stale guess.
     kana_mode_ = false;
+    last_engine_mode_ = L"latin";
     engine_pending_ = false;
   } else if (!was_ddskk) {
     // Resuming DDSKK from passthrough. Passthrough never sends the engine
@@ -314,7 +363,10 @@ void TextService::SelectInputEngine(bool ddskk) {
     // above. It is a safe no-op on the document here, because passthrough
     // guarantees no composition was ever started while it was active.
     const auto state = engine_.SendControl(ddskk::EngineControl::kCancel, 1000);
-    if (state) kana_mode_ = ddskk::DeriveKanaMode(*state);
+    if (state) {
+      kana_mode_ = ddskk::DeriveKanaMode(*state);
+      last_engine_mode_ = state->mode;
+    }
   }
   // No ITfContext is available from this langbar-triggered path; the
   // indicator falls back to the mouse cursor position.
@@ -342,10 +394,69 @@ void TextService::ToggleInputMode() {
       : engine_.SendControl(ddskk::EngineControl::kCancel, 1000);
   if (!state) return;
   kana_mode_ = ddskk::DeriveKanaMode(*state);
+  last_engine_mode_ = state->mode;
   MaybeShowModeIndicator(nullptr, nullptr);
 }
 
+// Right-click mode selection on the input-mode langbar item's menu (see
+// LangBarButton::OnClick()). Mirrors ToggleInputMode()'s guard exactly --
+// a langbar click has no ITfContext to flush a document edit through
+// either, so the engine must not be touched mid-composition -- and routes
+// through the same primitives OnKeyDown/ToggleInputMode already use,
+// never a new engine-driving path: CONTROL CANCEL is the Ctrl+J-
+// equivalent that always lands in hiragana submode (see the long comment
+// on OnKeyDown's Ctrl+J branch), so かな needs nothing further; カナ/全英/
+// SKK each send the one additional DDSKK key that moves off that
+// baseline -- `q' toggles hiragana<->katakana, `L' enters the wide-latin
+// (全英) submode, and `l' is the same ascii/latin key ToggleInputMode
+// itself sends.
+void TextService::SelectInputMode(const std::wstring& label) {
+  if (!ddskk_engine_ || engine_pending_) return;
+  auto state = engine_.SendControl(ddskk::EngineControl::kCancel, 1000);
+  if (!state) return;
+  if (label == L"カナ") {
+    state = engine_.SendKey(U'q', 1000);
+  } else if (label == L"全英") {
+    state = engine_.SendKey(U'L', 1000);
+  } else if (label == L"SKK") {
+    state = engine_.SendKey(U'l', 1000);
+  }
+  // かな (or anything unrecognized): CANCEL alone already reached it.
+  if (!state) return;
+  kana_mode_ = ddskk::DeriveKanaMode(*state);
+  last_engine_mode_ = state->mode;
+  MaybeShowModeIndicator(nullptr, &*state);
+}
+
+std::wstring TextService::CurrentModeLabel() const {
+  return ModeIndicatorLabel(kana_mode_, last_engine_mode_);
+}
+
+ModeIndicatorPalette TextService::CurrentModePalette() const {
+  // Reuses ModeIndicator's already-loaded registry overrides (see
+  // LoadSettings()) rather than re-reading the registry here.
+  return mode_indicator_.PaletteForLabel(CurrentModeLabel());
+}
+
 void TextService::ShowSettings() {
+  // The settings UI stores its own executable path once installed; if
+  // present, launch it (with --settings) in preference to the legacy
+  // fallback below. Registry read only.
+  wchar_t settings_exe[32768]{};
+  DWORD settings_exe_bytes = sizeof(settings_exe);
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0, KEY_READ,
+                    &key) == ERROR_SUCCESS) {
+    const LONG status = RegQueryValueExW(
+        key, L"SettingsExe", nullptr, nullptr,
+        reinterpret_cast<BYTE*>(settings_exe), &settings_exe_bytes);
+    RegCloseKey(key);
+    if (status == ERROR_SUCCESS && settings_exe[0] != L'\0') {
+      ShellExecuteW(nullptr, L"open", settings_exe, L"--settings", nullptr,
+                   SW_SHOWNORMAL);
+      return;
+    }
+  }
   wchar_t module_path[MAX_PATH]{};
   GetModuleFileNameW(g_module, module_path, MAX_PATH);
   std::wstring path(module_path);
@@ -418,7 +529,8 @@ void TextService::LoadSettings() {
 
   // Seed the baseline label without popping the indicator, so only a
   // real subsequent transition (not this initial load) shows the popup.
-  last_mode_label_ = ModeIndicatorLabel(kana_mode_, L"hiragana");
+  last_engine_mode_ = L"hiragana";
+  last_mode_label_ = ModeIndicatorLabel(kana_mode_, last_engine_mode_);
 }
 
 void TextService::EnsureEngineHost() {
@@ -634,6 +746,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   // and OnTestKeyDown kept claiming keys the engine no longer wanted.
   engine_pending_ = state->composition_start >= 0 || !state->pending_romaji.empty();
   kana_mode_ = ddskk::DeriveKanaMode(*state);
+  last_engine_mode_ = state->mode;
   UpdateCandidateUI(context, *state);
   auto* edit_session = new (std::nothrow) StateEditSession(this, context, *state);
   if (edit_session == nullptr) return E_OUTOFMEMORY;
@@ -992,20 +1105,33 @@ void TextService::CaptureCaretRect(TfEditCookie edit_cookie, ITfContext* context
   last_caret_valid_ = true;
 }
 
-// Pops the mode indicator when the computed label actually changes.
-// `context` may be null (langbar-triggered calls have no associated
-// context); `state` may be null when no fresh engine state is available
-// (the label then falls back to kana_mode_ alone). This never touches
-// *eaten, the composition, or any edit session result -- it is purely a
-// side effect observed after the fact.
+// The single choke point after every mode change: pops the transient
+// popup indicator and pushes an update to the input-mode langbar icon,
+// whenever the computed label actually changes. `context` may be null
+// (langbar-triggered calls have no associated context); `state` may be
+// null when no fresh engine state is available (the label then falls
+// back to kana_mode_ alone). This never touches *eaten, the composition,
+// or any edit session result -- it is purely a side effect observed
+// after the fact.
 void TextService::MaybeShowModeIndicator(ITfContext* context,
                                          const ddskk::EngineState* state) {
-  if (!mode_indicator_enabled_) return;
+  // Kept fresh regardless of mode_indicator_enabled_ below: CurrentModeLabel()
+  // (used by the input-mode item's GetIcon()/OnClick()) must reflect the
+  // engine's last-reported mode even when the transient popup is disabled.
+  if (state != nullptr) last_engine_mode_ = state->mode;
   const std::wstring engine_mode = state != nullptr ? state->mode : std::wstring();
   const std::wstring label = ModeIndicatorLabel(kana_mode_, engine_mode);
   if (label == last_mode_label_) return;
   last_mode_label_ = label;
 
+  // Independent of mode_indicator_enabled_ below: the taskbar icon and the
+  // transient popup are two separate UI surfaces, and TSF should still
+  // re-query GetIcon() for a real mode change even if the popup is off.
+  if (input_mode_button_ != nullptr) {
+    input_mode_button_->NotifyUpdate(TF_LBI_ICON | TF_LBI_STATUS);
+  }
+
+  if (!mode_indicator_enabled_) return;
   POINT anchor{};
   if (context != nullptr && last_caret_valid_) {
     anchor.x = last_caret_rect_.left;
