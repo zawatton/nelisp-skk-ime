@@ -60,7 +60,10 @@ param(
 
   [string]$Configuration = "Release",
 
-  [int]$ColdLoadSleepSec = 6,
+  # Engine cold load has been measured anywhere from 3.4s (quiet machine)
+  # to ~12s (loaded machine); a 6s default let the first scripted keys race
+  # the load and get swallowed, which read as false engine regressions.
+  [int]$ColdLoadSleepSec = 12,
 
   [int]$PipeWaitTimeoutSec = 30,
 

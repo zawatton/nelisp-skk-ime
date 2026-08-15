@@ -98,6 +98,13 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
                         ITfRange* range);
   void MaybeShowModeIndicator(ITfContext* context,
                               const ddskk::EngineState* state);
+  // Closes the candidate-selection UI element (if open) and clears the
+  // per-candidate state tracked alongside it (candidate_context_/
+  // candidate_count_/candidate_index_). Safe to call whether or not a
+  // candidate UI is currently open. See its definition for the harness
+  // evidence behind why every path that can abandon a composition must
+  // call this, not just UpdateCandidateUI()'s normal empty-candidates case.
+  void CloseCandidateUi();
   // Appends one line to %LOCALAPPDATA%\DDSKK\dll-debug.log when
   // debug_log_ is set (HKCU\Software\NativeIME\DllDebug == 1). No-op
   // otherwise, so this is safe to call unconditionally from hot paths.

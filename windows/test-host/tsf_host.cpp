@@ -624,6 +624,17 @@ bool TokenToKey(const std::wstring& token, KeyEvent* out) {
     *out = KeyEvent{static_cast<UINT>(L'J'), false, true};
     return true;
   }
+  if (token == L"CTRLG") {
+    *out = KeyEvent{static_cast<UINT>(L'G'), false, true};
+    return true;
+  }
+  if (token == L"LEFT") { *out = KeyEvent{VK_LEFT, false, false}; return true; }
+  if (token == L"RIGHT") { *out = KeyEvent{VK_RIGHT, false, false}; return true; }
+  if (token == L"UP") { *out = KeyEvent{VK_UP, false, false}; return true; }
+  if (token == L"DOWN") { *out = KeyEvent{VK_DOWN, false, false}; return true; }
+  if (token == L"DEL") { *out = KeyEvent{VK_DELETE, false, false}; return true; }
+  if (token == L"HOME") { *out = KeyEvent{VK_HOME, false, false}; return true; }
+  if (token == L"END") { *out = KeyEvent{VK_END, false, false}; return true; }
   if (token.size() == 1) {
     const wchar_t ch = token[0];
     if (ch >= L'a' && ch <= L'z') {

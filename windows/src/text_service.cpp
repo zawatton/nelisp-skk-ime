@@ -161,19 +161,7 @@ HRESULT TextService::Deactivate() {
     composition_->Release();
     composition_ = nullptr;
   }
-  if (candidate_ui_id_ != TF_INVALID_UIELEMENTID && thread_manager_ != nullptr) {
-    ITfUIElementMgr* manager = nullptr;
-    if (SUCCEEDED(thread_manager_->QueryInterface(
-            IID_ITfUIElementMgr, reinterpret_cast<void**>(&manager)))) {
-      manager->EndUIElement(candidate_ui_id_);
-      manager->Release();
-    }
-    candidate_ui_id_ = TF_INVALID_UIELEMENTID;
-  }
-  if (candidate_context_ != nullptr) {
-    candidate_context_->Release();
-    candidate_context_ = nullptr;
-  }
+  CloseCandidateUi();
   UnadviseKeySink();
   return S_OK;
 }
@@ -282,6 +270,11 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
              static_cast<unsigned>(wparam), handled, connect, *eaten);
   };
   const bool ctrl_j = wparam == 'J' && (GetKeyState(VK_CONTROL) & 0x8000);
+  // DDSKK's standard keyboard-quit binding: Ctrl+G cancels an in-flight
+  // conversion/composition exactly like Esc. Detected here alongside
+  // ctrl_j, but (unlike ctrl_j, which is always claimed) its actual claim
+  // decision needs `composing`, computed further below -- see that branch.
+  const bool ctrl_g = wparam == 'G' && (GetKeyState(VK_CONTROL) & 0x8000);
   if (!ddskk_engine_) {
     *eaten = FALSE;
     debug_exit(-1, -1);
@@ -301,6 +294,30 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
   // or a pending romaji prefix is actually in flight; otherwise they must
   // fall through to the application (matches CorvusSKK's key ownership).
   const bool composing = composition_ != nullptr || engine_pending_;
+  // Ctrl+G's claim decision needs `composing`, just computed above, so it
+  // is handled here rather than alongside ctrl_j. Unlike ctrl_j (always
+  // claimed), Ctrl+G must fall through to the application when nothing is
+  // composing (many apps bind it to go-to-line etc.); it must ALSO be
+  // decided here, before the `handled` computation below, because 'G' is
+  // already unconditionally inside that computation's plain letters range
+  // (`wparam >= 'A' && wparam <= 'Z'`) -- without this early branch,
+  // Ctrl+G would be claimed exactly like a bare "G" keystroke regardless
+  // of composing state, which is the bug being fixed here. ddskk_engine_
+  // and kana_mode_ are already guaranteed true by the two early-outs
+  // above by the time this runs, but are kept explicit anyway so this
+  // branch's condition still reads correctly on its own.
+  if (ctrl_g) {
+    if (!(ddskk_engine_ && kana_mode_ && composing)) {
+      *eaten = FALSE;
+      debug_exit(-1, -1);
+      return S_OK;
+    }
+    const bool connected = engine_.Connect(1500);
+    if (!connected) EnsureEngineHost();  // see the `handled` block's identical comment below
+    *eaten = TRUE;
+    debug_exit(-1, connected ? 1 : 0);
+    return S_OK;
+  }
   // wparam here is a VK code, not an ASCII/character code: the old
   // `wparam >= 0x20 && wparam <= 0x7e' range claimed far more than
   // printable keys -- VK_PRIOR/VK_NEXT/VK_END/VK_HOME/arrows/VK_INSERT/
@@ -667,7 +684,11 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     if (!state) {
       // OnTestKeyDown already claimed Ctrl+J; letting it fall through here
       // would leak the raw keystroke into the document instead of just
-      // swallowing it for this one failed round-trip.
+      // swallowing it for this one failed round-trip. A transaction
+      // timeout/resync here is also exactly the class of failure that can
+      // leave a candidate UI element stranded open behind a composition
+      // no later state will ever again describe -- see CloseCandidateUi().
+      CloseCandidateUi();
       *eaten = TRUE;
       debug_exit(*eaten);
       return S_OK;
@@ -710,6 +731,20 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       return S_OK;
     }
     state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
+  } else if (wparam == 'G' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+    branch = L"ctrlg";
+    // DDSKK's standard keyboard-quit binding: cancels exactly like Esc
+    // above. This condition mirrors OnTestKeyDown's ctrl_g branch exactly
+    // so claim and handling agree -- when nothing is composing,
+    // OnTestKeyDown already left this key unclaimed (*eaten stays FALSE,
+    // its top-of-function default), so this early-return is only ever
+    // reached in practice if that invariant somehow didn't hold; it is
+    // still made explicit here so this function is correct on its own.
+    if (composition_ == nullptr && !engine_pending_) {
+      debug_exit(*eaten);
+      return S_OK;
+    }
+    state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
   } else {
     branch = L"key";
     const auto codepoint = TranslateKey(wparam, lparam);
@@ -726,7 +761,11 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   if (!state) {
     // OnTestKeyDown already claimed this key, so letting it fall through
     // here would leak the raw keystroke into the document instead of just
-    // swallowing it for this one failed round-trip.
+    // swallowing it for this one failed round-trip. Also closes any
+    // candidate UI element rather than leaving it stranded open behind a
+    // composition no later state will ever describe again -- see
+    // CloseCandidateUi().
+    CloseCandidateUi();
     *eaten = TRUE;
     debug_exit(*eaten);
     return S_OK;
@@ -763,37 +802,71 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   return S_OK;
 }
 
+// HARNESS EVIDENCE this exists to fix: OnTestKeyDown provably claims no
+// navigation key (LEFT/RIGHT/UP/DOWN/DEL/HOME/END all eaten=0, idle and
+// mid-composition), yet arrow keys still went dead for the user in
+// specific host windows. The remaining mechanism was the candidate UI
+// element leaking OPEN: UpdateCandidateUI() only ever called
+// EndUIElement() when a LATER engine state happened to arrive reporting
+// empty candidates -- but every OnKeyDown failure path that returns with
+// `*eaten = TRUE` before reaching UpdateCandidateUI() (a transaction
+// timeout/resync: the Ctrl+J branch's and the common `if (!state)`
+// return) skips it entirely, and OnCompositionTerminated() never touched
+// candidate_ui_id_ either. Once the engine session was reset out from
+// under the DLL (see EngineClient's own needs_resync_ handling), no
+// subsequent state ever carries candidates for that context again, so
+// the element stayed open for the life of the app -- and while a TSF UI
+// element is open, hosts route navigation keys to the IME's candidate
+// handling instead of the caret. This is the single close path: called
+// from UpdateCandidateUI()'s own empty-candidates case below, from every
+// OnKeyDown failure path that abandons a composition, from
+// OnCompositionTerminated(), and from Deactivate().
+void TextService::CloseCandidateUi() {
+  if (candidate_ui_id_ != TF_INVALID_UIELEMENTID && thread_manager_ != nullptr) {
+    ITfUIElementMgr* manager = nullptr;
+    if (SUCCEEDED(thread_manager_->QueryInterface(
+            IID_ITfUIElementMgr, reinterpret_cast<void**>(&manager)))) {
+      manager->EndUIElement(candidate_ui_id_);
+      manager->Release();
+    }
+    candidate_ui_id_ = TF_INVALID_UIELEMENTID;
+  }
+  if (candidate_context_ != nullptr) {
+    candidate_context_->Release();
+    candidate_context_ = nullptr;
+  }
+  candidate_index_ = -1;
+  candidate_count_ = 0;
+}
+
 void TextService::UpdateCandidateUI(ITfContext* context,
                                     const ddskk::EngineState& state) {
+  if (state.candidates.empty()) {
+    CloseCandidateUi();
+    return;
+  }
   if (thread_manager_ == nullptr) return;
   ITfUIElementMgr* manager = nullptr;
   if (FAILED(thread_manager_->QueryInterface(
           IID_ITfUIElementMgr, reinterpret_cast<void**>(&manager)))) return;
-  if (state.candidates.empty()) {
-    if (candidate_ui_id_ != TF_INVALID_UIELEMENTID) {
-      manager->EndUIElement(candidate_ui_id_);
-      candidate_ui_id_ = TF_INVALID_UIELEMENTID;
-    }
-  } else {
-    if (candidate_ui_ == nullptr) candidate_ui_ = new (std::nothrow) CandidateUI(this);
-    if (candidate_context_ != context) {
-      if (candidate_context_ != nullptr) candidate_context_->Release();
-      candidate_context_ = context;
-      candidate_context_->AddRef();
-    }
-    candidate_index_ = state.candidate_index;
-    candidate_count_ = state.candidates.size();
-    ITfDocumentMgr* document = nullptr;
-    context->GetDocumentMgr(&document);
-    if (candidate_ui_ != nullptr) candidate_ui_->Update(state, document);
-    if (document != nullptr) document->Release();
-    if (candidate_ui_ != nullptr) {
-      if (candidate_ui_id_ == TF_INVALID_UIELEMENTID) {
-        BOOL show = TRUE;
-        manager->BeginUIElement(candidate_ui_, &show, &candidate_ui_id_);
-      } else {
-        manager->UpdateUIElement(candidate_ui_id_);
-      }
+  if (candidate_ui_ == nullptr) candidate_ui_ = new (std::nothrow) CandidateUI(this);
+  if (candidate_context_ != context) {
+    if (candidate_context_ != nullptr) candidate_context_->Release();
+    candidate_context_ = context;
+    candidate_context_->AddRef();
+  }
+  candidate_index_ = state.candidate_index;
+  candidate_count_ = state.candidates.size();
+  ITfDocumentMgr* document = nullptr;
+  context->GetDocumentMgr(&document);
+  if (candidate_ui_ != nullptr) candidate_ui_->Update(state, document);
+  if (document != nullptr) document->Release();
+  if (candidate_ui_ != nullptr) {
+    if (candidate_ui_id_ == TF_INVALID_UIELEMENTID) {
+      BOOL show = TRUE;
+      manager->BeginUIElement(candidate_ui_, &show, &candidate_ui_id_);
+    } else {
+      manager->UpdateUIElement(candidate_ui_id_);
     }
   }
   manager->Release();
@@ -921,6 +994,10 @@ HRESULT TextService::OnCompositionTerminated(TfEditCookie, ITfComposition*) {
     composition_->Release();
     composition_ = nullptr;
   }
+  // See CloseCandidateUi()'s own comment: the application ending this
+  // composition on its own is exactly the kind of path that must not
+  // leave a candidate UI element stranded open behind it.
+  CloseCandidateUi();
   engine_pending_ = false;
   engine_needs_cancel_ = true;
   return S_OK;
