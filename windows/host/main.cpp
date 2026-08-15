@@ -612,6 +612,25 @@ void IdleGcLoop() {
       // response is intentionally discarded: the host does not need the
       // engine's "OK GC" / "ERR GC ..." payload, only that the request/
       // response cycle completed (or, on failure, that it noticed).
+
+      // Piggyback the dictionary-compaction verb onto this same idle
+      // window, still inside this lock and this loop iteration: the
+      // pre-lock and post-lock freshness/composing-suppression checks
+      // above already cover it too, so there is no separate idle or
+      // composing gate to write for COMPACT. It costs 300-500 ms when the
+      // engine's append-journal has actually grown past its threshold (a
+      // quick no-op reply otherwise) -- exactly the class of cost that
+      // must never ride on a keystroke, same reasoning as GC above. If
+      // the connected engine predates this verb it replies with an ERR
+      // line; that is still a successful Dispatch() (a reply arrived), so
+      // no special handling is needed beyond the same child-exit check.
+      std::string response2;
+      if (!Dispatch(g_child, "COMPACT", &response2)) {
+        if (g_child.process == nullptr ||
+            WaitForSingleObject(g_child.process, 0) != WAIT_TIMEOUT) {
+          RequestStop();
+        }
+      }
     }
   }
 }

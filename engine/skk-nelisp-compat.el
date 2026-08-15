@@ -755,6 +755,102 @@ its minor-mode maps leave unbound -- that fall-through is what makes
   ;; `(goto-char (1- skk-henkan-start-point))', so this was load-bearing for
   ;; CONVERT; the runtime fix removes the need for the wrapper.
   ;;
+  ;; --- `write-region' fix -----------------------------------------------
+  ;;
+  ;; This unconditionally CLOBBERS the `write-region' baked into
+  ;; `nelisp.exe' from `dev/nelisp/scripts/nelisp-stdlib-prelude.el'
+  ;; (`(unless (fboundp 'write-region) (defun write-region ...))' there --
+  ;; that guard only protects against a PRIOR definition, and by the time
+  ;; this file loads the stub is already `fboundp', so a plain `defun'
+  ;; here replaces it).  Every other shim in this file only fills a
+  ;; genuine gap and is left `unless fboundp'-gated; this one is different
+  ;; because the existing definition is not merely missing, it is
+  ;; ACTIVELY WRONG, confirmed by direct probe against a running
+  ;; `nelisp.exe' (not assumed):
+  ;;
+  ;;   (1) The stub validates success as `(= rc (length bytes))', where
+  ;;       `rc' (the return value of the underlying `wrf' syscall) is a
+  ;;       BYTE count but `(length bytes)' is Elisp's CHARACTER count of
+  ;;       the string.  Those only agree for pure-ASCII content.  Probed
+  ;;       directly: writing "かんじ /漢字/幹事/\n" (12 characters) makes
+  ;;       `wrf' return 26 -- its true UTF-8 byte length -- which the stub
+  ;;       then compares against 12 and rejects with a signalled error,
+  ;;       even though the file on disk already contains exactly the
+  ;;       correct 26 bytes.  Every real save in `engine/skk-user-
+  ;;       jisyo.el' hits this, since learned candidates are Japanese.
+  ;;   (2) APPEND unconditionally signals "not supported" instead of
+  ;;       appending, forcing every caller that needs append semantics
+  ;;       (the learn journal below) into a full read-modify-write of the
+  ;;       whole file on every single confirmation -- exactly the cost
+  ;;       the journal exists to avoid.
+  ;;
+  ;; `nelisp.exe' is shared by other applications on this machine and
+  ;; must not be rebuilt to fix either defect; both are corrected here,
+  ;; in this repository's own compat shim, instead.
+  (defun skk-nelisp--utf8-byte-length (string)
+    "Return STRING's length in UTF-8 encoded bytes, without encoding it.
+Standard per-scalar-value UTF-8 width: 1 byte below U+0080, 2 below
+U+0800, 3 below U+10000, 4 otherwise.  NeLisp strings are Unicode scalar
+sequences (see `encode-coding-string' above), so no surrogate-pair
+handling is needed here -- this is exactly the count `wrf' itself
+produces when it writes STRING's UTF-8 bytes to disk, which is what
+makes this the correct thing to validate `write-region' against below,
+in place of the stub's broken character count."
+    (let ((total 0) (index 0) (count (length string)))
+      (while (< index count)
+        (let ((code (aref string index)))
+          (setq total (+ total
+                         (cond ((< code #x80) 1)
+                               ((< code #x800) 2)
+                               ((< code #x10000) 3)
+                               (t 4)))))
+        (setq index (1+ index)))
+      total))
+
+  (defun write-region (start end filename &optional append _visit
+                              _lockname _mustbenew)
+    "Write START (through END, or in full when END is nil) to FILENAME.
+Supports the same string-START-only subset the broken stub supported --
+there is no buffer-position form here -- and signals
+`wrong-type-argument' for a non-string START/FILENAME or a non-integer,
+non-nil END, exactly like the stub did.
+
+APPEND, when non-nil, reads FILENAME's existing content first via
+`nelisp--syscall-read-file' (treating a missing or unreadable file as
+empty, the same documented contract `ddskk-user-jisyo-load' already
+relies on elsewhere in this engine) and writes the concatenation of the
+existing content and the new payload in one `wrf' call -- there is no
+real append syscall here to hand off to, only a whole-file write.
+VISIT/LOCKNAME/MUSTBENEW are accepted for signature compatibility only,
+same as the stub they replace.
+
+Validates success by comparing `wrf's return value against the
+payload's UTF-8 BYTE length computed by `skk-nelisp--utf8-byte-length'
+-- not the stub's broken CHARACTER count -- and signals `error' only on
+a genuine mismatch (nothing/only part of the payload actually reached
+disk).  Always returns nil, like the stub it replaces."
+    (unless (stringp start)
+      (signal 'wrong-type-argument (list 'stringp start)))
+    (unless (stringp filename)
+      (signal 'wrong-type-argument (list 'stringp filename)))
+    (let* ((new (cond
+                 ((null end) start)
+                 ((integerp end) (substring start 0 end))
+                 (t (signal 'wrong-type-argument
+                            (list '(or null integerp) end)))))
+           (payload (if append
+                        (concat (or (nelisp--syscall-read-file filename) "")
+                                new)
+                      new))
+           (expected (skk-nelisp--utf8-byte-length payload))
+           (rc (wrf filename payload)))
+      (unless (= rc expected)
+        (signal 'error
+                (list (format
+                       "write-region: wrf returned %S (expected %S UTF-8 bytes) path=%s"
+                       rc expected filename)))))
+    nil)
+
   ;; `skk-nelisp--pos' itself stays: it still backs `looking-back',
   ;; `char-after', `char-before' below, none of which route through the
   ;; runtime's arithmetic dispatch table.

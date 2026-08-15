@@ -438,6 +438,24 @@ The data carries the missing symbol name for `void-variable' /
         (ddskk-engine--state-line
          (skk-ime-session-snapshot ddskk-engine--session))
       (error (ddskk-engine--error-token "ERR STATUS" err))))
+   ((equal line "COMPACT")
+    ;; Explicit maintenance request from the host's idle timer, exactly
+    ;; like `GC' above -- sent only after the pipe has sat idle for a
+    ;; while, never on the per-keystroke or per-commit critical path.
+    ;; `ddskk-user-jisyo-compact' (engine/skk-user-jisyo.el) folds the
+    ;; learn journal into a full save of the user dictionary ONLY once
+    ;; enough confirmations have queued (returning nil, a fast no-op,
+    ;; otherwise); every ordinary confirmation instead pays only for one
+    ;; short journal-append, on the CONTROL COMMIT path, so this is what
+    ;; keeps the ~300-500ms whole-table serialize off commit latency.
+    ;; Unlike the other error-degrading arms above, `ddskk-user-jisyo-
+    ;; compact' deliberately SIGNALS on a genuine save failure (rather
+    ;; than swallowing it the way `ddskk-user-jisyo-save' always does)
+    ;; specifically so this condition-case can report it back to
+    ;; whoever explicitly asked for a compaction.
+    (condition-case err
+        (if (ddskk-user-jisyo-compact) "OK COMPACT" "OK COMPACT NOOP")
+      (error (ddskk-engine--error-token "ERR COMPACT" err))))
    ((string-match "^KEY \\([0-9]+\\)$" line)
     (let ((codepoint (string-to-number (match-string 1 line))))
       (if (or (< codepoint 0) (> codepoint 1114111)) "ERR CODEPOINT"

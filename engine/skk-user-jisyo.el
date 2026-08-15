@@ -165,23 +165,53 @@
 ;; underlying disk write, dominates.  ~324-900ms for a few hundred
 ;; entries is still far past any keystroke-latency budget, so saving on
 ;; every single confirmation (this module's first-cut behavior) does
-;; NOT hold up at scale, exactly as anticipated.  `ddskk-user-jisyo--
-;; update' therefore batches: it saves only every `ddskk-user-jisyo-
-;; save-batch-size' confirmations (see that variable for why 10, not
-;; DDSKK's own `skk-jisyo-save-count' default of 50), and `ddskk-user-
-;; jisyo-purge' (an explicit, rare user correction) always flushes
-;; immediately rather than waiting for the batch.  Batching amortizes
-;; the AVERAGE cost but not the worst case: the occasional batched save
-;; at scale is still several hundred ms on this runtime; a fully
-;; async/deferred write was judged out of scope for v1 -- this single-
-;; threaded engine processes one wire request at a time, so there is no
-;; existing background-execution mechanism to defer onto.  A crash or
-;; hard kill between batched saves can lose up to `ddskk-user-jisyo-
-;; save-batch-size' minus one confirmations: `SHUTDOWN' (windows/host/
-;; main.cpp) is handled entirely by the C++ host and never reaches this
-;; engine at all, so there is no clean-shutdown hook here to flush on
-;; either -- `ddskk-user-jisyo-flush' exists for a future caller that
-;; gets one.
+;; NOT hold up at scale, exactly as anticipated.
+;;
+;; v1 responded to that by batching the full save itself: `ddskk-user-
+;; jisyo--update' saved only every `ddskk-user-jisyo-save-batch-size'
+;; confirmations, which amortized the AVERAGE cost but not the worst
+;; case (the occasional batched save was still several hundred ms,
+;; landing synchronously inside whichever CONTROL COMMIT triggered it)
+;; and could lose up to `ddskk-user-jisyo-save-batch-size' minus one
+;; confirmations on a crash or hard kill between batches -- observed in
+;; practice when the host was restarted for deployment.  `SHUTDOWN'
+;; (windows/host/main.cpp) is handled entirely by the C++ host and never
+;; reaches this engine at all, so there was no clean-shutdown hook here
+;; to flush on either.
+;;
+;; v2 (current) replaces that with a journal, now that `write-region'
+;; APPEND actually works (see `engine/skk-nelisp-compat.el'):
+;;   - Every confirmation appends ONE short line to `<path>.journal' --
+;;     `ddskk-user-jisyo--journal-append' -- instead of paying the
+;;     whole-table serialize.  The line is a full snapshot of that
+;;     MIDASI's current candidate list, in the same format as the base
+;;     file body, so a later line for the same MIDASI simply supersedes
+;;     an earlier one; replaying the journal in file order and
+;;     `puthash'-ing each line (`ddskk-user-jisyo--replay-journal',
+;;     reusing `ddskk-user-jisyo--parse-into-table') is therefore
+;;     idempotent and order-safe regardless of how many lines exist for
+;;     the same word.  A crash between the journal append and the next
+;;     compaction loses nothing: the journal itself IS the durable
+;;     record until compaction folds it into the base file.
+;;   - `ddskk-user-jisyo-load' replays `<path>.journal' over the base
+;;     file at startup, so a not-yet-compacted journal is never lost
+;;     across a restart.
+;;   - The expensive whole-table `ddskk-user-jisyo-save' now runs only
+;;     from `ddskk-user-jisyo-compact', and only when the journal has
+;;     accumulated at least `ddskk-user-jisyo-save-batch-size' entries
+;;     (that variable's meaning changes accordingly: a save/compaction
+;;     THRESHOLD, not a fixed save INTERVAL) -- and `ddskk-user-jisyo-
+;;     compact' is never called from the per-keystroke or per-commit
+;;     path at all.  It is wired to the engine's `COMPACT' wire verb
+;;     (`engine/ddskk-engine.el'), which the C++ host sends only after
+;;     observing the pipe idle, exactly mirroring how `GC' is already
+;;     scheduled there -- so commit latency never pays the whole-table
+;;     serialize cost measured above.
+;;   - `ddskk-user-jisyo-purge' (an explicit, rare user correction) still
+;;     flushes immediately via `ddskk-user-jisyo-flush' rather than only
+;;     journaling, exactly as v1 did; `ddskk-user-jisyo-flush' now also
+;;     empties the journal on a successful save, since every line it held
+;;     is already reflected in the base file it just wrote.
 
 ;;; Code:
 
@@ -207,27 +237,40 @@ file standalone) to see what went wrong, if anything.")
     (if (and env (> (length env) 0) (string-match "\\`[0-9]+\\'" env))
         (max 1 (string-to-number env))
       10))
-  "Confirmations between disk saves; see \"Save timing\" above.
-Every save serializes and writes the WHOLE table (this runtime's
-`write-region' cannot append), and that cost was measured at roughly
-2-3ms per entry -- a few hundred entries already means the better part
-of a second per save.  Saving on every confirmation therefore does not
-scale; this many confirmations are batched into one save instead.
-DDSKK's own `skk-jisyo-save-count' defaults to 50 for its much cheaper
-incremental save; this one is picked smaller because each save here is
-comparatively expensive AND there is no clean-shutdown hook to flush
-pending confirmations on this engine (see above) -- a smaller batch
-bounds how much can be lost to a crash or hard kill between saves.
-`DDSKK_USER_JISYO_SAVE_BATCH_SIZE', when set to a positive integer,
-overrides the default -- mirrors the existing `DDSKK_USER_JISYO' /
-`DDSKK_ENGINE_DEBUG' env-var pattern, and lets a test harness set this
-to 1 to get immediate-save semantics without changing production code.")
+  "Compaction threshold: journal entries queued before a full save runs.
+Formerly \"confirmations between disk saves\" when v1 batched the save
+itself directly from `ddskk-user-jisyo--update' (see \"Save timing\"
+above for the measurement history); v2 journals every confirmation
+individually (cheap -- one short `write-region' APPEND) and only
+consults this threshold from `ddskk-user-jisyo-compact', which folds the
+journal into a full save of the WHOLE table (this runtime's
+`write-region' still cannot incrementally update the base file itself,
+only append to the journal) at roughly 2-3ms per entry -- a few hundred
+entries already means the better part of a second, which is why
+`ddskk-user-jisyo-compact' is wired to the engine's `COMPACT' wire verb
+and invoked only when the host observes the pipe idle, never from the
+per-keystroke or per-commit path.  DDSKK's own `skk-jisyo-save-count'
+defaults to 50 for its much cheaper incremental save; this one is picked
+smaller because a compaction here is comparatively expensive AND bounds
+how many journal lines (and thus how much replay work) can accumulate
+before the next idle window.  `DDSKK_USER_JISYO_SAVE_BATCH_SIZE', when
+set to a positive integer, overrides the default -- mirrors the existing
+`DDSKK_USER_JISYO' / `DDSKK_ENGINE_DEBUG' env-var pattern, and lets a
+test harness set this to 1 to get compact-on-first-entry semantics
+without changing production code.")
 
-(defvar ddskk-user-jisyo--pending-saves 0
-  "Confirmations recorded since the last `ddskk-user-jisyo-save' attempt.
-Reset to 0 by `ddskk-user-jisyo-flush', whether or not the save
-actually succeeded -- a save that keeps failing must not make this
-counter grow without bound.")
+(defvar ddskk-user-jisyo--journal-pending 0
+  "Journal entries appended since the last successful compaction/flush.
+Incremented once per ordinary (non-purge) confirmation in `ddskk-user-
+jisyo--update', regardless of whether the journal append itself
+succeeded -- the counter only decides WHEN to attempt a compaction; the
+compaction itself always serializes the authoritative in-memory
+`ddskk-user-jisyo--table', so even a run of failed journal appends is
+still captured correctly once a compaction (or `ddskk-user-jisyo-flush')
+succeeds.  Reset to 0 by `ddskk-user-jisyo-flush', and only on a
+SUCCESSFUL save -- see that function's docstring for why a failed save
+must not also discard the one record (the journal) that could recover
+the pending confirmations.")
 
 ;; --- Path resolution --------------------------------------------------
 
@@ -249,6 +292,14 @@ is how tests point the engine at a private, disposable file instead of
 ever touching the user's real one, mirroring the existing
 `DDSKK_ENGINE_DEBUG' pattern read in `ddskk-engine.el'."
   (or (getenv "DDSKK_USER_JISYO") (ddskk-user-jisyo--default-path)))
+
+(defun ddskk-user-jisyo--journal-path ()
+  "Return the journal file path alongside the active user-dictionary, or nil.
+Simply `ddskk-user-jisyo-path' with a `.journal' suffix -- nil exactly
+when that is nil (no `LOCALAPPDATA' and no `DDSKK_USER_JISYO' override),
+which every caller here already treats as \"no dictionary available\"."
+  (let ((path (ddskk-user-jisyo-path)))
+    (and (stringp path) (concat path ".journal"))))
 
 (defun ddskk-user-jisyo--directory (path)
   "Return the parent directory portion of PATH (text before the last
@@ -359,6 +410,27 @@ file already reflects whatever priority order it was last saved in)."
 
 ;; --- Load / Save ------------------------------------------------------
 
+(defun ddskk-user-jisyo--replay-journal ()
+  "Overlay `<path>.journal' onto the already-loaded `ddskk-user-jisyo--table'.
+Called from `ddskk-user-jisyo-load', strictly AFTER the base file has
+been parsed into the table.  Each journal line is a full snapshot of
+one MIDASI's candidate list (see `ddskk-user-jisyo--journal-append'),
+so simply reusing `ddskk-user-jisyo--parse-into-table' to `puthash'
+every line onto the SAME table, in file (== append/chronological) order,
+is enough: only the LAST line for a given MIDASI matters, and that is
+exactly what a sequence of `puthash' calls in order already produces --
+no separate merge logic is needed.  A missing journal, or one that fails
+to read, is silently treated as empty (nothing to replay), matching
+`ddskk-user-jisyo-load's own tolerance for a missing base file; a
+malformed individual line is skipped by `ddskk-user-jisyo--parse-line'
+itself, same contract as the base file."
+  (let ((path (ddskk-user-jisyo--journal-path)))
+    (when (stringp path)
+      (let ((text (ignore-errors (nelisp--syscall-read-file path))))
+        (when (stringp text)
+          (ignore-errors
+            (ddskk-user-jisyo--parse-into-table text ddskk-user-jisyo--table)))))))
+
 (defun ddskk-user-jisyo-load ()
   "Populate the in-memory personal dictionary from disk.
 Called once at engine start.  A missing or unreadable file is NOT an
@@ -367,7 +439,12 @@ malformed file degrades to whatever entries did parse.  This never
 signals.  See the file commentary for why this deliberately never
 calls `file-exists-p' / `file-readable-p' (both were found to always
 report \"absent\" on this runtime build) and instead relies purely on
-`nelisp--syscall-read-file's own documented nil-on-failure contract."
+`nelisp--syscall-read-file's own documented nil-on-failure contract.
+
+Replays the not-yet-compacted journal (`ddskk-user-jisyo--replay-
+journal') over the base file afterwards, so any confirmation recorded
+since the last compaction is not lost across a restart -- see the
+\"v2 (current)\" architecture note at the top of this file."
   (clrhash ddskk-user-jisyo--table)
   (let ((path (ddskk-user-jisyo-path)))
     (when (stringp path)
@@ -375,6 +452,7 @@ report \"absent\" on this runtime build) and instead relies purely on
         (when (stringp text)
           (ignore-errors
             (ddskk-user-jisyo--parse-into-table text ddskk-user-jisyo--table))))))
+  (ddskk-user-jisyo--replay-journal)
   t)
 
 (defun ddskk-user-jisyo--serialize-entries (entries)
@@ -462,13 +540,98 @@ signalled error on failure; never signals itself."
      (setq ddskk-user-jisyo--last-save-error err)
      nil)))
 
+(defun ddskk-user-jisyo--journal-append (midasi)
+  "Append MIDASI's complete current candidate list to the journal.
+Writes ONE line, `MIDASI /cand1/cand2/.../\\n' -- the exact same shape
+`ddskk-user-jisyo--serialize-entries' already produces for the base
+file body, so `ddskk-user-jisyo--parse-line'/`ddskk-user-jisyo--replay-
+journal' read it back unchanged -- via the fixed `write-region' APPEND
+(`engine/skk-nelisp-compat.el').  This is a full snapshot of MIDASI's
+CURRENT list, not a delta: see the \"v2 (current)\" architecture note
+at the top of this file for why that makes replay idempotent and
+order-safe with no extra bookkeeping.
+
+A journal write failure is caught and never propagated, same policy as
+`ddskk-user-jisyo-save': losing the LATEST journal line for one word
+must not turn an otherwise-normal keystroke confirmation into an ERR
+response -- the word is still correct in `ddskk-user-jisyo--table' and
+will be captured by the next successful append or by the next
+compaction/flush regardless."
+  (let ((path (ddskk-user-jisyo--journal-path)))
+    (when (stringp path)
+      (condition-case nil
+          (write-region
+           (ddskk-user-jisyo--serialize-entries
+            (list (cons midasi (gethash midasi ddskk-user-jisyo--table))))
+           nil path t)
+        (error nil)))))
+
+(defun ddskk-user-jisyo--truncate-journal ()
+  "Empty the journal file, if one is configured.
+Called only after a full save has already succeeded (`ddskk-user-jisyo-
+flush', `ddskk-user-jisyo-compact'): every line the journal held up to
+that point is now redundant, since the base file it was just folded
+into already reflects the same in-memory table state.  Overwrites with
+an empty string via `write-region' (APPEND nil) rather than
+`delete-file': the file commentary above documents `file-exists-p' /
+`file-directory-p' as unconditionally reporting \"absent\" on this
+runtime build regardless of real filesystem state, so a delete-then-
+recreate cycle through that family of syscalls is not trusted here
+either -- truncating through the same `write-region' path this module
+already relies on for byte-accurate writes is the more conservative
+choice.  A failure here is caught and never propagated, same as every
+other disk operation in this module."
+  (let ((path (ddskk-user-jisyo--journal-path)))
+    (when (stringp path)
+      (condition-case nil (write-region "" nil path) (error nil)))))
+
 (defun ddskk-user-jisyo-flush ()
-  "Save immediately and reset the pending-confirmation batch counter.
-See `ddskk-user-jisyo-save-batch-size' for why `ddskk-user-jisyo--
-update' does not call `ddskk-user-jisyo-save' directly on every
-confirmation."
-  (setq ddskk-user-jisyo--pending-saves 0)
-  (ddskk-user-jisyo-save))
+  "Save the whole table immediately, then empty the journal.
+Used by `ddskk-user-jisyo-purge' (an explicit, rare user correction that
+still always flushes rather than only journaling, exactly as v1 did)
+and by `ddskk-user-jisyo-compact' once it decides to compact.
+
+The journal is truncated ONLY when `ddskk-user-jisyo-save' actually
+succeeded: on failure, the journal (and `ddskk-user-jisyo--journal-
+pending') is left untouched, because it is still the only durable
+record of whatever confirmations have not made it into the base file --
+discarding it on a failed save would silently lose them.  Returns
+`ddskk-user-jisyo-save's own result."
+  (let ((ok (ddskk-user-jisyo-save)))
+    (when ok
+      (setq ddskk-user-jisyo--journal-pending 0)
+      (ddskk-user-jisyo--truncate-journal))
+    ok))
+
+(defun ddskk-user-jisyo-compact ()
+  "Fold the journal into the base file once enough entries have queued.
+No-op, returning nil immediately, while `ddskk-user-jisyo--journal-
+pending' is below `ddskk-user-jisyo-save-batch-size' -- this in-memory
+counter check is the whole reason a normal confirmation only pays for
+one short journal append (`ddskk-user-jisyo--journal-append') instead
+of this function's expensive whole-table `ddskk-user-jisyo-save'.
+Callers are expected to invoke this only when the host has observed the
+wire protocol's pipe sitting idle (the `COMPACT' verb in
+`engine/ddskk-engine.el'), mirroring how `GC' is already scheduled
+there, never from the per-keystroke or per-commit path.
+
+Unlike `ddskk-user-jisyo-save'/`ddskk-user-jisyo-flush' (which always
+swallow their own errors, because a broken save must never turn an
+ordinary keystroke confirmation into an ERR response), this function
+DOES signal on a genuine save failure: it is the direct target of the
+`COMPACT' wire verb, and that verb's `condition-case' is what turns a
+signal here into an `ERR COMPACT' reply -- unlike an in-band keystroke,
+whoever sent COMPACT explicitly asked for a save and needs to know it
+did not succeed.
+
+Returns t when it actually compacted, nil when it was a no-op below
+threshold."
+  (if (< ddskk-user-jisyo--journal-pending ddskk-user-jisyo-save-batch-size)
+      nil
+    (unless (ddskk-user-jisyo-flush)
+      (signal 'error (list "ddskk-user-jisyo-compact: save failed"
+                            ddskk-user-jisyo--last-save-error)))
+    t))
 
 ;; --- Search / record / purge API ---------------------------------------
 
@@ -512,22 +675,28 @@ jisyo ...)' no-op here since `skk-jisyo' is nil by design; see
 call site that reaches here -- see the file commentary for the exact
 source line trace confirming this.  PURGE non-nil removes WORD instead
 of learning it, mirroring `skk-update-jisyo-original's contract, and
-always flushes to disk immediately (an explicit user correction, and
-rare enough that batching it away is not worth the risk of losing it).
-An ordinary (non-purge) confirmation only records in memory and
-increments `ddskk-user-jisyo--pending-saves'; the actual disk save is
-batched every `ddskk-user-jisyo-save-batch-size' confirmations -- see
-the \"Save timing\" commentary at the top of this file for the
-measurement that motivated batching over saving on every call."
+always flushes to disk immediately via `ddskk-user-jisyo-flush' (an
+explicit user correction, and rare enough that journaling it away is
+not worth the risk of losing it).
+
+An ordinary (non-purge) confirmation records in memory, appends ONE
+journal line for the midasi (`ddskk-user-jisyo--journal-append'), and
+increments `ddskk-user-jisyo--journal-pending' -- it no longer decides
+to save on its own at all.  The expensive whole-table save only ever
+runs from `ddskk-user-jisyo-compact', invoked out of band by the
+engine's `COMPACT' wire verb; see the \"v2 (current)\" architecture
+note at the top of this file for why that replaced the old save-every-
+`ddskk-user-jisyo-save-batch-size'-confirmations trigger that used to
+live in this function."
   (when (and (boundp 'skk-henkan-key) (stringp skk-henkan-key) (stringp word))
     (if purge
         (progn
           (ddskk-user-jisyo-purge skk-henkan-key word)
           (ddskk-user-jisyo-flush))
       (ddskk-user-jisyo-record skk-henkan-key word)
-      (setq ddskk-user-jisyo--pending-saves (1+ ddskk-user-jisyo--pending-saves))
-      (when (>= ddskk-user-jisyo--pending-saves ddskk-user-jisyo-save-batch-size)
-        (ddskk-user-jisyo-flush)))))
+      (ddskk-user-jisyo--journal-append skk-henkan-key)
+      (setq ddskk-user-jisyo--journal-pending
+            (1+ ddskk-user-jisyo--journal-pending)))))
 
 (provide 'skk-user-jisyo)
 
