@@ -108,17 +108,50 @@ work, not rendered as dead controls.
 
 ### Tab 辞書 (dictionary)
 
-| Setting                  | Registry value            | Type  | Default   | CorvusSKK analog   |
-|--------------------------|---------------------------|-------|-----------|--------------------|
-| 辞書サーバを使用する     | `SkkServEnable`           | DWORD | 1         | ValueServerServ    |
-| ホスト                   | `SkkServHost`             | SZ    | 127.0.0.1 | ValueServerHost    |
-| ポート                   | `SkkServPort`             | DWORD | 1179      | ValueServerPort    |
-| ユーザー辞書パス         | `UserJisyoPath` (new)     | SZ    | %LOCALAPPDATA%\DDSKK\user-jisyo.utf8 | — |
-| 保存間隔 (確定数)        | `UserJisyoBatch` (new)    | DWORD | 10        | —                  |
+| Setting                       | Registry value              | Type  | Default   | CorvusSKK analog   |
+|--------------------------------|-----------------------------|-------|-----------|--------------------|
+| 辞書サーバを使用する          | `SkkServEnable`              | DWORD | 1         | ValueServerServ    |
+| ホスト                        | `SkkServHost`                | SZ    | 127.0.0.1 | ValueServerHost    |
+| ポート                        | `SkkServPort`                | DWORD | 1179      | ValueServerPort    |
+| 辞書サーバ起動コマンド        | `SkkServStartCommand` (new)  | SZ    | (empty)   | —                  |
+| 内蔵辞書ファイル (`;`区切り)  | `DictionaryFiles` (new)      | SZ    | (empty)   | —                  |
+| ユーザー辞書パス              | `UserJisyoPath` (new)        | SZ    | %LOCALAPPDATA%\DDSKK\user-jisyo.utf8 | — |
+| 保存間隔 (確定数)             | `UserJisyoBatch` (new)       | DWORD | 10        | —                  |
 
 (`UserJisyoPath`/`UserJisyoBatch` require the host to export the values
 as `DDSKK_USER_JISYO` / `DDSKK_USER_JISYO_SAVE_BATCH_SIZE` when spawning
 the engine — a small host change bundled with Phase 3.)
+
+`SkkServStartCommand` lets the host self-heal a dead external dictionary
+server: on a failed connection attempt it spawns this command line
+(`CreateProcessW`, no shell interpretation, rate-limited to once per 30s)
+and retries once — field incident: the external skkserv (an Emacs daemon
+owned by the user's own session) died twice after a re-logon and was not
+restarted by the user's startup hooks, so every conversion returned
+nothing and compositions never closed.
+
+`DictionaryFiles` answers a follow-up user question directly —
+「辞書サーバー無しで変換出来ないのでしょうか？」 — by moving the
+dictionary itself into the host: one or more local SKK-JISYO format files
+(UTF-8, `;`-separated absolute paths, priority order), loaded on a
+background thread at host startup. `LookupDictionary()` merges candidates
+from every configured file (SKK semantics: union across files in
+first-occurrence order, not first-file-wins) *before* ever touching the
+external server, so conversion works with no dictionary server running at
+all; the external server, if still configured, only fills in words none
+of the local files have. The engine's own NeLisp heap deliberately does
+not hold this data — its semispace GC copies all live data on every
+collection, and a multi-MB dictionary there would push GC pauses into the
+seconds — so this lives in the host process instead.
+
+Both new values, like `UserJisyoPath`/`UserJisyoBatch`, are bridged to
+the engine host's own environment with env-wins-over-registry precedence
+(`DDSKK_SKKSERV_START_COMMAND`, `DDSKK_DICTIONARY_FILES`), mainly so a
+test harness can exercise them without a registry write. The host also
+honors `DDSKK_SKKSERV_HOST`/`DDSKK_SKKSERV_PORT` env overrides for the
+same testability reason (pointing the external-server probe at a
+deliberately unreachable target); these two have no registry-writable UI
+of their own to layer onto.
 
 ### Tab 調整 (maintenance — no CorvusSKK analog)
 
@@ -131,8 +164,12 @@ the engine — a small host change bundled with Phase 3.)
 
 Completion (動作2), candidate-window fonts/colors/paging (表示1), display
 attributes (▽表示/▼表示), selection keys, key maps, conversion-point and
-kana tables, dictionary list management. Each needs engine-side support
-first; the schema above deliberately stays honest about what works today.
+kana tables, and a proper dictionary-file list editor (v1 exposes
+`DictionaryFiles` as a single hand-edited `;`-separated registry string,
+not an add/remove/reorder list control — the underlying host-side
+multi-file merge lookup itself is already implemented, see the 辞書 tab
+above). Each of the others needs engine-side support first; the schema
+above deliberately stays honest about what works today.
 
 ## UI design (Sumi)
 

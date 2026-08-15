@@ -24,6 +24,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -31,7 +32,9 @@
 #include <cstdlib>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -255,6 +258,21 @@ struct DictionaryServerConfig {
   // env-first pattern as ApplyEngineEnvFromRegistry() above, so a test
   // harness can exercise this without a registry write.
   std::wstring start_command;
+  // Optional ';'-separated absolute paths to local SKK-JISYO format
+  // dictionary files, in priority order. USER QUESTION driving this:
+  // 「辞書サーバー無しで変換出来ないのでしょうか？」 -- the external
+  // skkserv (an Emacs daemon owned by the user's own session) has died
+  // twice, and the engine's own NeLisp heap cannot hold a multi-MB
+  // dictionary (its semispace GC copies all live data; pauses would reach
+  // seconds), so the dictionary belongs here, in the host. When set,
+  // LookupDictionary() merges candidates from every configured file
+  // (SKK semantics: union across files, not first-file-wins) and only
+  // ever falls through to the external server for words none of them
+  // have -- see LoadBuiltinDictionariesThread()/MergeBuiltinCandidates()
+  // below. Env DDSKK_DICTIONARY_FILES takes precedence over
+  // HKCU\Software\NativeIME\DictionaryFiles, same env-first pattern as
+  // start_command above.
+  std::wstring dictionary_files;
 };
 
 // Cached across lookups so a fresh TCP connection is not paid on every
@@ -281,6 +299,8 @@ void LoadDictionaryServerConfig(DictionaryServerConfig* config) {
   DWORD enabled = 1, enabled_bytes = sizeof(enabled);
   wchar_t start_command[32768]{};
   DWORD start_command_bytes = sizeof(start_command);
+  wchar_t dictionary_files[32768]{};
+  DWORD dictionary_files_bytes = sizeof(dictionary_files);
   if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0,
                     KEY_READ, &key) == ERROR_SUCCESS) {
     RegQueryValueExW(key, L"SkkServHost", nullptr, nullptr,
@@ -291,12 +311,16 @@ void LoadDictionaryServerConfig(DictionaryServerConfig* config) {
                      reinterpret_cast<BYTE*>(&enabled), &enabled_bytes);
     RegQueryValueExW(key, L"SkkServStartCommand", nullptr, nullptr,
                      reinterpret_cast<BYTE*>(start_command), &start_command_bytes);
+    RegQueryValueExW(key, L"DictionaryFiles", nullptr, nullptr,
+                     reinterpret_cast<BYTE*>(dictionary_files),
+                     &dictionary_files_bytes);
     RegCloseKey(key);
   }
   config->host = host;
   config->port = port;
   config->enabled = enabled;
   config->start_command = start_command;
+  config->dictionary_files = dictionary_files;
 
   // Env wins over registry -- see DictionaryServerConfig::start_command.
   wchar_t env_start_command[32768]{};
@@ -305,7 +329,231 @@ void LoadDictionaryServerConfig(DictionaryServerConfig* config) {
   if (env_size > 0 && env_size < 32768) {
     config->start_command = env_start_command;
   }
+
+  // Same env-first pattern -- see DictionaryServerConfig::dictionary_files.
+  wchar_t env_dictionary_files[32768]{};
+  const DWORD env_dictionary_files_size = GetEnvironmentVariableW(
+      L"DDSKK_DICTIONARY_FILES", env_dictionary_files, 32768);
+  if (env_dictionary_files_size > 0 && env_dictionary_files_size < 32768) {
+    config->dictionary_files = env_dictionary_files;
+  }
+
+  // DDSKK_SKKSERV_HOST/PORT: unlike the two bridges above, host/port have
+  // no registry-writable settings-UI story of their own to layer onto --
+  // these two env vars exist purely so a test harness can point the
+  // external-server probe at a deliberately unreachable target without a
+  // registry write (needed to test the built-in-dictionary-only,
+  // no-server-at-all path; see wmain()'s startup probe and
+  // LookupDictionary()).
+  wchar_t env_host[256]{};
+  const DWORD env_host_size =
+      GetEnvironmentVariableW(L"DDSKK_SKKSERV_HOST", env_host, 256);
+  if (env_host_size > 0 && env_host_size < 256) config->host = env_host;
+
+  wchar_t env_port[16]{};
+  const DWORD env_port_size =
+      GetEnvironmentVariableW(L"DDSKK_SKKSERV_PORT", env_port, 16);
+  if (env_port_size > 0 && env_port_size < 16) {
+    const int parsed = _wtoi(env_port);
+    if (parsed > 0) config->port = static_cast<DWORD>(parsed);
+  }
 }
+
+// ---------------------------------------------------------------------------
+// Built-in (host-local) SKK dictionaries -- see
+// DictionaryServerConfig::dictionary_files above for the motivating field
+// incident. One std::unordered_map per configured file, populated once by
+// LoadBuiltinDictionariesThread() and never mutated again: `ready` is the
+// single publish point (std::atomic<bool>, release/acquire), so once a
+// reader observes ready == true it is guaranteed to see every map exactly
+// as the loader thread left it, and no lock is needed for the read side
+// at all -- concurrent LookupDictionary() calls from different
+// ServeClient() threads (each already serialized through g_engine_mutex
+// for everything else, but that is incidental here, not required) just
+// do plain unordered_map lookups against immutable data.
+struct BuiltinDictionaryState {
+  std::atomic<bool> ready{false};
+  std::vector<std::unordered_map<std::string, std::string>> maps;
+};
+BuiltinDictionaryState g_builtin_dictionary;
+
+// Parses one already-loaded SKK-JISYO file's raw bytes into `*map`.
+// Format: ";;"-prefixed lines are comments and skipped; every other
+// non-empty line is "MIDASI /cand1/cand2;annotation/.../" (a single space
+// separates the midasi from the candidate list, which always starts and
+// ends with '/'). The stored value is that "/.../ " tail verbatim,
+// including any ";annotation" suffixes and "[okuri ...]" bracket sub-
+// entries some candidates carry -- both are kept as opaque text, not
+// specially parsed, because MergeBuiltinCandidates() (and the DDSKK
+// engine layer downstream of it) already knows how to handle them; this
+// function only needs to find where the candidate list starts. Malformed
+// lines (no space, or no '/' after it) are silently skipped, not fatal --
+// one bad line must not lose the rest of a multi-hundred-thousand-line
+// file.
+void ParseSkkJisyo(std::string_view contents,
+                   std::unordered_map<std::string, std::string>* map) {
+  size_t line_start = 0;
+  while (line_start <= contents.size()) {
+    size_t line_end = contents.find('\n', line_start);
+    if (line_end == std::string_view::npos) line_end = contents.size();
+    std::string_view line = contents.substr(line_start, line_end - line_start);
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    line_start = line_end + 1;
+
+    if (line.empty() || line.substr(0, 2) == ";;") continue;
+    const size_t space = line.find(' ');
+    if (space == std::string_view::npos) continue;
+    const size_t slash = line.find('/', space);
+    if (slash == std::string_view::npos) continue;
+    (*map)[std::string(line.substr(0, space))] = std::string(line.substr(slash));
+  }
+}
+
+// Reads `path` in full and hands it to ParseSkkJisyo(). Returns false (map
+// left however far it got, i.e. possibly partially populated) on any I/O
+// error; *entry_count is only meaningful when this returns true. A UTF-8
+// byte-order-mark, if present, is skipped first -- the map's keys/values
+// are exact UTF-8 bytes, and a leading BOM would otherwise corrupt the
+// very first midasi on the first line.
+bool LoadDictionaryFile(const std::wstring& path,
+                        std::unordered_map<std::string, std::string>* map,
+                        size_t* entry_count) {
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                            nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+
+  LARGE_INTEGER size{};
+  // 2 GiB sanity cap: ReadFile's single-call length is a DWORD anyway, and
+  // no real SKK-JISYO file approaches this -- this is purely a guard
+  // against an accidentally-misconfigured path (e.g. a device file).
+  if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 ||
+      size.QuadPart > 0x7FFFFFFF) {
+    CloseHandle(file);
+    return false;
+  }
+
+  std::string contents(static_cast<size_t>(size.QuadPart), '\0');
+  size_t total_read = 0;
+  bool read_ok = true;
+  while (total_read < contents.size()) {
+    DWORD chunk = 0;
+    if (!ReadFile(file, contents.data() + total_read,
+                  static_cast<DWORD>(contents.size() - total_read), &chunk,
+                  nullptr) ||
+        chunk == 0) {
+      read_ok = false;
+      break;
+    }
+    total_read += chunk;
+  }
+  CloseHandle(file);
+  if (!read_ok) return false;
+
+  size_t offset = 0;
+  if (contents.size() >= 3 && static_cast<unsigned char>(contents[0]) == 0xEF &&
+      static_cast<unsigned char>(contents[1]) == 0xBB &&
+      static_cast<unsigned char>(contents[2]) == 0xBF) {
+    offset = 3;
+  }
+  ParseSkkJisyo(std::string_view(contents).substr(offset), map);
+  *entry_count = map->size();
+  return true;
+}
+
+// Runs once on its own detached background thread (started in wmain()
+// right after the engine child is up), so file I/O and parsing a
+// multi-hundred-thousand-line dictionary never block pipe serving. Splits
+// `files_spec` on ';', loads each file's map in priority order, and only
+// publishes g_builtin_dictionary.ready after every file has been
+// attempted -- a lookup that arrives before that simply skips the
+// built-in tier (LookupDictionary() checks the flag first) and falls
+// through to the external server exactly as if dictionary_files had never
+// been set. A file that fails to load leaves an empty map in its slot
+// (logged, not fatal) rather than skipping the slot entirely, so the
+// remaining files keep their priority order.
+void LoadBuiltinDictionariesThread(std::wstring files_spec) {
+  std::vector<std::wstring> paths;
+  size_t start = 0;
+  while (start <= files_spec.size()) {
+    size_t end = files_spec.find(L';', start);
+    if (end == std::wstring::npos) end = files_spec.size();
+    if (end > start) paths.push_back(files_spec.substr(start, end - start));
+    start = end + 1;
+  }
+
+  std::vector<std::unordered_map<std::string, std::string>> maps;
+  maps.reserve(paths.size());
+  for (const std::wstring& path : paths) {
+    const auto started = std::chrono::steady_clock::now();
+    std::unordered_map<std::string, std::string> map;
+    size_t entry_count = 0;
+    const bool ok = LoadDictionaryFile(path, &map, &entry_count);
+    const long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    if (ok) {
+      std::fwprintf(stderr,
+                    L"ddskk-engine-host: loaded dictionary %ls (%zu entries, "
+                    L"%lld ms)\n",
+                    path.c_str(), entry_count, elapsed_ms);
+    } else {
+      std::fwprintf(stderr,
+                    L"ddskk-engine-host: failed to load dictionary %ls (%lu)\n",
+                    path.c_str(), static_cast<unsigned long>(GetLastError()));
+    }
+    maps.push_back(std::move(map));
+  }
+
+  g_builtin_dictionary.maps = std::move(maps);
+  // Release pairs with LookupDictionary()'s acquire load below: everything
+  // written above (every map) must be visible to any thread that observes
+  // ready == true afterward.
+  g_builtin_dictionary.ready.store(true, std::memory_order_release);
+}
+
+// Merges `midasi`'s candidate list across every loaded built-in
+// dictionary map, in priority order -- real SKK semantics: the union of
+// all candidates in first-occurrence order, not "first file that has it
+// wins". Dedup compares the candidate text before any ";annotation"
+// suffix (so "候補;何か" and "候補;別の注釈" count as the same candidate;
+// only the first-seen copy, annotation included, is kept). Returns an
+// empty string if no configured file has `midasi` at all.
+std::string MergeBuiltinCandidates(const std::string& midasi) {
+  std::vector<std::string> ordered_candidates;  // full text, first-occurrence order
+  std::vector<std::string> seen_keys;           // dedup key: text before ';'
+  for (const auto& map : g_builtin_dictionary.maps) {
+    const auto it = map.find(midasi);
+    if (it == map.end()) continue;
+    const std::string& raw = it->second;  // "/cand1/cand2;ann/cand3/"
+    size_t pos = 0;
+    while (pos <= raw.size()) {
+      size_t next = raw.find('/', pos);
+      if (next == std::string::npos) next = raw.size();
+      if (next > pos) {
+        std::string candidate = raw.substr(pos, next - pos);
+        const size_t semicolon = candidate.find(';');
+        const std::string key = semicolon == std::string::npos
+            ? candidate : candidate.substr(0, semicolon);
+        if (std::find(seen_keys.begin(), seen_keys.end(), key) ==
+            seen_keys.end()) {
+          seen_keys.push_back(key);
+          ordered_candidates.push_back(std::move(candidate));
+        }
+      }
+      if (next >= raw.size()) break;
+      pos = next + 1;
+    }
+  }
+  if (ordered_candidates.empty()) return std::string();
+  std::string merged;
+  for (const std::string& candidate : ordered_candidates) {
+    merged += '/';
+    merged += candidate;
+  }
+  merged += '/';
+  return merged;
+}
+// ---------------------------------------------------------------------------
 
 // The dictionary host name is read from the registry as UTF-16 (RegQueryValueExW)
 // but getaddrinfo() takes a narrow (ANSI/UTF-8) hostname on all Windows
@@ -477,18 +725,35 @@ bool SendAndReceive(SOCKET socket_handle, const std::string& request,
 }
 
 // Looks up `midasi` (already UTF-8 encoded by the engine; not transcoded
-// here) against the configured dictionary server and returns the single
-// line to hand back to the engine: the server's raw "1/cand/cand/.../"
-// answer on success, or "4" for not-found / disabled / any failure. Never
-// throws and never blocks longer than the configured send/recv timeouts
-// (plus, in the worst case, one OS-level connect timeout on the retry --
-// see ConnectDictionaryServer()).
+// here), first against the built-in dictionaries (if configured and
+// loaded -- see BuiltinDictionaryState/MergeBuiltinCandidates() above),
+// then, only if that comes up empty, against the external dictionary
+// server. Returns the single line to hand back to the engine, matching
+// the skkserv wire protocol's own reply forms byte-for-byte either way:
+// "1/cand/cand/.../" on a hit (built-in or external), or "4" for
+// not-found / disabled / any failure. Never throws and never blocks
+// longer than the configured send/recv timeouts (plus, in the worst case,
+// one OS-level connect timeout on the retry -- see
+// ConnectDictionaryServer()).
 std::string LookupDictionary(const std::string& midasi) {
   try {
     if (!g_dictionary_server.config_loaded) {
       LoadDictionaryServerConfig(&g_dictionary_server.config);
       g_dictionary_server.config_loaded = true;
     }
+
+    // Built-in dictionaries take priority over the external server, and
+    // are consulted even if the external server is disabled or
+    // unreachable -- this is what makes conversion work with no
+    // dictionary server running at all. A lookup that arrives before the
+    // loader thread has published its maps just falls through to the
+    // external-server logic below unchanged, exactly as if
+    // dictionary_files were never configured.
+    if (g_builtin_dictionary.ready.load(std::memory_order_acquire)) {
+      const std::string merged = MergeBuiltinCandidates(midasi);
+      if (!merged.empty()) return "1" + merged;
+    }
+
     if (g_dictionary_server.config.enabled == 0) return "4";
     if (!EnsureWinsock()) return "4";
 
@@ -951,6 +1216,26 @@ int wmain(int argc, wchar_t** argv) {
     return 3;
   }
 
+  if (!g_dictionary_server.config_loaded) {
+    LoadDictionaryServerConfig(&g_dictionary_server.config);
+    g_dictionary_server.config_loaded = true;
+  }
+
+  // Built-in dictionaries (USER QUESTION driving this:
+  // 「辞書サーバー無しで変換出来ないのでしょうか？」 -- see
+  // DictionaryServerConfig::dictionary_files above for the full field-
+  // incident rationale). Started here, detached, so multi-hundred-
+  // thousand-line file parsing never blocks pipe serving below: a lookup
+  // that arrives before it finishes just skips this tier
+  // (BuiltinDictionaryState::ready / LookupDictionary()) and falls
+  // through to the external server exactly as if dictionary_files were
+  // never configured.
+  if (!g_dictionary_server.config.dictionary_files.empty()) {
+    std::thread(LoadBuiltinDictionariesThread,
+               g_dictionary_server.config.dictionary_files)
+        .detach();
+  }
+
   // Self-heal the same SkkServStartCommand field incident this early,
   // once, before any client can even attempt a lookup: if the dictionary
   // server is not reachable and a start command is configured, spawn it
@@ -959,10 +1244,6 @@ int wmain(int argc, wchar_t** argv) {
   // fails (see LookupDictionary()/TrySpawnSkkServ() above). Deliberately
   // skipped when the dictionary server is disabled (SkkServEnable=0),
   // matching LookupDictionary()'s own gate.
-  if (!g_dictionary_server.config_loaded) {
-    LoadDictionaryServerConfig(&g_dictionary_server.config);
-    g_dictionary_server.config_loaded = true;
-  }
   if (g_dictionary_server.config.enabled != 0 &&
       !g_dictionary_server.config.start_command.empty() && EnsureWinsock()) {
     const SOCKET probe = ConnectDictionaryServer(g_dictionary_server.config);
