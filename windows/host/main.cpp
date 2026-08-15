@@ -42,6 +42,29 @@ std::wstring PipeName() {
   return size > 0 && size < 256 ? value : kPipeName;
 }
 
+// Backslash is the Object Manager namespace separator, so a raw pipe name
+// like "\\.\pipe\ddskk-ime-v1" pasted directly into a kernel object name
+// would be read as several namespace levels instead of one opaque suffix.
+// Sanitizing it is what makes SingletonMutexName() below produce a single
+// well-formed "Local\..." name.
+std::wstring SanitizeForMutexName(const std::wstring& value) {
+  std::wstring result = value;
+  for (wchar_t& ch : result) {
+    if (ch == L'\\') ch = L'_';
+  }
+  return result;
+}
+
+// Derives this host's single-instance mutex name from its own pipe name,
+// so a private-pipe test/prewarm host (see deploy-live.ps1's prewarm
+// step, or DDSKK_PIPE_NAME overrides generally) never collides with the
+// live default-pipe host's singleton guard -- each pipe name gets its own
+// independent "only one host" mutex. See the field-incident comment on
+// its call site in wmain() for why this guard exists at all.
+std::wstring SingletonMutexName(const std::wstring& pipe_name) {
+  return L"Local\\ddskk-engine-host-" + SanitizeForMutexName(pipe_name);
+}
+
 bool UseNativeEntry() {
   wchar_t value[16]{};
   const DWORD size =
@@ -656,9 +679,22 @@ void IdleGcLoop() {
 }
 // ---------------------------------------------------------------------------
 
-HANDLE CreatePipeInstance() {
+// `first_instance` must be true for exactly the very first pipe instance
+// this process creates, and false for every spare instance created after
+// it (see the accept loop in wmain()). Passing FILE_FLAG_FIRST_PIPE_INSTANCE
+// only on that first call is what makes CreateNamedPipeW fail with
+// ERROR_ACCESS_DENIED if another process already owns an instance of this
+// pipe name -- belt-and-braces alongside the SingletonMutexName() guard
+// in wmain() for the same two-hosts-at-once field incident (see there);
+// passing it again on a later, same-process spare instance would be
+// meaningless (this process already owns the name by then) but is still
+// avoided so the flag's presence always means exactly "first instance,
+// first process."
+HANDLE CreatePipeInstance(bool first_instance) {
+  const DWORD open_mode = PIPE_ACCESS_DUPLEX |
+      (first_instance ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0);
   return CreateNamedPipeW(
-      g_pipe_name.c_str(), PIPE_ACCESS_DUPLEX,
+      g_pipe_name.c_str(), open_mode,
       PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
       PIPE_UNLIMITED_INSTANCES, 8192, 8192, 0, nullptr);
 }
@@ -759,14 +795,72 @@ int wmain(int argc, wchar_t** argv) {
                   L"usage: ddskk-engine-host ENGINE_EXE [REPOSITORY]\n");
     return 2;
   }
+  g_pipe_name = PipeName();
+
+  // Field incident: after a re-logon, several TSF-hosting applications
+  // activated at once. Each independently called EnsureEngineHost(), each
+  // saw no pipe up yet, and each spawned its own ddskk-engine-host.exe --
+  // TWO processes ended up serving \\.\pipe\ddskk-ime-v1 concurrently,
+  // started the same second. Clients then landed on whichever process's
+  // pipe instance happened to accept them, silently splitting the one
+  // supposed-to-be-shared engine session in two: compositions were left
+  // stranded open in whichever app's connection migrated between the two
+  // sessions (which also traps arrow keys inside that still-open
+  // composition at the application level, since this TIP deliberately
+  // never claims arrow keys itself), plus inconsistent modes and a
+  // generally sluggish feel from two engines both running live. This
+  // named mutex, checked before touching the pipe or spawning the engine
+  // child at all, makes only the first host to reach here for a given
+  // pipe name actually run; every later one recognizes it lost the race
+  // and exits immediately.
+  const std::wstring mutex_name = SingletonMutexName(g_pipe_name);
+  HANDLE singleton_mutex = CreateMutexW(nullptr, TRUE, mutex_name.c_str());
+  if (singleton_mutex == nullptr) {
+    // Extremely unlikely (e.g. object-manager exhaustion). Fail open --
+    // log and keep going -- rather than silently refuse to start the
+    // IME's only engine host over a guard that could not even be set up.
+    std::fwprintf(stderr,
+                  L"ddskk-engine-host: CreateMutexW failed (%lu); continuing "
+                  L"without the singleton guard\n",
+                  static_cast<unsigned long>(GetLastError()));
+  } else if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    // Lost the race: another host already owns this pipe name's session.
+    // Exit 0 on purpose: EnsureEngineHost()'s CreateProcessW callers (see
+    // src/text_service.cpp) treat "a host is already running" as success,
+    // not a spawn failure that should be retried or surfaced.
+    std::fwprintf(stderr,
+                  L"ddskk-engine-host: another instance already owns %ls, exiting\n",
+                  mutex_name.c_str());
+    return 0;
+  }
+  // singleton_mutex is intentionally never closed: it must be held for the
+  // entire process lifetime, and the OS releases/closes it automatically
+  // on process exit either way, so leaking the handle here is fine.
+
   const std::wstring repository = argc == 3 ? argv[2] : L"";
   if (!StartChild(argv[1], repository, &g_child)) {
     StopChild(g_child);
     return 3;
   }
-  g_pipe_name = PipeName();
-  HANDLE pipe = CreatePipeInstance();
+  // true: this is the first (and, per the mutex above, should be the
+  // only) instance of this pipe name in the whole system -- see
+  // CreatePipeInstance()'s own comment for what FILE_FLAG_FIRST_PIPE_INSTANCE
+  // buys on top of the mutex.
+  HANDLE pipe = CreatePipeInstance(true);
   if (pipe == INVALID_HANDLE_VALUE) {
+    if (GetLastError() == ERROR_ACCESS_DENIED) {
+      // Belt-and-braces for the same field incident as the mutex above:
+      // this means a second process somehow raced past the mutex check
+      // (the mutex already makes that effectively impossible, but the
+      // flag costs nothing) and already owns the first instance of this
+      // pipe name. Exit 0 for the same "already running" reason.
+      std::fwprintf(stderr,
+                    L"ddskk-engine-host: pipe %ls already owned by another "
+                    L"instance, exiting\n",
+                    g_pipe_name.c_str());
+      StopChild(g_child);
+      return 0;
+    }
     StopChild(g_child);
     return 4;
   }
@@ -805,7 +899,10 @@ int wmain(int argc, wchar_t** argv) {
       break;
     }
     HANDLE connected_pipe = pipe;
-    pipe = CreatePipeInstance();
+    // false: every spare instance after the very first one -- see
+    // CreatePipeInstance()'s comment on why FILE_FLAG_FIRST_PIPE_INSTANCE
+    // must never be passed here too.
+    pipe = CreatePipeInstance(false);
     std::thread(ServeClient, connected_pipe).detach();
     if (pipe == INVALID_HANDLE_VALUE) {
       // Out of resources for further instances: the client just accepted
