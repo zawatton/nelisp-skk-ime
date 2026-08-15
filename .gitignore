@@ -3,6 +3,10 @@
 /build-*/
 .vs/
 
+# sumi-ui build output (emacs -Q --batch -l sumi-ui/build.el)
+/sumi-ui/target/
+/sumi-ui/.tmp-home/
+
 # NeLisp / DDSKK engine host runtime logs
 *.log
 .nelisp-host-helper.log.*
