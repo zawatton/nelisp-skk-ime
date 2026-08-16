@@ -36,7 +36,18 @@
                        (nelisp-ime-protocol-test--request
                         2 "ime/session.feed" params))))
            (result (gethash "result" response)))
+      ;; Typing shows the kana that were typed; conversion is a separate
+      ;; request, so the preedit is still the reading here.
       (should (equal (gethash "reading" result) "かな"))
+      (should (equal (gethash "preedit" result) "かな")))
+    (let* ((event (nelisp-ime-protocol--object "op" "convert"))
+           (params (nelisp-ime-protocol--object
+                    "sessionId" "mac:1" "event" event))
+           (response (nelisp-json-parse-string
+                      (nelisp-ime-protocol-handle-json
+                       (nelisp-ime-protocol-test--request
+                        3 "ime/session.feed" params))))
+           (result (gethash "result" response)))
       (should (equal (gethash "preedit" result) "仮名")))))
 
 (ert-deftest nelisp-ime-protocol-test-rejects-version-and-method ()
@@ -70,7 +81,8 @@
         (nelisp-ime-dictionary '(("はし" "橋" "箸" "端" "嘴")))
         (nelisp-ime-converter-function #'nelisp-ime-dictionary-convert))
     (nelisp-ime-session-open "array")
-    (let* ((event (nelisp-ime-protocol--object "op" "insert" "text" "はし"))
+    (nelisp-ime-feed "array" '(:op :insert :text "はし"))
+    (let* ((event (nelisp-ime-protocol--object "op" "convert"))
            (params (nelisp-ime-protocol--object
                     "sessionId" "array" "event" event))
            (response (nelisp-json-parse-string

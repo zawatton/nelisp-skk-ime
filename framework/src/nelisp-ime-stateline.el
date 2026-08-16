@@ -110,6 +110,11 @@ call, so the shape of this loop is most of the per-key budget."
 (defun nelisp-ime-stateline--line (snapshot)
   "Return the wire STATE line for SNAPSHOT.
 
+The text field carries the committed text when there is one, and the
+live preedit otherwise.  The wire has one text field and the host writes
+it over the composition before closing it, so a commit that sent the
+now-empty preedit would erase the composition instead of settling it.
+
 Assembled with `concat' rather than one `format': the seven directives a
 `format' would need cost ~23ms per call on this runtime, against ~136us
 per `concat' argument."
@@ -117,7 +122,8 @@ per `concat' argument."
           (or (plist-get snapshot :mode) "hiragana") " "
           (number-to-string (or (plist-get snapshot :cursor) 0)) " "
           (number-to-string (or (plist-get snapshot :composition-start) -1)) " "
-          (nelisp-ime-stateline--hex (plist-get snapshot :preedit)) " "
+          (nelisp-ime-stateline--hex (or (plist-get snapshot :commit)
+                                         (plist-get snapshot :preedit))) " "
           (nelisp-ime-stateline--hex (plist-get snapshot :pending)) " "
           (number-to-string (or (plist-get snapshot :candidate-index) -1)) " "
           (nelisp-ime-stateline--candidates snapshot)))
@@ -152,9 +158,12 @@ per `concat' argument."
   (cond
    ((equal name "BACKSPACE") '(:op :backspace))
    ((equal name "COMMIT") '(:op :commit))
-   ;; CONVERT and PREVIOUS step through the candidate list.  A modal engine
-   ;; maps them onto its own conversion state through its :feed hook; the
-   ;; framework's own pipeline treats them as candidate movement.
+   ;; CONVERT starts the conversion, then steps through the candidate list
+   ;; on every press after that -- the space key of any Japanese IME.  Which
+   ;; of the two it means is decided against the live session in
+   ;; `nelisp-ime-stateline--dispatch-control'.  PREVIOUS only ever steps.
+   ;; A modal engine maps both onto its own conversion state through its
+   ;; :feed hook.
    ((equal name "CONVERT") '(:op :select-candidate :index :next))
    ((equal name "PREVIOUS") '(:op :select-candidate :index :previous))
    ;; CANCEL is the unconditional return to plain input; QUIT is the
@@ -178,17 +187,26 @@ per `concat' argument."
     (cond
      ((null event) (concat "ERR " name))
      ((memq (plist-get event :index) '(:next :previous))
-      ;; Resolve the relative move against the live session; with no
-      ;; candidates there is nothing to step through, so report state.
-      (let* ((session (nelisp-ime-stateline--session))
-             (index (nelisp-ime-stateline--relative-candidate
-                     session
-                     (if (eq (plist-get event :index) :next) 1 -1))))
-        (if (null index)
-            (nelisp-ime-stateline--line
-             (nelisp-ime-session-status nelisp-ime-stateline--session-id))
-          (nelisp-ime-stateline--feed
-           (list :op :select-candidate :index index)))))
+      (let ((session (nelisp-ime-stateline--session)))
+        (cond
+         ;; First CONVERT on a composition that has only been typed: the
+         ;; user is asking for the conversion itself, not for the next
+         ;; candidate of one that does not exist yet.
+         ((and (eq (plist-get event :index) :next)
+               (not (plist-get session :converted))
+               (> (length (or (plist-get session :reading) "")) 0))
+          (nelisp-ime-stateline--feed '(:op :convert)))
+         (t
+          ;; Resolve the relative move against the live session; with no
+          ;; candidates there is nothing to step through, so report state.
+          (let ((index (nelisp-ime-stateline--relative-candidate
+                        session
+                        (if (eq (plist-get event :index) :next) 1 -1))))
+            (if (null index)
+                (nelisp-ime-stateline--line
+                 (nelisp-ime-session-status nelisp-ime-stateline--session-id))
+              (nelisp-ime-stateline--feed
+               (list :op :select-candidate :index index))))))))
      (t (nelisp-ime-stateline--feed event)))))
 
 ;;;###autoload

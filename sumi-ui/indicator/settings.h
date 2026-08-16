@@ -117,6 +117,15 @@ gboolean settings_save(const Settings *s);
  * through the same DDSKK_SETTINGS_KEY-aware resolution as load/save. */
 gboolean settings_delete_all(void);
 
+/* TRUE when HKCU\...\ExperimentalEngines is a non-zero DWORD.  Engines
+ * whose input model does not yet match DDSKK's are hidden from the
+ * settings window unless this is on: selecting one of them broke live
+ * input once (the composition never advanced, so every further keystroke
+ * overwrote the last), and an engine that cannot be typed with must not
+ * be offered as if it could.  Not part of Settings, so settings_save()
+ * never writes it back. */
+gboolean settings_experimental_engines(void);
+
 /* Reloads only the engine-scoped fields of S from ENGINE_ID's subkey,
  * leaving every shared field untouched.  The settings window calls this
  * when the engine dropdown changes, so each engine's page shows what is

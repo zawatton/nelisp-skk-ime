@@ -21,8 +21,8 @@
             ("は" (:surface "は" :cost 10))
             ("きょうは" (:surface "教派" :cost 500))))
     (nelisp-ime-session-open "s")
-    (let ((result (nelisp-ime-feed
-                   "s" '(:op :insert :text "きょうは"))))
+    (nelisp-ime-feed "s" '(:op :insert :text "きょうは"))
+    (let ((result (nelisp-ime-feed "s" '(:op :convert))))
       (should (equal (plist-get result :preedit) "今日は"))
       (should (= (length (plist-get result :segments)) 2))
       (should (equal (mapcar (lambda (segment)
@@ -44,6 +44,7 @@
           '(("はし" "橋" "箸") ("です" "です")))
     (nelisp-ime-session-open "s")
     (nelisp-ime-feed "s" '(:op :insert :text "はしです"))
+    (nelisp-ime-feed "s" '(:op :convert))
     (let ((result (nelisp-ime-feed
                    "s" '(:op :select-candidate :index 1))))
       (should (equal (plist-get result :preedit) "箸です")))
@@ -57,6 +58,7 @@
     (setq nelisp-ime-dictionary '(("はし" "橋" "箸")))
     (nelisp-ime-session-open "s")
     (nelisp-ime-feed "s" '(:op :insert :text "はし"))
+    (nelisp-ime-feed "s" '(:op :convert))
     (nelisp-ime-feed "s" '(:op :select-candidate :index 1))
     (nelisp-ime-feed "s" '(:op :commit))
     (should (= (nelisp-ime-learning-count "はし" "箸") 1))
@@ -111,9 +113,9 @@
     (let ((nelisp-ime-default-engine 'lattice))
       (setq nelisp-ime-dictionary '(("はし" "橋" "箸")))
       (nelisp-ime-session-open "s")
-      (should (equal (plist-get
-                      (nelisp-ime-feed "s" '(:op :insert :text "はし"))
-                      :preedit)
+      (nelisp-ime-feed "s" '(:op :insert :text "はし"))
+      (should (equal (plist-get (nelisp-ime-feed "s" '(:op :convert))
+                                :preedit)
                      "橋")))))
 
 (provide 'nelisp-ime-lattice-test)

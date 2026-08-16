@@ -22,25 +22,34 @@
       (should (equal (plist-get result :reading) "かな"))
       (should (equal (plist-get result :preedit) "かな")))))
 
-(ert-deftest nelisp-ime-test-live-converts-after-each-insert ()
+(ert-deftest nelisp-ime-test-converts-only-when-asked ()
+  ;; This used to assert the opposite -- that every insert re-ran the
+  ;; conversion and published its result as the preedit.  Live in a real
+  ;; IME that is unusable: each keystroke replaced what the user had typed
+  ;; with a guess at the whole reading, and the candidate window reopened
+  ;; on every character.  Typing now shows the kana that were typed, and
+  ;; `:convert' is what asks for a conversion.
   (nelisp-ime-test--isolated
     (setq nelisp-ime-dictionary
           '(("きょう" "今日" "教") ("きょ" "許")))
     (nelisp-ime-session-open "s")
-    (should (equal (plist-get
-                    (nelisp-ime-feed "s" '(:op :insert :text "きょ"))
-                    :preedit)
-                   "許"))
-    (should (equal (plist-get
-                    (nelisp-ime-feed "s" '(:op :insert :text "う"))
-                    :preedit)
-                   "今日"))))
+    (let ((result (nelisp-ime-feed "s" '(:op :insert :text "きょ"))))
+      (should (equal (plist-get result :preedit) "きょ"))
+      (should (equal (length (plist-get result :candidates)) 0)))
+    (let ((result (nelisp-ime-feed "s" '(:op :insert :text "う"))))
+      (should (equal (plist-get result :preedit) "きょう"))
+      (should (equal (length (plist-get result :candidates)) 0)))
+    (let ((result (nelisp-ime-feed "s" '(:op :convert))))
+      (should (equal (plist-get result :preedit) "今日"))
+      (should (equal (append (plist-get result :candidates) nil)
+                     '("今日" "教"))))))
 
 (ert-deftest nelisp-ime-test-select-and-commit-candidate ()
   (nelisp-ime-test--isolated
     (setq nelisp-ime-dictionary '(("はし" "橋" "箸" "端")))
     (nelisp-ime-session-open "s")
     (nelisp-ime-feed "s" '(:op :insert :text "はし"))
+    (nelisp-ime-feed "s" '(:op :convert))
     (let ((selected (nelisp-ime-feed
                      "s" '(:op :select-candidate :index 1))))
       (should (equal (plist-get selected :preedit) "箸")))
@@ -48,13 +57,20 @@
       (should (equal (plist-get committed :commit) "箸"))
       (should (equal (plist-get committed :preedit) "")))))
 
-(ert-deftest nelisp-ime-test-backspace-reconverts ()
+(ert-deftest nelisp-ime-test-backspace-returns-to-typing ()
   (nelisp-ime-test--isolated
     (setq nelisp-ime-dictionary '(("か" "蚊") ("かな" "仮名")))
     (nelisp-ime-session-open "s")
     (nelisp-ime-feed "s" '(:op :insert :text "かな"))
+    (nelisp-ime-feed "s" '(:op :convert))
+    ;; Shortening a composition is retyping it, so the conversion is
+    ;; dropped rather than recomputed for the shorter reading: the user is
+    ;; editing the reading again, not choosing among candidates.
     (let ((result (nelisp-ime-feed "s" '(:op :backspace))))
       (should (equal (plist-get result :reading) "か"))
+      (should (equal (plist-get result :preedit) "か"))
+      (should (equal (length (plist-get result :candidates)) 0)))
+    (let ((result (nelisp-ime-feed "s" '(:op :convert))))
       (should (equal (plist-get result :preedit) "蚊")))))
 
 (ert-deftest nelisp-ime-test-cancel-and-session-isolation ()
@@ -110,7 +126,10 @@
       (nelisp-ime-feed "s" `(:op :key :key ,key)))
     (let ((result (nelisp-ime-feed "s" '(:op :key :key "h"))))
       (should (equal (plist-get result :reading) "きょう"))
-      (should (equal (plist-get result :preedit) "きょうh"))
+      ;; Unresolved romaji stays in `pending' and only there; adapters
+      ;; render the two fields together, so folding it into the preedit
+      ;; here showed it twice.
+      (should (equal (plist-get result :preedit) "きょう"))
       (should (equal (plist-get result :pending) "h")))
     (let ((result (nelisp-ime-feed "s" '(:op :key :key "a"))))
       (should (equal (plist-get result :reading) "きょうは"))
@@ -140,6 +159,7 @@
     (setq nelisp-ime-dictionary '(("はし" "橋" "箸")))
     (nelisp-ime-session-open "s")
     (nelisp-ime-feed "s" '(:op :insert :text "はし"))
+    (nelisp-ime-feed "s" '(:op :convert))
     (nelisp-ime-feed "s" '(:op :select-candidate :index 1))
     (nelisp-ime-feed "s" '(:op :commit))
     (should (= (nelisp-ime-learning-count "はし" "箸") 1))))
@@ -170,11 +190,13 @@
     (setq nelisp-ime-dictionary '(("は" "端" "歯" "葉" "刃" "派")))
     (let ((nelisp-ime-candidate-limit 2))
       (nelisp-ime-session-open "s")
-      (let ((result (nelisp-ime-feed "s" '(:op :insert :text "は"))))
+      (nelisp-ime-feed "s" '(:op :insert :text "は"))
+      (let ((result (nelisp-ime-feed "s" '(:op :convert))))
         (should (equal (plist-get result :candidates) ["端" "歯"]))))
     (let ((nelisp-ime-candidate-limit nil))
       (nelisp-ime-session-open "s")
-      (let ((result (nelisp-ime-feed "s" '(:op :insert :text "は"))))
+      (nelisp-ime-feed "s" '(:op :insert :text "は"))
+      (let ((result (nelisp-ime-feed "s" '(:op :convert))))
         (should (= (length (plist-get result :candidates)) 5))))))
 
 (ert-deftest nelisp-ime-test-session-selects-registered-engine ()
@@ -187,9 +209,9 @@
                         :candidates (list (upcase reading))
                         :segments nil)))
       (nelisp-ime-session-open "s" '(:input-style romaji :engine upcase-test))
-      (should (equal (plist-get
-                      (nelisp-ime-feed "s" '(:op :insert :text "abc"))
-                      :preedit)
+      (nelisp-ime-feed "s" '(:op :insert :text "abc"))
+      (should (equal (plist-get (nelisp-ime-feed "s" '(:op :convert))
+                                :preedit)
                      "ABC")))))
 
 (ert-deftest nelisp-ime-test-feed-hook-intercepts-events ()
@@ -223,9 +245,9 @@
                         :candidates (list reading)
                         :segments nil)))
       (nelisp-ime-session-open "s")
-      (should (equal (plist-get
-                      (nelisp-ime-feed "s" '(:op :insert :text "はし"))
-                      :preedit)
+      (nelisp-ime-feed "s" '(:op :insert :text "はし"))
+      (should (equal (plist-get (nelisp-ime-feed "s" '(:op :convert))
+                                :preedit)
                      "d:はし")))))
 
 (ert-deftest nelisp-ime-test-engine-learn-hook-replaces-framework-learning ()
@@ -239,6 +261,9 @@
       (setq nelisp-ime-dictionary '(("はし" "橋")))
       (nelisp-ime-session-open "s" '(:engine learn-test))
       (nelisp-ime-feed "s" '(:op :insert :text "はし"))
+      ;; Learning records a conversion that was chosen, so there is
+      ;; nothing to learn until one has been asked for.
+      (nelisp-ime-feed "s" '(:op :convert))
       (nelisp-ime-feed "s" '(:op :commit))
       (should learned)
       (should (= (nelisp-ime-learning-count "はし" "橋") 0)))))
@@ -356,6 +381,7 @@
             (setq nelisp-ime-dictionary '(("はし" "橋" "箸")))
             (nelisp-ime-session-open "s")
             (nelisp-ime-feed "s" '(:op :insert :text "はし"))
+            (nelisp-ime-feed "s" '(:op :convert))
             (nelisp-ime-feed "s" '(:op :commit))
             ;; The commit appended to the journal without rewriting the table.
             (should (file-readable-p (concat file ".journal")))
@@ -389,7 +415,8 @@
   (nelisp-ime-test--isolated
     (setq nelisp-ime-dictionary '(("はし" "橋" "箸" "端")))
     (nelisp-ime-session-open "s" '(:detail compact))
-    (let ((result (nelisp-ime-feed "s" '(:op :insert :text "はし"))))
+    (nelisp-ime-feed "s" '(:op :insert :text "はし"))
+    (let ((result (nelisp-ime-feed "s" '(:op :convert))))
       ;; The composition itself still renders: only the lists are dropped.
       (should (equal (plist-get result :preedit) "橋"))
       (should (equal (plist-get result :reading) "はし"))
@@ -401,6 +428,7 @@
     (setq nelisp-ime-dictionary '(("はし" "橋" "箸" "端")))
     (nelisp-ime-session-open "s" '(:detail compact))
     (nelisp-ime-feed "s" '(:op :insert :text "はし"))
+    (nelisp-ime-feed "s" '(:op :convert))
     ;; Selecting needs the list being selected from, compact or not.
     (let ((result (nelisp-ime-feed "s" '(:op :select-candidate :index 1))))
       (should (equal (plist-get result :preedit) "箸"))
@@ -411,6 +439,7 @@
     (setq nelisp-ime-dictionary '(("はし" "橋" "箸")))
     (nelisp-ime-session-open "s" '(:detail compact))
     (nelisp-ime-feed "s" '(:op :insert :text "はし"))
+    (nelisp-ime-feed "s" '(:op :convert))
     (should (equal (plist-get (nelisp-ime-session-status "s") :candidates) []))
     (should (> (length (plist-get (nelisp-ime-session-status "s" 'full)
                                   :candidates))

@@ -369,6 +369,11 @@ typedef struct {
    * as the dropdown changes, so an engine's options never appear under
    * another engine. */
   GtkWidget *engine_stack;
+  /* kEngineChoices indices actually offered in the dropdown, in dropdown
+   * order; experimental engines are absent unless enabled.  The dropdown's
+   * own selection index means nothing without this mapping. */
+  guint engine_visible[8];
+  guint engine_visible_count;
   GtkWidget *check_okuri_auto;      /* ddskk */
   GtkWidget *spin_candidate_limit;  /* lattice */
   GtkWidget *check_lattice_learning;/* lattice */
@@ -449,17 +454,25 @@ typedef struct {
   const wchar_t *id;
   const char *label;   /* UTF-8, shown in the dropdown */
   const char *note;    /* UTF-8, one line under the dropdown */
+  /* TRUE while the engine cannot actually be typed with, whatever the
+   * wire protocol says.  Hidden unless settings_experimental_engines().
+   * `lattice' answered every request correctly and still made the IME
+   * unusable: it reports each kana as a fresh composition at offset 0,
+   * so the caret never advances and each keystroke overwrites the last.
+   * Speaking the protocol is not the same as sharing DDSKK's input
+   * model, and only the latter makes an engine selectable here. */
+  gboolean experimental;
 } EngineChoice;
 
 static const EngineChoice kEngineChoices[] = {
     {L"ddskk", "DDSKK (SKK)",
-     "SKK の変換規則をそのまま使います。"},
+     "SKK の変換規則をそのまま使います。", FALSE},
     {L"lattice", "かな漢字変換 (nelisp-ime)",
-     "辞書ラティスで文全体の候補を選びます。"},
+     "辞書ラティスで文全体の候補を選びます。", TRUE},
     {L"dictionary", "完全一致変換 (nelisp-ime)",
-     "読みが完全一致する候補だけを出します。"},
+     "読みが完全一致する候補だけを出します。", TRUE},
     {L"passthrough", "パススルー (実験用)",
-     "変換せずアプリへ渡します。"},
+     "変換せずアプリへ渡します。", FALSE},
 };
 
 #define ENGINE_CHOICE_COUNT (sizeof(kEngineChoices) / sizeof(kEngineChoices[0]))
@@ -471,6 +484,27 @@ static guint engine_choice_index(const wchar_t *id) {
   return 0; /* an id this build does not know falls back to the first */
 }
 
+/* Fill sw->engine_visible with the choices to offer.  An engine already
+ * selected in the registry stays visible even when experimental, so the
+ * window never silently misreports which engine is configured. */
+static void engine_visible_init(SettingsWindow *sw) {
+  const gboolean experimental = settings_experimental_engines();
+  const guint current = engine_choice_index(sw->app->settings.engine);
+  sw->engine_visible_count = 0;
+  for (guint i = 0; i < ENGINE_CHOICE_COUNT; i++) {
+    if (kEngineChoices[i].experimental && !experimental && i != current) continue;
+    sw->engine_visible[sw->engine_visible_count++] = i;
+  }
+}
+
+/* Dropdown position of the choice with kEngineChoices index CHOICE. */
+static guint engine_visible_position(const SettingsWindow *sw, guint choice) {
+  for (guint i = 0; i < sw->engine_visible_count; i++) {
+    if (sw->engine_visible[i] == choice) return i;
+  }
+  return 0;
+}
+
 /* Show the page belonging to the engine now selected, and reload that
  * engine's stored values into it.  Reloading matters because each
  * engine keeps its settings in its own subkey: without it the page would
@@ -479,8 +513,9 @@ static void on_engine_changed(GObject *dropdown, GParamSpec *pspec, gpointer use
   (void)pspec;
   SettingsWindow *sw = (SettingsWindow *)user_data;
   const guint selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(dropdown));
-  if (selected >= ENGINE_CHOICE_COUNT) return;
-  const EngineChoice *choice = &kEngineChoices[selected];
+  if (selected >= sw->engine_visible_count) return;
+  const guint index = sw->engine_visible[selected];
+  const EngineChoice *choice = &kEngineChoices[index];
 
   wcsncpy(sw->app->settings.engine, choice->id, SETTINGS_STR_LEN - 1);
   sw->app->settings.engine[SETTINGS_STR_LEN - 1] = L'\0';
@@ -499,8 +534,10 @@ static void on_engine_changed(GObject *dropdown, GParamSpec *pspec, gpointer use
                                 sw->app->settings.engine_learning != 0);
   }
   if (sw->engine_stack) {
+    /* Pages are named by kEngineChoices index, not dropdown position:
+     * the two differ as soon as an engine is hidden. */
     char name[32];
-    g_snprintf(name, sizeof(name), "%u", selected);
+    g_snprintf(name, sizeof(name), "%u", index);
     gtk_stack_set_visible_child_name(GTK_STACK(sw->engine_stack), name);
   }
 }
@@ -518,14 +555,14 @@ static GtkWidget *build_engine_pages(SettingsWindow *sw) {
 
     if (wcscmp(kEngineChoices[i].id, L"ddskk") == 0) {
       sw->check_okuri_auto = gtk_check_button_new_with_label(
-          "éãä»®åãèªåå¦çãã" /* 送り仮名を自動処理する */);
+          "\xe9\x80\x81\xe3\x82\x8a\xe4\xbb\xae\xe5\x90\x8d\xe3\x82\x92\xe8\x87\xaa\xe5\x8b\x95\xe5\x87\xa6\xe7\x90\x86\xe3\x81\x99\xe3\x82\x8b" /* 送り仮名を自動処理する */);
       gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_okuri_auto),
                                   sw->app->settings.engine_okuri_auto != 0);
       gtk_box_append(GTK_BOX(page), sw->check_okuri_auto);
     } else if (wcscmp(kEngineChoices[i].id, L"lattice") == 0) {
       GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
       GtkWidget *label = gtk_label_new(
-          "åè£ã®è¡¨ç¤ºæ°" /* 候補の表示数 */);
+          "\xe5\x80\x99\xe8\xa3\x9c\xe3\x81\xae\xe8\xa1\xa8\xe7\xa4\xba\xe6\x95\xb0" /* 候補の表示数 */);
       gtk_label_set_xalign(GTK_LABEL(label), 0.0);
       sw->spin_candidate_limit = gtk_spin_button_new_with_range(1, 30, 1);
       gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_candidate_limit),
@@ -535,7 +572,7 @@ static GtkWidget *build_engine_pages(SettingsWindow *sw) {
       gtk_box_append(GTK_BOX(page), row);
 
       sw->check_lattice_learning = gtk_check_button_new_with_label(
-          "ç¢ºå®ããåè£ãå­¦ç¿ãã" /* 確定した候補を学習する */);
+          "\xe7\xa2\xba\xe5\xae\x9a\xe3\x81\x97\xe3\x81\x9f\xe5\x80\x99\xe8\xa3\x9c\xe3\x82\x92\xe5\xad\xa6\xe7\xbf\x92\xe3\x81\x99\xe3\x82\x8b" /* 確定した候補を学習する */);
       gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_lattice_learning),
                                   sw->app->settings.engine_learning != 0);
       gtk_box_append(GTK_BOX(page), sw->check_lattice_learning);
@@ -557,12 +594,16 @@ static GtkWidget *build_tab_behavior(SettingsWindow *sw) {
   gtk_widget_set_margin_start(grid, 12);
   gtk_widget_set_margin_end(grid, 12);
 
+  engine_visible_init(sw);
   const char *engine_labels[ENGINE_CHOICE_COUNT + 1];
-  for (guint i = 0; i < ENGINE_CHOICE_COUNT; i++) engine_labels[i] = kEngineChoices[i].label;
-  engine_labels[ENGINE_CHOICE_COUNT] = NULL;
+  for (guint i = 0; i < sw->engine_visible_count; i++) {
+    engine_labels[i] = kEngineChoices[sw->engine_visible[i]].label;
+  }
+  engine_labels[sw->engine_visible_count] = NULL;
   sw->engine_dropdown = gtk_drop_down_new_from_strings(engine_labels);
-  gtk_drop_down_set_selected(GTK_DROP_DOWN(sw->engine_dropdown),
-                             engine_choice_index(sw->app->settings.engine));
+  gtk_drop_down_set_selected(
+      GTK_DROP_DOWN(sw->engine_dropdown),
+      engine_visible_position(sw, engine_choice_index(sw->app->settings.engine)));
   g_signal_connect(sw->engine_dropdown, "notify::selected",
                    G_CALLBACK(on_engine_changed), sw);
   grid_add_row(GTK_GRID(grid), 0, "エンジン" /* エンジン */, sw->engine_dropdown);
@@ -769,8 +810,9 @@ static void settings_read_from_widgets(SettingsWindow *sw, Settings *out) {
   /* The engine and its own settings.  `engine' is a control now, so it is
    * read back like everything else rather than carried over untouched. */
   const guint selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(sw->engine_dropdown));
-  if (selected < ENGINE_CHOICE_COUNT) {
-    wcsncpy(out->engine, kEngineChoices[selected].id, SETTINGS_STR_LEN - 1);
+  if (selected < sw->engine_visible_count) {
+    wcsncpy(out->engine, kEngineChoices[sw->engine_visible[selected]].id,
+            SETTINGS_STR_LEN - 1);
     out->engine[SETTINGS_STR_LEN - 1] = 0;
   }
   if (sw->check_okuri_auto) {

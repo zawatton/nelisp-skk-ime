@@ -219,6 +219,18 @@ gboolean settings_load(Settings *s) {
   return TRUE;
 }
 
+/* Deliberately not a Settings field: this is an escape hatch for
+ * developing an engine, not a preference.  Keeping it out of the struct
+ * keeps settings_save() from ever writing it back, so switching it on
+ * stays a explicit, manual act that does not survive by accident. */
+gboolean settings_experimental_engines(void) {
+  wchar_t key[512];
+  settings_key_path(key, 512);
+  int32_t enabled = 0;
+  reg_get_dword(key, L"ExperimentalEngines", 0, &enabled);
+  return enabled != 0;
+}
+
 void settings_load_engine_scope(Settings *s, const wchar_t *engine_id) {
   wchar_t key[512];
   engine_key_path(key, 512, engine_id);

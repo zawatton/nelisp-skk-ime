@@ -35,6 +35,7 @@
   "Validate and translate JSON operation VALUE."
   (let ((entry (assoc value '(("key" . :key) ("insert" . :insert)
                               ("backspace" . :backspace)
+                              ("convert" . :convert)
                               ("select-segment" . :select-segment)
                               ("select-candidate" . :select-candidate)
                               ("commit" . :commit) ("cancel" . :cancel)))))

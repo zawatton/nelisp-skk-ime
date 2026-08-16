@@ -92,6 +92,11 @@
                              '(:input-style romaji))
     (nelisp-ime-feed nelisp-ime-stateline--session-id
                      '(:op :insert :text "はし"))
+    ;; The first CONVERT performs the conversion and lands on candidate 0;
+    ;; only from there does it step.  This is the space key of any
+    ;; Japanese IME, and it is why typing alone shows no candidates.
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL CONVERT")))
+      (should (equal (nelisp-ime-stateline-test--field line 6) "0")))
     (let ((line (nelisp-ime-stateline-dispatch "CONTROL CONVERT")))
       ;; Stepped from candidate 0 to 1.
       (should (equal (nelisp-ime-stateline-test--field line 6) "1")))

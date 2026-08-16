@@ -365,7 +365,11 @@ compaction must not replay again or it would double-count."
   (mapconcat (lambda (segment) (plist-get segment :candidate)) segments ""))
 
 (defun nelisp-ime--reconvert (session)
-  "Recompute live conversion fields in SESSION and return SESSION."
+  "Convert SESSION's reading and return SESSION holding the result.
+
+Only ever reached through an explicit `:convert' (or a re-convert of an
+already-converted composition) -- see `nelisp-ime--retype' for why
+typing must not come through here."
   (let* ((reading (plist-get session :reading))
          (context (plist-get session :context))
          (conversion (nelisp-ime--convert session reading context)))
@@ -376,7 +380,24 @@ compaction must not replay again or it would double-count."
     (setq session (plist-put session :segments
                              (plist-get conversion :segments)))
     (setq session (plist-put session :active-segment 0))
+    (setq session (plist-put session :converted t))
     (plist-put session :candidate-index 0)))
+
+(defun nelisp-ime--retype (session)
+  "Show SESSION's reading unconverted and return SESSION.
+
+The typing path.  Converting on every keystroke was how the framework
+worked, and it made the IME unusable in practice: each character
+replaced the composition with a guess at the whole reading so far and
+reopened the candidate window, so what the user had typed kept being
+rewritten underneath them.  Conversion belongs to `:convert' alone;
+until then the composition shows exactly the kana that were typed."
+  (setq session (plist-put session :preedit (plist-get session :reading)))
+  (setq session (plist-put session :candidates nil))
+  (setq session (plist-put session :segments nil))
+  (setq session (plist-put session :active-segment 0))
+  (setq session (plist-put session :converted nil))
+  (plist-put session :candidate-index 0))
 
 (defvar nelisp-ime-candidate-limit 30
   "Maximum candidates carried per list in a public snapshot, nil = all.
@@ -439,9 +460,14 @@ non-modal engine's mode indicator should show anyway."
 
 (defun nelisp-ime--snapshot (session &optional commit)
   "Return the public representation of SESSION, optionally with COMMIT text."
-  (let* ((preedit (concat (or (plist-get session :preedit) "")
-                          (or (plist-get session :pending) "")))
-         (composing (> (length preedit) 0)))
+  ;; `preedit' and `pending' stay separate all the way to the adapter.
+  ;; Folding the unresolved romaji into the preedit here made every
+  ;; adapter that renders the two fields -- the STATE line one does, and
+  ;; so does the TSF host behind it -- show it twice, so a half-typed
+  ;; `k' appeared as "kk".
+  (let* ((preedit (or (plist-get session :preedit) ""))
+         (pending (or (plist-get session :pending) ""))
+         (composing (> (+ (length preedit) (length pending)) 0)))
     (list :consumed t
           :reading (plist-get session :reading)
           :preedit preedit
@@ -518,13 +544,13 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
   (nelisp-ime--snapshot session))
 
 (defun nelisp-ime--insert (session-id session text)
-  "Append normalized TEXT to SESSION-ID and run live conversion."
+  "Append normalized TEXT to SESSION-ID's reading."
   (unless (stringp text)
     (error "nelisp-ime: :insert requires string :text"))
   (setq session
         (plist-put session :reading
                    (concat (plist-get session :reading) text)))
-  (nelisp-ime--store session-id (nelisp-ime--reconvert session)))
+  (nelisp-ime--store session-id (nelisp-ime--retype session)))
 
 (defun nelisp-ime--key (session-id session event)
   "Normalize platform-neutral key EVENT and update SESSION-ID."
@@ -540,7 +566,7 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
                     (plist-put session :reading
                                (nelisp-ime--apply-mark
                                 (plist-get session :reading) kana)))
-              (nelisp-ime--store session-id (nelisp-ime--reconvert session)))
+              (nelisp-ime--store session-id (nelisp-ime--retype session)))
           (nelisp-ime--insert session-id session kana))))
      ((eq style 'romaji)
       (let* ((result (nelisp-ime-romaji-step
@@ -553,7 +579,7 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
           (setq session
                 (plist-put session :reading
                            (concat (plist-get session :reading) text))))
-        (nelisp-ime--store session-id (nelisp-ime--reconvert session))))
+        (nelisp-ime--store session-id (nelisp-ime--retype session))))
      (t (error "nelisp-ime: unsupported input style %S" style)))))
 
 (defun nelisp-ime--backspace (session-id session)
@@ -566,7 +592,9 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
       (when (> (length reading) 0)
         (setq session (plist-put session :reading
                                  (substring reading 0 (1- (length reading)))))))
-    (nelisp-ime--store session-id (nelisp-ime--reconvert session))))
+    ;; Deleting returns to typing: a composition being shortened is being
+    ;; retyped, not re-converted.
+    (nelisp-ime--store session-id (nelisp-ime--retype session))))
 
 (defun nelisp-ime--select-candidate (session-id session index)
   "Select candidate INDEX in SESSION-ID."
@@ -609,7 +637,11 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
                              (nelisp-ime-romaji-flush
                               (plist-get session :pending)))))
     (setq session (plist-put session :pending ""))
-    (setq session (nelisp-ime--reconvert session)))
+    ;; Committing an unconverted composition commits the kana that were
+    ;; typed, not a conversion of them: the user never asked for one.
+    (setq session (if (plist-get session :converted)
+                      (nelisp-ime--reconvert session)
+                    (nelisp-ime--retype session))))
   (let ((commit (and commit-p (plist-get session :preedit)))
         (empty (list :id session-id
                      :input-style (plist-get session :input-style)
@@ -638,6 +670,12 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
         (nelisp-ime--insert session-id session (plist-get event :text)))
        ((eq operation :backspace)
         (nelisp-ime--backspace session-id session))
+       ;; Conversion is a request, never a side effect of typing.  Unlike
+       ;; :select-candidate this does not force full detail: converting
+       ;; does not answer a question about a list, so a compact session
+       ;; stays compact and fetches candidates with `session-status'.
+       ((eq operation :convert)
+        (nelisp-ime--store session-id (nelisp-ime--reconvert session)))
        ;; A selection answer must carry the list being selected from, so
        ;; these two ignore a compact session.
        ((eq operation :select-candidate)
