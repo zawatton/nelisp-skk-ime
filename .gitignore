@@ -13,3 +13,9 @@
 
 # Editor / OS cruft
 *.*~
+
+# Local CMake build trees under windows/
+/windows/build/
+
+# Stray MSVC object from an out-of-tree harness build
+skkserv-spawn-harness.obj
