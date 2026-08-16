@@ -61,6 +61,42 @@ class StateEditSession final : public ITfEditSession {
   ITfContext* context_;
   ddskk::EngineState state_;
 };
+std::string NarrowUtf8(const wchar_t* text) {
+  if (!text || !*text) return {};
+  const int size = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0,
+                                       nullptr, nullptr);
+  if (size <= 1) return {};
+  std::string out(static_cast<size_t>(size - 1), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, text, -1, out.data(), size, nullptr,
+                      nullptr);
+  return out;
+}
+
+// Read a setting scoped to one engine.  The settings window writes these
+// under Software\NativeIME\Engines\<id> so two engines can use
+// the same name; FALLBACK is what the shared root key held, which keeps
+// profiles written before the split working.
+DWORD ReadEngineDword(const wchar_t* engine_id, const wchar_t* name,
+                      DWORD fallback) {
+  if (!engine_id || !*engine_id) return fallback;
+  std::wstring subkey = L"Software\\NativeIME\\Engines\\";
+  subkey += engine_id;
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, subkey.c_str(), 0, KEY_READ, &key) !=
+      ERROR_SUCCESS) {
+    return fallback;
+  }
+  DWORD value = fallback, bytes = sizeof(value), type = 0;
+  if (RegQueryValueExW(key, name, nullptr, &type,
+                       reinterpret_cast<BYTE*>(&value), &bytes) !=
+          ERROR_SUCCESS ||
+      type != REG_DWORD) {
+    value = fallback;
+  }
+  RegCloseKey(key);
+  return value;
+}
+
 }  // namespace
 
 LONG g_object_count = 0;
@@ -348,9 +384,12 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
 }
 
 void TextService::SelectInputEngine(bool ddskk) {
-  if (!engine_.SelectEngine(ddskk ? "ddskk" : "passthrough", 1000)) return;
+  // Re-enabling returns to the configured engine, which is not necessarily
+  // DDSKK now that the settings offer others.
+  const std::string target = ddskk ? engine_id_ : std::string("passthrough");
+  if (!engine_.SelectEngine(target, 1000)) return;
   const bool was_ddskk = ddskk_engine_;
-  ddskk_engine_ = ddskk;
+  ddskk_engine_ = ddskk && engine_id_ != "passthrough";
   if (!ddskk) {
     // Passthrough makes OnTestKeyDown/OnKeyDown bail out unconditionally
     // (their `!ddskk_engine_' early-outs), so kana_mode_ no longer
@@ -520,11 +559,16 @@ void TextService::LoadSettings() {
 
     RegCloseKey(key);
   }
-  ddskk_engine_ = wcscmp(engine, L"passthrough") != 0;
-  kana_mode_ = ddskk_engine_ && kana != 0;
+  engine_id_ = NarrowUtf8(engine);
+  ddskk_engine_ = engine_id_ != "passthrough";
+  // Settings that belong to one engine live under its own key, so reread
+  // the per-engine copy now that the engine id is known.  The value at the
+  // root is the pre-per-engine location and remains the fallback.
+  kana_mode_ = ddskk_engine_ &&
+               ReadEngineDword(engine, L"InitialKanaMode", kana) != 0;
   engine_pending_ = false;
   debug_log_ = debug_log == 1;
-  engine_.SelectEngine(ddskk_engine_ ? "ddskk" : "passthrough", 1000);
+  engine_.SelectEngine(engine_id_, 1000);
 
   // CorvusSKK documents a [1, 60000] ms range for its equivalent setting.
   if (indicator_ms < 1) indicator_ms = 1;

@@ -364,6 +364,14 @@ typedef struct {
   GtkWidget *window;
 
   /* Tab 動作 */
+  GtkWidget *engine_dropdown;
+  /* One page of engine-specific controls per engine, shown by the stack
+   * as the dropdown changes, so an engine's options never appear under
+   * another engine. */
+  GtkWidget *engine_stack;
+  GtkWidget *check_okuri_auto;      /* ddskk */
+  GtkWidget *spin_candidate_limit;  /* lattice */
+  GtkWidget *check_lattice_learning;/* lattice */
   GtkWidget *radio_hiragana;
   GtkWidget *radio_latin;
   GtkWidget *check_okuri_strictly;
@@ -395,10 +403,13 @@ typedef struct {
   GtkWidget *status_label;
 } SettingsWindow;
 
+/* The stored form is a Win32 COLORREF -- 0x00BBGGRR, blue in the high
+ * byte -- because TextService::LoadSettings() hands the value straight to
+ * GDI.  Packing it red-first instead swapped red and blue on screen. */
 static void packed_to_rgba(int64_t packed, GdkRGBA *out) {
-  out->red = ((packed >> 16) & 0xff) / 255.0;
+  out->blue = ((packed >> 16) & 0xff) / 255.0;
   out->green = ((packed >> 8) & 0xff) / 255.0;
-  out->blue = (packed & 0xff) / 255.0;
+  out->red = (packed & 0xff) / 255.0;
   out->alpha = 1.0;
 }
 
@@ -407,7 +418,7 @@ static int64_t rgba_to_packed(GtkColorDialogButton *btn) {
   const int r = (int)(rgba->red * 255.0 + 0.5);
   const int g = (int)(rgba->green * 255.0 + 0.5);
   const int b = (int)(rgba->blue * 255.0 + 0.5);
-  return ((int64_t)r << 16) | ((int64_t)g << 8) | (int64_t)b;
+  return ((int64_t)b << 16) | ((int64_t)g << 8) | (int64_t)r;
 }
 
 static GtkWidget *make_color_button(int64_t packed) {
@@ -429,6 +440,114 @@ static void grid_add_row(GtkGrid *grid, int row, const char *label_text, GtkWidg
   gtk_grid_attach(grid, control, 1, row, 1, 1);
 }
 
+/* The engines the settings window offers.  The id is the wire name the
+ * engine process answers to `ENGINE LIST' and the text service sends
+ * back with `ENGINE SET'; it is also the registry subkey holding that
+ * engine's own settings.  Adding an engine means adding a row here and a
+ * page in build_engine_pages(). */
+typedef struct {
+  const wchar_t *id;
+  const char *label;   /* UTF-8, shown in the dropdown */
+  const char *note;    /* UTF-8, one line under the dropdown */
+} EngineChoice;
+
+static const EngineChoice kEngineChoices[] = {
+    {L"ddskk", "DDSKK (SKK)",
+     "SKK の変換規則をそのまま使います。"},
+    {L"lattice", "かな漢字変換 (nelisp-ime)",
+     "辞書ラティスで文全体の候補を選びます。"},
+    {L"dictionary", "完全一致変換 (nelisp-ime)",
+     "読みが完全一致する候補だけを出します。"},
+    {L"passthrough", "パススルー (実験用)",
+     "変換せずアプリへ渡します。"},
+};
+
+#define ENGINE_CHOICE_COUNT (sizeof(kEngineChoices) / sizeof(kEngineChoices[0]))
+
+static guint engine_choice_index(const wchar_t *id) {
+  for (guint i = 0; i < ENGINE_CHOICE_COUNT; i++) {
+    if (wcscmp(kEngineChoices[i].id, id) == 0) return i;
+  }
+  return 0; /* an id this build does not know falls back to the first */
+}
+
+/* Show the page belonging to the engine now selected, and reload that
+ * engine's stored values into it.  Reloading matters because each
+ * engine keeps its settings in its own subkey: without it the page would
+ * show whatever the previously selected engine had. */
+static void on_engine_changed(GObject *dropdown, GParamSpec *pspec, gpointer user_data) {
+  (void)pspec;
+  SettingsWindow *sw = (SettingsWindow *)user_data;
+  const guint selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(dropdown));
+  if (selected >= ENGINE_CHOICE_COUNT) return;
+  const EngineChoice *choice = &kEngineChoices[selected];
+
+  wcsncpy(sw->app->settings.engine, choice->id, SETTINGS_STR_LEN - 1);
+  sw->app->settings.engine[SETTINGS_STR_LEN - 1] = L'\0';
+  settings_load_engine_scope(&sw->app->settings, choice->id);
+
+  if (sw->check_okuri_auto) {
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_okuri_auto),
+                                sw->app->settings.engine_okuri_auto != 0);
+  }
+  if (sw->spin_candidate_limit) {
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_candidate_limit),
+                              sw->app->settings.engine_candidate_limit);
+  }
+  if (sw->check_lattice_learning) {
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_lattice_learning),
+                                sw->app->settings.engine_learning != 0);
+  }
+  if (sw->engine_stack) {
+    char name[32];
+    g_snprintf(name, sizeof(name), "%u", selected);
+    gtk_stack_set_visible_child_name(GTK_STACK(sw->engine_stack), name);
+  }
+}
+
+/* One page per engine: its description plus whatever settings only that
+ * engine honors. */
+static GtkWidget *build_engine_pages(SettingsWindow *sw) {
+  GtkWidget *stack = gtk_stack_new();
+  for (guint i = 0; i < ENGINE_CHOICE_COUNT; i++) {
+    GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *note = gtk_label_new(kEngineChoices[i].note);
+    gtk_label_set_xalign(GTK_LABEL(note), 0.0);
+    gtk_label_set_wrap(GTK_LABEL(note), TRUE);
+    gtk_box_append(GTK_BOX(page), note);
+
+    if (wcscmp(kEngineChoices[i].id, L"ddskk") == 0) {
+      sw->check_okuri_auto = gtk_check_button_new_with_label(
+          "éãä»®åãèªåå¦çãã" /* 送り仮名を自動処理する */);
+      gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_okuri_auto),
+                                  sw->app->settings.engine_okuri_auto != 0);
+      gtk_box_append(GTK_BOX(page), sw->check_okuri_auto);
+    } else if (wcscmp(kEngineChoices[i].id, L"lattice") == 0) {
+      GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+      GtkWidget *label = gtk_label_new(
+          "åè£ã®è¡¨ç¤ºæ°" /* 候補の表示数 */);
+      gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+      sw->spin_candidate_limit = gtk_spin_button_new_with_range(1, 30, 1);
+      gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_candidate_limit),
+                                sw->app->settings.engine_candidate_limit);
+      gtk_box_append(GTK_BOX(row), label);
+      gtk_box_append(GTK_BOX(row), sw->spin_candidate_limit);
+      gtk_box_append(GTK_BOX(page), row);
+
+      sw->check_lattice_learning = gtk_check_button_new_with_label(
+          "ç¢ºå®ããåè£ãå­¦ç¿ãã" /* 確定した候補を学習する */);
+      gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_lattice_learning),
+                                  sw->app->settings.engine_learning != 0);
+      gtk_box_append(GTK_BOX(page), sw->check_lattice_learning);
+    }
+
+    char name[32];
+    g_snprintf(name, sizeof(name), "%u", i);
+    gtk_stack_add_named(GTK_STACK(stack), page, name);
+  }
+  return stack;
+}
+
 static GtkWidget *build_tab_behavior(SettingsWindow *sw) {
   GtkWidget *grid = gtk_grid_new();
   gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
@@ -438,11 +557,15 @@ static GtkWidget *build_tab_behavior(SettingsWindow *sw) {
   gtk_widget_set_margin_start(grid, 12);
   gtk_widget_set_margin_end(grid, 12);
 
-  char *engine_utf8 = wide_to_utf8_alloc(sw->app->settings.engine);
-  GtkWidget *engine_label = gtk_label_new(engine_utf8);
-  gtk_label_set_xalign(GTK_LABEL(engine_label), 0.0);
-  g_free(engine_utf8);
-  grid_add_row(GTK_GRID(grid), 0, "\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3" /* エンジン */, engine_label);
+  const char *engine_labels[ENGINE_CHOICE_COUNT + 1];
+  for (guint i = 0; i < ENGINE_CHOICE_COUNT; i++) engine_labels[i] = kEngineChoices[i].label;
+  engine_labels[ENGINE_CHOICE_COUNT] = NULL;
+  sw->engine_dropdown = gtk_drop_down_new_from_strings(engine_labels);
+  gtk_drop_down_set_selected(GTK_DROP_DOWN(sw->engine_dropdown),
+                             engine_choice_index(sw->app->settings.engine));
+  g_signal_connect(sw->engine_dropdown, "notify::selected",
+                   G_CALLBACK(on_engine_changed), sw);
+  grid_add_row(GTK_GRID(grid), 0, "エンジン" /* エンジン */, sw->engine_dropdown);
 
   GtkWidget *radio_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
   sw->radio_hiragana = gtk_check_button_new_with_label("\xe3\x81\x8b\xe3\x81\xaa" /* かな */);
@@ -482,6 +605,16 @@ static GtkWidget *build_tab_behavior(SettingsWindow *sw) {
   gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_add_katakana_cand),
                               sw->app->settings.behavior_add_katakana_cand != 0);
   gtk_grid_attach(GTK_GRID(grid), sw->check_add_katakana_cand, 0, row++, 2, 1);
+
+  /* Engine-specific settings live on their own page, swapped by the
+   * dropdown above, so an engine's options never show under another. */
+  sw->engine_stack = build_engine_pages(sw);
+  {
+    char name[32];
+    g_snprintf(name, sizeof(name), "%u",
+               engine_choice_index(sw->app->settings.engine));
+    gtk_stack_set_visible_child_name(GTK_STACK(sw->engine_stack), name);
+  }
 
   sw->check_learn_disabled = gtk_check_button_new_with_label(
       "\xe5\xad\xa6\xe7\xbf\x92\xe3\x81\x97\xe3\x81\xaa\xe3\x81\x84\xef\xbc\x88\xe3\x83\x97\xe3\x83\xa9\xe3\x82\xa4\xe3\x83\x99\xe3\x83\xbc\xe3\x83\x88\xe3\x83\xa2\xe3\x83\xbc\xe3\x83\x89\xef\xbc\x89"
@@ -631,7 +764,27 @@ static GtkWidget *build_tab_maintenance(SettingsWindow *sw) {
 }
 
 static void settings_read_from_widgets(SettingsWindow *sw, Settings *out) {
-  *out = sw->app->settings; /* preserves `engine' (read-only, never exposed as a control) */
+  *out = sw->app->settings;
+
+  /* The engine and its own settings.  `engine' is a control now, so it is
+   * read back like everything else rather than carried over untouched. */
+  const guint selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(sw->engine_dropdown));
+  if (selected < ENGINE_CHOICE_COUNT) {
+    wcsncpy(out->engine, kEngineChoices[selected].id, SETTINGS_STR_LEN - 1);
+    out->engine[SETTINGS_STR_LEN - 1] = 0;
+  }
+  if (sw->check_okuri_auto) {
+    out->engine_okuri_auto =
+        gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_okuri_auto)) ? 1 : 0;
+  }
+  if (sw->spin_candidate_limit) {
+    out->engine_candidate_limit =
+        gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_candidate_limit));
+  }
+  if (sw->check_lattice_learning) {
+    out->engine_learning =
+        gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_lattice_learning)) ? 1 : 0;
+  }
 
   out->initial_kana_mode = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->radio_hiragana)) ? 1 : 0;
   out->behavior_okuri_strictly = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_okuri_strictly)) ? 1 : 0;

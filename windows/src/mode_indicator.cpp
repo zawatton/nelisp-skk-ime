@@ -30,8 +30,8 @@ namespace {
 // TextColorFor() below), so only the backgrounds are listed here.
 constexpr COLORREF kColorKanaBackground = RGB(0xC0, 0x20, 0x20);      // red
 constexpr COLORREF kColorKatakanaBackground = RGB(0x1B, 0x7F, 0x3B);  // green
-constexpr COLORREF kColorLatinBackground = RGB(0x1E, 0x5A, 0xA8);     // blue
-constexpr COLORREF kColorWideLatinBackground = RGB(0xB0, 0x5A, 0x00); // amber
+constexpr COLORREF kColorLatinBackground = RGB(0x00, 0xA6, 0xC8);     // light blue
+constexpr COLORREF kColorWideLatinBackground = RGB(0x1E, 0x5A, 0xA8); // blue
 constexpr COLORREF kColorAbbrevBackground = RGB(0x6A, 0x2C, 0x91);    // purple
 
 // Border colors are this percentage of the background's brightness (i.e.

@@ -76,6 +76,79 @@ bool UseNativeEntry() {
   return size > 0 && size < 16 && _wcsicmp(value, L"native") == 0;
 }
 
+// The two runner scripts this host knows how to launch. Both speak the
+// same line protocol on stdin/stdout, so everything below StartChild() --
+// Dispatch(), the skkserv relay, idle GC -- is identical either way; the
+// only difference is which conversion the child performs.
+constexpr wchar_t kDdskkRunner[] = L"engine/ddskk-engine-stdio.el";
+constexpr wchar_t kFrameworkRunner[] = L"framework/nelisp-ime-stdio.el";
+
+// The engine the user configured, as an id matching what a runner answers
+// to `ENGINE LIST'. Env first, then the HKCU\Software\NativeIME\Engine
+// value the settings UI writes, then the historical default -- the same
+// env-first order as PipeName()/UseNativeEntry() above, so a harness can
+// exercise an engine without touching the live configuration.
+std::wstring ConfiguredEngineId() {
+  wchar_t value[64]{};
+  const DWORD size = GetEnvironmentVariableW(L"NELISP_IME_ENGINE", value, 64);
+  if (size > 0 && size < 64) return value;
+
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0, KEY_READ,
+                    &key) != ERROR_SUCCESS) return L"ddskk";
+  wchar_t engine[64]{};
+  // One wchar_t short of the buffer, so a value stored without its
+  // terminating null still leaves room for one.
+  DWORD bytes = sizeof(engine) - sizeof(wchar_t);
+  const LSTATUS status =
+      RegQueryValueExW(key, L"Engine", nullptr, nullptr,
+                       reinterpret_cast<BYTE*>(engine), &bytes);
+  RegCloseKey(key);
+  if (status != ERROR_SUCCESS || engine[0] == L'\0') return L"ddskk";
+  return engine;
+}
+
+// `ddskk' and `passthrough' are the two ids the DDSKK runner answers to
+// (see engine/ddskk-engine.el's ENGINE LIST). Every other id belongs to
+// the nelisp-ime framework runner, which serves whichever engines the
+// engine files it loads registered.
+bool IsDdskkEngineId(const std::wstring& id) {
+  return id.empty() || _wcsicmp(id.c_str(), L"ddskk") == 0 ||
+         _wcsicmp(id.c_str(), L"passthrough") == 0;
+}
+
+bool FileExists(const std::wstring& path) {
+  const DWORD attributes = GetFileAttributesW(path.c_str());
+  return attributes != INVALID_FILE_ATTRIBUTES &&
+         (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+// Returns the repository-relative runner script for the configured engine,
+// and exports NELISP_IME_ENGINE for the child when that is the framework
+// runner so it starts on the configured engine rather than its own
+// default. (The child inherits this process's environment: CreateProcessW
+// is called with lpEnvironment=nullptr, same as ApplyEngineEnvFromRegistry
+// relies on.)
+//
+// Falling back to DDSKK when the repository has no framework runner is
+// deliberate rather than defensive tidiness. Field incident: the settings
+// UI offered an engine the running stack could not serve, the user
+// selected it, and conversion stopped working entirely. A configured
+// engine that cannot be launched must degrade to the one that always can.
+std::wstring EngineRunnerScript(const std::wstring& repository) {
+  const std::wstring id = ConfiguredEngineId();
+  if (IsDdskkEngineId(id)) return kDdskkRunner;
+  if (!FileExists(repository + L"\\framework\\nelisp-ime-stdio.el")) {
+    std::fwprintf(stderr,
+                  L"ddskk-engine-host: engine \"%ls\" needs %ls, which this "
+                  L"repository does not provide; falling back to DDSKK\n",
+                  id.c_str(), kFrameworkRunner);
+    return kDdskkRunner;
+  }
+  SetEnvironmentVariableW(L"NELISP_IME_ENGINE", id.c_str());
+  return kFrameworkRunner;
+}
+
 struct Child {
   HANDLE process = nullptr;
   HANDLE input = nullptr;
@@ -206,9 +279,12 @@ bool StartChild(const std::wstring& engine, const std::wstring& repository,
   PROCESS_INFORMATION process{};
   std::wstring command = L"\"" + engine + L"\"";
   if (!repository.empty()) {
-    command += UseNativeEntry()
-                   ? L" --ddskk-ime-server engine/ddskk-engine-stdio.el"
-                   : L" --load engine/ddskk-engine-stdio.el";
+    const std::wstring runner = EngineRunnerScript(repository);
+    // The AOT-backed native entry exists for the DDSKK runner only, so an
+    // engine served by the framework runner always takes the --load path.
+    command += (UseNativeEntry() && runner == kDdskkRunner)
+                   ? L" --ddskk-ime-server " + runner
+                   : L" --load " + runner;
   }
   const wchar_t* working_directory =
       repository.empty() ? nullptr : repository.c_str();

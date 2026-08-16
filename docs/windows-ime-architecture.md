@@ -92,3 +92,29 @@ Normal TSF transactions continue to fail open through the bounded client
 connection timeout. The relay defaults to the compatible Elisp load path;
 setting `DDSKK_NELISP_ENTRY=native` selects the AOT-backed
 `--ddskk-ime-server` entry on a NeLisp reader that provides it.
+
+## Choosing the conversion engine
+
+Which runner the host loads follows the configured engine id —
+`NELISP_IME_ENGINE` in the environment, else `HKCU\Software\NativeIME\Engine`,
+else `ddskk`:
+
+| engine id | runner | registers |
+| --- | --- | --- |
+| `ddskk`, `passthrough` | `engine/ddskk-engine-stdio.el` | `ddskk passthrough` |
+| anything else | `framework/nelisp-ime-stdio.el` | whatever its engine files registered (`dictionary lattice`) |
+
+Both runners speak the same line protocol, so nothing below `StartChild()` —
+the dictionary relay, idle GC, the named-pipe server — can tell them apart.
+The host exports `NELISP_IME_ENGINE` to the framework runner so it starts on
+the configured engine; `ENGINE SET` still switches at runtime.
+
+An engine whose runner is not present in the deployed repository falls back to
+DDSKK with a line on stderr. This is not defensive tidiness: the settings
+window once offered an engine the running stack could not serve, and selecting
+it left the user with no conversion at all. An engine that cannot be launched
+degrades to the one that always can.
+
+Measured cold start, real host on a private pipe: DDSKK 4.9 s to first
+response, the framework runner on `lattice` 3.4 s. Both answer subsequent keys
+in well under 100 ms.

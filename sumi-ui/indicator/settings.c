@@ -99,9 +99,35 @@ static gboolean reg_set_dword(const wchar_t *key_path, const wchar_t *value, int
                          &data, sizeof(data)) == ERROR_SUCCESS;
 }
 
+/* An absent ModeColor* value means "use the colour the DLL was built
+ * with", which is not the same as writing this UI's default: the two
+ * tables need not agree, and unconditionally writing ours silently
+ * changed the user's indicator colours.  So a value equal to the default
+ * is removed rather than written, keeping "unset" expressible. */
+static gboolean reg_set_color(const wchar_t *key_path, const wchar_t *value,
+                              int32_t v, int32_t fallback) {
+  if (v == fallback) {
+    const LONG status = RegDeleteKeyValueW(HKEY_CURRENT_USER, key_path, value);
+    return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND;
+  }
+  return RegSetKeyValueW(HKEY_CURRENT_USER, key_path, value, REG_DWORD, &v,
+                         sizeof(v)) == ERROR_SUCCESS;
+}
+
 static gboolean reg_set_sz(const wchar_t *key_path, const wchar_t *value, const wchar_t *v) {
   return RegSetKeyValueW(HKEY_CURRENT_USER, key_path, value, REG_SZ,
                          v, (DWORD)((wcslen(v) + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
+}
+
+/* Path of the subkey holding one engine's own settings.  Derived from
+ * the same resolved base as everything else, so DDSKK_SETTINGS_KEY keeps
+ * confining these writes too. */
+static void engine_key_path(wchar_t *buf, size_t cap, const wchar_t *engine_id) {
+  wchar_t base[512];
+  settings_key_path(base, 512);
+  _snwprintf(buf, cap, L"%ls\\Engines\\%ls", base,
+             (engine_id && *engine_id) ? engine_id : L"ddskk");
+  buf[cap - 1] = L'\0';
 }
 
 /* -------------------------------------------------------------------- */
@@ -114,6 +140,9 @@ static gboolean reg_set_sz(const wchar_t *key_path, const wchar_t *value, const 
 void settings_defaults(Settings *s) {
   wcsncpy(s->engine, L"ddskk", SETTINGS_STR_LEN - 1);
   s->engine[SETTINGS_STR_LEN - 1] = L'\0';
+  s->engine_okuri_auto = 1;
+  s->engine_candidate_limit = 9;
+  s->engine_learning = 1;
   s->initial_kana_mode = 1;
   s->behavior_okuri_strictly = 0;
   s->behavior_delete_okuri_on_cancel = 0;
@@ -123,11 +152,20 @@ void settings_defaults(Settings *s) {
   s->mode_indicator = 1;
   s->mode_indicator_ms = 3000;
   s->mode_indicator_scale = 100;
-  s->color_kana = 0xC02020;
-  s->color_katakana = 0x00C000;
-  s->color_wide_latin = 0x8000C0;
-  s->color_latin = 0x1E5AA8;
-  s->color_abbrev = 0x808080; /* design doc: undecided; see comment above */
+  /* These must stay identical to the DLL's built-in palette in
+   * windows/src/mode_indicator.cpp.  They did not, and because Apply used
+   * to write every colour unconditionally, saving any setting silently
+   * repainted three of the five modes with this file's values instead of
+   * the ones the indicator was actually built with.
+   *
+   * Stored as COLORREF (0x00BBGGRR, blue in the high byte) because that
+   * is what the DLL passes straight to GDI; writing them red-first swaps
+   * red and blue on screen. */
+  s->color_kana = 0x2020C0;       /* red      RGB C0,20,20 */
+  s->color_katakana = 0x3B7F1B;   /* green    RGB 1B,7F,3B */
+  s->color_latin = 0xC8A600;      /* 水色      RGB 00,A6,C8 */
+  s->color_wide_latin = 0xA85A1E; /* 青        RGB 1E,5A,A8 */
+  s->color_abbrev = 0x912C6A;     /* purple   RGB 6A,2C,91 */
 
   s->skkserv_enable = 1;
   wcsncpy(s->skkserv_host, L"127.0.0.1", SETTINGS_STR_LEN - 1);
@@ -151,6 +189,7 @@ gboolean settings_load(Settings *s) {
 
   reg_get_sz(key, L"Engine", d.engine, s->engine, SETTINGS_STR_LEN);
   reg_get_dword(key, L"InitialKanaMode", d.initial_kana_mode, &s->initial_kana_mode);
+  settings_load_engine_scope(s, s->engine);
   reg_get_dword(key, L"BehaviorOkuriStrictly", d.behavior_okuri_strictly, &s->behavior_okuri_strictly);
   reg_get_dword(key, L"BehaviorDeleteOkuriOnCancel", d.behavior_delete_okuri_on_cancel,
                 &s->behavior_delete_okuri_on_cancel);
@@ -180,27 +219,57 @@ gboolean settings_load(Settings *s) {
   return TRUE;
 }
 
+void settings_load_engine_scope(Settings *s, const wchar_t *engine_id) {
+  wchar_t key[512];
+  engine_key_path(key, 512, engine_id);
+  Settings d;
+  settings_defaults(&d);
+  reg_get_dword(key, L"OkuriAuto", d.engine_okuri_auto, &s->engine_okuri_auto);
+  reg_get_dword(key, L"CandidateLimit", d.engine_candidate_limit,
+                &s->engine_candidate_limit);
+  reg_get_dword(key, L"Learning", d.engine_learning, &s->engine_learning);
+}
+
 gboolean settings_save(const Settings *s) {
   wchar_t key[512];
   settings_key_path(key, 512);
   gboolean ok = TRUE;
 
-  /* `engine' is deliberately NOT written -- read-only per the design
-   * doc's Tab 動作 table; this UI does not own that value. */
+  /* `engine' is written now: the engine process hosts more than DDSKK,
+   * and this window is where the user picks between them.  The text
+   * service reads it back on the next activation. */
+  ok = reg_set_sz(key, L"Engine", s->engine) && ok;
   ok = reg_set_dword(key, L"InitialKanaMode", s->initial_kana_mode) && ok;
   ok = reg_set_dword(key, L"BehaviorOkuriStrictly", s->behavior_okuri_strictly) && ok;
   ok = reg_set_dword(key, L"BehaviorDeleteOkuriOnCancel", s->behavior_delete_okuri_on_cancel) && ok;
   ok = reg_set_dword(key, L"BehaviorAddKatakanaCand", s->behavior_add_katakana_cand) && ok;
   ok = reg_set_dword(key, L"BehaviorLearnDisabled", s->behavior_learn_disabled) && ok;
 
+  /* Engine-scoped values go under the selected engine's own subkey so a
+   * name means the same thing for every engine that uses it. */
+  wchar_t engine_key[512];
+  engine_key_path(engine_key, 512, s->engine);
+  ok = reg_set_dword(engine_key, L"OkuriAuto", s->engine_okuri_auto) && ok;
+  ok = reg_set_dword(engine_key, L"CandidateLimit", s->engine_candidate_limit) && ok;
+  ok = reg_set_dword(engine_key, L"Learning", s->engine_learning) && ok;
+
   ok = reg_set_dword(key, L"ModeIndicator", s->mode_indicator) && ok;
   ok = reg_set_dword(key, L"ModeIndicatorMs", s->mode_indicator_ms) && ok;
   ok = reg_set_dword(key, L"ModeIndicatorScale", s->mode_indicator_scale) && ok;
-  ok = reg_set_dword(key, L"ModeColorKana", (int32_t)s->color_kana) && ok;
-  ok = reg_set_dword(key, L"ModeColorKatakana", (int32_t)s->color_katakana) && ok;
-  ok = reg_set_dword(key, L"ModeColorWideLatin", (int32_t)s->color_wide_latin) && ok;
-  ok = reg_set_dword(key, L"ModeColorLatin", (int32_t)s->color_latin) && ok;
-  ok = reg_set_dword(key, L"ModeColorAbbrev", (int32_t)s->color_abbrev) && ok;
+  {
+    Settings d;
+    settings_defaults(&d);
+    ok = reg_set_color(key, L"ModeColorKana", (int32_t)s->color_kana,
+                       (int32_t)d.color_kana) && ok;
+    ok = reg_set_color(key, L"ModeColorKatakana", (int32_t)s->color_katakana,
+                       (int32_t)d.color_katakana) && ok;
+    ok = reg_set_color(key, L"ModeColorWideLatin", (int32_t)s->color_wide_latin,
+                       (int32_t)d.color_wide_latin) && ok;
+    ok = reg_set_color(key, L"ModeColorLatin", (int32_t)s->color_latin,
+                       (int32_t)d.color_latin) && ok;
+    ok = reg_set_color(key, L"ModeColorAbbrev", (int32_t)s->color_abbrev,
+                       (int32_t)d.color_abbrev) && ok;
+  }
 
   ok = reg_set_dword(key, L"SkkServEnable", s->skkserv_enable) && ok;
   ok = reg_set_sz(key, L"SkkServHost", s->skkserv_host) && ok;
@@ -224,6 +293,9 @@ gboolean settings_delete_all(void) {
 
 gboolean settings_equal(const Settings *a, const Settings *b) {
   return wcscmp(a->engine, b->engine) == 0 &&
+         a->engine_okuri_auto == b->engine_okuri_auto &&
+         a->engine_candidate_limit == b->engine_candidate_limit &&
+         a->engine_learning == b->engine_learning &&
          a->initial_kana_mode == b->initial_kana_mode &&
          a->behavior_okuri_strictly == b->behavior_okuri_strictly &&
          a->behavior_delete_okuri_on_cancel == b->behavior_delete_okuri_on_cancel &&

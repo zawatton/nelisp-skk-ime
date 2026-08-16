@@ -22,6 +22,8 @@
 #include "langbar_button.h"
 #include "mode_indicator.h"
 
+#include <string>
+
 #include <msctf.h>
 #include <ctffunc.h>
 #include <windows.h>
@@ -141,7 +143,14 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // cancel the engine first (see OnKeyDown), or its stale text would
   // re-render into a brand-new composition.
   bool engine_needs_cancel_ = false;
+  // True while an engine that composes owns the keyboard; false under
+  // passthrough, where OnTestKeyDown/OnKeyDown bail out immediately.
   bool ddskk_engine_ = true;
+  // The engine the settings chose.  Kept as its wire id rather than a
+  // boolean because the engine process hosts more than DDSKK, and because
+  // toggling the language bar off and back on must return to the engine the
+  // user configured rather than to DDSKK.
+  std::string engine_id_ = "ddskk";
   LangBarButton* settings_button_ = nullptr;
   // GUID_LBI_INPUTMODE: the item Windows 10/11's taskbar "A/あ" input
   // indicator renders. See AddLangBarButton()/RemoveLangBarButton().

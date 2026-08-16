@@ -44,7 +44,15 @@
 
 typedef struct {
   /* Tab 動作 (behavior) */
-  wchar_t engine[SETTINGS_STR_LEN];   /* Engine, SZ -- read-only display, never written by settings_save() */
+  wchar_t engine[SETTINGS_STR_LEN];   /* Engine, SZ -- which conversion the IME uses */
+  /* Settings that belong to one engine, stored under
+   * <key>\\Engines\\<engine id> rather than beside the shared values,
+   * so two engines can use the same name without colliding.  Loaded and
+   * saved for the currently selected engine only: switching engines in
+   * the UI reloads this group from the newly selected engine subkey. */
+  int32_t engine_okuri_auto;          /* ddskk: OkuriAuto, DWORD 0/1 */
+  int32_t engine_candidate_limit;     /* lattice: CandidateLimit, DWORD 1..30 */
+  int32_t engine_learning;            /* lattice: Learning, DWORD 0/1 */
   int32_t initial_kana_mode;          /* InitialKanaMode, DWORD: 1=かな(hiragana) 0=英数(latin) */
   /* CorvusSKK-modeled behavior toggles, DWORD 0/1, default 0. These take
    * effect only via engine restart (the host bridges them to the
@@ -91,7 +99,10 @@ void settings_defaults(Settings *s);
  * load, so the caller always gets a fully-populated Settings back. */
 gboolean settings_load(Settings *s);
 
-/* Writes every field of S to the resolved registry key EXCEPT `engine'
+/* Writes every field of S to the resolved registry key, including
+ * `engine' now that the engine process hosts more than DDSKK; the
+ * engine-scoped fields go under the selected engine's own subkey.
+ * (Formerly `engine' was left unwritten
  * (read-only, per docs/design/sumi-indicator-settings.md's Tab 動作
  * table -- this UI never owns that value). RegSetKeyValueW creates the
  * key if it does not already exist. Returns TRUE only if every write
@@ -105,6 +116,12 @@ gboolean settings_save(const Settings *s);
  * belt-and-suspenders cleanup. Like every other function here, goes
  * through the same DDSKK_SETTINGS_KEY-aware resolution as load/save. */
 gboolean settings_delete_all(void);
+
+/* Reloads only the engine-scoped fields of S from ENGINE_ID's subkey,
+ * leaving every shared field untouched.  The settings window calls this
+ * when the engine dropdown changes, so each engine's page shows what is
+ * stored for that engine rather than the previous one's values. */
+void settings_load_engine_scope(Settings *s, const wchar_t *engine_id);
 
 /* TRUE iff every field of A and B is identical (wcscmp for the wide-
  * string fields). Used only by settings_selftest(). */
