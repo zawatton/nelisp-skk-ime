@@ -44,6 +44,28 @@
       (when (nelisp-ime-engine-get name)
         (setq nelisp-ime-default-engine name)))))
 
+;; One conversion during the cold load, which the host and the DLL
+;; already absorb off the user's keystroke path.
+;;
+;; Measured against the real host, this is worth ~0.3s of the first
+;; conversion and no more: かき went 1.4s -> 1.1s, still far above the
+;; 0.3-0.4s a later conversion costs.  So most of that first cost is NOT
+;; a global warm-up this can pay off; it tracks the reading (its
+;; substrings' candidate lists are cached per reading, and かき carries
+;; 20 candidates against てす's 3).  The remaining latency is the real
+;; blocker for enabling this engine: the DLL gives a conversion 1500ms
+;; (`EngineControl::kConvert' in windows/src/text_service.cpp), and a
+;; first conversion that overruns it does not merely fail to convert --
+;; the Enter after it lands on a connection still carrying the late
+;; reply, and the composition is erased.
+(let ((engine (nelisp-ime-engine-get nelisp-ime-default-engine)))
+  (when engine
+    (let ((convert (plist-get engine :convert)))
+      (when convert
+        (condition-case nil
+            (funcall convert "あい" nil)
+          (error nil))))))
+
 (defvar nelisp-ime-stdio--pending ""
   "Bytes read from stdin that do not yet form a complete line.
 
