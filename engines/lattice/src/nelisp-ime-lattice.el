@@ -64,23 +64,38 @@ short readings carry hundreds, and this runs on every cache hit."
          affected)))
 
 (defun nelisp-ime--dictionary-candidates-compute (reading)
-  "Normalize, deduplicate, and rank-sort dictionary candidates for READING."
+  "Normalize, deduplicate, and cost-order dictionary candidates for READING.
+
+Sorts only when the dictionary supplied its own costs.  A candidate
+without one is priced from its rank, and rank-derived costs ascend with
+rank, so the list leaves the loop already in cost order and the sort
+cannot move anything -- it just pays two `plist-get's and a funcall per
+comparison across every homophone of the reading.  That is not a
+rounding error on this runtime: single-kana readings carry hundreds of
+homophones, and computing か measured 555ms, き 906ms, against 86ms for
+かき, which has 20.  Three such lookups are what one lattice pass over a
+two-character reading costs."
   (let ((items (append (cdr (assoc reading nelisp-ime-system-candidates))
                        (or (gethash reading nelisp-ime-dictionary-index)
                            (cdr (assoc reading nelisp-ime-dictionary)))))
         (seen (make-hash-table :test 'equal))
         (rank 0)
+        (dictionary-costs nil)
         result)
     (dolist (item items)
       (let* ((candidate (nelisp-ime--candidate-normalize item rank))
              (surface (plist-get candidate :surface)))
+        (unless (or (stringp item) (null (plist-get item :cost)))
+          (setq dictionary-costs t))
         (unless (gethash surface seen)
           (puthash surface t seen)
           (push candidate result)))
       (setq rank (1+ rank)))
-    (sort (nreverse result)
-          (lambda (left right)
-            (< (plist-get left :cost) (plist-get right :cost))))))
+    (setq result (nreverse result))
+    (if dictionary-costs
+        (sort result (lambda (left right)
+                       (< (plist-get left :cost) (plist-get right :cost))))
+      result)))
 
 (defun nelisp-ime--dictionary-candidates (reading)
   "Return normalized dictionary candidates for READING.

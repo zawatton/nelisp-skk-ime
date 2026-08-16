@@ -30,6 +30,26 @@
                             (plist-get result :segments))
                      '("きょう" "は"))))))
 
+(ert-deftest nelisp-ime-lattice-test-candidate-order-follows-the-dictionary ()
+  "Plain-string candidates keep dictionary order; explicit costs sort.
+
+`nelisp-ime--dictionary-candidates-compute' skips its sort for the
+first case, so this pins the ordering the skip assumes: a candidate
+priced from its rank is already in cost order, and one that carries its
+own cost still has to be moved."
+  (nelisp-ime-lattice-test--isolated
+    (setq nelisp-ime-dictionary '(("あか" "赤" "垢" "аka" "朱")))
+    (should (equal (plist-get (nelisp-ime-lattice-convert "あか" nil)
+                              :candidates)
+                   '("赤" "垢" "аka" "朱")))
+    ;; Same reading, dictionary-supplied costs in the wrong order.
+    (nelisp-ime-lattice-cache-clear)
+    (setq nelisp-ime-dictionary
+          '(("あか" (:surface "垢" :cost 900) (:surface "赤" :cost 10))))
+    (should (equal (plist-get (nelisp-ime-lattice-convert "あか" nil)
+                              :candidates)
+                   '("赤" "垢")))))
+
 (ert-deftest nelisp-ime-lattice-test-preserves-unknown-kana ()
   (nelisp-ime-lattice-test--isolated
     (setq nelisp-ime-dictionary
