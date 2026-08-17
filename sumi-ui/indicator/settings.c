@@ -52,72 +52,29 @@ static void settings_key_path(wchar_t *buf, size_t cap) {
 }
 
 /* -------------------------------------------------------------------- */
-/* Low-level registry helpers. All go through settings_key_path() so
- * DDSKK_SETTINGS_KEY governs every read/write uniformly. RegGetValueW/
- * RegSetKeyValueW (both available since Vista) are used instead of the
- * classic RegOpenKeyEx+RegQueryValueEx/RegCreateKeyEx+RegSetValueEx
- * pairs specifically because they collapse "open-or-fail" and "create-
- * if-missing" into one call each -- settings_save() must silently
- * create the key on first run, and settings_load() must silently treat
- * a missing key exactly like a missing value (both fall back to the
- * same per-field default), so the simpler single-call API removes an
- * entire class of "did I remember to create the key first" bugs. */
+/* Low-level registry helpers -- implemented in NeLisp.
+ *
+ * These five used to be `static' C functions here.  They now live in
+ * indicator/registry.el, AOT-compiled to a COFF object and linked into
+ * this executable exactly the way indicator/mode-logic.el already is
+ * (see sumi-ui/build.el), per the project direction of moving non-
+ * NeLisp code to NeLisp.  Their names, signatures and semantics are
+ * unchanged, so every call site below is untouched and the existing
+ * `--settings-selftest' stays the equivalence check.
+ *
+ * `settings_key_path' and `engine_key_path' deliberately stayed in C:
+ * they *build* strings, and object-mode AOT rejects a module whose
+ * rodata is non-empty, so the format strings could not live there.
+ * The NeLisp side only ever forwards caller-owned pointers. */
 
-static gboolean reg_get_dword(const wchar_t *key_path, const wchar_t *value,
-                              int32_t default_value, int32_t *out) {
-  DWORD data = 0;
-  DWORD size = sizeof(data);
-  LSTATUS st = RegGetValueW(HKEY_CURRENT_USER, key_path, value,
-                            RRF_RT_REG_DWORD, NULL, &data, &size);
-  if (st != ERROR_SUCCESS) {
-    *out = default_value;
-    return TRUE;
-  }
-  *out = (int32_t)data;
-  return TRUE;
-}
-
-static gboolean reg_get_sz(const wchar_t *key_path, const wchar_t *value,
-                           const wchar_t *default_value, wchar_t *out, size_t out_cap) {
-  wchar_t buf[SETTINGS_STR_LEN];
-  DWORD size = sizeof(buf);
-  LSTATUS st = RegGetValueW(HKEY_CURRENT_USER, key_path, value,
-                            RRF_RT_REG_SZ, NULL, buf, &size);
-  if (st != ERROR_SUCCESS) {
-    wcsncpy(out, default_value, out_cap - 1);
-    out[out_cap - 1] = L'\0';
-    return TRUE;
-  }
-  wcsncpy(out, buf, out_cap - 1);
-  out[out_cap - 1] = L'\0';
-  return TRUE;
-}
-
-static gboolean reg_set_dword(const wchar_t *key_path, const wchar_t *value, int32_t v) {
-  DWORD data = (DWORD)v;
-  return RegSetKeyValueW(HKEY_CURRENT_USER, key_path, value, REG_DWORD,
-                         &data, sizeof(data)) == ERROR_SUCCESS;
-}
-
-/* An absent ModeColor* value means "use the colour the DLL was built
- * with", which is not the same as writing this UI's default: the two
- * tables need not agree, and unconditionally writing ours silently
- * changed the user's indicator colours.  So a value equal to the default
- * is removed rather than written, keeping "unset" expressible. */
-static gboolean reg_set_color(const wchar_t *key_path, const wchar_t *value,
-                              int32_t v, int32_t fallback) {
-  if (v == fallback) {
-    const LONG status = RegDeleteKeyValueW(HKEY_CURRENT_USER, key_path, value);
-    return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND;
-  }
-  return RegSetKeyValueW(HKEY_CURRENT_USER, key_path, value, REG_DWORD, &v,
-                         sizeof(v)) == ERROR_SUCCESS;
-}
-
-static gboolean reg_set_sz(const wchar_t *key_path, const wchar_t *value, const wchar_t *v) {
-  return RegSetKeyValueW(HKEY_CURRENT_USER, key_path, value, REG_SZ,
-                         v, (DWORD)((wcslen(v) + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
-}
+gboolean reg_get_dword(const wchar_t *key_path, const wchar_t *value,
+                       int32_t default_value, int32_t *out);
+gboolean reg_get_sz(const wchar_t *key_path, const wchar_t *value,
+                    const wchar_t *default_value, wchar_t *out, size_t out_cap);
+gboolean reg_set_dword(const wchar_t *key_path, const wchar_t *value, int32_t v);
+gboolean reg_set_color(const wchar_t *key_path, const wchar_t *value,
+                       int32_t v, int32_t fallback);
+gboolean reg_set_sz(const wchar_t *key_path, const wchar_t *value, const wchar_t *v);
 
 /* Path of the subkey holding one engine's own settings.  Derived from
  * the same resolved base as everything else, so DDSKK_SETTINGS_KEY keeps

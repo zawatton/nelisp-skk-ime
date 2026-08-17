@@ -105,23 +105,31 @@ is exactly how a fully-working toolchain still failed to find glib.h."
   (mapcar #'sumi-ui-fix-mingw-path
           (split-string (car (sumi-ui-process-lines "pkg-config" flag module)) " " t)))
 
-(defun sumi-ui-compile-mode-logic (obj)
-  "Compile indicator/mode-logic.el to COFF object OBJ."
+(defun sumi-ui-compile-nelisp (name obj)
+  "Compile indicator/NAME.el to COFF object OBJ.
+
+Shared by every NeLisp module linked into the executable: `mode-logic'
+(pure decision logic) and `registry' (settings.c's advapi32 layer).
+Both are object-mode AOT sources, so both are subject to the same
+`:object-mode-no-strings' rule -- neither may reference a string
+literal, which is why registry.el takes its key paths as pointers from
+settings.c rather than building them."
   (add-to-list 'load-path (expand-file-name "lisp" sumi-ui-nelisp-root))
   (add-to-list 'load-path (expand-file-name "src" sumi-ui-nelisp-root))
   (require 'nelisp-aot-compiler)
-  (let* ((src (expand-file-name "mode-logic.el" sumi-ui-indicator-dir))
+  (let* ((src (expand-file-name (concat name ".el") sumi-ui-indicator-dir))
          (program (with-temp-buffer
                     (insert-file-contents src)
                     (goto-char (point-min))
-                    (read (current-buffer)))))
+                    (read (current-buffer))))
+         (tag (upcase name)))
     (princ (format "=== compile-to-object %s -> %s ===\n" src obj))
     (condition-case err
         (progn
           (nelisp-aot-compile-to-object program obj :format 'coff)
-          (princ "MODE-LOGIC-OBJ-OK\n"))
+          (princ (format "%s-OBJ-OK\n" tag)))
       (error
-       (princ (format "MODE-LOGIC-OBJ-ERR %S\n" err))
+       (princ (format "%s-OBJ-ERR %S\n" tag err))
        (kill-emacs 1)))))
 
 (defun sumi-ui-compile-c (stem obj cflags)
@@ -199,6 +207,7 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
   (make-directory (getenv "HOME") t)
   (make-directory sumi-ui-target-dir t)
   (let* ((mode-logic-obj (expand-file-name "mode-logic.o" sumi-ui-target-dir))
+         (registry-obj (expand-file-name "registry.o" sumi-ui-target-dir))
          (pipe-client-obj (expand-file-name "pipe-client.o" sumi-ui-target-dir))
          (settings-obj (expand-file-name "settings.o" sumi-ui-target-dir))
          (main-obj (expand-file-name "main.o" sumi-ui-target-dir))
@@ -208,7 +217,8 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
          (gtk-libs (sumi-ui-pkg-config-flags "--libs" "gtk4"))
          (pango-libs (sumi-ui-pkg-config-flags "--libs" "pangocairo"))
          (all-cflags (append gtk-cflags pango-cflags)))
-    (sumi-ui-compile-mode-logic mode-logic-obj)
+    (sumi-ui-compile-nelisp "mode-logic" mode-logic-obj)
+    (sumi-ui-compile-nelisp "registry" registry-obj)
     ;; pipe-client.c/settings.c only need glib.h (for `gboolean') plus
     ;; plain <windows.h> -- gtk4's own cflags already cover glib's
     ;; include path, so reuse ALL-CFLAGS rather than pkg-config'ing glib
@@ -217,7 +227,9 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
     (sumi-ui-compile-c "settings" settings-obj all-cflags)
     (sumi-ui-compile-c "main" main-obj all-cflags)
     (let ((linked (sumi-ui-link
-                   (list main-obj mode-logic-obj pipe-client-obj settings-obj) exe
+                   (list main-obj mode-logic-obj registry-obj pipe-client-obj
+                         settings-obj)
+                   exe
                    ;; advapi32 for settings.c's RegGetValueW/RegSetKeyValueW/
                    ;; RegDeleteTreeW (Phase 3) -- not pulled in transitively
                    ;; by gtk4/pangocairo's own pkg-config libs.
