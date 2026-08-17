@@ -117,6 +117,17 @@ settings.c rather than building them."
   (add-to-list 'load-path (expand-file-name "lisp" sumi-ui-nelisp-root))
   (add-to-list 'load-path (expand-file-name "src" sumi-ui-nelisp-root))
   (require 'nelisp-aot-compiler)
+  ;; Fail loudly on a compiler that predates `(:f32 LIT)' rather than
+  ;; building against it.  GTK4 takes `float' for xalign/yalign and
+  ;; friends; without :f32 those arguments would have to be passed as
+  ;; :f64, which is an ABI mismatch that corrupts the value silently
+  ;; instead of erroring -- so a quiet fallback to an older NELISP_ROOT
+  ;; is exactly the failure this check exists to prevent.
+  (unless (fboundp 'nelisp-aot-compiler--f32-imm-bits)
+    (princ (format "NELISP-TOO-OLD %s lacks (:f32 LIT) support\n"
+                   sumi-ui-nelisp-root))
+    (princ "  set NELISP_ROOT to a checkout carrying feat/aot-f32-literal-args\n")
+    (kill-emacs 1))
   (let* ((src (expand-file-name (concat name ".el") sumi-ui-indicator-dir))
          (program (with-temp-buffer
                     (insert-file-contents src)
@@ -208,6 +219,7 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
   (make-directory sumi-ui-target-dir t)
   (let* ((mode-logic-obj (expand-file-name "mode-logic.o" sumi-ui-target-dir))
          (registry-obj (expand-file-name "registry.o" sumi-ui-target-dir))
+         (widgets-obj (expand-file-name "widgets.o" sumi-ui-target-dir))
          (pipe-client-obj (expand-file-name "pipe-client.o" sumi-ui-target-dir))
          (settings-obj (expand-file-name "settings.o" sumi-ui-target-dir))
          (main-obj (expand-file-name "main.o" sumi-ui-target-dir))
@@ -219,6 +231,7 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
          (all-cflags (append gtk-cflags pango-cflags)))
     (sumi-ui-compile-nelisp "mode-logic" mode-logic-obj)
     (sumi-ui-compile-nelisp "registry" registry-obj)
+    (sumi-ui-compile-nelisp "widgets" widgets-obj)
     ;; pipe-client.c/settings.c only need glib.h (for `gboolean') plus
     ;; plain <windows.h> -- gtk4's own cflags already cover glib's
     ;; include path, so reuse ALL-CFLAGS rather than pkg-config'ing glib
@@ -227,8 +240,8 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
     (sumi-ui-compile-c "settings" settings-obj all-cflags)
     (sumi-ui-compile-c "main" main-obj all-cflags)
     (let ((linked (sumi-ui-link
-                   (list main-obj mode-logic-obj registry-obj pipe-client-obj
-                         settings-obj)
+                   (list main-obj mode-logic-obj registry-obj widgets-obj
+                         pipe-client-obj settings-obj)
                    exe
                    ;; advapi32 for settings.c's RegGetValueW/RegSetKeyValueW/
                    ;; RegDeleteTreeW (Phase 3) -- not pulled in transitively

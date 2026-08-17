@@ -437,13 +437,13 @@ static GtkWidget *make_color_button(int64_t packed) {
 /* Appends a label + control row to GRID at ROW. Used for every setting
  * except the three standalone checkboxes (ModeIndicator/SkkServEnable/
  * DllDebug), whose own label text is the checkbox's own label. */
-static void grid_add_row(GtkGrid *grid, int row, const char *label_text, GtkWidget *control) {
-  GtkWidget *label = gtk_label_new(label_text);
-  gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-  gtk_widget_set_hexpand(control, TRUE);
-  gtk_grid_attach(grid, label, 0, row, 1, 1);
-  gtk_grid_attach(grid, control, 1, row, 1, 1);
-}
+/* Implemented in indicator/widgets.el (NeLisp, AOT object mode) -- the
+ * first slice of this file's GTK layer to move, chosen because it is the
+ * only GTK helper here that touches no application state and so needs no
+ * struct offsets.  Its `xalign' argument is why the build now requires a
+ * NeLisp with `(:f32 LIT)' support. */
+void grid_add_row(GtkGrid *grid, int row, const char *label_text,
+                  GtkWidget *control);
 
 /* The engines the settings window offers.  The id is the wire name the
  * engine process answers to `ENGINE LIST' and the text service sends
