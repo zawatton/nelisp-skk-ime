@@ -51,9 +51,18 @@ capping here cannot remove a candidate the user could otherwise reach.")
 Flush with `nelisp-ime-lattice-cache-clear' after replacing the
 dictionary; learning changes never require a flush.")
 
+(defvar nelisp-ime--best-cache (make-hash-table :test 'equal)
+  "Best-candidate-only results keyed by reading, for lattice edge scoring.
+
+Separate from `nelisp-ime--candidates-cache' because it answers a
+different and much cheaper question, and because a reading can be in one
+and not the other: scoring visits every substring, while only the
+winning segments ever need a full list.")
+
 (defun nelisp-ime-lattice-cache-clear ()
-  "Flush the normalized-candidate cache after a dictionary change."
-  (clrhash nelisp-ime--candidates-cache))
+  "Flush the normalized-candidate caches after a dictionary change."
+  (clrhash nelisp-ime--candidates-cache)
+  (clrhash nelisp-ime--best-cache))
 
 (defun nelisp-ime--learning-affects-p (reading candidates)
   "Return non-nil when READING has learned counts for any of CANDIDATES.
@@ -83,12 +92,20 @@ homophones, and computing か measured 555ms, き 906ms, against 86ms for
 two-character reading costs."
   (let ((items (append (cdr (assoc reading nelisp-ime-system-candidates))
                        (or (gethash reading nelisp-ime-dictionary-index)
-                           (cdr (assoc reading nelisp-ime-dictionary)))))
-        (seen (make-hash-table :test 'equal))
-        (rank 0)
-        (kept 0)
-        (dictionary-costs nil)
-        result)
+                           (cdr (assoc reading nelisp-ime-dictionary))))))
+   ;; Most readings the lattice asks about do not exist.  A nine-kana
+   ;; reading is 45 substrings and only a handful are words, so the
+   ;; common case here is "no candidates at all" -- and it was still
+   ;; allocating a dedup table to put nothing in.  `make-hash-table'
+   ;; costs 41ms on this runtime, which made the misses, not the hits,
+   ;; the price of converting a sentence: 1396ms cold against 243ms once
+   ;; the same substrings were cached.
+   (when items
+    (let ((seen (make-hash-table :test 'equal))
+          (rank 0)
+          (kept 0)
+          (dictionary-costs nil)
+          result)
     (dolist (item items)
       ;; Stop building candidates nobody can ask for.  A single-kana
       ;; reading carries hundreds of homophones and every one of them was
@@ -119,7 +136,7 @@ two-character reading costs."
     (if dictionary-costs
         (sort result (lambda (left right)
                        (< (plist-get left :cost) (plist-get right :cost))))
-      result)))
+      result)))))
 
 (defun nelisp-ime--dictionary-candidates (reading)
   "Return normalized dictionary candidates for READING.
@@ -261,6 +278,54 @@ expression candidates are ignored; plain candidates and annotations are safe."
     (nelisp-ime-lattice-cache-clear)
     (hash-table-count table)))
 
+(defun nelisp-ime--dictionary-best (reading)
+  "Return only the cheapest candidate for READING, without building the rest.
+
+Scoring an edge needs one candidate; the full list is needed only for the
+handful of segments that survive into the result, and
+`nelisp-ime--segment-public' fetches those from the cache when it builds
+them.  A nine-kana reading is 45 substrings, so building every list to
+read its head was the bulk of the work in a cold conversion.
+
+Falls back to the full list whenever the head is not simply the cheapest:
+when it is already cached (nothing left to save), when the dictionary
+supplies costs of its own (the sort can move the head), or when learning
+has an opinion about this reading (it re-sorts)."
+  (cond
+   ;; A full list already exists: nothing left to save by going cheap.
+   ((not (eq (gethash reading nelisp-ime--candidates-cache 'miss) 'miss))
+    (car (nelisp-ime--dictionary-candidates reading)))
+   ;; Learning re-sorts, so its opinion has to be applied to the whole
+   ;; list before the head means anything.  Checked per call rather than
+   ;; cached: the table changes as the user commits.
+   ((> (hash-table-count nelisp-ime-learning) 0)
+    (car (nelisp-ime--dictionary-candidates reading)))
+   (t
+    (let ((cached (gethash reading nelisp-ime--best-cache 'miss)))
+      (when (eq cached 'miss)
+        (setq cached (nelisp-ime--dictionary-best-compute reading))
+        (puthash reading cached nelisp-ime--best-cache))
+      cached))))
+
+(defun nelisp-ime--dictionary-best-compute (reading)
+  "Return READING's cheapest candidate without normalizing the others."
+  (let ((items (append (cdr (assoc reading nelisp-ime-system-candidates))
+                       (or (gethash reading nelisp-ime-dictionary-index)
+                           (cdr (assoc reading nelisp-ime-dictionary))))))
+    (when items
+      (let ((plain t)
+            (rest items))
+        ;; Allocation-free walk: `stringp' short-circuits for the SKK
+        ;; dictionaries, where every candidate is a bare string.
+        (while (and plain rest)
+          (unless (stringp (car rest)) (setq plain nil))
+          (setq rest (cdr rest)))
+        (if plain
+            (nelisp-ime--candidate-normalize (car items) 0)
+          ;; Dictionary-supplied costs can move the head, so the sort in
+          ;; the full path has to decide it.
+          (car (nelisp-ime--dictionary-candidates reading)))))))
+
 (defun nelisp-ime--lattice-edges (reading from)
   "Return conversion edges beginning at FROM in READING."
   (let ((remaining (- (length reading) from))
@@ -268,17 +333,21 @@ expression candidates are ignored; plain candidates and annotations are safe."
         edges)
     (while (<= size remaining)
       (let* ((key (substring reading from (+ from size)))
-             (candidates (nelisp-ime--dictionary-candidates key)))
-        (when candidates
+             ;; Head only: `nelisp-ime--segment-public' pulls the full list
+             ;; for the segments that actually win.
+             (best (nelisp-ime--dictionary-best key)))
+        (when best
           (push (list :from from :to (+ from size) :reading key
-                      :candidates candidates
-                      :surface (plist-get (car candidates) :surface)
-                      :cost (plist-get (car candidates) :cost))
+                      :surface (plist-get best :surface)
+                      :cost (plist-get best :cost))
                 edges)))
       (setq size (1+ size)))
     (when (> remaining 0)
       (let ((kana (substring reading from (1+ from))))
         (push (list :from from :to (1+ from) :reading kana
+                    ;; The unknown-kana fallback is not in any dictionary,
+                    ;; so it carries its own one-element list rather than
+                    ;; being looked up again later.
                     :candidates (list (list :surface kana
                                             :cost nelisp-ime-unknown-cost))
                     :surface kana :cost nelisp-ime-unknown-cost)
@@ -286,13 +355,20 @@ expression candidates are ignored; plain candidates and annotations are safe."
     edges))
 
 (defun nelisp-ime--segment-public (edge)
-  "Convert internal lattice EDGE to a public segment plist."
-  (list :from (plist-get edge :from)
-        :to (plist-get edge :to)
-        :reading (plist-get edge :reading)
-        :candidate (plist-get edge :surface)
-        :candidates (mapcar (lambda (item) (plist-get item :surface))
-                            (plist-get edge :candidates))))
+  "Convert internal lattice EDGE to a public segment plist.
+
+Edges carry only their best candidate; the full list is fetched here, for
+the winning path alone, and comes back from the per-reading cache warmed
+while the lattice was scoring."
+  (let* ((reading (plist-get edge :reading))
+         (candidates (or (plist-get edge :candidates)
+                         (nelisp-ime--dictionary-candidates reading))))
+    (list :from (plist-get edge :from)
+          :to (plist-get edge :to)
+          :reading reading
+          :candidate (plist-get edge :surface)
+          :candidates (mapcar (lambda (item) (plist-get item :surface))
+                              candidates))))
 
 ;;;###autoload
 (defun nelisp-ime-lattice-convert (reading _context)
