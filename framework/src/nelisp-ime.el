@@ -383,6 +383,35 @@ typing must not come through here."
     (setq session (plist-put session :converted t))
     (plist-put session :candidate-index 0)))
 
+(defun nelisp-ime--settle (session)
+  "Accept SESSION's conversion into the settled prefix and return SESSION.
+
+Typing after a conversion neither discards it nor re-reads it: the
+conversion is accepted where it stands, and the key that arrived starts
+a fresh reading behind it.  DDSKK does exactly this on the same wire --
+▼今日 then `h' renders 今日h -- and doing the opposite is what reached
+the user as \"「今日」に変換された後で「は」を打つと「きょうは」に戻る\".
+
+Learning happens here rather than at commit because by commit these
+segments are no longer in the session; a candidate the user chose and
+then typed past was still chosen."
+  (if (not (plist-get session :converted))
+      session
+    (let* ((engine (nelisp-ime--session-engine session))
+           (learn (and engine (plist-get engine :learn))))
+      (funcall (or learn #'nelisp-ime--learn-segments)
+               (plist-get session :segments)))
+    (setq session (plist-put session :settled
+                             (concat (or (plist-get session :settled) "")
+                                     (or (plist-get session :preedit) ""))))
+    (setq session (plist-put session :reading ""))
+    (setq session (plist-put session :preedit ""))
+    (setq session (plist-put session :candidates nil))
+    (setq session (plist-put session :segments nil))
+    (setq session (plist-put session :active-segment 0))
+    (setq session (plist-put session :candidate-index 0))
+    (plist-put session :converted nil)))
+
 (defun nelisp-ime--retype (session)
   "Show SESSION's reading unconverted and return SESSION.
 
@@ -465,7 +494,12 @@ non-modal engine's mode indicator should show anyway."
   ;; adapter that renders the two fields -- the STATE line one does, and
   ;; so does the TSF host behind it -- show it twice, so a half-typed
   ;; `k' appeared as "kk".
-  (let* ((preedit (or (plist-get session :preedit) ""))
+  ;; The settled prefix is part of the composition the adapter paints, so
+  ;; it is folded in here -- one text field on the wire, and the caret
+  ;; belongs after all of it.  It stays a separate session field so that
+  ;; `:convert' and the candidate lists apply to the current reading only.
+  (let* ((preedit (concat (or (plist-get session :settled) "")
+                          (or (plist-get session :preedit) "")))
          (pending (or (plist-get session :pending) ""))
          (composing (> (+ (length preedit) (length pending)) 0)))
     (list :consumed t
@@ -525,6 +559,7 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
                          :reading ""
                          :pending ""
                          :preedit ""
+                         :settled ""
                          :segments nil
                          :candidates nil
                          :active-segment 0
@@ -547,6 +582,7 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
   "Append normalized TEXT to SESSION-ID's reading."
   (unless (stringp text)
     (error "nelisp-ime: :insert requires string :text"))
+  (setq session (nelisp-ime--settle session))
   (setq session
         (plist-put session :reading
                    (concat (plist-get session :reading) text)))
@@ -554,6 +590,10 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
 
 (defun nelisp-ime--key (session-id session event)
   "Normalize platform-neutral key EVENT and update SESSION-ID."
+  ;; A key is typing, so an outstanding conversion is accepted first --
+  ;; `nelisp-ime--insert' does the same for its own path, and settling
+  ;; twice is a no-op, so the kana branch below may route through it.
+  (setq session (nelisp-ime--settle session))
   (let ((style (plist-get session :input-style)))
     (cond
      ((eq style 'kana)
@@ -585,13 +625,21 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
 (defun nelisp-ime--backspace (session-id session)
   "Remove the final character from SESSION-ID and reconvert."
   (let* ((pending (or (plist-get session :pending) ""))
-         (reading (plist-get session :reading)))
-    (if (> (length pending) 0)
-        (setq session (plist-put session :pending
-                                 (substring pending 0 (1- (length pending)))))
-      (when (> (length reading) 0)
-        (setq session (plist-put session :reading
-                                 (substring reading 0 (1- (length reading)))))))
+         (reading (plist-get session :reading))
+         (settled (or (plist-get session :settled) "")))
+    (cond
+     ((> (length pending) 0)
+      (setq session (plist-put session :pending
+                               (substring pending 0 (1- (length pending))))))
+     ((> (length reading) 0)
+      (setq session (plist-put session :reading
+                               (substring reading 0 (1- (length reading))))))
+     ;; Nothing left to retype: eat into what was settled, so backspace
+     ;; keeps shortening one composition instead of stopping dead in
+     ;; front of an accepted conversion the user can still see.
+     ((> (length settled) 0)
+      (setq session (plist-put session :settled
+                               (substring settled 0 (1- (length settled)))))))
     ;; Deleting returns to typing: a composition being shortened is being
     ;; retyped, not re-converted.
     (nelisp-ime--store session-id (nelisp-ime--retype session))))
@@ -642,12 +690,15 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
     (setq session (if (plist-get session :converted)
                       (nelisp-ime--reconvert session)
                     (nelisp-ime--retype session))))
-  (let ((commit (and commit-p (plist-get session :preedit)))
+  (let ((commit (and commit-p
+                     (concat (or (plist-get session :settled) "")
+                             (or (plist-get session :preedit) ""))))
         (empty (list :id session-id
                      :input-style (plist-get session :input-style)
                      :context (plist-get session :context)
                      :engine (plist-get session :engine)
-                     :reading "" :pending "" :preedit "" :segments nil
+                     :reading "" :pending "" :preedit "" :settled ""
+                     :segments nil
                      :candidates nil :active-segment 0 :candidate-index 0)))
     (when commit-p
       (let* ((engine (nelisp-ime--session-engine session))

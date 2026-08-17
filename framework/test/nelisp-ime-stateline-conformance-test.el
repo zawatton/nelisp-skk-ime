@@ -157,6 +157,46 @@ and pops the candidate window on each character."
                      (nth (plist-get state :candidate-index)
                           (plist-get state :candidates)))))))
 
+(ert-deftest nelisp-ime-conformance-test-typing-accepts-the-conversion ()
+  "Typing after a conversion keeps it and starts a new reading behind it.
+
+Measured against DDSKK on this same wire, which is the reference for
+what the host renders: ▽きょう SPACE gives ▼今日, and `h' after it gives
+今日h -- the conversion is accepted, not re-read.  Reverting to the
+reading instead is what the user hit (「今日」→「は」→「きょうは」),
+and no test here covered the converted→typing transition at all: they
+each checked one state, never the move between them."
+  (nelisp-ime-conformance-test--isolated
+    (dolist (key '("KEY 107" "KEY 97" "KEY 107" "KEY 105"))      ; kaki
+      (nelisp-ime-conformance-test--send key))
+    (nelisp-ime-conformance-test--send "CONTROL CONVERT")        ; -> 柿
+    (let ((state (nelisp-ime-conformance-test--send "KEY 107"))) ; k
+      (should (equal (nelisp-ime-conformance-test--display state) "柿k")))
+    (let ((state (nelisp-ime-conformance-test--send "KEY 105"))) ; i
+      (should (equal (nelisp-ime-conformance-test--display state) "柿き"))
+      ;; Still one composition: the accepted part is not committed yet.
+      (should (>= (plist-get state :composition-start) 0)))
+    ;; CONVERT now applies to the new reading only, leaving 柿 alone.
+    (let ((state (nelisp-ime-conformance-test--send "CONTROL CONVERT")))
+      (should (equal (nelisp-ime-conformance-test--display state) "柿木")))
+    (let ((state (nelisp-ime-conformance-test--send "CONTROL COMMIT")))
+      (should (equal (nelisp-ime-conformance-test--display state) "柿木"))
+      (should (< (plist-get state :composition-start) 0)))))
+
+(ert-deftest nelisp-ime-conformance-test-backspace-eats-into-the-accepted-text ()
+  "Backspace keeps shortening one composition past an accepted conversion."
+  (nelisp-ime-conformance-test--isolated
+    (dolist (key '("KEY 107" "KEY 97" "KEY 107" "KEY 105"))      ; kaki
+      (nelisp-ime-conformance-test--send key))
+    (nelisp-ime-conformance-test--send "CONTROL CONVERT")        ; -> 柿
+    (nelisp-ime-conformance-test--send "KEY 107")                ; k -> 柿k
+    (let ((state (nelisp-ime-conformance-test--send "CONTROL BACKSPACE")))
+      (should (equal (nelisp-ime-conformance-test--display state) "柿")))
+    ;; Past the accepted conversion rather than stopping in front of it.
+    (let ((state (nelisp-ime-conformance-test--send "CONTROL BACKSPACE")))
+      (should (equal (nelisp-ime-conformance-test--display state) ""))
+      (should (< (plist-get state :composition-start) 0)))))
+
 (ert-deftest nelisp-ime-conformance-test-commit-carries-the-committed-text ()
   "The settled text has to travel in the STATE line's own text field.
 
