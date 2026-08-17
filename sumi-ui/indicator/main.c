@@ -456,11 +456,15 @@ typedef struct {
   const char *note;    /* UTF-8, one line under the dropdown */
   /* TRUE while the engine cannot actually be typed with, whatever the
    * wire protocol says.  Hidden unless settings_experimental_engines().
-   * `lattice' answered every request correctly and still made the IME
-   * unusable: it reports each kana as a fresh composition at offset 0,
-   * so the caret never advances and each keystroke overwrites the last.
-   * Speaking the protocol is not the same as sharing DDSKK's input
-   * model, and only the latter makes an engine selectable here. */
+   *
+   * The bar for clearing this flag is a run through windows/test-host,
+   * which drives the registered text service with key events and reads
+   * the document back: typing, conversion, candidate stepping, commit,
+   * backspace and cancel all landing the right text in a real document.
+   * Answering the wire correctly is not that bar and never was --
+   * `lattice' passed every wire probe while reporting each kana as a
+   * fresh composition at offset 0, so the caret never advanced and each
+   * keystroke overwrote the last, which is what reached the user. */
   gboolean experimental;
 } EngineChoice;
 
@@ -468,7 +472,7 @@ static const EngineChoice kEngineChoices[] = {
     {L"ddskk", "DDSKK (SKK)",
      "SKK の変換規則をそのまま使います。", FALSE},
     {L"lattice", "かな漢字変換 (nelisp-ime)",
-     "辞書ラティスで文全体の候補を選びます。", TRUE},
+     "辞書ラティスで文全体を変換します。変換精度はまだ素朴です。", FALSE},
     {L"dictionary", "完全一致変換 (nelisp-ime)",
      "読みが完全一致する候補だけを出します。", TRUE},
     {L"passthrough", "パススルー (実験用)",
