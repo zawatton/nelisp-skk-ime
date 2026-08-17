@@ -108,14 +108,41 @@
   (or (and shift (cdr (assoc code nelisp-ime-jis-kana-shift-map)))
       (cdr (assoc code nelisp-ime-jis-kana-map))))
 
+;; Both tables are derived from `nelisp-ime-romaji-map' once, at load, and
+;; go stale if that map is mutated afterwards -- it is a defconst for
+;; exactly that reason.
+;;
+;; They exist because the linear versions were the single most expensive
+;; thing in the typing path.  `nelisp-ime-romaji-step' asks the prefix
+;; question up to twice per keystroke and looked the rule up with `assoc'
+;; besides, so one key walked a 130-entry alist three times: ~390 calls,
+;; measured at 49.6ms per keystroke against DDSKK's ~15ms for the whole
+;; round trip on the same host and pipe.  A keystroke costs two hash
+;; lookups now.
+(defconst nelisp-ime--romaji-exact
+  (let ((table (make-hash-table :test 'equal)))
+    (dolist (rule nelisp-ime-romaji-map)
+      (puthash (car rule) (cdr rule) table))
+    table)
+  "`nelisp-ime-romaji-map' as a hash table, for exact rule lookup.")
+
+(defconst nelisp-ime--romaji-prefixes
+  (let ((table (make-hash-table :test 'equal)))
+    ;; The empty string prefixes every rule, which is what the linear
+    ;; `string-prefix-p' scan this replaces answered for it.
+    (puthash "" t table)
+    (dolist (rule nelisp-ime-romaji-map)
+      (let ((key (car rule))
+            (index 1))
+        (while (<= index (length key))
+          (puthash (substring key 0 index) t table)
+          (setq index (1+ index)))))
+    table)
+  "Every prefix of every key in `nelisp-ime-romaji-map', including the keys.")
+
 (defun nelisp-ime--romaji-prefix-p (pending)
   "Return non-nil when PENDING begins at least one romanization rule."
-  (let ((rules nelisp-ime-romaji-map)
-        found)
-    (while (and rules (not found))
-      (when (string-prefix-p pending (caar rules)) (setq found t))
-      (setq rules (cdr rules)))
-    found))
+  (and (gethash pending nelisp-ime--romaji-prefixes) t))
 
 (defun nelisp-ime-romaji-step (pending key)
   "Consume roman KEY after PENDING and return (:text TEXT :pending REST)."
@@ -126,7 +153,7 @@
                (not (memq (aref next 0) '(?a ?i ?u ?e ?o ?n))))
       (setq emitted "っ"
             next (substring next 1)))
-    (let ((exact (cdr (assoc next nelisp-ime-romaji-map))))
+    (let ((exact (gethash next nelisp-ime--romaji-exact)))
       (cond
        ((and exact (not (nelisp-ime--romaji-prefix-p
                          (concat next "a"))))
