@@ -876,6 +876,9 @@ static void on_apply_clicked(GtkButton *button, gpointer user_data) {
   SettingsWindow *sw = user_data;
   Settings s;
   settings_read_from_widgets(sw, &s);
+  /* Read before the app's copy is overwritten below. */
+  const gboolean engine_changed =
+      wcscmp(sw->app->settings.engine, s.engine) != 0;
   const gboolean ok = settings_save(&s);
   /* Reflect the just-applied values in the running app (pill color/
    * visibility, poll cadence) regardless of whether persistence fully
@@ -884,12 +887,30 @@ static void on_apply_clicked(GtkButton *button, gpointer user_data) {
   sw->app->settings = s;
   app_sync_pill_visibility(sw->app);
   if (sw->app->drawing_area) gtk_widget_queue_draw(sw->app->drawing_area);
+  /* Every other value here degrades honestly to "applies next time":
+   * until the restart the engine behaves as it did before, which is what
+   * the user was already living with.  A changed engine does not degrade
+   * that way.  The host resolves which runner to launch once, at startup
+   * (`ConfiguredEngineId' in windows/host/main.cpp), so a host that is
+   * already up keeps serving the old engine while this window reports
+   * the new one -- the user types, gets the previous engine's behaviour,
+   * and reads it as the setting having done nothing.  It cost a session
+   * to diagnose from the outside, so the engine restarts itself here
+   * rather than being advertised in a label that is easy to pass over. */
+  if (engine_changed) {
+    char response[64];
+    pipe_client_transact(&sw->app->pipe, "SHUTDOWN\n", response,
+                         sizeof(response));
+  }
   gtk_label_set_text(
       GTK_LABEL(sw->status_label),
-      ok ? "\xe5\x8f\x8d\xe6\x98\xa0\xe3\x81\xab\xe3\x81\xaf IME \xe3\x81\xae\xe5\x88\x87\xe6\x9b\xbf\xef\xbc\x88\xe3\x81\xbe\xe3\x81\x9f\xe3\x81\xaf\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe5\x86\x8d\xe8\xb5\xb7\xe5\x8b\x95\xef\xbc\x89\xe3\x81\x8c\xe5\xbf\x85\xe8\xa6\x81\xe3\x81\xa7\xe3\x81\x99"
-         /* 反映には IME の切替（またはエンジン再起動）が必要です */
-         : "\xe4\xb8\x80\xe9\x83\xa8\xe3\x81\xae\xe8\xa8\xad\xe5\xae\x9a\xe3\x81\xae\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\xab\xe5\xa4\xb1\xe6\x95\x97\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x97\xe3\x81\x9f"
-         /* 一部の設定の保存に失敗しました */);
+      !ok ? "\xe4\xb8\x80\xe9\x83\xa8\xe3\x81\xae\xe8\xa8\xad\xe5\xae\x9a\xe3\x81\xae\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\xab\xe5\xa4\xb1\xe6\x95\x97\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x97\xe3\x81\x9f"
+            /* 一部の設定の保存に失敗しました */
+      : engine_changed
+          ? "\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe3\x82\x92\xe5\x88\x87\xe6\x9b\xbf\xe3\x81\x88\xe3\x81\xa6\xe5\x86\x8d\xe8\xb5\xb7\xe5\x8b\x95\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x97\xe3\x81\x9f\xe3\x80\x82\xe6\xac\xa1\xe3\x81\xae\xe5\x85\xa5\xe5\x8a\x9b\xe3\x81\x8b\xe3\x82\x89\xe6\x9c\x89\xe5\x8a\xb9\xe3\x81\xa7\xe3\x81\x99"
+            /* エンジンを切替えて再起動しました。次の入力から有効です */
+          : "\xe5\x8f\x8d\xe6\x98\xa0\xe3\x81\xab\xe3\x81\xaf IME \xe3\x81\xae\xe5\x88\x87\xe6\x9b\xbf\xef\xbc\x88\xe3\x81\xbe\xe3\x81\x9f\xe3\x81\xaf\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe5\x86\x8d\xe8\xb5\xb7\xe5\x8b\x95\xef\xbc\x89\xe3\x81\x8c\xe5\xbf\x85\xe8\xa6\x81\xe3\x81\xa7\xe3\x81\x99"
+            /* 反映には IME の切替（またはエンジン再起動）が必要です */);
 }
 
 /* windows/host/main.cpp's ServeClient() accepts a literal "SHUTDOWN"
