@@ -210,7 +210,21 @@ invalidation."
                      (< (aref reading (1- (length reading))) 128))
                 (when expand-okuri
                   (nelisp-ime--skk-expand-okuri reading candidates table))
-              (puthash reading candidates table))))))))
+              ;; Merge rather than replace.  An SKK file lists its
+              ;; okuri-ari entries before its okuri-nasi ones, so a plain
+              ;; `puthash' here erased every conjugated form the okuri
+              ;; expansion had already produced for the same reading:
+              ;; かいた kept 海田/頴田 and lost 書いた, みる kept 覩/海松
+              ;; and lost 見る, while かきます survived only because no
+              ;; okuri-nasi entry happened to collide with it.  Read from
+              ;; outside, okurigana conversion looked broken for exactly
+              ;; the words that also have a rare homograph.
+              ;;
+              ;; Expanded forms stay in front: a reading that collides
+              ;; this way is nearly always the verb, not the homograph.
+              (puthash reading
+                       (append (gethash reading table) candidates)
+                       table))))))))
 
 (defun nelisp-ime-dictionary-install (entries)
   "Install portable dictionary ENTRIES and return their count.

@@ -127,6 +127,34 @@ own cost still has to be moved."
                            "話した")))
         (delete-directory directory t)))))
 
+(ert-deftest nelisp-ime-lattice-test-okuri-survives-a-colliding-plain-entry ()
+  "An okuri-nasi entry must not erase the conjugations already expanded.
+
+SKK files list okuri-ari first, so the plain entry always arrives second
+and a replacing `puthash' silently dropped the verb: かいた kept its
+海田 and lost 書いた.  Only readings with a rare homograph were hit,
+which is why okurigana conversion looked broken for some words and fine
+for others."
+  (nelisp-ime-lattice-test--isolated
+    (let* ((directory (make-temp-file "nelisp-ime-merge-" t))
+           (file (expand-file-name "SKK-JISYO.merge" directory)))
+      (unwind-protect
+          (progn
+            (let ((coding-system-for-write 'utf-8-unix))
+              (with-temp-file file
+                (insert ";; okuri-ari entries.\n")
+                (insert "かk /書/\n")
+                (insert ";; okuri-nasi entries.\n")
+                (insert "かいた /海田/\n")))
+            (nelisp-ime-dictionary-load-skk file 'utf-8 t)
+            (let ((candidates (plist-get (nelisp-ime-lattice-convert "かいた" nil)
+                                         :candidates)))
+              (should (member "書いた" candidates))
+              ;; The plain entry is kept too, just behind the verb.
+              (should (member "海田" candidates))
+              (should (equal (car candidates) "書いた"))))
+        (delete-directory directory t)))))
+
 (ert-deftest nelisp-ime-lattice-test-registers-as-default-engine ()
   (nelisp-ime-lattice-test--isolated
     (setq nelisp-ime-converter-function nil)
