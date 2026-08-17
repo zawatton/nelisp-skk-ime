@@ -34,6 +34,12 @@
     ("いい" "いい"))
   "Readings whose grammatical kana form must precede dictionary homophones.")
 
+(defvar nelisp-ime-lattice-candidate-cap 64
+  "Most candidates kept per reading, nil = all.
+
+Sits above `nelisp-ime-candidate-limit' (what a snapshot publishes) so
+capping here cannot remove a candidate the user could otherwise reach.")
+
 (defvar nelisp-ime-unknown-cost 10000
   "Cost assigned to one unknown kana character in lattice conversion.")
 
@@ -80,16 +86,34 @@ two-character reading costs."
                            (cdr (assoc reading nelisp-ime-dictionary)))))
         (seen (make-hash-table :test 'equal))
         (rank 0)
+        (kept 0)
         (dictionary-costs nil)
         result)
     (dolist (item items)
-      (let* ((candidate (nelisp-ime--candidate-normalize item rank))
-             (surface (plist-get candidate :surface)))
-        (unless (or (stringp item) (null (plist-get item :cost)))
-          (setq dictionary-costs t))
-        (unless (gethash surface seen)
-          (puthash surface t seen)
-          (push candidate result)))
+      ;; Stop building candidates nobody can ask for.  A single-kana
+      ;; reading carries hundreds of homophones and every one of them was
+      ;; being normalized into a fresh plist on the way to a snapshot that
+      ;; truncates to `nelisp-ime-candidate-limit' anyway -- and the
+      ;; lattice itself only reads the head of the list, for the edge's
+      ;; surface and cost.  The cap sits well above the snapshot limit so
+      ;; what the user can see is unaffected; `rank' keeps counting so the
+      ;; costs of what is kept do not shift.
+      ;;
+      ;; Safe only because the list arrives in rank order and rank-derived
+      ;; costs ascend with it, so the first N are the cheapest N.  A
+      ;; dictionary supplying its own costs is sorted below and could in
+      ;; principle order them differently, so it is not capped.
+      (when (or dictionary-costs
+                (null nelisp-ime-lattice-candidate-cap)
+                (< kept nelisp-ime-lattice-candidate-cap))
+        (let* ((candidate (nelisp-ime--candidate-normalize item rank))
+               (surface (plist-get candidate :surface)))
+          (unless (or (stringp item) (null (plist-get item :cost)))
+            (setq dictionary-costs t))
+          (unless (gethash surface seen)
+            (puthash surface t seen)
+            (setq kept (1+ kept))
+            (push candidate result))))
       (setq rank (1+ rank)))
     (setq result (nreverse result))
     (if dictionary-costs
