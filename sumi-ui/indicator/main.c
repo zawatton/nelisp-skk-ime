@@ -36,6 +36,7 @@
  */
 
 #define WIN32_LEAN_AND_MEAN
+#include <stddef.h>
 #include <windows.h>
 
 #include <gtk/gtk.h>
@@ -245,19 +246,30 @@ static void draw_centered_pango(cairo_t *cr, PangoFontDescription *desc,
 }
 
 /* Fills OUT (7 slots, see mode-logic.el's COLORS_PTR contract) from the
- * currently loaded Settings. Slots 4/5/7 (preedit/candidate/
- * unreachable) are left at 0 -- mode-logic.el's skkui_base_color_configured
- * never reads them (preedit/candidate are redirected to previous_base
- * before indexing, and unreachable/ERR keeps its own hardcoded #808080). */
-static void fill_configured_colors(const Settings *s, int64_t out[7]) {
-  out[0] = s->color_kana;
-  out[1] = s->color_katakana;
-  out[2] = s->color_wide_latin;
-  out[3] = s->color_latin;
-  out[4] = 0;
-  out[5] = 0;
-  out[6] = s->color_abbrev;
-}
+ * currently loaded Settings.  Implemented in indicator/colors.el.
+ *
+ * That module reads the struct by byte offset, because object-mode AOT
+ * has no notion of a C struct.  The asserts below are what make those
+ * literal offsets safe to write: get one wrong and the build stops here,
+ * naming the field.  They are not decoration -- nothing else would catch
+ * it, since settings.c's round-trip selftest compares a struct against
+ * itself and a consistently wrong pair of offsets still passes it.
+ *
+ * Keep in step with colors.el's own offset table. */
+_Static_assert(sizeof(wchar_t) == 2, "colors.el assumes 2-byte wchar_t");
+_Static_assert(offsetof(Settings, color_kana) == 568,
+               "colors.el: color_kana offset moved");
+_Static_assert(offsetof(Settings, color_katakana) == 576,
+               "colors.el: color_katakana offset moved");
+_Static_assert(offsetof(Settings, color_wide_latin) == 584,
+               "colors.el: color_wide_latin offset moved");
+_Static_assert(offsetof(Settings, color_latin) == 592,
+               "colors.el: color_latin offset moved");
+_Static_assert(offsetof(Settings, color_abbrev) == 600,
+               "colors.el: color_abbrev offset moved");
+_Static_assert(sizeof(int64_t) == 8, "colors.el writes 8-byte slots");
+
+void fill_configured_colors(const Settings *s, int64_t out[7]);
 
 static void draw_indicator(GtkDrawingArea *area, cairo_t *cr, int width,
                            int height, gpointer user_data) {

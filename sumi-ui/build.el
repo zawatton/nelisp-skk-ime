@@ -220,6 +220,7 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
   (let* ((mode-logic-obj (expand-file-name "mode-logic.o" sumi-ui-target-dir))
          (registry-obj (expand-file-name "registry.o" sumi-ui-target-dir))
          (widgets-obj (expand-file-name "widgets.o" sumi-ui-target-dir))
+         (colors-obj (expand-file-name "colors.o" sumi-ui-target-dir))
          (pipe-client-obj (expand-file-name "pipe-client.o" sumi-ui-target-dir))
          (settings-obj (expand-file-name "settings.o" sumi-ui-target-dir))
          (main-obj (expand-file-name "main.o" sumi-ui-target-dir))
@@ -232,6 +233,7 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
     (sumi-ui-compile-nelisp "mode-logic" mode-logic-obj)
     (sumi-ui-compile-nelisp "registry" registry-obj)
     (sumi-ui-compile-nelisp "widgets" widgets-obj)
+    (sumi-ui-compile-nelisp "colors" colors-obj)
     ;; pipe-client.c/settings.c only need glib.h (for `gboolean') plus
     ;; plain <windows.h> -- gtk4's own cflags already cover glib's
     ;; include path, so reuse ALL-CFLAGS rather than pkg-config'ing glib
@@ -241,7 +243,7 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
     (sumi-ui-compile-c "main" main-obj all-cflags)
     (let ((linked (sumi-ui-link
                    (list main-obj mode-logic-obj registry-obj widgets-obj
-                         pipe-client-obj settings-obj)
+                         colors-obj pipe-client-obj settings-obj)
                    exe
                    ;; advapi32 for settings.c's RegGetValueW/RegSetKeyValueW/
                    ;; RegDeleteTreeW (Phase 3) -- not pulled in transitively
