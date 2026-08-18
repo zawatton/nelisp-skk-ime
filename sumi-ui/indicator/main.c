@@ -36,7 +36,9 @@
  */
 
 #define WIN32_LEAN_AND_MEAN
+#include <stdarg.h>
 #include <stddef.h>
+
 #include <windows.h>
 
 #include <gtk/gtk.h>
@@ -51,6 +53,8 @@
 
 #include "pipe-client.h"
 #include "settings.h"
+
+
 
 /* ------------------------------------------------------------------ */
 /* Decision logic, compiled from indicator/mode-logic.el by build.el's
@@ -883,6 +887,109 @@ static void app_sync_pill_visibility(App *app) {
   }
 }
 
+/* Status-label strings, as UTF-8 escapes like the rest of this file. */
+#define SKKUI_MSG_ENGINE_STARTING "ã¨ã³ã¸ã³ãèµ·åä¸­ã§ãâ¦ï¼æ°ç§ãããã¾ãï¼"  /* エンジンを起動中です…（数秒かかります） */
+#define SKKUI_MSG_ENGINE_READY "ã¨ã³ã¸ã³ãåæ¿ãã¾ãããå¥åã§ãã¾ã"  /* エンジンを切替えました。入力できます */
+#define SKKUI_MSG_ENGINE_STUCK "ã¨ã³ã¸ã³ãå¿ç­ãã¾ãããããä¸åº¦é©ç¨ãã¦ãã ãã"  /* エンジンが応答しません。もう一度適用してください */
+
+/* ------------------------------------------------------------------ */
+/* Engine restart: spawn the host ourselves and wait for it to answer.
+ *
+ * Changing the engine used to write the registry, send SHUTDOWN, and
+ * report "next input will use it" -- while the host that would serve the
+ * new engine did not exist yet.  Nothing respawns it until the DLL sees a
+ * keystroke, and the NeLisp runner's cold load then takes 6-8 seconds
+ * (measured repeatedly: deploy-live.ps1's own prewarm reports 5.4-6.2s
+ * and the live STATUS after it 6.3-8.1s).  So the label claimed success
+ * and the keyboard then did nothing for several seconds.
+ *
+ * Apply now starts the host itself, the same way
+ * TextService::EnsureEngineHost does, and polls until STATUS answers.
+ * The wait does not disappear; it moves to where the user is already
+ * looking, labelled, instead of landing on their typing.
+ *
+ * Polled on a GTK timeout rather than a blocking loop, so the window
+ * keeps painting while it waits. */
+
+static void skkui_spawn_engine_host(void) {
+  HKEY key = NULL;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0, KEY_READ,
+                    &key) != ERROR_SUCCESS)
+    return;
+  wchar_t host[32768], exe[32768], repo[32768];
+  DWORD n;
+  host[0] = exe[0] = repo[0] = L'\0';
+  n = sizeof(host);
+  if (RegQueryValueExW(key, L"EngineHost", NULL, NULL, (BYTE *)host, &n)
+      != ERROR_SUCCESS) host[0] = L'\0';
+  n = sizeof(exe);
+  if (RegQueryValueExW(key, L"EngineExecutable", NULL, NULL, (BYTE *)exe, &n)
+      != ERROR_SUCCESS) exe[0] = L'\0';
+  n = sizeof(repo);
+  if (RegQueryValueExW(key, L"Repository", NULL, NULL, (BYTE *)repo, &n)
+      != ERROR_SUCCESS) repo[0] = L'\0';
+  RegCloseKey(key);
+  if (host[0] == L'\0' || exe[0] == L'\0') return;
+
+  wchar_t command[32768];
+  if (repo[0] != L'\0')
+    _snwprintf(command, 32768, L"\"%ls\" \"%ls\" \"%ls\"", host, exe, repo);
+  else
+    _snwprintf(command, 32768, L"\"%ls\" \"%ls\"", host, exe);
+  command[32767] = L'\0';
+
+  STARTUPINFOW startup;
+  PROCESS_INFORMATION process;
+  memset(&startup, 0, sizeof(startup));
+  memset(&process, 0, sizeof(process));
+  startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESHOWWINDOW;
+  startup.wShowWindow = SW_HIDE;
+  if (CreateProcessW(NULL, command, NULL, NULL, FALSE, 0, NULL,
+                     repo[0] != L'\0' ? repo : NULL, &startup, &process)) {
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+  }
+}
+
+/* 20 s is about three times the worst cold load observed, so exhausting
+ * it means something is wrong rather than merely slow. */
+#define SKKUI_RESTART_POLL_MS 400
+#define SKKUI_RESTART_BUDGET_MS 20000
+
+typedef struct {
+  SettingsWindow *sw;
+  int waited_ms;
+} RestartPoll;
+
+static gboolean skkui_restart_poll(gpointer user_data) {
+  RestartPoll *rp = (RestartPoll *)user_data;
+  char response[8192];
+  if (pipe_client_transact(&rp->sw->app->pipe, "STATUS\n", response,
+                           sizeof(response))) {
+    gtk_label_set_text(GTK_LABEL(rp->sw->status_label), SKKUI_MSG_ENGINE_READY);
+    g_free(rp);
+    return G_SOURCE_REMOVE;
+  }
+  rp->waited_ms += SKKUI_RESTART_POLL_MS;
+  if (rp->waited_ms >= SKKUI_RESTART_BUDGET_MS) {
+    gtk_label_set_text(GTK_LABEL(rp->sw->status_label), SKKUI_MSG_ENGINE_STUCK);
+    g_free(rp);
+    return G_SOURCE_REMOVE;
+  }
+  return G_SOURCE_CONTINUE;
+}
+
+static void skkui_restart_engine_and_wait(SettingsWindow *sw) {
+  char response[64];
+  pipe_client_transact(&sw->app->pipe, "SHUTDOWN\n", response, sizeof(response));
+  skkui_spawn_engine_host();
+  gtk_label_set_text(GTK_LABEL(sw->status_label), SKKUI_MSG_ENGINE_STARTING);
+  RestartPoll *rp = g_new0(RestartPoll, 1);
+  rp->sw = sw;
+  g_timeout_add(SKKUI_RESTART_POLL_MS, skkui_restart_poll, rp);
+}
+
 static void on_apply_clicked(GtkButton *button, gpointer user_data) {
   (void)button;
   SettingsWindow *sw = user_data;
@@ -909,11 +1016,11 @@ static void on_apply_clicked(GtkButton *button, gpointer user_data) {
    * and reads it as the setting having done nothing.  It cost a session
    * to diagnose from the outside, so the engine restarts itself here
    * rather than being advertised in a label that is easy to pass over. */
-  if (engine_changed) {
-    char response[64];
-    pipe_client_transact(&sw->app->pipe, "SHUTDOWN\n", response,
-                         sizeof(response));
-  }
+  if (engine_changed) skkui_restart_engine_and_wait(sw);
+  /* The engine path owns the label from here: it says "starting", then
+   * reports the outcome of its own poll.  Overwriting it would claim
+   * success while the engine is still coming up -- the original bug. */
+  if (engine_changed && ok) return;
   gtk_label_set_text(
       GTK_LABEL(sw->status_label),
       !ok ? "\xe4\xb8\x80\xe9\x83\xa8\xe3\x81\xae\xe8\xa8\xad\xe5\xae\x9a\xe3\x81\xae\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\xab\xe5\xa4\xb1\xe6\x95\x97\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x97\xe3\x81\x9f"
