@@ -497,7 +497,44 @@ ModeIndicatorPalette TextService::CurrentModePalette() const {
   return mode_indicator_.PaletteForLabel(CurrentModeLabel());
 }
 
+// Title of sumi-ui's settings window, used to find one that is already
+// open. It must match `gtk_window_set_title' in
+// sumi-ui/indicator/main.c's `open_settings_window' exactly; the two are
+// checked against each other by
+// sumi-ui/verify/verify-settings-window-title.ps1, because a silent
+// mismatch here does not fail anything -- it just quietly goes back to
+// spawning a second window every time.
+static const wchar_t kSettingsWindowTitle[] = L"SKK 設定";
+
+// GTK4 gives every toplevel this window class on Windows.  The lookup
+// below needs it: FindWindowW with a null class does NOT match this
+// window, even though its title is byte-identical to the string above
+// (verified with EnumWindows -- 53-00-4B-00-4B-00-20-00-2D-8A-9A-5B on
+// both sides).  Passing the class finds it immediately.  Discovered by
+// running the lookup against a real settings window before shipping the
+// change; a title-only FindWindowW would have compiled, deployed, and
+// silently gone on spawning a second window every time.
+static const wchar_t kGtkToplevelClass[] = L"gdkSurfaceToplevel";
+
 void TextService::ShowSettings() {
+  // Focus the settings window if one is already open, rather than
+  // starting another process.
+  //
+  // Every invocation used to ShellExecute unconditionally, and sumi-ui
+  // passes G_APPLICATION_NON_UNIQUE for `--settings', so nothing on
+  // either side stopped a second one: clicking 設定 twice gave two
+  // windows, clicking it ten times gave ten. Reported as 「設定をクリック
+  // するたびにウィンドウが新規に立ちあがり量産されます」, together with
+  // the delay -- which is the same cause, since each click paid a fresh
+  // process start plus GTK4's eleven DLLs (measured at 1.6-1.9s warm, and
+  // the user sees up to ~10s cold).
+  if (HWND existing = FindWindowW(kGtkToplevelClass, kSettingsWindowTitle)) {
+    // A minimised window has to be restored before it can take focus.
+    if (IsIconic(existing)) ShowWindow(existing, SW_RESTORE);
+    SetForegroundWindow(existing);
+    return;
+  }
+
   // The settings UI stores its own executable path once installed; if
   // present, launch it (with --settings) in preference to the legacy
   // fallback below. Registry read only.
