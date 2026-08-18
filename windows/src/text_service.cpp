@@ -323,7 +323,17 @@ HRESULT TextService::OnSetFocus(BOOL) { return S_OK; }
 bool TextService::WouldClaimKey(WPARAM wparam, bool composing) const {
   if (wparam == 'G' && (GetKeyState(VK_CONTROL) & 0x8000)) return composing;
   return (wparam >= 'A' && wparam <= 'Z') ||             // letters
-         (wparam >= '0' && wparam <= '9') ||              // top-row digits
+         // Digits only mid-composition, like space and backspace below.
+         // Claimed unconditionally they were simply lost: DDSKK commits
+         // each kana as it is typed, so outside a composition it has no
+         // state a digit belongs to and returns nothing for it -- the key
+         // was eaten and produced no character. Field report: "ddskkの時
+         // に数字入力ができません", reproduced through windows/test-host
+         // as `1`/`2`/`3` all giving eaten=1 with an empty buffer.
+         //
+         // Mid-composition they must still be claimed: SKK selects a
+         // candidate by digit, and a lattice reading can contain them.
+         ((wparam >= '0' && wparam <= '9') && composing) ||
          (wparam >= VK_OEM_1 && wparam <= VK_OEM_3) ||    // 0xBA-0xC0 punctuation
          (wparam >= VK_OEM_4 && wparam <= VK_OEM_8) ||    // 0xDB-0xDF punctuation
          wparam == VK_OEM_102 ||                          // 0xE2 JIS backslash
