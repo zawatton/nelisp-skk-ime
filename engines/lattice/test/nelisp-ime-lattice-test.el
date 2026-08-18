@@ -155,6 +155,46 @@ for others."
               (should (equal (car candidates) "書いた"))))
         (delete-directory directory t)))))
 
+(ert-deftest nelisp-ime-lattice-test-one-use-promotes-to-the-top ()
+  "Choosing a candidate once puts it first next time, wherever it ranked.
+
+The requirement is \"used once, then top\", so the candidate exercised
+here sits far enough down the list that the old cost discount could not
+reach it: costs are 100 + rank*10 and the weight was 100, so anything
+past rank 10 stayed put no matter how often it was chosen."
+  (nelisp-ime-lattice-test--isolated
+    (setq nelisp-ime-dictionary
+          '(("あ" "亜" "阿" "唖" "娃" "彼" "吾" "字" "蛙" "鴉" "痾"
+             "襾" "鵄" "堊" "婀")))
+    (let* ((before (plist-get (nelisp-ime-lattice-convert "あ" nil)
+                              :candidates))
+           (rank (cl-position "鵄" before :test #'equal)))
+      ;; Stated as a condition rather than a fixed index: what matters is
+      ;; that it starts past rank 10, where a 100-point discount against
+      ;; costs spaced 10 apart could never have lifted it.
+      (should rank)
+      (should (> rank 10))
+      (nelisp-ime--learn-segments '((:reading "あ" :candidate "鵄")))
+      (nelisp-ime-lattice-cache-clear)
+      (should (equal (car (plist-get (nelisp-ime-lattice-convert "あ" nil)
+                                     :candidates))
+                     "鵄")))))
+
+(ert-deftest nelisp-ime-lattice-test-most-recent-choice-wins ()
+  "Between two learned candidates the later choice leads, not the more frequent."
+  (nelisp-ime-lattice-test--isolated
+    (setq nelisp-ime-dictionary '(("はし" "橋" "箸" "端")))
+    ;; 箸 three times, then 端 once: recency beats frequency.
+    (dotimes (_ 3) (nelisp-ime--learn-segments '((:reading "はし" :candidate "箸"))))
+    (nelisp-ime--learn-segments '((:reading "はし" :candidate "端")))
+    (nelisp-ime-lattice-cache-clear)
+    (let ((candidates (plist-get (nelisp-ime-lattice-convert "はし" nil)
+                                 :candidates)))
+      (should (equal (car candidates) "端"))
+      (should (equal (nth 1 candidates) "箸"))
+      ;; Never-chosen candidates keep the engine's own order behind them.
+      (should (equal (nth 2 candidates) "橋")))))
+
 (ert-deftest nelisp-ime-lattice-test-registers-as-default-engine ()
   (nelisp-ime-lattice-test--isolated
     (setq nelisp-ime-converter-function nil)

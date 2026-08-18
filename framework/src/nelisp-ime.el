@@ -38,10 +38,31 @@ A candidate may be a surface string or a plist containing :surface and
 :cost.  Lower costs win.  String candidates receive costs from their order.")
 
 (defvar nelisp-ime-learning (make-hash-table :test 'equal)
-  "Selection frequencies keyed by a reading and surface pair.")
+  "Learned selections keyed by a reading and surface pair.
+
+Each value is a cons of (COUNT . RECENCY): how many times the candidate
+was chosen, and a sequence number stamped at the last choice.  Read them
+with `nelisp-ime-learning-count' / `nelisp-ime-learning-recency' rather
+than reaching into the cons.
+
+RECENCY is a counter rather than a clock deliberately.  Time-of-day is
+not dependable across the runtimes this has to run on, and a counter is
+deterministic, which keeps the ordering testable.  It buys plain
+most-recently-used ordering with no decay -- Mozc's history rewriter
+weighs frequency against elapsed time, which is a better answer for a
+long-lived profile but needs a clock this cannot rely on.")
+
+(defvar nelisp-ime--learning-sequence 0
+  "Monotonic counter stamped into each learned selection's RECENCY.")
 
 (defvar nelisp-ime-learning-weight 100
-  "Cost reduction applied for each learned candidate selection.")
+  "Cost reduction applied for each learned candidate selection.
+
+Only consulted by engines that fold learning into their cost model.  The
+framework's own reordering (`nelisp-ime-learning-reorder') does not use
+it: a weight has to out-rank the whole candidate list to guarantee the
+last-used candidate comes first, and at 100 against rank costs spaced 10
+apart it only promoted candidates already inside the top ten.")
 
 (defvar nelisp-ime-learning-journal-file nil
   "Journal path for commit-time learning appends, or nil to disable.
@@ -191,29 +212,93 @@ gloss beside the surface, so it must not be flattened away."
   "Return an unambiguous learning key for READING and SURFACE."
   (cons reading surface))
 
+(defun nelisp-ime--learning-entry (reading surface)
+  "Return the raw (COUNT . RECENCY) cell for READING and SURFACE, or nil.
+
+Tolerates a bare integer, which is what tables loaded from a pre-recency
+save file hold: those rows keep their count and sort as least-recent."
+  (let ((value (gethash (nelisp-ime--learning-key reading surface)
+                        nelisp-ime-learning)))
+    (cond ((consp value) value)
+          ((integerp value) (cons value 0))
+          (t nil))))
+
 (defun nelisp-ime-learning-count (reading surface)
   "Return learned selection count for READING and SURFACE."
-  (or (gethash (nelisp-ime--learning-key reading surface)
-               nelisp-ime-learning)
-      0))
+  (car (or (nelisp-ime--learning-entry reading surface) '(0 . 0))))
+
+(defun nelisp-ime-learning-recency (reading surface)
+  "Return the sequence number of READING and SURFACE's last selection.
+
+0 means never chosen, or chosen before this table started recording
+recency.  Larger is more recent; the numbers are only ever compared."
+  (cdr (or (nelisp-ime--learning-entry reading surface) '(0 . 0))))
+
+(defun nelisp-ime--learn-one (reading surface)
+  "Record one selection of SURFACE for READING: bump count, stamp recency."
+  (let ((key (nelisp-ime--learning-key reading surface))
+        (entry (nelisp-ime--learning-entry reading surface)))
+    (setq nelisp-ime--learning-sequence (1+ nelisp-ime--learning-sequence))
+    (puthash key
+             (cons (1+ (if entry (car entry) 0))
+                   nelisp-ime--learning-sequence)
+             nelisp-ime-learning)))
 
 (defun nelisp-ime--learn-segments (segments)
-  "Increase selection frequencies represented by SEGMENTS."
+  "Record the selections represented by SEGMENTS."
   (dolist (segment segments)
-    (let* ((reading (plist-get segment :reading))
-           (surface (plist-get segment :candidate))
-           (key (and reading surface
-                     (nelisp-ime--learning-key reading surface))))
-      (when key
-        (puthash key (1+ (or (gethash key nelisp-ime-learning) 0))
-                 nelisp-ime-learning)
+    (let ((reading (plist-get segment :reading))
+          (surface (plist-get segment :candidate)))
+      (when (and reading surface)
+        (nelisp-ime--learn-one reading surface)
         (nelisp-ime-learning-journal-append reading surface)))))
 
+(defun nelisp-ime-learning-reorder (reading candidates)
+  "Return CANDIDATES with READING's learned choices moved to the front.
+
+Most recently chosen first, then the rest in the order the engine
+produced them.  This is a layer over the engine's ranking rather than an
+adjustment to it -- the shape Mozc uses, where a history rewriter
+reorders what the converter already ranked.  Folding learning into the
+cost instead cannot promise the last-used candidate comes first: it has
+to beat the whole list on a scale the list also lives on, so with rank
+costs spaced 10 apart and a weight of 100 only the top ten could ever
+move.
+
+CANDIDATES is a list of plists carrying :surface.  Order among unlearned
+candidates is preserved exactly, so an engine that ranks well keeps its
+ranking wherever the user has expressed no preference."
+  (if (or (null candidates)
+          (= (hash-table-count nelisp-ime-learning) 0))
+      candidates
+    (let (learned plain)
+      (dolist (candidate candidates)
+        (let ((recency (nelisp-ime-learning-recency
+                        reading (plist-get candidate :surface))))
+          (if (> recency 0)
+              (push (cons recency candidate) learned)
+            (push candidate plain))))
+      (if (null learned)
+          candidates
+        (append (mapcar #'cdr
+                        (sort (nreverse learned)
+                              (lambda (left right) (> (car left) (car right)))))
+                (nreverse plain))))))
+
 (defun nelisp-ime-learning-export ()
-  "Return deterministic readable learning rows."
+  "Return deterministic readable learning rows.
+
+Rows are (READING SURFACE COUNT RECENCY).  The fourth field is new; a
+reader that only understands three keeps working on the first three, and
+`nelisp-ime-learning-import' still accepts three-field rows, so a table
+written by an older build loads here and a table written here loads
+there."
   (let (rows)
-    (maphash (lambda (key count)
-               (push (list (car key) (cdr key) count) rows))
+    (maphash (lambda (key value)
+               (push (list (car key) (cdr key)
+                           (if (consp value) (car value) value)
+                           (if (consp value) (cdr value) 0))
+                     rows))
              nelisp-ime-learning)
     (sort rows
           (lambda (left right)
@@ -225,16 +310,26 @@ gloss beside the surface, so it must not be flattened away."
   "Replace learning state with validated ROWS and return its row count."
   (when (vectorp rows) (setq rows (append rows nil)))
   (unless (listp rows) (error "nelisp-ime: invalid learning rows"))
-  (let ((table (make-hash-table :test 'equal)))
+  (let ((table (make-hash-table :test 'equal))
+        (highest 0))
     (dolist (row rows)
       (when (vectorp row) (setq row (append row nil)))
-      (unless (and (listp row) (= (length row) 3)
+      ;; Three fields is the pre-recency shape and still valid: those rows
+      ;; load with recency 0 and sort behind anything chosen since.
+      (unless (and (listp row) (memq (length row) '(3 4))
                    (stringp (nth 0 row)) (stringp (nth 1 row))
-                   (integerp (nth 2 row)) (>= (nth 2 row) 0))
+                   (integerp (nth 2 row)) (>= (nth 2 row) 0)
+                   (or (= (length row) 3)
+                       (and (integerp (nth 3 row)) (>= (nth 3 row) 0))))
         (error "nelisp-ime: invalid learning row %S" row))
-      (puthash (nelisp-ime--learning-key (nth 0 row) (nth 1 row))
-               (nth 2 row) table))
+      (let ((recency (if (= (length row) 4) (nth 3 row) 0)))
+        (when (> recency highest) (setq highest recency))
+        (puthash (nelisp-ime--learning-key (nth 0 row) (nth 1 row))
+                 (cons (nth 2 row) recency) table)))
     (setq nelisp-ime-learning table)
+    ;; Resume stamping above every recency just loaded, so selections made
+    ;; now outrank the restored ones instead of colliding with them.
+    (setq nelisp-ime--learning-sequence highest)
     (hash-table-count table)))
 
 ;;;###autoload
@@ -326,11 +421,12 @@ lost."
                              (error nil))))
                 (when (and (listp entry) (= (length entry) 2)
                            (stringp (nth 0 entry)) (stringp (nth 1 entry)))
-                  (let ((key (nelisp-ime--learning-key (nth 0 entry)
-                                                       (nth 1 entry))))
-                    (puthash key (1+ (or (gethash key nelisp-ime-learning) 0))
-                             nelisp-ime-learning)
-                    (setq replayed (1+ replayed)))))))
+                  ;; Through the same path a live selection takes, so the
+                  ;; journal's own append order becomes the recency order --
+                  ;; the log is already a record of what was chosen when, so
+                  ;; nothing had to be added to its format to carry that.
+                  (nelisp-ime--learn-one (nth 0 entry) (nth 1 entry))
+                  (setq replayed (1+ replayed))))))
           (forward-line 1))))
     replayed))
 

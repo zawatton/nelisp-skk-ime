@@ -152,17 +152,15 @@ invalidation."
     (when (eq cached 'miss)
       (setq cached (nelisp-ime--dictionary-candidates-compute reading))
       (puthash reading cached nelisp-ime--candidates-cache))
+    ;; Learning reorders; it no longer discounts costs.  Subtracting a
+    ;; weight could not promise the last-used candidate came first -- it had
+    ;; to beat the whole list on the same scale the list lives on, so with
+    ;; rank costs spaced 10 apart and a weight of 100 only the top ten ever
+    ;; moved.  `nelisp-ime-learning-reorder' puts the most recently chosen
+    ;; candidate in front unconditionally and leaves everything else in the
+    ;; order this engine ranked it.
     (if (nelisp-ime--learning-affects-p reading cached)
-        (sort (mapcar (lambda (candidate)
-                        (list :surface (plist-get candidate :surface)
-                              :cost (- (plist-get candidate :cost)
-                                       (* (nelisp-ime-learning-count
-                                           reading
-                                           (plist-get candidate :surface))
-                                          nelisp-ime-learning-weight))))
-                      cached)
-              (lambda (left right)
-                (< (plist-get left :cost) (plist-get right :cost))))
+        (nelisp-ime-learning-reorder reading cached)
       cached)))
 
 (defun nelisp-ime--skk-candidate (value)

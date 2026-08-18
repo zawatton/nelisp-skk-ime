@@ -74,7 +74,19 @@
                       (make-hash-table :test 'equal)))
            (rows (plist-get exported :rows)))
       (should (vectorp rows))
-      (should (equal (aref rows 0) '("かな" "仮名" 4))))))
+      ;; Four fields since learning started recording recency: the count is
+      ;; still third, and a row imported without a fourth field (as above)
+      ;; exports with recency 0 -- never chosen through this table.
+      (should (equal (aref rows 0) '("かな" "仮名" 4 0))))))
+
+(ert-deftest nelisp-ime-protocol-test-learning-import-accepts-both-shapes ()
+  "Three-field rows keep loading, so an older saved table still imports."
+  (let ((nelisp-ime-learning (make-hash-table :test 'equal)))
+    (should (= (nelisp-ime-learning-import '(("かな" "仮名" 4))) 1))
+    (should (= (nelisp-ime-learning-count "かな" "仮名") 4))
+    (should (= (nelisp-ime-learning-recency "かな" "仮名") 0))
+    (should (= (nelisp-ime-learning-import '(("かな" "仮名" 4 9))) 1))
+    (should (= (nelisp-ime-learning-recency "かな" "仮名") 9))))
 
 (ert-deftest nelisp-ime-protocol-test-candidates-are-json-arrays ()
   (let ((nelisp-ime-sessions (make-hash-table :test 'equal))
