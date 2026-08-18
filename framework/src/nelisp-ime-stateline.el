@@ -167,10 +167,12 @@ per `concat' argument."
    ((equal name "CONVERT") '(:op :select-candidate :index :next))
    ((equal name "PREVIOUS") '(:op :select-candidate :index :previous))
    ;; CANCEL is the unconditional return to plain input; QUIT is the
-   ;; stepwise escape.  The framework has one cancel, so both discard the
-   ;; composition and QUIT additionally leaves the session ready for input.
+   ;; stepwise escape the DLL has always sent for Escape and Ctrl+G
+   ;; (`EngineControl::kQuit', chosen over kCancel for exactly this
+   ;; reason).  They used to collapse onto the same cancel, so one press
+   ;; discarded everything -- reported as Ctrl+G eating the input.
    ((equal name "CANCEL") '(:op :cancel))
-   ((equal name "QUIT") '(:op :cancel))
+   ((equal name "QUIT") '(:op :revert))
    (t nil)))
 
 (defun nelisp-ime-stateline--relative-candidate (session step)

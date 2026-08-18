@@ -740,6 +740,40 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
     ;; retyped, not re-converted.
     (nelisp-ime--store session-id (nelisp-ime--retype session))))
 
+(defun nelisp-ime--revert (session-id session)
+  "Undo one stage of SESSION-ID's composition and return the snapshot.
+
+The stepwise keyboard-quit.  Escape and Ctrl+G have always sent
+`kQuit' rather than `kCancel' from the DLL, precisely because DDSKK's
+own quit steps (▼ back to ▽ with the reading intact, ▽ to empty, a
+pending romaji prefix dropped on its own) -- but the framework had one
+cancel and mapped both onto it, so a single press threw the whole
+composition away.  Reported from live use as \"Ctrl+G で入力した文字が
+消える\".
+
+The ladder, most-recent work undone first:
+
+  converted        -> drop the conversion, keep the reading
+  pending romaji   -> drop the unresolved prefix
+  reading          -> clear it, keeping any settled prefix
+  settled prefix   -> clear that too
+  nothing          -> nothing to undo; the session is already empty
+
+Only the last rung ends the composition, so the caller keeps typing
+where they were instead of starting over."
+  (cond
+   ((plist-get session :converted)
+    (nelisp-ime--store session-id (nelisp-ime--retype session)))
+   ((> (length (or (plist-get session :pending) "")) 0)
+    (nelisp-ime--store session-id
+                       (nelisp-ime--retype (plist-put session :pending ""))))
+   ((> (length (or (plist-get session :reading) "")) 0)
+    (nelisp-ime--store session-id
+                       (nelisp-ime--retype (plist-put session :reading ""))))
+   (t
+    ;; Settled prefix only, or already empty: both end the composition.
+    (nelisp-ime--finish session-id session nil))))
+
 (defun nelisp-ime--select-candidate (session-id session index)
   "Select candidate INDEX in SESSION-ID."
   (let* ((segments (plist-get session :segments))
@@ -839,6 +873,8 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
         (nelisp-ime--finish session-id session t))
        ((eq operation :cancel)
         (nelisp-ime--finish session-id session nil))
+       ((eq operation :revert)
+        (nelisp-ime--revert session-id session))
        (t (error "nelisp-ime: unsupported operation %S" operation))))))
 
 (defvar nelisp-ime-fail-open t

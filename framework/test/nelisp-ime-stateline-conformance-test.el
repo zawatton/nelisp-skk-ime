@@ -157,6 +157,38 @@ and pops the candidate window on each character."
                      (nth (plist-get state :candidate-index)
                           (plist-get state :candidates)))))))
 
+(ert-deftest nelisp-ime-conformance-test-quit-steps-back-once ()
+  "CONTROL QUIT undoes one stage; it does not throw the composition away.
+
+Escape and Ctrl+G have always sent `kQuit' rather than `kCancel' from the
+DLL, because DDSKK's quit is stepwise.  The framework had one cancel and
+mapped both onto it, so a single Ctrl+G discarded everything -- reported
+from live use as the input disappearing.  Each rung here is one press."
+  (nelisp-ime-conformance-test--isolated
+    (dolist (key '("KEY 107" "KEY 97" "KEY 107" "KEY 105"))      ; kaki
+      (nelisp-ime-conformance-test--send key))
+    (nelisp-ime-conformance-test--send "CONTROL CONVERT")        ; -> 柿
+    ;; converted -> reading, not gone
+    (let ((state (nelisp-ime-conformance-test--send "CONTROL QUIT")))
+      (should (equal (nelisp-ime-conformance-test--display state) "かき"))
+      (should (>= (plist-get state :composition-start) 0)))
+    ;; reading -> empty, composition closes only now
+    (let ((state (nelisp-ime-conformance-test--send "CONTROL QUIT")))
+      (should (equal (nelisp-ime-conformance-test--display state) ""))
+      (should (< (plist-get state :composition-start) 0)))))
+
+(ert-deftest nelisp-ime-conformance-test-quit-drops-pending-romaji-alone ()
+  "An unresolved romaji prefix is its own rung, above the reading."
+  (nelisp-ime-conformance-test--isolated
+    (dolist (key '("KEY 107" "KEY 97" "KEY 107"))                ; ka + k
+      (nelisp-ime-conformance-test--send key))
+    (let ((state (nelisp-ime-conformance-test--send "CONTROL QUIT")))
+      ;; the pending "k" goes, the kana stays
+      (should (equal (nelisp-ime-conformance-test--display state) "か"))
+      (should (equal (plist-get state :pending) "")))
+    (let ((state (nelisp-ime-conformance-test--send "CONTROL QUIT")))
+      (should (equal (nelisp-ime-conformance-test--display state) "")))))
+
 (ert-deftest nelisp-ime-conformance-test-typing-accepts-the-conversion ()
   "Typing after a conversion keeps it and starts a new reading behind it.
 

@@ -38,7 +38,8 @@
                               ("convert" . :convert)
                               ("select-segment" . :select-segment)
                               ("select-candidate" . :select-candidate)
-                              ("commit" . :commit) ("cancel" . :cancel)))))
+                              ("commit" . :commit) ("cancel" . :cancel)
+                              ("revert" . :revert)))))
     (or (cdr entry) (error "nelisp-ime: unsupported operation %S" value))))
 
 (defun nelisp-ime-protocol--detail (value)
