@@ -118,6 +118,14 @@ mutex prevents duplicate monitors, and the Run entry is removed only after all
 elapsed and application-coverage gates pass. At logon the monitor waits without
 counting a failure until TSF has started one complete host/engine/Sumi runtime.
 
+After every elapsed and application gate is complete, run the final command of
+record. It validates the immutable JSONL/status evidence and current registered
+runtime, then reruns the complete automated suite:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\scripts\verify-v1-release.ps1
+```
+
 JSONL evidence and a current summary are written under
 `%LOCALAPPDATA%\DDSKK\verification`. Process loss/restart, wrong runtime
 paths, and private memory above 768 MiB are recorded as failures. The summary

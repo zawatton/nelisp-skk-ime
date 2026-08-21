@@ -78,6 +78,7 @@ $wallDeadline = $started.AddDays($NormalUseDays)
 $soakSamplesNeeded = [Math]::Ceiling(($SoakHours * 3600) / $SampleSeconds)
 $samples = 0
 $continuousSamples = 0
+$lastActiveSample = $null
 $failures = 0
 $initialHostPid = $null
 $initialChildPid = $null
@@ -103,6 +104,7 @@ function Write-CurrentStatus([datetime]$Now) {
     schema = 1
     log = $logPath; started = $started.ToString('o'); last_sample = $Now.ToString('o')
     samples = $samples; continuous_samples = $continuousSamples
+    last_active_sample = if ($null -eq $lastActiveSample) { $null } else { $lastActiveSample.ToString('o') }
     failures = $failures; soak_complete = $soakRecorded
     normal_use_complete = ($Now -ge $wallDeadline)
     app_matrix = $appMatrix
@@ -251,7 +253,18 @@ while ((Get-Date) -lt $wallDeadline -or -not $soakRecorded -or
   if ($sumiBytes -gt $limitBytes) { $issues += 'sumi-memory-limit' }
   if ($issues.Count -gt 0) { $failures++ }
   $samples++
+  if ($null -ne $lastActiveSample -and
+      ($now - $lastActiveSample).TotalSeconds -gt ($SampleSeconds * 3)) {
+    Write-Record ([ordered]@{
+      type = 'soak-reset'; timestamp = $now.ToString('o')
+      reason = 'sample-gap'; prior_timestamp = $lastActiveSample.ToString('o')
+      gap_seconds = [Math]::Round(($now - $lastActiveSample).TotalSeconds, 3)
+      prior_continuous_samples = $continuousSamples
+    })
+    $continuousSamples = 0
+  }
   $continuousSamples++
+  $lastActiveSample = $now
   Write-Record ([ordered]@{
     type = 'sample'; timestamp = $now.ToString('o'); sample = $samples
     host_pid = $hostPid; child_pid = $childPid; sumi_pid = $sumiPid
