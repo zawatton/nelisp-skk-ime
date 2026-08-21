@@ -102,6 +102,22 @@ normal-use evidence without sending requests to the engine:
 powershell -ExecutionPolicy Bypass -File windows\scripts\monitor-v1.ps1
 ```
 
+For the release run, register the same monitor for logon-time recovery:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\scripts\monitor-v1.ps1 -RegisterStartup
+```
+
+The monitor freezes a copy of itself in the evidence directory and registers
+that copy with `-Resume`, so later working-tree edits cannot change an active
+release run. Resume preserves the original start time,
+failure count, memory maxima, sample count, log, and application coverage after
+a reboot or logoff. The 24-hour soak counter deliberately restarts at zero so
+that this gate still represents one uninterrupted powered session. A named
+mutex prevents duplicate monitors, and the Run entry is removed only after all
+elapsed and application-coverage gates pass. At logon the monitor waits without
+counting a failure until TSF has started one complete host/engine/Sumi runtime.
+
 JSONL evidence and a current summary are written under
 `%LOCALAPPDATA%\DDSKK\verification`. Process loss/restart, wrong runtime
 paths, and private memory above 768 MiB are recorded as failures. The summary

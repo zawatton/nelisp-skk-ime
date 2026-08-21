@@ -17,18 +17,50 @@ param(
   [int]$NormalUseDays = 7,
   [int]$MemoryLimitMiB = 768,
   [string]$OutputDirectory = "$env:LOCALAPPDATA\DDSKK\verification",
-  [int]$MaxSamples = 0
+  [int]$MaxSamples = 0,
+  [switch]$Resume,
+  [switch]$RegisterStartup
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+function Get-Sha256([string]$Path) {
+  $stream = [IO.File]::OpenRead($Path)
+  try {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+      return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '')
+    } finally {
+      $sha.Dispose()
+    }
+  } finally {
+    $stream.Dispose()
+  }
+}
 if ($SampleSeconds -lt 10 -or $SoakHours -lt 1 -or $NormalUseDays -lt 1) {
   throw 'invalid monitor duration'
 }
 New-Item -ItemType Directory -Force $OutputDirectory | Out-Null
+$createdMutex = $false
+$processMutex = [Threading.Mutex]::new($true, 'Local\NeLispImeV1ReleaseMonitor',
+                                       [ref]$createdMutex)
+if (-not $createdMutex) { Write-Host 'v1 monitor is already running'; exit 0 }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $logPath = Join-Path $OutputDirectory "v1-monitor-$stamp.jsonl"
 $statusPath = Join-Path $OutputDirectory 'v1-monitor-current.json'
+$startupKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$startupName = 'NeLisp IME v1 Release Monitor'
+$monitorScript = [IO.Path]::GetFullPath($PSCommandPath)
+if ($RegisterStartup) {
+  $frozenMonitor = [IO.Path]::GetFullPath((Join-Path $OutputDirectory 'v1-monitor-runtime.ps1'))
+  if ($monitorScript -ne $frozenMonitor) {
+    Copy-Item -LiteralPath $monitorScript -Destination $frozenMonitor -Force
+  }
+  $monitorScript = $frozenMonitor
+  $startupCommand = 'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -Resume' -f $monitorScript
+  Set-ItemProperty -Path $startupKey -Name $startupName -Value $startupCommand
+}
+$monitorHash = Get-Sha256 $monitorScript
 $native = Get-ItemProperty 'HKCU:\Software\NativeIME'
 $expectedHost = [IO.Path]::GetFullPath([string]$native.EngineHost)
 $expectedRepository = [IO.Path]::GetFullPath([string]$native.Repository)
@@ -45,6 +77,7 @@ $started = Get-Date
 $wallDeadline = $started.AddDays($NormalUseDays)
 $soakSamplesNeeded = [Math]::Ceiling(($SoakHours * 3600) / $SampleSeconds)
 $samples = 0
+$continuousSamples = 0
 $failures = 0
 $initialHostPid = $null
 $initialChildPid = $null
@@ -58,16 +91,79 @@ function Write-Record($Record) {
     Add-Content -LiteralPath $logPath -Encoding UTF8
 }
 
+function Get-JsonProperty($Object, [string]$Name, $Default = $null) {
+  if ($null -eq $Object) { return $Default }
+  $property = $Object.PSObject.Properties[$Name]
+  if ($null -eq $property) { return $Default }
+  return $property.Value
+}
+
+function Write-CurrentStatus([datetime]$Now) {
+  ([ordered]@{
+    schema = 1
+    log = $logPath; started = $started.ToString('o'); last_sample = $Now.ToString('o')
+    samples = $samples; continuous_samples = $continuousSamples
+    failures = $failures; soak_complete = $soakRecorded
+    normal_use_complete = ($Now -ge $wallDeadline)
+    app_matrix = $appMatrix
+    expected_host = $expectedHost; expected_repository = $expectedRepository
+    expected_sumi = $expectedSumi; expected_dll = $expectedDll
+    monitor_script = $monitorScript; monitor_sha256 = $monitorHash
+    sample_seconds = $SampleSeconds; soak_hours = $SoakHours
+    normal_use_days = $NormalUseDays; memory_limit_mib = $MemoryLimitMiB
+    max_host_bytes = $maxHostBytes; max_child_bytes = $maxChildBytes
+    max_sumi_bytes = $maxSumiBytes
+  }) | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $statusPath -Encoding UTF8
+}
+
+$resumed = $false
+if ($Resume -and (Test-Path -LiteralPath $statusPath)) {
+  $prior = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+  $priorMatrix = Get-JsonProperty $prior 'app_matrix'
+  $priorMatrixComplete = $null -ne $priorMatrix
+  foreach ($name in @('notepad','edge','terminal','emacs')) {
+    if (-not [bool](Get-JsonProperty $priorMatrix $name $false)) {
+      $priorMatrixComplete = $false
+    }
+  }
+  $priorComplete = [bool](Get-JsonProperty $prior 'normal_use_complete' $false) -and
+                   [bool](Get-JsonProperty $prior 'soak_complete' $false) -and
+                   $priorMatrixComplete -and
+                   [int](Get-JsonProperty $prior 'failures' 0) -eq 0
+  if ((Get-JsonProperty $prior 'expected_host') -eq $expectedHost -and
+      (Get-JsonProperty $prior 'expected_repository') -eq $expectedRepository -and
+      (Get-JsonProperty $prior 'expected_sumi') -eq $expectedSumi -and
+      (Get-JsonProperty $prior 'expected_dll') -eq $expectedDll -and
+      -not $priorComplete) {
+    $logPath = [string](Get-JsonProperty $prior 'log')
+    $started = [datetime]::Parse([string](Get-JsonProperty $prior 'started'))
+    $wallDeadline = $started.AddDays($NormalUseDays)
+    $samples = [int](Get-JsonProperty $prior 'samples' 0)
+    $failures = [int](Get-JsonProperty $prior 'failures' 0)
+    $soakRecorded = [bool](Get-JsonProperty $prior 'soak_complete' $false)
+    $maxHostBytes = [int64](Get-JsonProperty $prior 'max_host_bytes' 0)
+    $maxChildBytes = [int64](Get-JsonProperty $prior 'max_child_bytes' 0)
+    $maxSumiBytes = [int64](Get-JsonProperty $prior 'max_sumi_bytes' 0)
+    foreach ($name in @('notepad','edge','terminal','emacs')) {
+      $appMatrix[$name] = [bool](Get-JsonProperty $priorMatrix $name $false)
+    }
+    $resumed = $true
+  }
+}
+
 Write-Record ([ordered]@{
-  type = 'start'; timestamp = $started.ToString('o'); schema = 1
+  type = if ($resumed) { 'resume' } else { 'start' }
+  timestamp = (Get-Date).ToString('o'); schema = 1
   expected_host = $expectedHost; expected_repository = $expectedRepository
   expected_sumi = $expectedSumi; expected_dll = $expectedDll
+  monitor_script = $monitorScript; monitor_sha256 = $monitorHash
   sample_seconds = $SampleSeconds
   soak_hours = $SoakHours; normal_use_days = $NormalUseDays
-  memory_limit_mib = $MemoryLimitMiB
+  memory_limit_mib = $MemoryLimitMiB; prior_samples = $samples
 })
 
-while ((Get-Date) -lt $wallDeadline -or $samples -lt $soakSamplesNeeded) {
+while ((Get-Date) -lt $wallDeadline -or -not $soakRecorded -or
+       $appMatrix.Values -contains $false) {
   $now = Get-Date
   $hostCim = @(Get-CimInstance Win32_Process -Filter "Name='ddskk-engine-host.exe'" |
     Where-Object { $_.ExecutablePath -and
@@ -82,6 +178,22 @@ while ((Get-Date) -lt $wallDeadline -or $samples -lt $soakSamplesNeeded) {
   })
   $childPid = if ($childCim.Count -eq 1) { [int]$childCim[0].ProcessId } else { $null }
   $sumiPid = if ($sumiCim.Count -eq 1) { [int]$sumiCim[0].ProcessId } else { $null }
+
+  # A logon Run entry can execute before TSF starts the engine. Do not turn
+  # that expected startup ordering into a permanent release failure. Sampling
+  # begins only when one complete runtime set is present.
+  if ($null -eq $initialHostPid -and
+      ($null -eq $hostPid -or $null -eq $childPid -or $null -eq $sumiPid)) {
+    Write-Record ([ordered]@{
+      type = 'waiting'; timestamp = $now.ToString('o')
+      host_count = $hostCim.Count; child_count = $childCim.Count
+      sumi_count = $sumiCim.Count
+    })
+    Write-CurrentStatus $now
+    if ($MaxSamples -gt 0) { break }
+    Start-Sleep -Seconds $SampleSeconds
+    continue
+  }
 
   if ($null -eq $initialHostPid -and $null -ne $hostPid) { $initialHostPid = $hostPid }
   if ($null -eq $initialChildPid -and $null -ne $childPid) { $initialChildPid = $childPid }
@@ -139,6 +251,7 @@ while ((Get-Date) -lt $wallDeadline -or $samples -lt $soakSamplesNeeded) {
   if ($sumiBytes -gt $limitBytes) { $issues += 'sumi-memory-limit' }
   if ($issues.Count -gt 0) { $failures++ }
   $samples++
+  $continuousSamples++
   Write-Record ([ordered]@{
     type = 'sample'; timestamp = $now.ToString('o'); sample = $samples
     host_pid = $hostPid; child_pid = $childPid; sumi_pid = $sumiPid
@@ -147,37 +260,38 @@ while ((Get-Date) -lt $wallDeadline -or $samples -lt $soakSamplesNeeded) {
     app_matrix = $appMatrix
   })
 
-  if (-not $soakRecorded -and $samples -ge $soakSamplesNeeded) {
+  if (-not $soakRecorded -and $continuousSamples -ge $soakSamplesNeeded) {
     $soakRecorded = $true
     Write-Record ([ordered]@{
       type = 'soak-milestone'; timestamp = $now.ToString('o')
-      active_sample_hours = [Math]::Round(($samples * $SampleSeconds) / 3600, 3)
+      active_sample_hours = [Math]::Round(($continuousSamples * $SampleSeconds) / 3600, 3)
       failures = $failures; max_host_bytes = $maxHostBytes
       max_child_bytes = $maxChildBytes; max_sumi_bytes = $maxSumiBytes
       pass = ($failures -eq 0)
     })
   }
-  ([ordered]@{
-    log = $logPath; started = $started.ToString('o'); last_sample = $now.ToString('o')
-    samples = $samples; failures = $failures; soak_complete = $soakRecorded
-    normal_use_complete = ($now -ge $wallDeadline)
-    app_matrix = $appMatrix
-    max_host_bytes = $maxHostBytes; max_child_bytes = $maxChildBytes
-    max_sumi_bytes = $maxSumiBytes
-  }) | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $statusPath -Encoding UTF8
+  Write-CurrentStatus $now
   if ($MaxSamples -gt 0 -and $samples -ge $MaxSamples) { break }
   Start-Sleep -Seconds $SampleSeconds
 }
 
 $finished = Get-Date
 $appMatrixComplete = -not ($appMatrix.Values -contains $false)
+$normalUseComplete = $finished -ge $wallDeadline
+$finalPass = $failures -eq 0 -and $soakRecorded -and
+             $normalUseComplete -and $appMatrixComplete
 Write-Record ([ordered]@{
   type = 'complete'; timestamp = $finished.ToString('o'); samples = $samples
   failures = $failures; soak_complete = $soakRecorded
-  normal_use_complete = ($finished -ge $wallDeadline)
+  normal_use_complete = $normalUseComplete
   app_matrix = $appMatrix; app_matrix_complete = $appMatrixComplete
   max_host_bytes = $maxHostBytes; max_child_bytes = $maxChildBytes
   max_sumi_bytes = $maxSumiBytes; test_run = ($MaxSamples -gt 0)
-  pass = ($failures -eq 0 -and $appMatrixComplete)
+  pass = $finalPass
 })
-exit $(if ($failures -eq 0) { 0 } else { 1 })
+if ($finalPass) {
+  Remove-ItemProperty -Path $startupKey -Name $startupName -ErrorAction SilentlyContinue
+}
+$processMutex.ReleaseMutex()
+$processMutex.Dispose()
+exit $(if ($MaxSamples -gt 0 -or $finalPass) { 0 } else { 1 })
