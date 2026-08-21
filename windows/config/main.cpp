@@ -71,7 +71,7 @@ struct Engine {
 // text service sends back with `ENGINE SET'.
 const std::vector<Engine>& Engines() {
   static const std::vector<Engine> engines = {
-      {L"ddskk", L"DDSKK (NeLisp)",
+      {L"ddskk", L"DDSKK",
        L"SKK の変換規則をそのまま使います。",
        {{L"InitialKanaMode", L"起動時からかな入力", Field::Kind::Checkbox, 1, 0, 1},
         {L"OkuriAuto", L"送り仮名を自動処理する", Field::Kind::Checkbox, 1, 0, 1}}},

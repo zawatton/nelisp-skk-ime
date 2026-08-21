@@ -34,10 +34,14 @@
                              (nelisp-ime-stateline-dispatch "ENGINE LIST")))
     (should (string-prefix-p "ENGINE "
                              (nelisp-ime-stateline-dispatch "ENGINE CURRENT")))
+    (nelisp-ime-stateline-dispatch "KEY 107")
     (let ((nelisp-ime-default-engine nelisp-ime-default-engine))
       (should (equal (nelisp-ime-stateline-dispatch "ENGINE SET dictionary")
                      "OK ENGINE dictionary"))
-      (should (eq nelisp-ime-default-engine 'dictionary)))
+      (should (eq nelisp-ime-default-engine 'dictionary))
+      (let ((status (nelisp-ime-stateline-dispatch "STATUS")))
+        (should (equal (nelisp-ime-stateline-test--field status 3) "-1"))
+        (should (equal (nelisp-ime-stateline-test--field status 4) "-"))))
     (should (equal (nelisp-ime-stateline-dispatch "ENGINE SET nope")
                    "ERR ENGINE nope"))))
 
@@ -68,6 +72,22 @@
           (second (nelisp-ime-stateline-dispatch "STATUS")))
       (should (string-prefix-p "STATE " first))
       (should (equal first second)))))
+
+(ert-deftest nelisp-ime-stateline-test-session-prefix-isolates-composition ()
+  (nelisp-ime-stateline-test--isolated
+    (should (string-prefix-p "STATE "
+                             (nelisp-ime-stateline-dispatch
+                              "SESSION app-a KEY 107"))) ; k
+    (should (string-prefix-p "STATE "
+                             (nelisp-ime-stateline-dispatch
+                              "SESSION app-b KEY 110"))) ; n
+    (let ((app-a (nelisp-ime-stateline-dispatch "SESSION app-a KEY 97"))
+          (app-b (nelisp-ime-stateline-dispatch "SESSION app-b STATUS")))
+      (should (equal (nelisp-ime-stateline-test--field app-a 4) "00304b"))
+      (should (equal (nelisp-ime-stateline-test--field app-b 5) "00006e")))
+    (should (equal (nelisp-ime-stateline-dispatch "SESSION app-a CLOSE")
+                   "OK CLOSED"))
+    (should-not (gethash "app-a" nelisp-ime-sessions))))
 
 (ert-deftest nelisp-ime-stateline-test-commit-and-reset ()
   (nelisp-ime-stateline-test--isolated

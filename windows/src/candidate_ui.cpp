@@ -34,7 +34,7 @@ HRESULT CandidateUI::QueryInterface(REFIID iid, void** object) {
 }
 ULONG CandidateUI::AddRef() { return InterlockedIncrement(&ref_count_); }
 ULONG CandidateUI::Release() { const ULONG n = InterlockedDecrement(&ref_count_); if (!n) delete this; return n; }
-HRESULT CandidateUI::GetDescription(BSTR* value) { if (!value) return E_POINTER; *value = SysAllocString(L"DDSKK candidates"); return *value ? S_OK : E_OUTOFMEMORY; }
+HRESULT CandidateUI::GetDescription(BSTR* value) { if (!value) return E_POINTER; *value = SysAllocString(L"NeLisp IME candidates"); return *value ? S_OK : E_OUTOFMEMORY; }
 HRESULT CandidateUI::GetGUID(GUID* guid) { if (!guid) return E_POINTER; *guid = kCandidateUiGuid; return S_OK; }
 HRESULT CandidateUI::Show(BOOL show) { shown_ = show; return S_OK; }
 HRESULT CandidateUI::IsShown(BOOL* show) { if (!show) return E_POINTER; *show = shown_; return S_OK; }

@@ -39,8 +39,9 @@
                 HKCU\Software\NativeIME\Repository and restart the live
                 host onto the new snapshot.
 
-    -Indicator  Launch sumi-skk-ui.exe (the mode indicator) detached on
-                the default pipe, if present.
+    -Indicator  Copy the rebuilt sumi-skk-ui.exe into the timestamped
+                runtime directory, update SettingsExe, and restart the
+                resident Sumi process on the default pipe.
 
   All four switches are independently combinable. -HostExe and -Engine share
   a single restart-and-verify step at the end, so passing both together
@@ -56,6 +57,10 @@
   This is what makes it safe to run anywhere and is this script's own
   test vehicle; see README.md.
 
+  Immediately before changing registry pointers, a rollback.json manifest
+  records all previous paths. Pass it to rollback-live.ps1 to restore the
+  older runtime without copying over either version.
+
 .PARAMETER Dll
   Deploy the rebuilt ddskk-ime.dll and repoint the CLSID InprocServer32
   default value at it.
@@ -70,7 +75,7 @@
   the shared step below, alongside -HostExe if also given).
 
 .PARAMETER Indicator
-  Launch the mode indicator (sumi-skk-ui.exe) detached, if present.
+  Deploy and restart the Sumi indicator/candidate/registration UI.
 
 .PARAMETER DryRun
   Print every action without performing it. Required test vehicle for
@@ -134,6 +139,8 @@ $LiveRoot = Join-Path $env:LOCALAPPDATA 'DDSKK'
 $BinDir = Join-Path $LiveRoot $Stamp
 $SnapshotRoot = Join-Path $LiveRoot "live-$Stamp"
 $NativeImeKey = 'HKCU:\Software\NativeIME'
+$UserRunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$SumiRunValue = 'NeLisp IME Sumi'
 $ClsidKey = 'HKCU:\Software\Classes\CLSID\{80B44B14-B866-4EF4-A394-4FF1D87D5185}\InprocServer32'
 $DllSrc = Join-Path $RepoRoot 'windows\build\Release\ddskk-ime.dll'
 $HostSrc = Join-Path $RepoRoot 'windows\build\Release\ddskk-engine-host.exe'
@@ -145,6 +152,7 @@ $LivePipeName = 'ddskk-ime-v1'
 # the DLL loaded (that case is handled by the -Dll restart-reminder above,
 # not by stopping anything).
 $HostProcessName = 'ddskk-engine-host.exe'
+$IndicatorProcessName = 'sumi-skk-ui'
 
 # Explicitly cleared before starting the live host so it serves the
 # DEFAULT pipe, default user dictionary, default save-batch size, and
@@ -218,6 +226,15 @@ function Set-ClsidDefault {
   Write-Host "REG   : $ClsidKey (default): $old -> $Value"
 }
 
+function Get-RegistryValueOrNull {
+  param([string]$Path, [string]$Name)
+  $item = Get-ItemProperty -Path $Path -ErrorAction SilentlyContinue
+  if ($null -eq $item) { return $null }
+  $property = $item.PSObject.Properties[$Name]
+  if ($null -eq $property) { return $null }
+  return $property.Value
+}
+
 function Stop-LiveHost {
   if ($DryRun) { Write-Step "would stop all running $HostProcessName processes"; return }
   Get-CimInstance Win32_Process -Filter "Name='$HostProcessName'" | ForEach-Object {
@@ -246,8 +263,10 @@ function Start-EngineHost {
   }
   $psi = [Diagnostics.ProcessStartInfo]::new()
   $psi.FileName = $HostExe
-  $psi.ArgumentList.Add($NelispExe)
-  $psi.ArgumentList.Add($RepositoryDir)
+  # ProcessStartInfo.ArgumentList is unavailable in the Windows PowerShell
+  # 5.1 used by this machine.  These are both paths, so quote each argument
+  # explicitly for the compatible Arguments property instead.
+  $psi.Arguments = '"{0}" "{1}"' -f $NelispExe, $RepositoryDir
   $psi.WorkingDirectory = $RepositoryDir
   $psi.UseShellExecute = $false
   $proc = [Diagnostics.Process]::Start($psi)
@@ -312,12 +331,13 @@ if (-not ($Dll -or $HostExe -or $Engine -or $Indicator)) {
 Write-Host "=== deploy-live.ps1 $(if ($DryRun) { '(DRY RUN -- nothing will be changed)' }) stamp=$Stamp ==="
 
 # 1. DLL: independent of everything else below; never touches the running
-#    host process.
+#    host process. The registry switch is deferred until after rollback.json
+#    has captured the old pointer in step 5.
+$dllDest = $null
 if ($Dll) {
   Write-Host '--- DLL ---'
   $dllDest = Join-Path $BinDir 'ddskk-ime.dll'
   Copy-Deployed -Source $DllSrc -Destination $dllDest
-  Set-ClsidDefault -Value $dllDest
   Write-Host 'NOTE  : ddskk-ime.dll is an in-process COM server; any application that'
   Write-Host '        already loaded the old copy must be RESTARTED by the user to pick'
   Write-Host '        up this change. DllRegisterServer is never invoked (see README.md).'
@@ -332,6 +352,16 @@ if ($HostExe) {
   Write-Host '--- HOST EXE ---'
   $hostDest = Join-Path $BinDir 'ddskk-engine-host.exe'
   Copy-Deployed -Source $HostSrc -Destination $hostDest
+}
+
+# 2b. Sumi UI copy. Registry update and restart happen below, after the
+# immutable destination exists. Candidate and dictionary-registration UI
+# live in this process, not in the TSF DLL.
+$indicatorDest = $null
+if ($Indicator) {
+  Write-Host '--- SUMI UI ---'
+  $indicatorDest = Join-Path $BinDir 'sumi-skk-ui.exe'
+  Copy-Deployed -Source $IndicatorExe -Destination $indicatorDest
 }
 
 # 3. Engine snapshot: robocopy + sibling file + PREWARM, all before
@@ -391,14 +421,48 @@ if ($Engine) {
   }
 }
 
-# 4. Registry writes. Limited to exactly these three values across the
-#    whole script: EngineHost, Repository, and the CLSID InprocServer32
-#    default (written in step 1 above). Nothing else under
-#    HKCU\Software\NativeIME is ever touched.
+# 4. Save exact old pointers before any registry write. The manifest lives
+#    inside this deployment's immutable directory.
+$manifestDir = if ($Dll -or $HostExe -or $Indicator) { $BinDir } else { $SnapshotRoot }
+$manifestPath = Join-Path $manifestDir 'rollback.json'
+if ($DryRun) {
+  Write-Step "would save previous DLL/host/repository/Sumi registry pointers to $manifestPath"
+} else {
+  New-Item -ItemType Directory -Force $manifestDir | Out-Null
+  $manifest = [ordered]@{
+    schema = 1
+    created_at = (Get-Date).ToString('o')
+    deployed_bin = if ($Dll -or $HostExe -or $Indicator) { $BinDir } else { $null }
+    deployed_snapshot = if ($Engine) { $SnapshotRoot } else { $null }
+    previous = [ordered]@{
+      dll = Get-RegistryValueOrNull -Path $ClsidKey -Name '(default)'
+      engine_host = Get-RegistryValueOrNull -Path $NativeImeKey -Name 'EngineHost'
+      repository = Get-RegistryValueOrNull -Path $NativeImeKey -Name 'Repository'
+      settings_exe = Get-RegistryValueOrNull -Path $NativeImeKey -Name 'SettingsExe'
+      sumi_run = Get-RegistryValueOrNull -Path $UserRunKey -Name $SumiRunValue
+    }
+  }
+  $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+  Write-Host "ROLLBK: $manifestPath"
+}
+
+# 5. Registry writes. SettingsExe is updated only with -Indicator; the
+#    engine and DLL switches retain their previous narrow write sets.
+if ($dllDest) { Set-ClsidDefault -Value $dllDest }
 if ($hostDest) { Set-NativeImeValue -Name 'EngineHost' -Value $hostDest }
 if ($snapshotDir) { Set-NativeImeValue -Name 'Repository' -Value $snapshotDir }
+if ($indicatorDest) {
+  Set-NativeImeValue -Name 'SettingsExe' -Value $indicatorDest
+  $runCommand = '"' + $indicatorDest + '"'
+  if ($DryRun) {
+    Write-Step "would set $UserRunKey\$SumiRunValue = $runCommand"
+  } else {
+    Set-ItemProperty -Path $UserRunKey -Name $SumiRunValue -Value $runCommand
+    Write-Host "REG   : $UserRunKey\$SumiRunValue = $runCommand"
+  }
+}
 
-# 5. Restart the live host if its exe or its snapshot changed, then verify
+# 6. Restart the live host if its exe or its snapshot changed, then verify
 #    it over the live pipe.
 if ($HostExe -or $Engine) {
   Write-Host '--- RESTART LIVE HOST ---'
@@ -420,24 +484,36 @@ if ($HostExe -or $Engine) {
   }
 }
 
-# 6. Mode indicator: independent, combinable with anything above.
+# 7. Sumi UI: replace only the resident Sumi process and start the newly
+#    deployed candidate/registration-capable binary detached.
 if ($Indicator) {
   Write-Host '--- INDICATOR ---'
   if ($DryRun) {
-    Write-Step "would start $IndicatorExe (if present) detached"
-  } elseif (Test-Path -LiteralPath $IndicatorExe) {
+    Write-Step "would stop existing $IndicatorProcessName processes"
+    Write-Step "would start $indicatorDest detached"
+  } elseif (Test-Path -LiteralPath $indicatorDest) {
+    Get-Process -Name $IndicatorProcessName -ErrorAction SilentlyContinue |
+      Stop-Process -Force
     $ipsi = [Diagnostics.ProcessStartInfo]::new()
-    $ipsi.FileName = $IndicatorExe
-    $ipsi.WorkingDirectory = Split-Path -Parent $IndicatorExe
+    $ipsi.FileName = $indicatorDest
+    $ipsi.WorkingDirectory = Split-Path -Parent $indicatorDest
     $ipsi.UseShellExecute = $false
+    # GApplication's Windows session registration can outlive the process
+    # briefly and absorb this freshly deployed launch.  We have already
+    # stopped every resident Sumi process above, so bypassing that stale
+    # uniqueness check here cannot create a duplicate pill.
+    $ipsi.EnvironmentVariables['DDSKK_ALLOW_MULTIPLE_INSTANCES'] = '1'
     $ip = [Diagnostics.Process]::Start($ipsi)
-    Write-Host "INDIC : pid=$($ip.Id) $IndicatorExe"
+    Write-Host "INDIC : pid=$($ip.Id) $indicatorDest"
   } else {
-    Write-Host "INDIC : exe not found ($IndicatorExe)"
+    Write-Host "INDIC : exe not found ($indicatorDest)"
   }
 }
 
 Write-Host "=== done $(if ($DryRun) { '(dry run -- nothing was changed)' }) ==="
+if (-not $DryRun) {
+  Write-Host "Rollback: powershell -ExecutionPolicy Bypass -File windows\scripts\rollback-live.ps1 -Manifest `"$manifestPath`""
+}
 # Without this, the script's exit code is whatever the last native/cmdlet
 # call left in $LASTEXITCODE (observed: robocopy's success codes 1-7 leaked
 # through as apparent failure). Reaching this line means every step above

@@ -28,6 +28,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -35,10 +36,55 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
 constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\ddskk-ime-v1";
+constexpr wchar_t kStateMapName[] = L"Local\\ddskk-ime-state-v1";
+
+/* A read-only snapshot channel for the Sumi companion UI.  It deliberately
+ * is not another request path: keyboard requests retain the engine mutex,
+ * while Sumi can observe the newest STATE without queuing behind them. */
+struct SharedImeState {
+  volatile LONG sequence;
+  char line[8192];
+};
+HANDLE g_state_map = nullptr;
+SharedImeState* g_state_view = nullptr;
+
+void InitializeStateMirror(const std::wstring& pipe_name) {
+  std::wstring map_name = kStateMapName;
+  if (pipe_name != kPipeName) {
+    std::wstring suffix = pipe_name;
+    for (wchar_t& ch : suffix) {
+      if (ch == L'\\' || ch == L'/') ch = L'_';
+    }
+    map_name = L"Local\\ddskk-ime-state-v1-" + suffix;
+  }
+  g_state_map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+                                   0, sizeof(SharedImeState), map_name.c_str());
+  if (g_state_map == nullptr) return;
+  g_state_view = static_cast<SharedImeState*>(
+      MapViewOfFile(g_state_map, FILE_MAP_WRITE, 0, 0, sizeof(SharedImeState)));
+  if (g_state_view == nullptr) {
+    CloseHandle(g_state_map);
+    g_state_map = nullptr;
+    return;
+  }
+  std::memset(g_state_view, 0, sizeof(*g_state_view));
+}
+
+void PublishStateMirror(const std::string& response) {
+  if (g_state_view == nullptr || response.compare(0, 6, "STATE ") != 0) return;
+  InterlockedIncrement(&g_state_view->sequence);  // odd = writer owns it
+  const size_t capacity = sizeof(g_state_view->line) - 1;
+  const size_t count = response.size() < capacity ? response.size() : capacity;
+  std::memcpy(g_state_view->line, response.data(), count);
+  g_state_view->line[count] = '\0';
+  MemoryBarrier();
+  InterlockedIncrement(&g_state_view->sequence);  // even = stable snapshot
+}
 
 std::wstring PipeName() {
   wchar_t value[256]{};
@@ -227,7 +273,19 @@ void ApplyEngineEnvFromRegistry() {
                          reinterpret_cast<BYTE*>(path), &path_bytes) ==
             ERROR_SUCCESS &&
         path[0] != L'\0') {
-      SetEnvironmentVariableW(L"DDSKK_USER_JISYO", path);
+      /* The settings default intentionally uses %LOCALAPPDATA% so it is
+       * portable between users. SetEnvironmentVariableW does not expand
+       * embedded references; passing the registry text through unchanged
+       * made NeLisp try to open a literal "%LOCALAPPDATA%" path and its
+       * best-effort journal write was silently skipped. */
+      const DWORD expanded_size = ExpandEnvironmentStringsW(path, nullptr, 0);
+      std::vector<wchar_t> expanded(expanded_size > 0 ? expanded_size : 1);
+      if (expanded_size > 0 &&
+          ExpandEnvironmentStringsW(path, expanded.data(), expanded_size) > 0) {
+        SetEnvironmentVariableW(L"DDSKK_USER_JISYO", expanded.data());
+      } else {
+        SetEnvironmentVariableW(L"DDSKK_USER_JISYO", path);
+      }
     }
   }
 
@@ -432,6 +490,12 @@ void LoadDictionaryServerConfig(DictionaryServerConfig* config) {
   if (env_port_size > 0 && env_port_size < 16) {
     const int parsed = _wtoi(env_port);
     if (parsed > 0) config->port = static_cast<DWORD>(parsed);
+  }
+  wchar_t env_enabled[8]{};
+  const DWORD env_enabled_size =
+      GetEnvironmentVariableW(L"DDSKK_SKKSERV_ENABLE", env_enabled, 8);
+  if (env_enabled_size > 0 && env_enabled_size < 8) {
+    config->enabled = wcscmp(env_enabled, L"0") == 0 ? 0 : 1;
   }
 }
 
@@ -719,7 +783,11 @@ SOCKET ConnectDictionaryServer(const DictionaryServerConfig& config) {
   freeaddrinfo(result);
   if (socket_handle == INVALID_SOCKET) return INVALID_SOCKET;
 
-  const DWORD timeout_ms = 1000;
+  // This runs while the single engine mutex is held.  A dead skkserv must
+  // never freeze every application's conversion path for a full second.
+  // Local/LAN skkserv replies are normally sub-millisecond; a slower reply
+  // degrades to the already-loaded local dictionaries for this conversion.
+  const DWORD timeout_ms = 150;
   setsockopt(socket_handle, SOL_SOCKET, SO_RCVTIMEO,
             reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
   setsockopt(socket_handle, SOL_SOCKET, SO_SNDTIMEO,
@@ -836,6 +904,9 @@ bool SendAndReceive(SOCKET socket_handle, const std::string& request,
 // ConnectDictionaryServer()).
 std::string LookupDictionary(const std::string& midasi) {
   try {
+    if (GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0) {
+      std::fprintf(stderr, "ddskk-engine-host: lookup [%s]\n", midasi.c_str());
+    }
     if (!g_dictionary_server.config_loaded) {
       LoadDictionaryServerConfig(&g_dictionary_server.config);
       g_dictionary_server.config_loaded = true;
@@ -850,6 +921,10 @@ std::string LookupDictionary(const std::string& midasi) {
     // dictionary_files were never configured.
     if (g_builtin_dictionary.ready.load(std::memory_order_acquire)) {
       const std::string merged = MergeBuiltinCandidates(midasi);
+      if (GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0) {
+        std::fprintf(stderr, "ddskk-engine-host: builtin [%s]\n",
+                     merged.c_str());
+      }
       if (!merged.empty()) return "1" + merged;
     }
 
@@ -868,17 +943,11 @@ std::string LookupDictionary(const std::string& midasi) {
           // Self-heal the field incident this connect failure might be:
           // the dictionary server may simply not be running. Spawn it
           // (rate-limited by TrySpawnSkkServ's cooldown) and give it
-          // ~1.5s to come up for exactly one bounded extra retry here,
-          // rather than silently degrading every conversion for the rest
-          // of the session -- see DictionaryServerConfig::start_command.
-          // This adds at most one fixed sleep on top of the existing
-          // connect timeout; if the retry also fails, the loop below
-          // falls through to the unchanged "4" (not-found/unavailable)
-          // path exactly as before.
+          // let it become ready in the background.  Waiting 1.5 seconds
+          // here held g_engine_mutex and froze all active editors.  This
+          // lookup returns not-found; the next conversion uses the server.
           if (TrySpawnSkkServ(g_dictionary_server.config.start_command)) {
-            Sleep(1500);
-            g_dictionary_server.socket =
-                ConnectDictionaryServer(g_dictionary_server.config);
+            continue;
           }
         }
       }
@@ -927,6 +996,52 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
   }
 }
 
+bool DispatchConvertKeys(Child& child, const std::string& request,
+                         std::string* response) {
+  constexpr std::string_view prefix = "CONTROL CONVERT-KEYS ";
+  if (!request.starts_with(prefix)) return false;
+  const std::string_view encoded(request.data() + prefix.size(),
+                                 request.size() - prefix.size());
+  if (encoded.empty() || encoded.size() > 8192) return false;
+
+  // This entire helper runs under g_engine_mutex.  No other client can see
+  // RESET or any replayed intermediate key; only the final candidate STATE
+  // is returned/published.
+  std::string ignored;
+  if (!Dispatch(child, "RESET", &ignored)) return false;
+  size_t start = 0;
+  size_t count = 0;
+  while (start < encoded.size()) {
+    const size_t comma = encoded.find(',', start);
+    const size_t end = comma == std::string_view::npos ? encoded.size() : comma;
+    if (end == start || ++count > 1024) return false;
+    uint32_t codepoint = 0;
+    for (size_t index = start; index < end; ++index) {
+      const char value = encoded[index];
+      if (value < '0' || value > '9') return false;
+      codepoint = codepoint * 10 + static_cast<uint32_t>(value - '0');
+      if (codepoint > 0x10ffff) return false;
+    }
+    if (codepoint >= 0xd800 && codepoint <= 0xdfff) return false;
+    if (!Dispatch(child, "KEY " + std::to_string(codepoint), &ignored))
+      return false;
+    if (comma == std::string_view::npos) break;
+    start = comma + 1;
+  }
+  // DDSKK starts okuri-ari conversion automatically when the final
+  // okurigana syllable resolves (for example KieRu becomes a candidate on
+  // the KEY 'u' response). Sending CONTROL CONVERT once more here advances
+  // past that freshly produced candidate; a one-candidate entry then looks
+  // exhausted and incorrectly opens registration. Preserve the automatic
+  // conversion response as the barrier's final result.
+  if (ignored.rfind("STATE candidate ", 0) == 0 ||
+      ignored.rfind("STATE registration ", 0) == 0) {
+    *response = std::move(ignored);
+    return true;
+  }
+  return Dispatch(child, "CONTROL CONVERT", response);
+}
+
 // ---------------------------------------------------------------------------
 // Multi-client serving.
 //
@@ -940,11 +1055,11 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
 // untranslated. Each connected instance is now accepted on the main thread
 // and handed off to its own detached worker thread in ServeClient().
 //
-// All connections share exactly one `g_child` NeLisp process, which holds a
-// single SKK session (composition state, kana mode, the session buffer) --
-// two clients interleaving requests would corrupt it. `g_engine_mutex`
-// makes each client's request/response transaction atomic with respect to
-// the others: it is held for the entire Dispatch() call, which already
+// All connections share exactly one `g_child` NeLisp process.  Each native
+// client prefixes requests with a stable SESSION id, and the engine swaps a
+// complete SKK checkpoint when that id changes. `g_engine_mutex` makes each
+// request/response transaction atomic with respect to the others: it is held
+// for the entire Dispatch() call, which already
 // contains the nested "SERVER " dictionary-lookup sub-exchange loop (and
 // therefore LookupDictionary()'s cached socket in g_dictionary_server), so
 // a dictionary round trip can never be interleaved with another client's
@@ -956,6 +1071,17 @@ Child g_child;
 std::mutex g_engine_mutex;
 std::atomic<bool> g_stopping{false};
 std::wstring g_pipe_name;  // Set once in wmain before any thread starts.
+std::atomic<uint64_t> g_next_client_id{1};
+// Guarded by g_engine_mutex.  Retained for pre-SESSION clients only; scoped
+// clients own their independent engine checkpoints and bypass this legacy
+// focus/reset arbitration.
+uint64_t g_active_input_client = 0;
+
+// Guarded by g_engine_mutex. A reconnect transfers ownership of its stable
+// session id to the new pipe worker. The old worker therefore cannot close a
+// session that has already resumed on a replacement connection.
+std::unordered_map<std::string, uint64_t> g_session_owners;
+std::unordered_set<std::string> g_composing_sessions;
 
 // Forward declaration: defined below (just above ServeClient()), used by
 // IdleGcLoop() immediately below this point.
@@ -1026,7 +1152,11 @@ void RequestStop();
 // `g_engine_mutex' for the same "may have changed while this thread
 // waited for the lock" reason as the idle-freshness re-check.
 constexpr DWORD kIdleGcPollMs = 100;
-constexpr DWORD kDefaultIdleGcMs = 800;
+// A sub-second/two-second idle window makes ordinary thinking pauses race
+// the 300-900 ms collector, so the first key after the pause feels frozen.
+// Ten seconds still collects between real work bursts without putting GC
+// on the normal type-pause-type path.
+constexpr DWORD kDefaultIdleGcMs = 10000;
 
 std::atomic<uint64_t> g_last_activity_tick{0};
 std::atomic<bool> g_gc_pending{false};
@@ -1036,12 +1166,19 @@ std::atomic<bool> g_gc_pending{false};
 // ever connected, there is nothing to collect and no reason to contend
 // for `g_engine_mutex' against the first real client's own request).
 std::atomic<bool> g_engine_active{false};
-// True when the last STATE reply on the ServeClient() request path
-// reported mode "preedit" or "candidate" -- i.e. DDSKK is mid-composition
-// and the user may be reading a candidate before their next keystroke.
+// True when any scoped (or legacy) STATE reply on the ServeClient() request
+// path reports mode "preedit" or "candidate" -- i.e. DDSKK is mid-composition
+// and a user may be reading a candidate before their next keystroke.
 // See the "Composition-in-progress suppression" paragraph in the block
 // comment above IdleGcLoop() for why this gates collection.
 std::atomic<bool> g_session_composing{false};
+
+std::string SessionIdFromRequest(const std::string& request) {
+  if (request.rfind("SESSION ", 0) != 0) return {};
+  const size_t separator = request.find(' ', 8);
+  if (separator == std::string::npos || separator == 8) return {};
+  return request.substr(8, separator - 8);
+}
 
 void NoteActivity() {
   g_last_activity_tick.store(GetTickCount64(), std::memory_order_release);
@@ -1196,8 +1333,9 @@ void RequestStop() {
 // alone. Everything else it touches (g_child, g_engine_mutex, g_stopping,
 // g_pipe_name) is shared with other worker threads and the main thread,
 // and is only ever touched through the synchronization documented above.
-void ServeClient(HANDLE pipe) {
+void ServeClient(HANDLE pipe, uint64_t client_id) {
   bool connected = true;
+  std::unordered_set<std::string> client_sessions;
   while (connected) {
     std::array<char, 8192> request_buffer{};
     DWORD read = 0;
@@ -1213,6 +1351,7 @@ void ServeClient(HANDLE pipe) {
     while (!request.empty() && (request.back() == '\n' || request.back() == '\r'))
       request.pop_back();
     std::string response;
+    bool publish_response = true;
     const bool is_shutdown = request == "SHUTDOWN";
     if (is_shutdown) {
       response = "OK";
@@ -1221,21 +1360,81 @@ void ServeClient(HANDLE pipe) {
       // dictionary exchanges inside Dispatch() -- see the block comment
       // above.
       std::lock_guard<std::mutex> lock(g_engine_mutex);
-      if (!Dispatch(g_child, request, &response)) { connected = false; break; }
+      const std::string session_id = SessionIdFromRequest(request);
+      const bool scoped_session = !session_id.empty();
+      if (scoped_session) {
+        client_sessions.insert(session_id);
+        g_session_owners[session_id] = client_id;
+      }
+      const bool input_request = !scoped_session &&
+                                 (request.rfind("KEY ", 0) == 0 ||
+                                 request.rfind("CONTROL CONVERT-KEYS ", 0) == 0 ||
+                                 request.rfind("CONTROL ", 0) == 0);
+      const bool reset_request = !scoped_session && request == "RESET";
+      if (reset_request && g_active_input_client != 0 &&
+          (g_active_input_client != client_id ||
+           g_session_composing.load(std::memory_order_acquire))) {
+        // A delayed focus/composition callback, either from an old client
+        // or a transient FALSE focus notification in the active client.
+        // Acknowledge its local cleanup without touching a live conversion.
+        // If a different client really takes focus, its first KEY/CONTROL
+        // below performs the authoritative reset before taking ownership.
+        response = "STATE hiragana 0 -1 - - -1 -";
+        publish_response = false;
+      } else {
+        if (input_request && g_active_input_client != client_id) {
+          std::string ignored;
+          if (!Dispatch(g_child, "RESET", &ignored)) {
+            connected = false;
+            break;
+          }
+          g_active_input_client = client_id;
+        } else if (reset_request) {
+          g_active_input_client = client_id;
+        }
+        const bool convert_keys =
+            request.rfind("CONTROL CONVERT-KEYS ", 0) == 0;
+        const bool dispatched = convert_keys
+            ? DispatchConvertKeys(g_child, request, &response)
+            : Dispatch(g_child, request, &response);
+        if (!dispatched) {
+          connected = false;
+          break;
+        }
+      }
       // Track composition state from this reply for IdleGcLoop() (see its
       // "Composition-in-progress suppression" comment). Only STATE lines
       // carry a mode; OK/ERR/ENGINES/... replies leave the flag as-is.
       // This lives only on the ServeClient() request path -- IdleGcLoop's
       // own "GC" request always gets back "OK GC", never "STATE ...", so
       // it can never affect this flag.
-      if (response.compare(0, 6, "STATE ") == 0) {
+      if (publish_response && response.compare(0, 6, "STATE ") == 0) {
         const size_t mode_start = 6;
         const size_t mode_end = response.find(' ', mode_start);
         const std::string mode = mode_end == std::string::npos
             ? response.substr(mode_start)
             : response.substr(mode_start, mode_end - mode_start);
-        g_session_composing.store(mode == "preedit" || mode == "candidate",
+        const bool composing = mode == "preedit" || mode == "candidate" ||
+                               mode == "registration";
+        const std::string state_owner = scoped_session
+            ? session_id
+            : "legacy:" + std::to_string(client_id);
+        if (composing)
+          g_composing_sessions.insert(state_owner);
+        else
+          g_composing_sessions.erase(state_owner);
+        g_session_composing.store(!g_composing_sessions.empty(),
                                   std::memory_order_release);
+        PublishStateMirror(response);
+      }
+      if (scoped_session && request == "SESSION " + session_id + " CLOSE") {
+        const auto owner = g_session_owners.find(session_id);
+        if (owner != g_session_owners.end() && owner->second == client_id) {
+          g_session_owners.erase(owner);
+          g_composing_sessions.erase(session_id);
+          g_session_composing.store(!g_composing_sessions.empty(),
+                                    std::memory_order_release);
+        }
       }
     }
     DWORD written = 0;
@@ -1254,6 +1453,21 @@ void ServeClient(HANDLE pipe) {
   // to). Any client's worker thread may be the one to notice this first.
   // Locked so this never races StopChild()'s handle teardown in wmain.
   std::lock_guard<std::mutex> lock(g_engine_mutex);
+  if (g_active_input_client == client_id) g_active_input_client = 0;
+  g_composing_sessions.erase("legacy:" + std::to_string(client_id));
+  for (const std::string& session_id : client_sessions) {
+    const auto owner = g_session_owners.find(session_id);
+    if (owner == g_session_owners.end() || owner->second != client_id) continue;
+    if (g_child.process != nullptr &&
+        WaitForSingleObject(g_child.process, 0) == WAIT_TIMEOUT) {
+      std::string ignored;
+      Dispatch(g_child, "SESSION " + session_id + " CLOSE", &ignored);
+    }
+    g_session_owners.erase(owner);
+    g_composing_sessions.erase(session_id);
+  }
+  g_session_composing.store(!g_composing_sessions.empty(),
+                            std::memory_order_release);
   if (g_child.process == nullptr ||
       WaitForSingleObject(g_child.process, 0) != WAIT_TIMEOUT) {
     RequestStop();
@@ -1314,6 +1528,7 @@ int wmain(int argc, wchar_t** argv) {
     StopChild(g_child);
     return 3;
   }
+  InitializeStateMirror(g_pipe_name);
 
   if (!g_dictionary_server.config_loaded) {
     LoadDictionaryServerConfig(&g_dictionary_server.config);
@@ -1419,7 +1634,9 @@ int wmain(int argc, wchar_t** argv) {
     // CreatePipeInstance()'s comment on why FILE_FLAG_FIRST_PIPE_INSTANCE
     // must never be passed here too.
     pipe = CreatePipeInstance(false);
-    std::thread(ServeClient, connected_pipe).detach();
+    const uint64_t client_id =
+        g_next_client_id.fetch_add(1, std::memory_order_relaxed);
+    std::thread(ServeClient, connected_pipe, client_id).detach();
     if (pipe == INVALID_HANDLE_VALUE) {
       // Out of resources for further instances: the client just accepted
       // above is still served (thread already started); just stop taking

@@ -65,7 +65,7 @@ param(
   [string]$Repository = "",
   [int]$ColdLoadSleepSec = 8,
   [int]$PipeWaitTimeoutSec = 30,
-  [int]$StepPauseMs = 800
+  [int]$StepPauseMs = 1200
 )
 
 $ErrorActionPreference = "Stop"

@@ -32,6 +32,27 @@
 
 (load "vendor/ddskk/skk.el")
 
+;; `skk-okurigana-prefix' in DDSKK derives the romaji prefix of an
+;; okurigana through Mule's JIS-octet API.  Both GNU Emacs in a UTF-8-only
+;; batch environment and standalone NeLisp can report the UTF-8 trailing
+;; byte there (for example 0x8b for る) instead of its JIS column.  The
+;; resulting vector index is outside `skk-kana-rom-vector' and the final
+;; key of an okuri-ari word is lost (KieRu used to stop at ▽きえ*r).
+;; Hiragana U+3041..U+3093 has exactly the same order as that vector, so use
+;; the Unicode scalar directly and leave dictionary/conversion semantics to
+;; DDSKK unchanged.
+(defun skk-okurigana-prefix (okurigana)
+  (let* ((headchar (substring okurigana 0 1))
+         (target (if (and (string= headchar "っ")
+                          (not (string= okurigana "っ")))
+                     (substring okurigana 1 2)
+                   headchar))
+         (char (string-to-char target)))
+    (cond
+     ((string= headchar "ん") "n")
+     ((not (and (<= #x3041 char) (<= char #x3093))) nil)
+     (t (aref skk-kana-rom-vector (- char #x3041))))))
+
 ;; `skk-use-face' (skk-vars.el:1982) defaults to
 ;; `(or window-system (fboundp 'selected-frame) (fboundp 'frame-face-alist))'.
 ;; This engine has no display of its own -- all visual treatment of the
@@ -182,6 +203,15 @@
                                  skk-rom-kana-rule-list))))
 
 (defvar ddskk-engine--session nil)
+(defvar ddskk-engine--registration-checkpoint nil)
+(defvar ddskk-engine--registration-reading "")
+(defvar ddskk-engine--registration-had-candidates nil)
+(defvar ddskk-engine--registration-editor (vector "" 0)
+  "Shared [TEXT CURSOR] state for the modal registration editor.")
+(defvar ddskk-engine--sessions (make-hash-table :test 'equal)
+  "Client-scoped DDSKK states used by SESSION-prefixed native requests.")
+(defvar ddskk-engine--active-session-id nil
+  "Session whose native DDSKK globals are currently installed.")
 (defvar native-ime-engine-id "ddskk")
 
 (defvar ddskk-engine--debug-errors (getenv "DDSKK_ENGINE_DEBUG")
@@ -238,7 +268,10 @@ harness can see what actually failed.")
 (defun ddskk-engine-stop ()
   (when (skk-ime-session-live-p ddskk-engine--session)
     (skk-ime-session-destroy ddskk-engine--session))
-  (setq ddskk-engine--session nil))
+  (setq ddskk-engine--session nil
+        ddskk-engine--registration-checkpoint nil
+        ddskk-engine--registration-reading ""
+        ddskk-engine--registration-had-candidates nil))
 
 (defconst ddskk-engine--hex-digits "0123456789abcdef"
   "Lowercase nibble table for `ddskk-engine--hex'.")
@@ -278,7 +311,59 @@ implementation grew a result string with `concat' (quadratic) and called
           (setq offset (+ offset 6)))
         out))))
 
-(defun ddskk-engine--state-line (state)
+(defun ddskk-engine--unhex (hex)
+  "Decode the six-hex-scalar wire representation, or return nil.
+Registration is the only client-to-engine Unicode string request; keeping
+it in this strict encoding prevents spaces, newlines and protocol tokens
+from entering the line protocol."
+  (when (and (stringp hex) (> (length hex) 0) (= (% (length hex) 6) 0))
+    (let ((out "") (offset 0) (valid t))
+      (while (< offset (length hex))
+        ;; NeLisp's current `string-to-number' ignores its optional radix
+        ;; argument.  Parsing "00004b" through it therefore yielded codepoint
+        ;; 4, and the atomic Kana replay became control characters 4/6/0.
+        ;; Accumulate the fixed six nibbles explicitly so this wire decoder is
+        ;; identical under GNU Emacs and the standalone runtime.
+        (let ((code 0) (digit 0))
+          (while (< digit 6)
+            (let* ((char (aref hex (+ offset digit)))
+                   (nibble (cond ((and (>= char ?0) (<= char ?9)) (- char ?0))
+                                 ((and (>= char ?a) (<= char ?f))
+                                  (+ 10 (- char ?a)))
+                                 (t -1))))
+              (if (< nibble 0)
+                  (setq valid nil digit 6)
+                (setq code (+ (ash code 4) nibble)
+                      digit (1+ digit)))))
+          (if (or (> code #x10ffff) (and (>= code #xd800) (<= code #xdfff)))
+              (setq valid nil)
+            (when valid (setq out (concat out (string code))))))
+        (setq offset (+ offset 6)))
+      (and valid out))))
+
+(defun ddskk-engine--decode-codepoints (encoded)
+  "Decode comma-separated decimal Unicode scalars in ENCODED, or nil."
+  (when (and (stringp encoded) (> (length encoded) 0))
+    (let ((start 0) (out "") (valid t) end)
+      (while (and valid (< start (length encoded)))
+        (setq end (or (string-match "," encoded start) (length encoded)))
+        (if (= end start)
+            (setq valid nil)
+          (let ((index start) (code 0))
+            (while (and valid (< index end))
+              (let ((char (aref encoded index)))
+                (if (or (< char ?0) (> char ?9))
+                    (setq valid nil)
+                  (setq code (+ (* code 10) (- char ?0))
+                        index (1+ index)))))
+            (if (or (> code #x10ffff)
+                    (and (>= code #xd800) (<= code #xdfff)))
+                (setq valid nil)
+              (when valid (setq out (concat out (string code)))))))
+        (setq start (1+ end)))
+      (and valid out))))
+
+(defun ddskk-engine--raw-state-line (state)
   "Return the wire STATE line for STATE.
 
 Assembled with `concat' rather than one `format'.  Measured on this
@@ -304,6 +389,300 @@ identity.  `:candidates' is read once instead of twice."
             (if candidates
                 (mapconcat #'ddskk-engine--hex candidates ",")
               "-"))))
+
+;; CorvusSKK keeps dictionary registration inside the TIP rather than
+;; focusing an ordinary edit control.  Mirror that architecture with a
+;; checkpoint of the main DDSKK state.  The same session then accepts kana
+;; input and nested conversion, and is restored before confirm/cancel.  This
+;; is also compatible with NeLisp's current process-wide buffer-local table.
+(defun ddskk-engine--registration-active-p ()
+  (and ddskk-engine--registration-checkpoint t))
+
+(defun ddskk-engine--registration-state-line ()
+  "Return the nine-field STATE extension used only during registration."
+  (let ((state (skk-ime-session-snapshot ddskk-engine--session)))
+    ;; Keep the flush on the mandatory serialization path.  NeLisp's `if'
+    ;; evaluator only retains one else expression on the KEY dispatch form,
+    ;; so a side effect placed between feed-key and this serializer is lost.
+    (ddskk-engine--registration-flush state)
+    (setq state (skk-ime-session-snapshot ddskk-engine--session))
+    (let* (
+         (wire-state (copy-sequence state))
+         (cursor (aref ddskk-engine--registration-editor 1))
+         (session-text (plist-get state :text))
+         (editor-text (aref ddskk-engine--registration-editor 0))
+         (before (substring editor-text 0 cursor))
+         (after (substring editor-text cursor))
+         (start (plist-get state :composition-start)))
+    (setq wire-state (plist-put wire-state :mode 'registration))
+    (setq wire-state
+          (plist-put wire-state :text (concat before session-text after)))
+    (setq wire-state
+          (plist-put wire-state :cursor
+                     (+ cursor (plist-get state :cursor))))
+    (when start
+      (setq wire-state
+            (plist-put wire-state :composition-start (+ cursor start))))
+      (concat (ddskk-engine--raw-state-line wire-state) " "
+              (ddskk-engine--hex ddskk-engine--registration-reading)))))
+
+(defun ddskk-engine--registration-flush (state)
+  "Move finalized DDSKK text in STATE into the registration editor."
+  (when (and (not (ddskk-engine--registration-composing-p state))
+             (> (length (plist-get state :text)) 0))
+    (let* ((cursor (aref ddskk-engine--registration-editor 1))
+           (editor-text (aref ddskk-engine--registration-editor 0))
+           (text (plist-get state :text))
+           (new-text
+            (concat (substring editor-text 0 cursor)
+                    text
+                    (substring editor-text cursor)))
+           (new-cursor (+ cursor (length text))))
+      ;; Clear only DDSKK's transient direct-input state here.  Calling the
+      ;; full session reset from inside this function crosses another NeLisp
+      ;; buffer scope and loses NEW-TEXT/NEW-CURSOR before they can be saved.
+      (with-current-buffer (skk-ime-session-buffer ddskk-engine--session)
+        (erase-buffer)
+        (setq skk-prefix "" skk-current-rule-tree nil
+              skk-kana-start-point nil skk-henkan-mode nil
+              skk-henkan-start-point nil skk-henkan-end-point nil
+              skk-henkan-key nil skk-henkan-list nil skk-henkan-count -1)
+        (setf (skk-ime-session-last-command ddskk-engine--session) nil))
+      (aset ddskk-engine--registration-editor 0 new-text)
+      (aset ddskk-engine--registration-editor 1 new-cursor))))
+
+(defun ddskk-engine--begin-registration (main-state &optional checkpoint reading-override)
+  (unless (ddskk-engine--registration-active-p)
+    (setq ddskk-engine--registration-checkpoint
+          (or checkpoint
+              (skk-ime-session-checkpoint ddskk-engine--session)))
+    (let* ((native-state
+            (plist-get ddskk-engine--registration-checkpoint :native-state))
+           (reading (cdr (assq 'skk-henkan-key native-state)))
+           (candidates (cdr (assq 'skk-henkan-list native-state))))
+      (setq ddskk-engine--registration-reading
+            (if (stringp reading) reading "")
+            ddskk-engine--registration-had-candidates
+            (and (listp candidates) (> (length candidates) 0))))
+    ;; A zero-result first conversion has already let DDSKK clean up its
+    ;; marker before returning. Its checkpoint therefore has no
+    ;; `skk-henkan-key'; retain the reading captured by the caller instead.
+    (when (and (stringp reading-override) (> (length reading-override) 0))
+      (setq ddskk-engine--registration-reading reading-override))
+    (aset ddskk-engine--registration-editor 0 "")
+    (aset ddskk-engine--registration-editor 1 0)
+    (skk-ime-session-reset ddskk-engine--session))
+  (ddskk-engine--registration-state-line))
+
+(defun ddskk-engine--convert-or-register ()
+  "Convert once, preserving a zero-result reading for native registration."
+  (let* ((before (skk-ime-session-snapshot ddskk-engine--session))
+         (checkpoint (skk-ime-session-checkpoint ddskk-engine--session))
+         (start (plist-get before :composition-start))
+         (text (plist-get before :text))
+         (reading (if (and (numberp start) (>= start 0)
+                           (stringp text) (<= start (length text)))
+                      (substring text start)
+                    ""))
+         (state (skk-ime-session-control ddskk-engine--session 'convert)))
+    ;; Current DDSKK cleans a missing first conversion back to an empty
+    ;; hiragana state after the noninteractive minibuffer stub returns nil.
+    ;; Older builds left a candidate state with an empty list, which
+    ;; `ddskk-engine--state-line' already detects. Cover both behaviours.
+    (if (and (eq (plist-get before :mode) 'preedit)
+             (> (length reading) 0)
+             (eq (plist-get state :mode) 'hiragana)
+             (= (length (plist-get state :text)) 0)
+             (= (length (plist-get state :pending-romaji)) 0))
+        (ddskk-engine--begin-registration before checkpoint reading)
+      (ddskk-engine--state-line state))))
+
+(defun ddskk-engine--candidates-exhausted-p (state)
+  "Return non-nil when STATE has moved beyond its final candidate.
+
+DDSKK keeps `skk-henkan-list' intact after the last SPC and advances
+`skk-henkan-count' one position past that list.  Testing only for an empty
+candidate list therefore catches a missing reading's first conversion but
+misses exhaustion after one or more real candidates."
+  (let ((candidates (plist-get state :candidates))
+        (index (plist-get state :candidate-index)))
+    (and (eq (plist-get state :mode) 'candidate)
+         (or (null candidates)
+             (and (numberp index) (>= index (length candidates)))))))
+
+(defun ddskk-engine--state-line (state)
+  "Encode STATE, entering CorvusSKK-style registration on exhaustion."
+  (cond
+   ((ddskk-engine--registration-active-p)
+    (ddskk-engine--registration-state-line))
+   ((ddskk-engine--candidates-exhausted-p state)
+    (ddskk-engine--begin-registration state))
+   (t (ddskk-engine--raw-state-line state))))
+
+(defun ddskk-engine--registration-composing-p (state)
+  (or (plist-get state :composition-start)
+      (> (length (plist-get state :pending-romaji)) 0)))
+
+(defun ddskk-engine--end-registration ()
+  (setq ddskk-engine--registration-checkpoint nil
+        ddskk-engine--registration-reading "")
+  (aset ddskk-engine--registration-editor 0 "")
+  (aset ddskk-engine--registration-editor 1 0))
+
+(defun ddskk-engine--cancel-registration ()
+  (let ((checkpoint ddskk-engine--registration-checkpoint))
+    (ddskk-engine--end-registration)
+    (skk-ime-session-restore ddskk-engine--session checkpoint)
+    (setq ddskk-engine--registration-had-candidates nil)
+    ;; The exhausted conversion is restored as ▼READING.  Calling DDSKK's
+    ;; normal `skk-henkan-inactivate' here duplicates READING on NeLisp
+    ;; because its restored markers are static copies.  CorvusSKK restores
+    ;; the pre-registration reading, so perform the equivalent ▼ -> ▽ state
+    ;; transition directly and leave the reading editable.
+    (with-current-buffer (skk-ime-session-buffer ddskk-engine--session)
+      (let* ((marker-pos (and (markerp skk-henkan-start-point)
+                              (marker-position skk-henkan-start-point)))
+             (marker-char-pos
+              (max (point-min) (1- (or marker-pos (1+ (point-min)))))))
+        (delete-region marker-char-pos (1+ marker-char-pos))
+        (goto-char marker-char-pos)
+        (insert "▽")
+        (setq skk-henkan-mode 'on skk-henkan-count -1
+              skk-henkan-list nil skk-current-search-prog-list nil)
+        (set-marker skk-henkan-start-point (1+ marker-char-pos))
+        (goto-char (point-max))))
+    (ddskk-engine--raw-state-line
+     (skk-ime-session-snapshot ddskk-engine--session))))
+
+(defun ddskk-engine--finish-registration (word)
+  (let ((checkpoint ddskk-engine--registration-checkpoint))
+    (ddskk-engine--end-registration)
+    (skk-ime-session-restore ddskk-engine--session checkpoint))
+  (setq ddskk-engine--registration-had-candidates nil)
+  (ddskk-engine--raw-state-line
+   (skk-ime-session-control ddskk-engine--session
+                            'register-and-commit word)))
+
+(defun ddskk-engine--registration-edit (control)
+  "Edit the idle registration buffer at its own cursor."
+  (let ((cursor (aref ddskk-engine--registration-editor 1))
+        (text (aref ddskk-engine--registration-editor 0)))
+    (pcase control
+      ('backspace
+       (when (> cursor 0)
+         (setq text (concat (substring text 0 (1- cursor))
+                            (substring text cursor))
+               cursor (1- cursor))))
+      ('delete
+       (when (< cursor (length text))
+         (setq text (concat (substring text 0 cursor)
+                            (substring text (1+ cursor))))))
+      ('left (when (> cursor 0) (setq cursor (1- cursor))))
+      ('right (when (< cursor (length text)) (setq cursor (1+ cursor))))
+      ('home (setq cursor 0))
+      ('end (setq cursor (length text)))
+      ('space
+       (setq text (concat (substring text 0 cursor) " "
+                          (substring text cursor))
+             cursor (1+ cursor))))
+    (aset ddskk-engine--registration-editor 0 text)
+    (aset ddskk-engine--registration-editor 1 cursor)
+    (skk-ime-session-snapshot ddskk-engine--session)))
+
+(defun ddskk-engine--registration-request-p (line)
+  (or (string-match "\\`KEY " line)
+      (string-match "\\`CONTROL " line)
+      (string-match "\\`REGISTER " line)))
+
+(defun ddskk-engine--dispatch-registration (line)
+  "Handle one protocol LINE while the registration sub-session is active."
+  (condition-case err
+       (let ((state (skk-ime-session-snapshot
+                    ddskk-engine--session)))
+        (cond
+         ((string-match "\\`REGISTER \\([0-9a-f]+\\)\\'" line)
+          (let ((word (ddskk-engine--unhex (match-string 1 line))))
+            (if (and word (> (length word) 0))
+                (ddskk-engine--finish-registration word)
+              (ddskk-engine--cancel-registration))))
+         ((string-match "\\`KEY \\([0-9]+\\)\\'" line)
+          (let ((codepoint (string-to-number (match-string 1 line))))
+            (if (or (< codepoint 0) (> codepoint 1114111))
+                "ERR CODEPOINT"
+              (skk-ime-session-feed-key
+               ddskk-engine--session codepoint)
+              (ddskk-engine--registration-flush
+               (skk-ime-session-snapshot ddskk-engine--session))
+              (ddskk-engine--registration-state-line))))
+         ((and (> (length line) 18)
+               (equal (substring line 0 18) "CONTROL FEED-KEYS "))
+          (let ((keys (ddskk-engine--decode-codepoints (substring line 18))))
+            (if (not keys)
+                "ERR FEED-KEYS"
+              (skk-ime-session-feed-string ddskk-engine--session keys)
+              (ddskk-engine--registration-flush
+               (skk-ime-session-snapshot ddskk-engine--session))
+              (ddskk-engine--registration-state-line))))
+         ((equal line "CONTROL COMMIT")
+          (if (ddskk-engine--registration-composing-p state)
+              (progn
+                (skk-ime-session-control
+                  ddskk-engine--session 'commit)
+                (ddskk-engine--registration-flush
+                 (skk-ime-session-snapshot ddskk-engine--session))
+                (ddskk-engine--registration-state-line))
+            (let ((word (aref ddskk-engine--registration-editor 0)))
+              (if (or (= (length word) 0)
+                      (string-match "\\`[ \\t\\r\\n]+\\'" word))
+                  (ddskk-engine--cancel-registration)
+                (ddskk-engine--finish-registration word)))))
+         ((or (equal line "CONTROL QUIT") (equal line "CONTROL CANCEL"))
+          ;; CorvusSKK treats Ctrl+G/Escape as cancellation of the whole
+          ;; registration editor.  Do not consume the first press merely to
+          ;; clear a pending romaji or nested conversion.
+          (ddskk-engine--cancel-registration))
+         ((equal line "CONTROL BACKSPACE")
+          (if (ddskk-engine--registration-composing-p state)
+              (skk-ime-session-control
+               ddskk-engine--session 'backspace)
+            (ddskk-engine--registration-edit 'backspace))
+          (ddskk-engine--registration-state-line))
+         ((equal line "CONTROL CONVERT")
+          (if (ddskk-engine--registration-composing-p state)
+              (skk-ime-session-control
+               ddskk-engine--session 'convert)
+            (ddskk-engine--registration-edit 'space))
+          (ddskk-engine--registration-state-line))
+         ((equal line "CONTROL PREVIOUS")
+          (when (ddskk-engine--registration-composing-p state)
+            (skk-ime-session-control
+             ddskk-engine--session 'previous))
+          (ddskk-engine--registration-state-line))
+         ((equal line "CONTROL LEFT")
+          (ddskk-engine--registration-edit 'left)
+          (ddskk-engine--registration-state-line))
+         ((equal line "CONTROL RIGHT")
+          (ddskk-engine--registration-edit 'right)
+          (ddskk-engine--registration-state-line))
+         ((equal line "CONTROL HOME")
+          (ddskk-engine--registration-edit 'home)
+          (ddskk-engine--registration-state-line))
+         ((equal line "CONTROL END")
+          (ddskk-engine--registration-edit 'end)
+          (ddskk-engine--registration-state-line))
+         ((equal line "CONTROL DELETE")
+          (ddskk-engine--registration-edit 'delete)
+          (ddskk-engine--registration-state-line))
+         ((equal line "CONTROL TO-HIRAGANA")
+          (skk-ime-session-control
+           ddskk-engine--session 'to-hiragana)
+          (ddskk-engine--registration-state-line))
+         ((equal line "CONTROL TO-KATAKANA")
+          (skk-ime-session-control
+           ddskk-engine--session 'to-katakana)
+          (ddskk-engine--registration-state-line))
+         (t "ERR REGISTRATION REQUEST")))
+    (error (ddskk-engine--error-token "ERR REGISTRATION" err))))
 
 (defun ddskk-engine--maybe-truncate-session ()
   "Drop already-committed text from the session buffer at a clean boundary.
@@ -365,18 +744,27 @@ The data carries the missing symbol name for `void-variable' /
         (ddskk-engine--sanitize-protocol-line parts))
     token))
 
-(defun ddskk-engine-dispatch-line (line)
+(defun ddskk-engine--dispatch-line-1 (line)
   (ddskk-engine-start)
   (cond
-   ((equal line "HELLO 1") "OK 1")
+   ((and (ddskk-engine--registration-active-p)
+         (ddskk-engine--registration-request-p line))
+    (ddskk-engine--dispatch-registration line))
+    ((equal line "HELLO 1") "OK 1")
    ((equal line "ENGINE LIST") "ENGINES ddskk passthrough")
    ((equal line "ENGINE CURRENT")
     (concat "ENGINE " native-ime-engine-id))
    ((equal line "ENGINE SET ddskk")
+    (ddskk-engine--end-registration)
+    (skk-ime-session-reset ddskk-engine--session)
     (setq native-ime-engine-id "ddskk") "OK ENGINE ddskk")
    ((equal line "ENGINE SET passthrough")
+    (ddskk-engine--end-registration)
+    (skk-ime-session-reset ddskk-engine--session)
     (setq native-ime-engine-id "passthrough") "OK ENGINE passthrough")
    ((equal line "RESET")
+    (ddskk-engine--end-registration)
+    (setq ddskk-engine--registration-had-candidates nil)
     (ddskk-engine--state-line (skk-ime-session-reset ddskk-engine--session)))
    ((equal line "CONTROL BACKSPACE")
     ;; A signal here would terminate the whole engine process and with it the
@@ -402,9 +790,33 @@ The data carries the missing symbol name for `void-variable' /
     ;; can signal and would otherwise terminate the whole engine process and
     ;; with it the user's resident IME.  Degrade to an error response.
     (condition-case err
-        (ddskk-engine--state-line
-         (skk-ime-session-control ddskk-engine--session 'convert))
+        (ddskk-engine--convert-or-register)
       (error (ddskk-engine--error-token "ERR CONVERT" err))))
+   ((and (> (length line) 21)
+         (equal (substring line 0 21) "CONTROL CONVERT-KEYS "))
+    ;; Native real-time input keeps ordinary romaji off the NeLisp critical
+    ;; path.  At the conversion barrier replay the exact DDSKK key sequence
+    ;; into a clean session and start conversion atomically, so no other
+    ;; client can observe or interleave the intermediate states.
+    ;; Do not use `string-match' here.  The standalone NeLisp regexp shim
+    ;; does not implement Emacs' \\`/\\' anchors and silently failed to
+    ;; recognize this otherwise-valid request in the real stdio runner.
+    (let ((keys (ddskk-engine--decode-codepoints (substring line 21))))
+      (if (not keys) "ERR CONVERT-KEYS"
+        (condition-case err
+            (progn
+              (skk-ime-session-reset ddskk-engine--session)
+              (let ((state (skk-ime-session-feed-string
+                            ddskk-engine--session keys)))
+                ;; Okuri-ari conversion starts automatically when its final
+                ;; kana resolves.  A second CONVERT here advances past that
+                ;; fresh candidate (and a one-candidate entry immediately
+                ;; exhausts into registration).  Preserve the automatic
+                ;; result; only an ordinary ▽ reading needs explicit convert.
+                (if (memq (plist-get state :mode) '(candidate registration))
+                    (ddskk-engine--state-line state)
+                  (ddskk-engine--convert-or-register))))
+          (error (ddskk-engine--error-token "ERR CONVERT-KEYS" err))))))
    ((equal line "CONTROL PREVIOUS")
     ;; DDSKK's henkan guards compare a marker with `point' arithmetically.
     ;; This runtime does not coerce a marker to its position, so the guard
@@ -414,6 +826,24 @@ The data carries the missing symbol name for `void-variable' /
         (ddskk-engine--state-line
          (skk-ime-session-control ddskk-engine--session 'previous))
       (error (ddskk-engine--error-token "ERR PREVIOUS" err))))
+   ((string-match "\\`REGISTER \\([0-9a-f]+\\)\\'" line)
+    (let ((candidate (ddskk-engine--unhex (match-string 1 line))))
+      (if (not candidate) "ERR REGISTER"
+        (condition-case err
+            (ddskk-engine--state-line
+             (skk-ime-session-control ddskk-engine--session
+                                      'register-and-commit candidate))
+          (error (ddskk-engine--error-token "ERR REGISTER" err))))))
+   ((equal line "CONTROL TO-HIRAGANA")
+    (condition-case err
+        (ddskk-engine--state-line
+         (skk-ime-session-control ddskk-engine--session 'to-hiragana))
+      (error (ddskk-engine--error-token "ERR TO-HIRAGANA" err))))
+   ((equal line "CONTROL TO-KATAKANA")
+    (condition-case err
+        (ddskk-engine--state-line
+         (skk-ime-session-control ddskk-engine--session 'to-katakana))
+      (error (ddskk-engine--error-token "ERR TO-KATAKANA" err))))
    ((equal line "CONTROL CANCEL")
     ;; A signal here would terminate the whole engine process and with it the
     ;; user's resident IME.  Degrade to an error response instead.
@@ -502,6 +932,90 @@ The data carries the missing symbol name for `void-variable' /
                      (ddskk-engine--error-token "ERR KEY" err)
                    (ddskk-engine--safe-state-line)))))))
    (t "ERR REQUEST")))
+
+(defun ddskk-engine--session-id-valid-p (session-id)
+  "Return non-nil for a bounded wire-safe SESSION-ID."
+  (let ((index 0)
+        (count (length session-id))
+        (valid (and (> (length session-id) 0)
+                    (<= (length session-id) 96))))
+    (while (and valid (< index count))
+      (let ((char (aref session-id index)))
+        (unless (or (and (>= char ?a) (<= char ?z))
+                    (and (>= char ?A) (<= char ?Z))
+                    (and (>= char ?0) (<= char ?9))
+                    (memq char '(?- ?_ ?. ?:)))
+          (setq valid nil)))
+      (setq index (1+ index)))
+    valid))
+
+(defun ddskk-engine--session-record (session-id)
+  "Return SESSION-ID's mutable state record, creating it when absent."
+  (or (gethash session-id ddskk-engine--sessions)
+      (let* ((session (skk-ime-session-create))
+             ;; NeLisp's current buffer-local table is process-wide.  Keep a
+             ;; full DDSKK checkpoint per client and restore it whenever the
+             ;; active client changes; separate buffer objects alone do not
+             ;; isolate the mode/prefix/marker variables in this runtime.
+             (record (vector session nil "" nil (vector "" 0)
+                             (skk-ime-session-checkpoint session))))
+        (puthash session-id record ddskk-engine--sessions)
+        record)))
+
+(defun ddskk-engine--dispatch-session-line (session-id line)
+  "Dispatch LINE with every mutable DDSKK field scoped to SESSION-ID."
+  (if (equal line "CLOSE")
+      (let ((record (gethash session-id ddskk-engine--sessions)))
+        (when record
+          (skk-ime-session-destroy (aref record 0))
+          (remhash session-id ddskk-engine--sessions))
+        (when (equal session-id ddskk-engine--active-session-id)
+          (setq ddskk-engine--active-session-id nil))
+        "OK CLOSED")
+    ;; NeLisp's buffer-local table is process-wide, but switching its full
+    ;; DDSKK checkpoint on EVERY key makes registration/candidate traversal
+    ;; hundreds of milliseconds slower.  Save/restore only at the actual
+    ;; client boundary; consecutive requests from one application then run
+    ;; on the already-installed state exactly as the old singleton did.
+    (unless (equal session-id ddskk-engine--active-session-id)
+      (when ddskk-engine--active-session-id
+        (let ((old (gethash ddskk-engine--active-session-id
+                            ddskk-engine--sessions)))
+          (when old
+            (aset old 5 (skk-ime-session-checkpoint (aref old 0))))))
+      (let ((next (ddskk-engine--session-record session-id)))
+        (skk-ime-session-restore (aref next 0) (aref next 5)))
+      (setq ddskk-engine--active-session-id session-id))
+    (let* ((record (ddskk-engine--session-record session-id))
+           (ddskk-engine--session (aref record 0))
+           (ddskk-engine--registration-checkpoint (aref record 1))
+           (ddskk-engine--registration-reading (aref record 2))
+           (ddskk-engine--registration-had-candidates (aref record 3))
+           (ddskk-engine--registration-editor (aref record 4))
+           response)
+      (unwind-protect
+          (setq response (ddskk-engine--dispatch-line-1 line))
+        (aset record 0 ddskk-engine--session)
+        (aset record 1 ddskk-engine--registration-checkpoint)
+        (aset record 2 ddskk-engine--registration-reading)
+        (aset record 3 ddskk-engine--registration-had-candidates)
+        (aset record 4 ddskk-engine--registration-editor))
+      response)))
+
+(defun ddskk-engine-dispatch-line (line)
+  "Dispatch legacy LINE or a client-scoped `SESSION ID LINE' request."
+  (if (and (> (length line) 8)
+           (equal (substring line 0 8) "SESSION "))
+      (let ((separator (string-match " " line 8)))
+        (if (not separator)
+            "ERR SESSION"
+          (let ((session-id (substring line 8 separator))
+                (request (substring line (1+ separator))))
+            (if (or (not (ddskk-engine--session-id-valid-p session-id))
+                    (= (length request) 0))
+                "ERR SESSION"
+              (ddskk-engine--dispatch-session-line session-id request)))))
+    (ddskk-engine--dispatch-session-line "legacy" line)))
 
 (defun ddskk-engine-write-response (response)
   (nelisp--write-stdout-bytes (concat response "\n")))

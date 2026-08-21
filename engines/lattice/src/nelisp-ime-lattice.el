@@ -401,8 +401,44 @@ while the lattice was scoring."
               :segments segments
               :cost (aref costs size))))))
 
+(defun nelisp-ime-lattice-resize (session direction)
+  "Resize SESSION's active lattice segment in DIRECTION.
+Segments before the active one stay exactly as selected; only the active
+segment and the suffix are re-cut."
+  (let* ((reading (plist-get session :reading))
+         (segments (plist-get session :segments))
+         (active (or (plist-get session :active-segment) 0))
+         (segment (nth active segments))
+         (from (plist-get segment :from))
+         (to (plist-get segment :to))
+         (new-to (pcase direction (:shrink (1- to)) (:extend (1+ to))
+                   (_ (error "nelisp-ime: invalid resize direction %S" direction)))))
+    (unless (and (>= new-to (1+ from)) (<= new-to (length reading)))
+      (error "nelisp-ime: segment resize is out of range"))
+    (let* ((fixed-reading (substring reading from new-to))
+           (fixed-candidates (or (nelisp-ime--dictionary-candidates fixed-reading)
+                                 (list (list :surface fixed-reading))))
+           (fixed (list :from from :to new-to :reading fixed-reading
+                        :candidate (plist-get (car fixed-candidates) :surface)
+                        :candidates (mapcar (lambda (item) (plist-get item :surface))
+                                            fixed-candidates)))
+           (suffix (nelisp-ime-lattice-convert (substring reading new-to) nil))
+           (suffix-segments
+            (mapcar (lambda (item)
+                      (let ((copy (copy-sequence item)))
+                        (plist-put copy :from (+ new-to (plist-get copy :from)))
+                        (plist-put copy :to (+ new-to (plist-get copy :to)))
+                        copy))
+                    (plist-get suffix :segments))))
+      (append (cl-subseq segments 0 active) (list fixed) suffix-segments))))
+
 (nelisp-ime-engine-register 'lattice
-                            :convert #'nelisp-ime-lattice-convert)
+                            :convert #'nelisp-ime-lattice-convert
+                            :resize #'nelisp-ime-lattice-resize
+                            :capabilities '(conversion learning segments
+                                            segment-resize transliteration)
+                            :settings '(initial-kana-mode candidate-limit
+                                        learning))
 
 (provide 'nelisp-ime-lattice)
 ;;; nelisp-ime-lattice.el ends here

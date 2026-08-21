@@ -27,16 +27,14 @@ void Print(const wchar_t* stage, HRESULT result) {
 }
 }  // namespace
 
-// Registers (or, with --unregister, unregisters) exactly the two TSF
-// categories GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT and
-// GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT for CLSID_DdskkTextService -- the
-// pair dllmain.cpp's RegisterCategories()/UnregisterCategories() also
-// apply as part of the normal DllRegisterServer path, needed for the
-// Windows 10/11 taskbar host to treat this TIP as tray-capable and render
-// its GUID_LBI_INPUTMODE langbar item there (see
+// Registers (or, with --unregister, unregisters) the three taskbar-facing
+// TSF categories used by CorvusSKK: SYSTRAYSUPPORT, IMMERSIVESUPPORT and
+// INPUTMODECOMPARTMENT. They are also applied by dllmain.cpp's normal
+// registration path and let Windows render the TIP identity and
+// GUID_LBI_INPUTMODE as separate taskbar items (see
 // TextService::AddLangBarButton()). DllRegisterServer itself is never run
 // against the live installation on this machine, so this standalone tool
-// lets an operator apply just these two category registrations to an
+// lets an operator apply just these category registrations to an
 // already-installed DLL without touching anything else
 // DllRegisterServer would (the COM CLSID keys, the language profile,
 // HKCU\Software\NativeIME defaults). It does not run itself as part of
@@ -61,6 +59,7 @@ int wmain(int argc, wchar_t** argv) {
 
   HRESULT tray_result;
   HRESULT immersive_result;
+  HRESULT input_mode_result;
   if (unregister) {
     tray_result = categories->UnregisterCategory(
         CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
@@ -70,6 +69,10 @@ int wmain(int argc, wchar_t** argv) {
         CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
         CLSID_DdskkTextService);
     Print(L"UnregisterCategory ImmersiveSupport", immersive_result);
+    input_mode_result = categories->UnregisterCategory(
+        CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT,
+        CLSID_DdskkTextService);
+    Print(L"UnregisterCategory InputModeCompartment", input_mode_result);
   } else {
     tray_result = categories->RegisterCategory(
         CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
@@ -79,8 +82,13 @@ int wmain(int argc, wchar_t** argv) {
         CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
         CLSID_DdskkTextService);
     Print(L"RegisterCategory ImmersiveSupport", immersive_result);
+    input_mode_result = categories->RegisterCategory(
+        CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT,
+        CLSID_DdskkTextService);
+    Print(L"RegisterCategory InputModeCompartment", input_mode_result);
   }
   categories->Release();
   CoUninitialize();
-  return (FAILED(tray_result) || FAILED(immersive_result)) ? 4 : 0;
+  return (FAILED(tray_result) || FAILED(immersive_result) ||
+          FAILED(input_mode_result)) ? 4 : 0;
 }

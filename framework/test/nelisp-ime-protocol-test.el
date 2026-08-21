@@ -17,7 +17,14 @@
          (result (gethash "result" response)))
     (should (= (gethash "id" response) 1))
     (should (= (gethash "protocolVersion" result) 1))
-    (should (equal (gethash "engine" result) "nelisp-ime"))))
+    (should (equal (gethash "engine" result) "nelisp-ime"))
+    (let* ((providers (gethash "providers" result))
+           (dictionary (aref providers 0)))
+      (should (equal (gethash "id" dictionary) "dictionary"))
+      (should (member "conversion"
+                      (append (gethash "capabilities" dictionary) nil)))
+      (should (equal (append (gethash "settings" dictionary) nil)
+                     '("initial-kana-mode"))))))
 
 (ert-deftest nelisp-ime-protocol-test-session-round-trip ()
   (let ((nelisp-ime-sessions (make-hash-table :test 'equal))

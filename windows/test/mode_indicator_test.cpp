@@ -50,14 +50,16 @@ int main() {
   // the same default as an ordinary kana transition.
   assert(ModeIndicatorLabel(true, L"") == L"かな");
 
-  // Each of the five recognized labels gets a distinguishable background
-  // color (CorvusSKK's "入力モードの色" equivalent), so the mode reads at
+  // Each active label gets a distinguishable background, and the external
+  // disabled "--" state gets a neutral gray background.
+  // This is CorvusSKK's "入力モードの色" equivalent, so the mode reads at
   // a glance without needing to read the label text itself.
   const ModeIndicatorPalette kana = ModeIndicatorColors(L"かな");
   const ModeIndicatorPalette katakana = ModeIndicatorColors(L"カナ");
   const ModeIndicatorPalette latin = ModeIndicatorColors(L"SKK");
   const ModeIndicatorPalette wide_latin = ModeIndicatorColors(L"全英");
   const ModeIndicatorPalette abbrev = ModeIndicatorColors(L"Abbrev");
+  const ModeIndicatorPalette disabled = ModeIndicatorColors(L"--");
 
   assert(kana.background != katakana.background);
   assert(kana.background != latin.background);
@@ -69,6 +71,9 @@ int main() {
   assert(latin.background != wide_latin.background);
   assert(latin.background != abbrev.background);
   assert(wide_latin.background != abbrev.background);
+  assert(disabled.background != latin.background);
+  assert(GetRValue(disabled.background) == GetGValue(disabled.background));
+  assert(GetGValue(disabled.background) == GetBValue(disabled.background));
 
   // かな (kana) is red and SKK (latin/direct-input) is blue, per the
   // user-requested palette: red channel dominates kana's background, blue

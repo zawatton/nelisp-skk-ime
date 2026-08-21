@@ -12,6 +12,7 @@
          (nelisp-ime-dictionary-index (make-hash-table :test 'equal))
          (nelisp-ime-dictionary nil)
          (nelisp-ime-converter-function #'nelisp-ime-lattice-convert))
+     (nelisp-ime-lattice-cache-clear)
      ,@body))
 
 (ert-deftest nelisp-ime-lattice-test-prefers-lower-cost-path ()
@@ -20,7 +21,7 @@
           '(("きょう" (:surface "今日" :cost 80))
             ("は" (:surface "は" :cost 10))
             ("きょうは" (:surface "教派" :cost 500))))
-    (nelisp-ime-session-open "s")
+    (nelisp-ime-session-open "s" '(:engine lattice))
     (nelisp-ime-feed "s" '(:op :insert :text "きょうは"))
     (let ((result (nelisp-ime-feed "s" '(:op :convert))))
       (should (equal (plist-get result :preedit) "今日は"))
@@ -62,7 +63,7 @@ own cost still has to be moved."
   (nelisp-ime-lattice-test--isolated
     (setq nelisp-ime-dictionary
           '(("はし" "橋" "箸") ("です" "です")))
-    (nelisp-ime-session-open "s")
+    (nelisp-ime-session-open "s" '(:engine lattice))
     (nelisp-ime-feed "s" '(:op :insert :text "はしです"))
     (nelisp-ime-feed "s" '(:op :convert))
     (let ((result (nelisp-ime-feed
@@ -72,6 +73,33 @@ own cost still has to be moved."
                    "s" '(:op :select-segment :index 1))))
       (should (= (plist-get result :active-segment) 1))
       (should (equal (plist-get result :candidates) ["です"])))))
+
+(ert-deftest nelisp-ime-lattice-test-resize-keeps-earlier-segments-fixed ()
+  "Resizing only re-cuts the active segment and its suffix."
+  (nelisp-ime-lattice-test--isolated
+    (setq nelisp-ime-dictionary
+          '(("あ" "亜") ("い" "伊") ("う" "宇") ("え" "江")
+            ("いう" "言う") ("うえ" "上") ("あい" "愛")))
+    (nelisp-ime-session-open "s" '(:engine lattice))
+    (nelisp-ime-feed "s" '(:op :insert :text "あいうえ"))
+    (nelisp-ime-feed "s" '(:op :convert))
+    ;; Make the first segment an explicit user decision before resizing the
+    ;; second; it must survive byte-for-byte.
+    (nelisp-ime-feed "s" '(:op :select-segment :index 1))
+    (let ((result (nelisp-ime-feed "s" '(:op :resize-segment :direction :shrink))))
+      (should (equal (mapcar (lambda (item) (plist-get item :reading))
+                             (plist-get result :segments))
+                     '("あい" "う" "え")))
+      (should (equal (plist-get (aref (plist-get result :segments) 0) :candidate) "愛")))))
+
+(ert-deftest nelisp-ime-lattice-test-resize-obeys-reading-bounds ()
+  (nelisp-ime-lattice-test--isolated
+    (setq nelisp-ime-dictionary '(("あ" "亜") ("い" "伊")))
+    (nelisp-ime-session-open "s" '(:engine lattice))
+    (nelisp-ime-feed "s" '(:op :insert :text "あい"))
+    (nelisp-ime-feed "s" '(:op :convert))
+    (let ((nelisp-ime-fail-open nil))
+      (should-error (nelisp-ime-feed "s" '(:op :resize-segment :direction :shrink))))))
 
 (ert-deftest nelisp-ime-lattice-test-commit-learns-selected-candidate ()
   (nelisp-ime-lattice-test--isolated
@@ -205,6 +233,39 @@ past rank 10 stayed put no matter how often it was chosen."
       (should (equal (plist-get (nelisp-ime-feed "s" '(:op :convert))
                                 :preedit)
                      "橋")))))
+
+(ert-deftest nelisp-ime-lattice-test-latin-transliteration-keeps-romaji ()
+  (nelisp-ime-lattice-test--isolated
+    (setq nelisp-ime-dictionary '(("かな" "仮名")))
+    (nelisp-ime-session-open "s" '(:engine lattice :input-style romaji))
+    (dolist (key '("k" "a" "n" "a"))
+      (nelisp-ime-feed "s" (list :op :key :key key)))
+    (nelisp-ime-feed "s" '(:op :convert))
+    (should (equal (plist-get
+                    (nelisp-ime-feed
+                     "s" '(:op :transliterate :target :katakana))
+                    :preedit)
+                   "カナ"))
+    (should (equal (plist-get
+                    (nelisp-ime-feed
+                     "s" '(:op :transliterate :target :half-katakana))
+                    :preedit)
+                   "ｶﾅ"))
+    (should (equal (plist-get
+                    (nelisp-ime-feed
+                     "s" '(:op :transliterate :target :hiragana))
+                    :preedit)
+                   "かな"))
+    (should (equal (plist-get
+                    (nelisp-ime-feed
+                     "s" '(:op :transliterate :target :wide-latin))
+                    :preedit)
+                   "ｋａｎａ"))
+    (should (equal (plist-get
+                    (nelisp-ime-feed
+                     "s" '(:op :transliterate :target :latin))
+                    :preedit)
+                   "kana"))))
 
 (provide 'nelisp-ime-lattice-test)
 ;;; nelisp-ime-lattice-test.el ends here

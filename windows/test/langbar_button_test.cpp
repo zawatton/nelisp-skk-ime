@@ -42,26 +42,30 @@ int main() {
   Handler handler;
   auto* settings_button = new LangBarButton(
       &handler, GUID_DdskkSettingsButton,
-      TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAYONLY,
-      L"DDSKK settings", LangBarButton::Kind::kSettings);
+      TF_LBI_STYLE_BTN_MENU | TF_LBI_STYLE_SHOWNINTRAY,
+      L"NeLisp IME", LangBarButton::Kind::kSettings);
   TF_LANGBARITEMINFO info{};
   assert(SUCCEEDED(settings_button->GetInfo(&info)));
-  assert((info.dwStyle & TF_LBI_STYLE_SHOWNINTRAYONLY) != 0);
-  assert((info.dwStyle & TF_LBI_STYLE_BTN_BUTTON) != 0);
+  assert((info.dwStyle & TF_LBI_STYLE_SHOWNINTRAY) != 0);
+  assert((info.dwStyle & TF_LBI_STYLE_BTN_MENU) != 0);
+  assert(info.ulSort == 1);
   DWORD status = 0;
   assert(SUCCEEDED(settings_button->GetStatus(&status)) && status == 0);
+  HICON logo_icon = nullptr;
+  assert(SUCCEEDED(settings_button->GetIcon(&logo_icon)) &&
+         logo_icon != nullptr);
+  DestroyIcon(logo_icon);
   assert(SUCCEEDED(settings_button->Show(FALSE)));
-  assert(SUCCEEDED(settings_button->GetStatus(&status)) &&
-         (status & TF_LBI_STATUS_HIDDEN) != 0);
+  assert(SUCCEEDED(settings_button->GetStatus(&status)) && status == 0);
   settings_button->Release();
 
-  // The input-mode item: GUID_LBI_INPUTMODE/TF_LBI_STYLE_SHOWNINTRAY (not
-  // the settings item's ...ONLY variant), a mode-aware GetIcon(), and a
+  // The input-mode item: GUID_LBI_INPUTMODE/TF_LBI_STYLE_SHOWNINTRAY,
+  // independently from the logo item, with a mode-aware GetIcon() and a
   // real ITfSource (AdviseSink/UnadviseSink/NotifyUpdate).
   auto* input_mode_button = new LangBarButton(
       &handler, GUID_LBI_INPUTMODE,
       TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY,
-      L"DDSKK input mode", LangBarButton::Kind::kInputMode);
+      L"NeLisp IME input mode", LangBarButton::Kind::kInputMode);
   assert(SUCCEEDED(input_mode_button->GetInfo(&info)));
   assert((info.dwStyle & TF_LBI_STYLE_SHOWNINTRAY) != 0);
   HICON icon = nullptr;

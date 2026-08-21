@@ -29,9 +29,18 @@ struct EngineState {
   std::wstring pending_romaji;
   int candidate_index = -1;
   std::vector<std::wstring> candidates;
+  // Non-empty only for the CorvusSKK-style nine-field registration STATE.
+  // `text'/`pending_romaji'/`candidates' then describe the nested
+  // registration session, while this preserves the parked main reading.
+  std::wstring registration_reading;
 };
 
 std::string EncodeKeyRequest(char32_t codepoint);
+// Atomic conversion barrier used by the native real-time frontend: reset the
+// provider session, replay the exact SKK key sequence, and convert in one
+// provider transaction. Ordinary typing never uses this slow path.
+std::string EncodeConvertKeysRequest(const std::u32string& keys);
+std::string EncodeFeedKeysRequest(const std::u32string& keys);
 // kQuit is DDSKK's stepwise keyboard-quit ("CONTROL QUIT"): ▼->▽ with the
 // reading restored, ▽->clear, a pending romaji prefix->drop the last
 // syllable, idle->no-op. Distinct from kCancel, which is skk-kakutei's
@@ -39,7 +48,10 @@ std::string EncodeKeyRequest(char32_t codepoint);
 // TextService::OnKeyDown) -- Esc and Ctrl+G both send kQuit, not kCancel;
 // see that same comment for why.
 enum class EngineControl { kBackspace, kConvert, kPrevious, kCommit, kCancel,
-                           kQuit };
+                           kQuit, kSegmentPrev, kSegmentNext, kSegmentShrink,
+                           kSegmentExtend, kToHiragana, kToKatakana,
+                           kToHalfKatakana, kToWideLatin, kToLatin,
+                           kLeft, kRight, kHome, kEnd, kDelete };
 std::string EncodeControlRequest(EngineControl control);
 std::optional<EngineState> ParseStateResponse(const std::string& line);
 

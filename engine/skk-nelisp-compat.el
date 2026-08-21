@@ -441,6 +441,16 @@ via `skk-nelisp--pos'), or nil (detaches MARKER from its buffer, per
   (defun buffer-modified-p () nil)
   (defun use-region-p () nil)
   (defun force-mode-line-update (&rest _args) nil)
+  ;; Native sessions invoke DDSKK commands directly instead of through the
+  ;; Emacs command loop.  DDSKK's no-candidate conversion handler still asks
+  ;; which key invoked the current command; synthesize that one-key sequence
+  ;; from the event installed by `skk-ime-session-feed-key'.  Without this,
+  ;; an atomic replay followed by CONVERT signalled void-function and the
+  ;; TSF frontend retained ▽ reading instead of opening candidates/registration.
+  (defun this-command-keys ()
+    (if (characterp last-command-event)
+        (string last-command-event)
+      ""))
   (defun run-hooks (&rest _hooks) nil)
 
   ;; `skk-kakutei' (the COMMIT-control target) confirms every real candidate
@@ -485,6 +495,11 @@ via `skk-nelisp--pos'), or nil (detaches MARKER from its buffer, per
   (defun lookup-key (keymap key &optional _accept-default)
     (and (consp keymap)
          (cdr (assoc key (cdr keymap)))))
+
+  ;; There is no ambient Emacs command-loop keymap in the standalone host.
+  ;; DDSKK only reaches this from its conversion-program fallback; nil means
+  ;; that no original application binding is available to emulate.
+  (defun key-binding (&rest _args) nil)
 
   (defun easy-menu-define (&rest _args) nil)
 

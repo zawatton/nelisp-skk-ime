@@ -37,11 +37,17 @@
 // Each token is one of:
 //   a-z, 0-9      unshifted key (VK for the letter/digit)
 //   A-Z           shifted key (Shift + the letter's VK)
+//   S0..S9        Shift + digit
 //   SPACE         VK_SPACE
 //   ENTER         VK_RETURN
 //   BS            VK_BACK
 //   ESC           VK_ESCAPE
 //   CTRLJ         Ctrl+J (skk-kakutei-key)
+//   CTRLC/CTRLW   arbitrary Ctrl + letter shortcut
+//   LEFT/RIGHT    segment navigation
+//   SLEFT/SRIGHT  Shift+arrow segment resize
+//   F6..F10       character-class conversion
+//   IMEOFF/IMEON  set TSF keyboard open/close compartment
 //   WAIT500       sleep 500 ms (no key event)
 //
 // After every token the program prints one UTF-8 line to stdout:
@@ -65,6 +71,7 @@
 #include "guids.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cwctype>
 #include <new>
@@ -680,13 +687,29 @@ bool TokenToKey(const std::wstring& token, KeyEvent* out) {
     *out = KeyEvent{static_cast<UINT>(L'G'), false, true};
     return true;
   }
+  if (token.size() == 5 && token.rfind(L"CTRL", 0) == 0 &&
+      token[4] >= L'A' && token[4] <= L'Z') {
+    *out = KeyEvent{static_cast<UINT>(token[4]), false, true};
+    return true;
+  }
   if (token == L"LEFT") { *out = KeyEvent{VK_LEFT, false, false}; return true; }
   if (token == L"RIGHT") { *out = KeyEvent{VK_RIGHT, false, false}; return true; }
+  if (token == L"SLEFT") { *out = KeyEvent{VK_LEFT, true, false}; return true; }
+  if (token == L"SRIGHT") { *out = KeyEvent{VK_RIGHT, true, false}; return true; }
+  if (token.size() == 2 && token[0] == L'F' && token[1] >= L'6' && token[1] <= L'9') {
+    *out = KeyEvent{static_cast<UINT>(VK_F1 + (token[1] - L'1')), false, false}; return true;
+  }
+  if (token == L"F10") { *out = KeyEvent{VK_F10, false, false}; return true; }
   if (token == L"UP") { *out = KeyEvent{VK_UP, false, false}; return true; }
   if (token == L"DOWN") { *out = KeyEvent{VK_DOWN, false, false}; return true; }
   if (token == L"DEL") { *out = KeyEvent{VK_DELETE, false, false}; return true; }
   if (token == L"HOME") { *out = KeyEvent{VK_HOME, false, false}; return true; }
   if (token == L"END") { *out = KeyEvent{VK_END, false, false}; return true; }
+  if (token.size() == 2 && token[0] == L'S' &&
+      token[1] >= L'0' && token[1] <= L'9') {
+    *out = KeyEvent{static_cast<UINT>(token[1]), true, false};
+    return true;
+  }
   if (token.size() == 1) {
     const wchar_t ch = token[0];
     if (ch >= L'a' && ch <= L'z') {
@@ -728,8 +751,32 @@ bool DirectKeyDownMode() {
 
 constexpr DWORD kPumpMs = 15;
 
+bool CompactHarnessMode() {
+  static const bool compact = [] {
+    wchar_t value[8]{};
+    const DWORD size = GetEnvironmentVariableW(
+        L"NELISP_IME_HARNESS_COMPACT", value,
+        static_cast<DWORD>(_countof(value)));
+    return size > 0 && size < _countof(value) && value[0] != L'0';
+  }();
+  return compact;
+}
+
+DWORD PerKeyPumpMs() {
+  // The normal harness leaves enough time to observe asynchronous UI work.
+  // Compact mode is used by long throughput/ordering soaks, where a 15 ms
+  // delay after both key-down and key-up would dominate the run entirely.
+  return CompactHarnessMode() ? 0 : kPumpMs;
+}
+
 void PumpMessages(DWORD duration_ms) {
   MSG msg;
+  while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+  }
+  if (duration_ms == 0) return;
+
   const ULONGLONG deadline = GetTickCount64() + duration_ms;
   do {
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -751,7 +798,8 @@ void PumpMessages(DWORD duration_ms) {
 // context, so everything under test (claim logic, engine I/O, edit
 // sessions, compositions) still runs unmodified.
 void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
-                     ITfContext* context, const KeyEvent& key) {
+                     ITfContext* context, const KeyEvent& key,
+                     const std::wstring& token) {
   BYTE state_before[256]{};
   GetKeyboardState(state_before);
   BYTE state[256];
@@ -781,11 +829,21 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
     // Ill-behaved-app repro: call KeyDown directly, never consulting
     // TestKeyDown at all, for every token -- see DirectKeyDownMode().
     BOOL eaten = FALSE;
+    const auto started = std::chrono::steady_clock::now();
     HRESULT hr = down(&eaten);
+    const auto completed = std::chrono::steady_clock::now();
     if (FAILED(hr)) PrintHr("KeyDown", hr);
     std::printf("DIRECT KEYDOWN vk=%02X eaten=%d\n", key.vk, eaten);
+    std::printf("KEYLAT token=%s test_us=0 down_us=%lld total_us=%lld "
+                "claimed=%d direct=1\n",
+                Utf8FromWide(token).c_str(),
+                static_cast<long long>(std::chrono::duration_cast<
+                    std::chrono::microseconds>(completed - started).count()),
+                static_cast<long long>(std::chrono::duration_cast<
+                    std::chrono::microseconds>(completed - started).count()),
+                eaten ? 1 : 0);
     std::fflush(stdout);
-    PumpMessages(kPumpMs);
+    PumpMessages(PerKeyPumpMs());
 
     const LPARAM lparam_up = lparam_down | (static_cast<LPARAM>(1) << 30) |
                              (static_cast<LPARAM>(1) << 31);
@@ -794,25 +852,39 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
         ? key_sink->OnKeyUp(context, key.vk, lparam_up, &eaten_up)
         : keystroke_mgr->KeyUp(key.vk, lparam_up, &eaten_up);
     if (FAILED(hr)) PrintHr("KeyUp", hr);
-    PumpMessages(kPumpMs);
+    PumpMessages(PerKeyPumpMs());
     SetKeyboardState(state_before);
     return;
   }
 
   BOOL eaten = FALSE;
+  const auto started = std::chrono::steady_clock::now();
   HRESULT hr = test_down(&eaten);
+  const auto tested = std::chrono::steady_clock::now();
+  auto completed = tested;
+  const bool claimed = SUCCEEDED(hr) && eaten;
   if (FAILED(hr)) {
     PrintHr("TestKeyDown", hr);
   } else if (eaten) {
     eaten = FALSE;
     hr = down(&eaten);
+    completed = std::chrono::steady_clock::now();
     if (FAILED(hr)) PrintHr("KeyDown", hr);
     std::printf("KEYDOWN vk=%02X eaten=%d\n", key.vk, eaten);
   } else {
     std::printf("TESTKEYDOWN vk=%02X eaten=0 (key not claimed)\n", key.vk);
   }
+  const auto test_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      tested - started).count();
+  const auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      completed - started).count();
+  std::printf("KEYLAT token=%s test_us=%lld down_us=%lld total_us=%lld "
+              "claimed=%d direct=0\n",
+              Utf8FromWide(token).c_str(), static_cast<long long>(test_us),
+              static_cast<long long>(total_us - test_us),
+              static_cast<long long>(total_us), claimed ? 1 : 0);
   std::fflush(stdout);
-  PumpMessages(kPumpMs);
+  PumpMessages(PerKeyPumpMs());
 
   // Standard WM_KEYUP lparam convention: previous-key-state (bit 30) and
   // transition-state (bit 31) both set, on top of the same repeat/scan
@@ -832,13 +904,14 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
         : keystroke_mgr->KeyUp(key.vk, lparam_up, &eaten_up);
     if (FAILED(hr)) PrintHr("KeyUp", hr);
   }
-  PumpMessages(kPumpMs);
+  PumpMessages(PerKeyPumpMs());
 
   SetKeyboardState(state_before);
 }
 
 void PrintAfterLine(const std::wstring& token, const DocumentStore* store) {
   const std::wstring buf = store->BufferSnapshot();
+  const bool compact = CompactHarnessMode();
   LONG sel_start = 0, sel_end = 0;
   store->SelectionSnapshot(&sel_start, &sel_end);
   std::wstring comp;
@@ -848,25 +921,85 @@ void PrintAfterLine(const std::wstring& token, const DocumentStore* store) {
   } else {
     comp = L"-";
   }
-  const std::wstring line = L"AFTER " + token + L" BUF=[" + buf + L"] SEL=" +
-                            std::to_wstring(sel_start) + L"," +
-                            std::to_wstring(sel_end) + L" COMP=" + comp;
+  const std::wstring line = compact
+      ? L"AFTER " + token + L" BUF_LEN=" + std::to_wstring(buf.size()) +
+            L" SEL=" + std::to_wstring(sel_start) + L"," +
+            std::to_wstring(sel_end) + L" COMP=" + comp
+      : L"AFTER " + token + L" BUF=[" + buf + L"] SEL=" +
+            std::to_wstring(sel_start) + L"," +
+            std::to_wstring(sel_end) + L" COMP=" + comp;
   std::printf("%s\n", Utf8FromWide(line).c_str());
   std::fflush(stdout);
 }
 
+void PrintFinalLine(const DocumentStore* store) {
+  const std::wstring buf = store->BufferSnapshot();
+  uint64_t hash = 14695981039346656037ull;
+  for (const wchar_t value : buf) {
+    hash ^= static_cast<uint16_t>(value);
+    hash *= 1099511628211ull;
+  }
+  std::printf("FINAL BUF_LEN=%zu BUF_FNV=%016llx\n", buf.size(),
+              static_cast<unsigned long long>(hash));
+  std::fflush(stdout);
+}
+
+HRESULT SetKeyboardOpen(ITfThreadMgr* thread_mgr, TfClientId client_id,
+                        bool open) {
+  ITfCompartmentMgr* manager = nullptr;
+  ITfCompartment* compartment = nullptr;
+  HRESULT result = thread_mgr->QueryInterface(
+      IID_ITfCompartmentMgr, reinterpret_cast<void**>(&manager));
+  if (SUCCEEDED(result)) {
+    result = manager->GetCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+                                     &compartment);
+  }
+  if (SUCCEEDED(result)) {
+    VARIANT value;
+    VariantInit(&value);
+    value.vt = VT_I4;
+    value.lVal = open ? 1 : 0;
+    result = compartment->SetValue(client_id, &value);
+    VariantClear(&value);
+    VARIANT observed;
+    VariantInit(&observed);
+    const HRESULT get_result = compartment->GetValue(&observed);
+    std::printf("COMPARTMENT open=%ld vt=%u get=%08lx\n",
+                observed.vt == VT_I4 ? observed.lVal : -1L,
+                static_cast<unsigned>(observed.vt),
+                static_cast<unsigned long>(get_result));
+    VariantClear(&observed);
+  }
+  if (compartment != nullptr) compartment->Release();
+  if (manager != nullptr) manager->Release();
+  return result;
+}
+
 void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
+               ITfThreadMgr* thread_mgr, TfClientId client_id,
                ITfContext* context, DocumentStore* store,
                const std::wstring& script) {
   std::wstringstream stream(script);
   std::wstring token;
   while (stream >> token) {
-    if (token == L"WAIT500") {
-      Sleep(500);
+    if (token.size() > 4 && token.starts_with(L"WAIT")) {
+      // Provider conversion completes through the TSF thread's message
+      // queue. Sleeping here starves that queue and cannot test async IME
+      // behavior, so keep pumping for the requested observation window.
+      wchar_t* end = nullptr;
+      const unsigned long milliseconds = wcstoul(token.c_str() + 4, &end, 10);
+      if (end != token.c_str() + 4 && *end == L'\0' && milliseconds <= 60000)
+        PumpMessages(static_cast<DWORD>(milliseconds));
+      else
+        PrintHrStr("UnknownToken:" + Utf8FromWide(token), E_INVALIDARG);
+    } else if (token == L"IMEOFF" || token == L"IMEON") {
+      const HRESULT hr =
+          SetKeyboardOpen(thread_mgr, client_id, token == L"IMEON");
+      PrintHrStr(Utf8FromWide(token), hr);
     } else {
       KeyEvent key{};
       if (TokenToKey(token, &key)) {
-        SendScriptedKey(key_sink, keystroke_mgr, context, key);
+        SendScriptedKey(key_sink, keystroke_mgr, context, key, token);
       } else {
         PrintHrStr("UnknownToken:" + Utf8FromWide(token), E_INVALIDARG);
       }
@@ -1077,7 +1210,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     std::fflush(stdout);
     if (!script.empty()) {
-      RunScript(key_sink, keystroke_mgr, context, store, script);
+      RunScript(key_sink, keystroke_mgr, thread_mgr, client_id,
+                context, store, script);
+      PrintFinalLine(store);
     }
   } while (false);
 

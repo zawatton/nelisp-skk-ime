@@ -123,6 +123,11 @@ NAME is a symbol.  HOOKS is a plist:
             `nelisp-ime-maintain') performing engine-side housekeeping such
             as collecting garbage or compacting a learning journal.  Return
             value is reported to the caller.
+  :resize   (optional) function of SESSION and DIRECTION that returns the
+            resized segment list.  DIRECTION is :shrink or :extend.
+  :capabilities optional list of stable capability symbols exposed through
+            the versioned provider discovery contract.
+  :settings optional list of stable setting symbols supported by the engine.
 
 At least one of :convert or :feed is required.  Registering NAME again
 replaces the previous definition."
@@ -144,6 +149,19 @@ replaces the previous definition."
     (maphash (lambda (name _engine) (push name names)) nelisp-ime-engines)
     (sort names (lambda (left right)
                   (string< (symbol-name left) (symbol-name right))))))
+
+(defun nelisp-ime-engine-describe (name)
+  "Return NAME's versioned provider descriptor, or nil when unknown."
+  (let ((engine (nelisp-ime-engine-get name)))
+    (when engine
+      (list :id (symbol-name name)
+            :capabilities
+            (vconcat (mapcar #'symbol-name
+                              (or (plist-get engine :capabilities)
+                                  '(conversion))))
+            :settings
+            (vconcat (mapcar #'symbol-name
+                              (or (plist-get engine :settings) nil)))))))
 
 (defun nelisp-ime--session-engine (session)
   "Return the engine plist governing SESSION, or nil for the legacy hook.
@@ -185,7 +203,9 @@ engines replace it without changing the session or platform adapter APIs."
                                                     reading)))))))
 
 (nelisp-ime-engine-register 'dictionary
-                            :convert #'nelisp-ime-dictionary-convert)
+                            :convert #'nelisp-ime-dictionary-convert
+                            :capabilities '(conversion learning transliteration)
+                            :settings '(initial-kana-mode))
 
 ;;; Shared candidate and learning helpers
 
@@ -501,6 +521,7 @@ then typed past was still chosen."
                              (concat (or (plist-get session :settled) "")
                                      (or (plist-get session :preedit) ""))))
     (setq session (plist-put session :reading ""))
+    (setq session (plist-put session :romaji ""))
     (setq session (plist-put session :preedit ""))
     (setq session (plist-put session :candidates nil))
     (setq session (plist-put session :segments nil))
@@ -653,6 +674,7 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
                          :detail (or (plist-get options :detail)
                                      nelisp-ime-snapshot-detail)
                          :reading ""
+                         :romaji ""
                          :pending ""
                          :preedit ""
                          :settled ""
@@ -705,6 +727,10 @@ session; omitting it defers to `nelisp-ime-converter-function' and then
               (nelisp-ime--store session-id (nelisp-ime--retype session)))
           (nelisp-ime--insert session-id session kana))))
      ((eq style 'romaji)
+      (setq session
+            (plist-put session :romaji
+                       (concat (or (plist-get session :romaji) "")
+                               (plist-get event :key))))
       (let* ((result (nelisp-ime-romaji-step
                       (or (plist-get session :pending) "")
                       (plist-get event :key)))
@@ -806,6 +832,144 @@ where they were instead of starting over."
       (setq session (plist-put session :candidates candidates))
       (nelisp-ime--store session-id session))))
 
+(defun nelisp-ime--resize-segment (session-id session direction)
+  "Resize SESSION's active segment in DIRECTION through its engine."
+  (let* ((engine (nelisp-ime--session-engine session))
+         (resize (and engine (plist-get engine :resize))))
+    (unless resize
+      (error "nelisp-ime: engine does not support segment resize"))
+    (unless (plist-get session :converted)
+      (error "nelisp-ime: cannot resize an unconverted composition"))
+    (let* ((segments (funcall resize session direction))
+           (active (or (plist-get session :active-segment) 0))
+           (segment (nth active segments)))
+      (setq session (plist-put session :segments segments))
+      (setq session (plist-put session :preedit
+                               (nelisp-ime--segment-preedit segments)))
+      (setq session (plist-put session :candidates
+                               (plist-get segment :candidates)))
+      (setq session (plist-put session :candidate-index 0))
+      (nelisp-ime--store session-id session))))
+
+(defconst nelisp-ime--halfwidth-katakana
+  '(?ア ?イ ?ウ ?エ ?オ ?カ ?キ ?ク ?ケ ?コ ?サ ?シ ?ス ?セ ?ソ ?タ ?チ ?ツ ?テ ?ト
+    ?ナ ?ニ ?ヌ ?ネ ?ノ ?ハ ?ヒ ?フ ?ヘ ?ホ ?マ ?ミ ?ム ?メ ?モ ?ヤ ?ユ ?ヨ ?ラ ?リ ?ル
+    ?レ ?ロ ?ワ ?ン ?ァ ?ィ ?ゥ ?ェ ?ォ ?ッ ?ャ ?ュ ?ョ ?ー ?。 ?、 ?・ ?「 ?」)
+  "Katakana corresponding to the JIS halfwidth katakana block.")
+
+(defconst nelisp-ime--halfwidth-katakana-output
+  '(#xFF71 #xFF72 #xFF73 #xFF74 #xFF75
+    #xFF76 #xFF77 #xFF78 #xFF79 #xFF7A
+    #xFF7B #xFF7C #xFF7D #xFF7E #xFF7F
+    #xFF80 #xFF81 #xFF82 #xFF83 #xFF84
+    #xFF85 #xFF86 #xFF87 #xFF88 #xFF89
+    #xFF8A #xFF8B #xFF8C #xFF8D #xFF8E
+    #xFF8F #xFF90 #xFF91 #xFF92 #xFF93
+    #xFF94 #xFF95 #xFF96
+    #xFF97 #xFF98 #xFF99 #xFF9A #xFF9B
+    #xFF9C #xFF9D
+    #xFF67 #xFF68 #xFF69 #xFF6A #xFF6B
+    #xFF6F #xFF6C #xFF6D #xFF6E #xFF70
+    #xFF61 #xFF64 #xFF65 #xFF62 #xFF63)
+  "Halfwidth forms matching `nelisp-ime--halfwidth-katakana'.")
+
+(defconst nelisp-ime--halfwidth-katakana-combinations
+  (list
+   (cons ?ガ (string #xFF76 #xFF9E)) (cons ?ギ (string #xFF77 #xFF9E))
+   (cons ?グ (string #xFF78 #xFF9E)) (cons ?ゲ (string #xFF79 #xFF9E))
+   (cons ?ゴ (string #xFF7A #xFF9E)) (cons ?ザ (string #xFF7B #xFF9E))
+   (cons ?ジ (string #xFF7C #xFF9E)) (cons ?ズ (string #xFF7D #xFF9E))
+   (cons ?ゼ (string #xFF7E #xFF9E)) (cons ?ゾ (string #xFF7F #xFF9E))
+   (cons ?ダ (string #xFF80 #xFF9E)) (cons ?ヂ (string #xFF81 #xFF9E))
+   (cons ?ヅ (string #xFF82 #xFF9E)) (cons ?デ (string #xFF83 #xFF9E))
+   (cons ?ド (string #xFF84 #xFF9E)) (cons ?バ (string #xFF8A #xFF9E))
+   (cons ?ビ (string #xFF8B #xFF9E)) (cons ?ブ (string #xFF8C #xFF9E))
+   (cons ?ベ (string #xFF8D #xFF9E)) (cons ?ボ (string #xFF8E #xFF9E))
+   (cons ?パ (string #xFF8A #xFF9F)) (cons ?ピ (string #xFF8B #xFF9F))
+   (cons ?プ (string #xFF8C #xFF9F)) (cons ?ペ (string #xFF8D #xFF9F))
+   (cons ?ポ (string #xFF8E #xFF9F)) (cons ?ヴ (string #xFF73 #xFF9E)))
+  "Katakana whose halfwidth representation needs a dakuten or handakuten.")
+
+(defun nelisp-ime--transliterate-reading (reading target)
+  "Return READING forced to TARGET's character class."
+  (pcase target
+    (:hiragana (apply #'string
+                       (mapcar (lambda (char)
+                                 (if (and (>= char ?ァ) (<= char ?ヶ))
+                                     (- char #x60) char)) reading)))
+    (:katakana (apply #'string
+                       (mapcar (lambda (char)
+                                 (if (and (>= char ?ぁ) (<= char ?ゖ))
+                                     (+ char #x60) char)) reading)))
+    (:half-katakana
+     ;; NeLisp's current `mapconcat' does not enumerate a string as a
+     ;; sequence of characters (Emacs does); it calls the mapper once with
+     ;; the whole string, which turned F8 into U+0000.  Keep the provider
+     ;; portable by walking character indices explicitly.
+     (let* ((katakana (nelisp-ime--transliterate-reading reading :katakana))
+            (index 0)
+            (result ""))
+       (while (< index (length katakana))
+         (let* ((char (aref katakana index))
+                (combination
+                 (cdr (assq char nelisp-ime--halfwidth-katakana-combinations)))
+                (position
+                 (cl-position char nelisp-ime--halfwidth-katakana)))
+           (setq result
+                 (concat result
+                         (or combination
+                             (and position
+                                  (char-to-string
+                                   (nth position
+                                        nelisp-ime--halfwidth-katakana-output)))
+                             (char-to-string char)))))
+         (setq index (1+ index)))
+       result))
+    ((or :wide-latin :latin)
+     (error "nelisp-ime: %s requires the original romaji" target))
+    (_ (error "nelisp-ime: unsupported transliteration %S" target))))
+
+(defun nelisp-ime--transliterate (session-id session target)
+  "Force the active segment of SESSION to TARGET using its reading."
+  (unless (plist-get session :converted)
+    (setq session (nelisp-ime--reconvert session)))
+  (if (memq target '(:wide-latin :latin))
+      (let* ((roman (or (plist-get session :romaji) ""))
+             (candidate
+              (if (eq target :latin)
+                  roman
+                (apply #'string
+                       (mapcar (lambda (char)
+                                 (cond ((= char 32) #x3000)
+                                       ((and (>= char 33) (<= char 126))
+                                        (+ char #xfee0))
+                                       (t char)))
+                               roman))))
+             (segment (list :reading (plist-get session :reading)
+                            :candidate candidate
+                            :candidates (list candidate))))
+        (setq session (plist-put session :segments (list segment)))
+        (setq session (plist-put session :active-segment 0))
+        (setq session (plist-put session :preedit candidate))
+        (setq session (plist-put session :candidates (list candidate)))
+        (setq session (plist-put session :candidate-index 0))
+        (nelisp-ime--store session-id session))
+    (let* ((segments (plist-get session :segments))
+         (active (or (plist-get session :active-segment) 0))
+         (segment (nth active segments)))
+    (unless segment (error "nelisp-ime: no active segment"))
+    (let ((candidate (nelisp-ime--transliterate-reading
+                      (plist-get segment :reading) target)))
+      (setq segment (plist-put segment :candidate candidate))
+      (setq segment (plist-put segment :candidates (list candidate)))
+      (setcar (nthcdr active segments) segment)
+      (setq session (plist-put session :segments segments))
+      (setq session (plist-put session :preedit
+                               (nelisp-ime--segment-preedit segments)))
+      (setq session (plist-put session :candidates (list candidate)))
+      (setq session (plist-put session :candidate-index 0))
+      (nelisp-ime--store session-id session)))))
+
 (defun nelisp-ime--finish (session-id session commit-p)
   "Finish SESSION-ID, returning preedit when COMMIT-P is non-nil."
   (when (and commit-p (> (length (or (plist-get session :pending) "")) 0))
@@ -827,7 +991,7 @@ where they were instead of starting over."
                      :input-style (plist-get session :input-style)
                      :context (plist-get session :context)
                      :engine (plist-get session :engine)
-                     :reading "" :pending "" :preedit "" :settled ""
+                     :reading "" :romaji "" :pending "" :preedit "" :settled ""
                      :segments nil
                      :candidates nil :active-segment 0 :candidate-index 0)))
     (when commit-p
@@ -869,6 +1033,16 @@ where they were instead of starting over."
           (nelisp-ime--select-segment session-id
                                       (plist-put session :detail 'full)
                                       (plist-get event :index))))
+       ((eq operation :resize-segment)
+        (let ((nelisp-ime-snapshot-detail 'full))
+          (nelisp-ime--resize-segment session-id
+                                      (plist-put session :detail 'full)
+                                      (plist-get event :direction))))
+       ((eq operation :transliterate)
+        (let ((nelisp-ime-snapshot-detail 'full))
+          (nelisp-ime--transliterate session-id
+                                     (plist-put session :detail 'full)
+                                     (plist-get event :target))))
        ((eq operation :commit)
         (nelisp-ime--finish session-id session t))
        ((eq operation :cancel)
@@ -891,7 +1065,8 @@ engine development to surface the underlying error.")
   "Apply normalized EVENT to SESSION-ID and return a composition snapshot.
 
 Supported operations are :key, :insert, :backspace, :select-segment,
-:select-candidate, :commit, and :cancel.  Platform adapters retain ownership
+:select-candidate, :resize-segment, :transliterate, :commit, and :cancel.
+Platform adapters retain ownership
 of native key codes and UI.
 
 An engine registered with a :feed hook receives every EVENT before the
@@ -926,7 +1101,7 @@ open with its input style, context, and engine intact."
                       :input-style (plist-get session :input-style)
                       :context (plist-get session :context)
                       :engine (plist-get session :engine)
-                      :reading "" :pending "" :preedit "" :segments nil
+                      :reading "" :romaji "" :pending "" :preedit "" :segments nil
                       :candidates nil :active-segment 0 :candidate-index 0)))
     (when reset (funcall reset session-id session))
     (puthash session-id empty nelisp-ime-sessions)

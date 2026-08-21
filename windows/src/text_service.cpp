@@ -17,12 +17,36 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <memory>
 #include <new>
 #include <shellapi.h>
 #include <thread>
 #include <utility>
 
 namespace {
+constexpr DWORD kInteractiveTimeoutMs = 350;
+// Dictionary lookup may legitimately take longer than an ordinary kana
+// keystroke. This is only an upper bound; fast conversions still return
+// immediately, while a slow lookup no longer causes a destructive resync.
+constexpr DWORD kConversionTimeoutMs = 1500;
+constexpr UINT kProviderResultMessage = WM_APP + 0x4e1;
+constexpr wchar_t kProviderWindowClass[] = L"NeLispImeProviderResultWindow";
+
+bool ControlDown() {
+  // Some TSF hosts update the thread-local keyboard state after dispatching
+  // TestKeyDown/KeyDown.  The asynchronous state keeps Ctrl+G/Ctrl+J
+  // reliable in those hosts while GetKeyState remains the normal path.
+  return (GetKeyState(VK_CONTROL) & 0x8000) != 0 ||
+         (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+}
+
+bool ShiftDown() {
+  // Match ControlDown(): some hosts expose the modifier through async
+  // state first.  A VK_Q value alone cannot distinguish q from Shift+Q.
+  return (GetKeyState(VK_SHIFT) & 0x8000) != 0 ||
+         (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+}
+
 class StateEditSession final : public ITfEditSession {
  public:
   StateEditSession(TextService* service, ITfContext* context,
@@ -97,19 +121,429 @@ DWORD ReadEngineDword(const wchar_t* engine_id, const wchar_t* name,
   return value;
 }
 
+constexpr wchar_t kCaretMapName[] = L"Local\\ddskk-ime-caret-v1";
+struct SharedImeCaret {
+  volatile LONG sequence;
+  RECT rect;
+  DWORD process_id;
+};
+HANDLE g_caret_map = nullptr;
+SharedImeCaret* g_caret_view = nullptr;
+
+// Publish the TSF-owned text extent for Sumi. This is deliberately a
+// separate one-way mapping: candidate placement must never send a request
+// through the engine pipe or contend with the keystroke mutex.
+void PublishCaretRect(const RECT& rect) {
+  if (g_caret_view == nullptr) {
+    g_caret_map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr,
+                                     PAGE_READWRITE, 0,
+                                     sizeof(SharedImeCaret), kCaretMapName);
+    if (g_caret_map == nullptr) return;
+    g_caret_view = static_cast<SharedImeCaret*>(MapViewOfFile(
+        g_caret_map, FILE_MAP_WRITE, 0, 0, sizeof(SharedImeCaret)));
+    if (g_caret_view == nullptr) {
+      CloseHandle(g_caret_map);
+      g_caret_map = nullptr;
+      return;
+    }
+  }
+  InterlockedIncrement(&g_caret_view->sequence);  // odd = writer owns it
+  g_caret_view->rect = rect;
+  g_caret_view->process_id = GetCurrentProcessId();
+  MemoryBarrier();
+  InterlockedIncrement(&g_caret_view->sequence);  // even = stable snapshot
+}
+
 }  // namespace
 
 LONG g_object_count = 0;
 LONG g_lock_count = 0;
 
+struct TextService::ProviderResult {
+  TextService* owner = nullptr;
+  uint64_t sequence = 0;
+  std::optional<ddskk::EngineState> state;
+};
+
 TextService::TextService() { InterlockedIncrement(&g_object_count); }
 
 TextService::~TextService() {
+  if (provider_window_ != nullptr) DestroyWindow(provider_window_);
+  if (active_context_ != nullptr) active_context_->Release();
+  if (registration_range_ != nullptr) registration_range_->Release();
   if (candidate_context_ != nullptr) candidate_context_->Release();
   if (candidate_ui_ != nullptr) candidate_ui_->Release();
+  if (ending_composition_ != nullptr) ending_composition_->Release();
   if (composition_ != nullptr) composition_->Release();
+  UnadviseOpenCloseCompartment();
   UnadviseKeySink();
   InterlockedDecrement(&g_object_count);
+}
+
+LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
+                                                  WPARAM wparam,
+                                                  LPARAM lparam) {
+  if (message == WM_NCCREATE) {
+    const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lparam);
+    SetWindowLongPtrW(window, GWLP_USERDATA,
+                      reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+  }
+  auto* service = reinterpret_cast<TextService*>(
+      GetWindowLongPtrW(window, GWLP_USERDATA));
+  if (message == kProviderResultMessage) {
+    std::unique_ptr<ProviderResult> result(
+        reinterpret_cast<ProviderResult*>(lparam));
+    if (result && service == result->owner) service->ApplyProviderResult(result.get());
+    if (result && result->owner) result->owner->Release();
+    return 0;
+  }
+  return DefWindowProcW(window, message, wparam, lparam);
+}
+
+bool TextService::CreateProviderWindow() {
+  if (provider_window_ != nullptr) return true;
+  const HINSTANCE instance = GetModuleHandleW(nullptr);
+  WNDCLASSW window_class{};
+  window_class.lpfnWndProc = &TextService::ProviderWindowProc;
+  window_class.hInstance = instance;
+  window_class.lpszClassName = kProviderWindowClass;
+  if (RegisterClassW(&window_class) == 0 &&
+      GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+  provider_window_ = CreateWindowExW(
+      0, kProviderWindowClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
+      instance, this);
+  return provider_window_ != nullptr;
+}
+
+bool TextService::BeginProviderConversion(const std::u32string& keys) {
+  if (keys.empty() || provider_window_ == nullptr) return false;
+  const uint64_t sequence =
+      provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
+  provider_pending_.store(true, std::memory_order_release);
+  const HWND destination = provider_window_;
+  AddRef();
+  try {
+    std::thread([this, keys, sequence, destination] {
+      DebugLog(L"Provider convert begin seq=%llu keys=%zu",
+               static_cast<unsigned long long>(sequence), keys.size());
+      std::optional<ddskk::EngineState> state;
+      {
+        std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+        state = engine_.ConvertKeys(keys, kConversionTimeoutMs);
+      }
+      DebugLog(L"Provider convert done seq=%llu state=%d raw=%hs",
+               static_cast<unsigned long long>(sequence), state ? 1 : 0,
+               engine_.last_response().c_str());
+      auto* result = new (std::nothrow) ProviderResult{this, sequence,
+                                                       std::move(state)};
+      if (result == nullptr ||
+          !PostMessageW(destination, kProviderResultMessage, 0,
+                        reinterpret_cast<LPARAM>(result))) {
+        DebugLog(L"Provider convert post failed seq=%llu error=%u",
+                 static_cast<unsigned long long>(sequence), GetLastError());
+        delete result;
+        Release();
+      }
+    }).detach();
+  } catch (...) {
+    provider_pending_.store(false, std::memory_order_release);
+    Release();
+    return false;
+  }
+  return true;
+}
+
+bool TextService::BeginProviderControl(ddskk::EngineControl control) {
+  if (provider_window_ == nullptr) return false;
+  const uint64_t sequence =
+      provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
+  provider_pending_.store(true, std::memory_order_release);
+  const HWND destination = provider_window_;
+  AddRef();
+  try {
+    std::thread([this, control, sequence, destination] {
+      std::optional<ddskk::EngineState> state;
+      {
+        std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+        state = engine_.SendControl(control, kConversionTimeoutMs);
+      }
+      auto* result = new (std::nothrow) ProviderResult{this, sequence,
+                                                       std::move(state)};
+      if (result == nullptr ||
+          !PostMessageW(destination, kProviderResultMessage, 0,
+                        reinterpret_cast<LPARAM>(result))) {
+        delete result;
+        Release();
+      }
+    }).detach();
+  } catch (...) {
+    provider_pending_.store(false, std::memory_order_release);
+    Release();
+    return false;
+  }
+  return true;
+}
+
+bool TextService::BeginProviderKey(char32_t key) {
+  if (provider_window_ == nullptr) return false;
+  const uint64_t sequence =
+      provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
+  provider_pending_.store(true, std::memory_order_release);
+  const HWND destination = provider_window_;
+  AddRef();
+  try {
+    std::thread([this, key, sequence, destination] {
+      std::optional<ddskk::EngineState> state;
+      {
+        std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+        state = engine_.SendKey(key, kInteractiveTimeoutMs);
+      }
+      auto* result = new (std::nothrow) ProviderResult{
+          this, sequence, std::move(state)};
+      if (result == nullptr ||
+          !PostMessageW(destination, kProviderResultMessage, 0,
+                        reinterpret_cast<LPARAM>(result))) {
+        delete result;
+        Release();
+      }
+    }).detach();
+  } catch (...) {
+    provider_pending_.store(false, std::memory_order_release);
+    Release();
+    return false;
+  }
+  return true;
+}
+
+bool TextService::BeginProviderKeys(const std::u32string& keys) {
+  if (keys.empty() || provider_window_ == nullptr) return false;
+  const uint64_t sequence =
+      provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
+  provider_pending_.store(true, std::memory_order_release);
+  const HWND destination = provider_window_;
+  AddRef();
+  try {
+    std::thread([this, keys, sequence, destination] {
+      std::optional<ddskk::EngineState> state;
+      {
+        std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+        state = engine_.SendKeys(keys, kConversionTimeoutMs);
+      }
+      auto* result = new (std::nothrow) ProviderResult{
+          this, sequence, std::move(state)};
+      if (result == nullptr ||
+          !PostMessageW(destination, kProviderResultMessage, 0,
+                        reinterpret_cast<LPARAM>(result))) {
+        delete result;
+        Release();
+      }
+    }).detach();
+  } catch (...) {
+    provider_pending_.store(false, std::memory_order_release);
+    Release();
+    return false;
+  }
+  return true;
+}
+
+void TextService::CancelPendingProvider() {
+  const uint64_t sequence =
+      provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
+  DebugLog(L"Provider cancel seq=%llu",
+           static_cast<unsigned long long>(sequence));
+  provider_pending_.store(false, std::memory_order_release);
+  deferred_provider_keys_.clear();
+  engine_.CancelPendingIo();
+}
+
+void TextService::ApplyProviderResult(ProviderResult* result) {
+  DebugLog(L"Provider apply seq=%llu current=%llu state=%d",
+           static_cast<unsigned long long>(result ? result->sequence : 0),
+           static_cast<unsigned long long>(
+               provider_sequence_.load(std::memory_order_acquire)),
+           result && result->state ? 1 : 0);
+  if (result == nullptr ||
+      result->sequence != provider_sequence_.load(std::memory_order_acquire))
+    return;
+  provider_pending_.store(false, std::memory_order_release);
+  if (!result->state) {
+    engine_roundtrip_failed_ = true;
+    CloseCandidateUi();
+    return;
+  }
+
+  // Resolve queued keys against the provider state in strict arrival order.
+  // Candidate controls belong to that candidate; a printable key first
+  // accepts it and remains queued so it can start the next native episode.
+  if (!deferred_provider_keys_.empty() &&
+      (!result->state->candidates.empty() ||
+       result->state->mode == L"candidate")) {
+    const DeferredProviderKey& key = deferred_provider_keys_.front();
+    std::optional<ddskk::EngineControl> control;
+    bool consume = true;
+    if (key.virtual_key == VK_RETURN)
+      control = ddskk::EngineControl::kCommit;
+    else if (key.virtual_key == VK_SPACE)
+      control = ddskk::EngineControl::kConvert;
+    else if (key.virtual_key == VK_BACK)
+      control = ddskk::EngineControl::kBackspace;
+    else if (key.ctrl_j)
+      control = ddskk::EngineControl::kCancel;
+    else if (key.virtual_key == VK_LEFT)
+      control = engine_id_ == "lattice"
+          ? (key.shift ? ddskk::EngineControl::kSegmentShrink
+                       : ddskk::EngineControl::kSegmentPrev)
+          : ddskk::EngineControl::kPrevious;
+    else if (key.virtual_key == VK_RIGHT)
+      control = engine_id_ == "lattice"
+          ? (key.shift ? ddskk::EngineControl::kSegmentExtend
+                       : ddskk::EngineControl::kSegmentNext)
+          : ddskk::EngineControl::kConvert;
+    else if (key.virtual_key >= VK_F6 && key.virtual_key <= VK_F10) {
+      constexpr ddskk::EngineControl controls[] = {
+          ddskk::EngineControl::kToHiragana,
+          ddskk::EngineControl::kToKatakana,
+          ddskk::EngineControl::kToHalfKatakana,
+          ddskk::EngineControl::kToWideLatin,
+          ddskk::EngineControl::kToLatin};
+      control = controls[key.virtual_key - VK_F6];
+    } else {
+      control = ddskk::EngineControl::kCommit;
+      consume = false;
+    }
+    if (consume) deferred_provider_keys_.pop_front();
+    if (control && BeginProviderControl(*control)) return;
+  }
+
+  // Preserve raw keys across candidate/registration states. They provide
+  // the immediate local candidate -> reading cancellation path.
+  if (result->state->mode != L"candidate" &&
+      result->state->mode != L"registration" &&
+      result->state->composition_start < 0) {
+    realtime_frontend_.Reset();
+  }
+  engine_roundtrip_failed_ = false;
+  const bool was_registration = registration_mode_;
+  registration_mode_ = result->state->mode == L"registration";
+  registration_commit_pending_ =
+      was_registration && !registration_mode_ &&
+      result->state->composition_start < 0 &&
+      result->state->pending_romaji.empty();
+  if (was_registration && !registration_mode_ &&
+      !registration_commit_pending_ && registration_range_ != nullptr) {
+    registration_range_->Release();
+    registration_range_ = nullptr;
+  }
+  provider_composition_active_ = !registration_mode_ &&
+      result->state->composition_start >= 0 &&
+      !result->state->candidates.empty();
+  engine_pending_ = registration_mode_ || result->state->composition_start >= 0 ||
+                    !result->state->pending_romaji.empty();
+  kana_mode_ = ddskk::DeriveKanaMode(*result->state);
+  if (!registration_mode_) last_engine_mode_ = result->state->mode;
+  if (registration_mode_) {
+    CloseCandidateUi();
+    if (!was_registration && registration_range_ == nullptr &&
+        composition_ != nullptr) {
+      composition_->GetRange(&registration_range_);
+    }
+    if (!deferred_provider_keys_.empty()) {
+      bool started = false;
+      const DeferredProviderKey key = deferred_provider_keys_.front();
+      if (key.has_codepoint) {
+        std::u32string keys;
+        while (!deferred_provider_keys_.empty() &&
+               deferred_provider_keys_.front().has_codepoint) {
+          keys.push_back(deferred_provider_keys_.front().codepoint);
+          deferred_provider_keys_.pop_front();
+        }
+        started = BeginProviderKeys(keys);
+      } else {
+        deferred_provider_keys_.pop_front();
+      }
+      if (!started && key.virtual_key == VK_RETURN)
+        started = BeginProviderControl(ddskk::EngineControl::kCommit);
+      else if (!started && key.virtual_key == VK_BACK)
+        started = BeginProviderControl(ddskk::EngineControl::kBackspace);
+      if (started) return;
+    }
+    return;
+  }
+  if (active_context_ == nullptr) return;
+  UpdateCandidateUI(active_context_, *result->state);
+  auto* edit_session =
+      new (std::nothrow) StateEditSession(this, active_context_, *result->state);
+  if (edit_session == nullptr) return;
+  HRESULT edit_result = E_FAIL;
+  const HRESULT request = active_context_->RequestEditSession(
+      client_id_, edit_session, TF_ES_SYNC | TF_ES_READWRITE, &edit_result);
+  edit_session->Release();
+  MaybeShowModeIndicator(active_context_, &*result->state);
+  if (SUCCEEDED(request) && SUCCEEDED(edit_result))
+    ReplayDeferredProviderKeys();
+}
+
+void TextService::ReplayDeferredProviderKeys() {
+  while (!deferred_provider_keys_.empty() && active_context_ != nullptr &&
+         !provider_pending_.load(std::memory_order_acquire)) {
+    const DeferredProviderKey key = deferred_provider_keys_.front();
+    deferred_provider_keys_.pop_front();
+    std::optional<ddskk::EngineState> state;
+    if (key.virtual_key == VK_SPACE && realtime_frontend_.preedit()) {
+      if (BeginProviderConversion(realtime_frontend_.raw_keys())) {
+        ShowProviderBusy(active_context_);
+        return;
+      }
+    } else if (key.virtual_key == VK_RETURN) {
+      state = realtime_frontend_.Commit();
+    } else if (key.virtual_key == VK_BACK) {
+      state = realtime_frontend_.Backspace();
+    } else if (key.ctrl_j) {
+      state = realtime_frontend_.Commit();
+      const auto hiragana = realtime_frontend_.ToHiragana();
+      if (state) state->mode = L"hiragana";
+      else state = hiragana;
+    } else if (key.virtual_key == VK_ESCAPE) {
+      state = realtime_frontend_.Quit();
+    } else if (key.virtual_key >= VK_F6 && key.virtual_key <= VK_F10 &&
+               realtime_frontend_.preedit()) {
+      // Lattice transliteration operates on converted segments.  Put the
+      // F-key back behind an atomic conversion barrier; the next provider
+      // result will dispatch it as a candidate control above.
+      deferred_provider_keys_.push_front(key);
+      if (BeginProviderConversion(realtime_frontend_.raw_keys())) {
+        ShowProviderBusy(active_context_);
+        return;
+      }
+      deferred_provider_keys_.pop_front();
+    } else if (key.has_codepoint) {
+      state = realtime_frontend_.Feed(key.codepoint);
+    }
+    if (!state) continue;
+
+    engine_pending_ = state->composition_start >= 0 ||
+                      !state->pending_romaji.empty();
+    kana_mode_ = ddskk::DeriveKanaMode(*state);
+    last_engine_mode_ = state->mode;
+    UpdateCandidateUI(active_context_, *state);
+    auto* edit_session =
+        new (std::nothrow) StateEditSession(this, active_context_, *state);
+    if (edit_session == nullptr) return;
+    HRESULT edit_result = E_FAIL;
+    const HRESULT request = active_context_->RequestEditSession(
+        client_id_, edit_session, TF_ES_SYNC | TF_ES_READWRITE, &edit_result);
+    edit_session->Release();
+    if (FAILED(request) || FAILED(edit_result)) return;
+  }
+}
+
+void TextService::ShowProviderBusy(ITfContext* context) {
+  if (context == nullptr) return;
+  ddskk::EngineState busy;
+  busy.mode = L"provider-busy";
+  busy.candidate_index = 0;
+  busy.candidates = {L"変換中…"};
+  UpdateCandidateUI(context, busy);
 }
 
 HRESULT TextService::QueryInterface(REFIID iid, void** object) {
@@ -127,6 +561,8 @@ HRESULT TextService::QueryInterface(REFIID iid, void** object) {
     *object = static_cast<ITfFnConfigure*>(this);
   } else if (iid == IID_ITfCompositionSink) {
     *object = static_cast<ITfCompositionSink*>(this);
+  } else if (iid == IID_ITfCompartmentEventSink) {
+    *object = static_cast<ITfCompartmentEventSink*>(this);
   } else {
     return E_NOINTERFACE;
   }
@@ -148,24 +584,28 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
   thread_manager_ = thread_manager;
   thread_manager_->AddRef();
   client_id_ = client_id;
+  if (!CreateProviderWindow()) {
+    DebugLog(L"Activate provider-window failed error=%u", GetLastError());
+  }
   EnsureEngineHost();
+  LoadSettings();
   // The engine's cold load was measured at 3.4 s. Pay that cost here, on a
   // detached background thread at activation, instead of on the user's
   // first keystroke -- that removes the first-key freeze. This thread
   // constructs its own EngineClient and never touches engine_, which is
   // UI-thread-only.
-  std::thread([] {
+  const std::string selected_engine = engine_id_;
+  std::thread([selected_engine] {
     ddskk::EngineClient warm_up_client;
     const ULONGLONG deadline = GetTickCount64() + 20000;
     while (GetTickCount64() < deadline) {
       if (warm_up_client.Connect(2000)) {
-        warm_up_client.Ping(15000);
+        warm_up_client.SelectEngine(selected_engine, 1000);
         return;
       }
       Sleep(250);
     }
   }).detach();
-  LoadSettings();
 
   ITfKeystrokeMgr* keystroke_manager = nullptr;
   const HRESULT query = thread_manager_->QueryInterface(
@@ -181,21 +621,39 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
     UnadviseKeySink();
     return advise;
   }
+  const HRESULT open_close = AdviseOpenCloseCompartment();
+  DebugLog(L"Activate open-close=%X open=%d",
+           static_cast<unsigned>(open_close), keyboard_open_ ? 1 : 0);
   // The langbar settings button is cosmetic. Hosts without a language bar
   // (console TSF hosts, some sandboxed apps) fail AddItem, and returning
   // that failure here made TSF deactivate the whole text service -- no key
   // sink, IME silently dead. Log and carry on instead.
   const HRESULT langbar = AddLangBarButton();
   DebugLog(L"Activate langbar=%X", static_cast<unsigned>(langbar));
+  // Every TextService instance shares one out-of-process DDSKK session.
+  // Its first actual input must establish ownership instead of inheriting
+  // whatever a previously focused application left in that session.
+  engine_.MarkNeedsResync();
   return S_OK;
 }
 
 HRESULT TextService::Deactivate() {
+  CancelPendingProvider();
   RemoveLangBarButton();
-  engine_.Disconnect();
-  if (composition_ != nullptr) {
-    composition_->Release();
-    composition_ = nullptr;
+  UnadviseOpenCloseCompartment();
+  if (engine_pending_ || registration_mode_ || composition_ != nullptr) {
+    ResetAbandonedComposition();
+  }
+  {
+    // A provider worker may still be finishing a cancelled lookup. Do not
+    // close its pipe underneath it; this wait is confined to deactivation,
+    // never to the keystroke path.
+    std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+    engine_.Disconnect();
+  }
+  if (active_context_ != nullptr) {
+    active_context_->Release();
+    active_context_ = nullptr;
   }
   CloseCandidateUi();
   UnadviseKeySink();
@@ -222,10 +680,11 @@ HRESULT TextService::AddLangBarButton() {
   if (settings_button_ == nullptr) {
     settings_button_ = new (std::nothrow) LangBarButton(
         this, GUID_DdskkSettingsButton,
-        TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAYONLY,
-        L"DDSKK settings", LangBarButton::Kind::kSettings);
+        TF_LBI_STYLE_BTN_MENU | TF_LBI_STYLE_SHOWNINTRAY,
+        L"NeLisp IME", LangBarButton::Kind::kSettings);
     settings_result = settings_button_ == nullptr
         ? E_OUTOFMEMORY : manager->AddItem(settings_button_);
+    DebugLog(L"LangBar AddItem logo=%X", static_cast<unsigned>(settings_result));
     if (FAILED(settings_result) && settings_button_ != nullptr) {
       settings_button_->Release();
       settings_button_ = nullptr;
@@ -235,18 +694,21 @@ HRESULT TextService::AddLangBarButton() {
   HRESULT input_mode_result = S_OK;
   if (input_mode_button_ == nullptr) {
     // GUID_LBI_INPUTMODE is the well-known item Windows 10/11's taskbar
-    // "A/あ" indicator renders; TF_LBI_STYLE_SHOWNINTRAY (not the
-    // ...ONLY variant the settings item uses) is what makes it eligible
-    // for the taskbar itself rather than only the floating language bar
+    // "A/あ" indicator renders. Both this and the separate custom-GUID
+    // DDSKK logo item use TF_LBI_STYLE_SHOWNINTRAY, following CorvusSKK's
+    // two-item layout, so the logo does not replace the current mode.
+    // This style makes an item eligible for the taskbar rather than only
+    // the floating language bar
     // (also needs the two GUID_TFCAT_TIPCAP_* categories -- see
     // dllmain.cpp's RegisterCategories() and
     // windows/tools/register-categories.cpp).
     input_mode_button_ = new (std::nothrow) LangBarButton(
         this, GUID_LBI_INPUTMODE,
         TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY,
-        L"DDSKK input mode", LangBarButton::Kind::kInputMode);
+        L"NeLisp IME input mode", LangBarButton::Kind::kInputMode);
     input_mode_result = input_mode_button_ == nullptr
         ? E_OUTOFMEMORY : manager->AddItem(input_mode_button_);
+    DebugLog(L"LangBar AddItem mode=%X", static_cast<unsigned>(input_mode_result));
     if (FAILED(input_mode_result) && input_mode_button_ != nullptr) {
       input_mode_button_->Release();
       input_mode_button_ = nullptr;
@@ -293,7 +755,139 @@ void TextService::UnadviseKeySink() {
   client_id_ = TF_CLIENTID_NULL;
 }
 
-HRESULT TextService::OnSetFocus(BOOL) { return S_OK; }
+bool TextService::ReadKeyboardOpen(bool fallback) const {
+  if (thread_manager_ == nullptr) return fallback;
+  ITfCompartmentMgr* manager = nullptr;
+  ITfCompartment* compartment = nullptr;
+  VARIANT value;
+  VariantInit(&value);
+  bool open = fallback;
+  if (SUCCEEDED(thread_manager_->QueryInterface(
+          IID_ITfCompartmentMgr, reinterpret_cast<void**>(&manager))) &&
+      SUCCEEDED(manager->GetCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+                                       &compartment)) &&
+      SUCCEEDED(compartment->GetValue(&value)) && value.vt == VT_I4) {
+    open = value.lVal != 0;
+  }
+  VariantClear(&value);
+  if (compartment != nullptr) compartment->Release();
+  if (manager != nullptr) manager->Release();
+  return open;
+}
+
+HRESULT TextService::AdviseOpenCloseCompartment() {
+  if (thread_manager_ == nullptr) return E_UNEXPECTED;
+  UnadviseOpenCloseCompartment();
+  ITfCompartmentMgr* manager = nullptr;
+  ITfCompartment* compartment = nullptr;
+  ITfSource* source = nullptr;
+  HRESULT result = thread_manager_->QueryInterface(
+      IID_ITfCompartmentMgr, reinterpret_cast<void**>(&manager));
+  if (SUCCEEDED(result)) {
+    result = manager->GetCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+                                     &compartment);
+  }
+  if (SUCCEEDED(result)) {
+    result = compartment->QueryInterface(IID_ITfSource,
+                                         reinterpret_cast<void**>(&source));
+  }
+  if (SUCCEEDED(result)) {
+    result = source->AdviseSink(
+        IID_ITfCompartmentEventSink,
+        static_cast<ITfCompartmentEventSink*>(this), &open_close_cookie_);
+  }
+  if (source != nullptr) source->Release();
+  if (compartment != nullptr) compartment->Release();
+  if (manager != nullptr) manager->Release();
+  keyboard_open_ = ReadKeyboardOpen(true);
+  return result;
+}
+
+void TextService::UnadviseOpenCloseCompartment() {
+  if (open_close_cookie_ == TF_INVALID_COOKIE || thread_manager_ == nullptr) {
+    open_close_cookie_ = TF_INVALID_COOKIE;
+    return;
+  }
+  ITfCompartmentMgr* manager = nullptr;
+  ITfCompartment* compartment = nullptr;
+  ITfSource* source = nullptr;
+  if (SUCCEEDED(thread_manager_->QueryInterface(
+          IID_ITfCompartmentMgr, reinterpret_cast<void**>(&manager))) &&
+      SUCCEEDED(manager->GetCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+                                       &compartment)) &&
+      SUCCEEDED(compartment->QueryInterface(IID_ITfSource,
+                                            reinterpret_cast<void**>(&source)))) {
+    source->UnadviseSink(open_close_cookie_);
+  }
+  if (source != nullptr) source->Release();
+  if (compartment != nullptr) compartment->Release();
+  if (manager != nullptr) manager->Release();
+  open_close_cookie_ = TF_INVALID_COOKIE;
+}
+
+HRESULT TextService::OnChange(REFGUID guid) {
+  if (IsEqualGUID(guid, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)) {
+    ApplyKeyboardOpenChange();
+  }
+  return S_OK;
+}
+
+void TextService::ApplyKeyboardOpenChange() {
+  const bool open = ReadKeyboardOpen(keyboard_open_);
+  if (open == keyboard_open_) return;
+  if (!open) {
+    mode_before_close_kana_ = kana_mode_;
+    engine_mode_before_close_ = last_engine_mode_;
+  }
+  keyboard_open_ = open;
+
+  // Closing an IME while text is composing must also remove that transient
+  // text from the document.  An idle close deliberately does not reset the
+  // shared engine session: this compartment is per TSF thread/application.
+  if (!open &&
+      (engine_pending_ || registration_mode_ || composition_ != nullptr)) {
+    const auto state = engine_.Reset(kInteractiveTimeoutMs);
+    CloseCandidateUi();
+    if (registration_range_ != nullptr) {
+      registration_range_->Release();
+      registration_range_ = nullptr;
+    }
+    registration_commit_pending_ = false;
+    registration_mode_ = false;
+    engine_pending_ = false;
+    provider_composition_active_ = false;
+    deferred_provider_keys_.clear();
+    if (state && active_context_ != nullptr) {
+      auto* edit_session =
+          new (std::nothrow) StateEditSession(this, active_context_, *state);
+      if (edit_session != nullptr) {
+        HRESULT edit_result = E_FAIL;
+        active_context_->RequestEditSession(
+            client_id_, edit_session, TF_ES_ASYNC | TF_ES_READWRITE,
+            &edit_result);
+        edit_session->Release();
+      }
+    } else if (composition_ != nullptr) {
+      composition_->Release();
+      composition_ = nullptr;
+    }
+  } else if (open) {
+    kana_mode_ = mode_before_close_kana_;
+    last_engine_mode_ = engine_mode_before_close_;
+  }
+  MaybeShowModeIndicator(nullptr, nullptr);
+}
+
+HRESULT TextService::OnSetFocus(BOOL foreground) {
+  (void)foreground;
+  // Thread-focus notifications are not document-ownership boundaries.
+  // Edge/Electron and even TSF UI surfaces can briefly report FALSE while
+  // the same editor composition remains active; scheduling RESET here made
+  // the very next Enter turn `▼変換' into an empty state.  Real ownership
+  // changes are handled by the active ITfContext comparison in OnKeyDown,
+  // and actual composition termination by OnCompositionTerminated.
+  return S_OK;
+}
 
 // The full "would this key be part of the claimed set" predicate,
 // factored out of OnTestKeyDown so OnKeyDown's own direct-call fallback
@@ -321,23 +915,49 @@ HRESULT TextService::OnSetFocus(BOOL) { return S_OK; }
 // state. Ctrl+J is NOT handled here: it has its own always-claimed
 // branch in both OnTestKeyDown and OnKeyDown, independent of composing.
 bool TextService::WouldClaimKey(WPARAM wparam, bool composing) const {
-  if (wparam == 'G' && (GetKeyState(VK_CONTROL) & 0x8000)) return composing;
+  const bool control_down = tested_control_down_ || ControlDown();
+  if (registration_mode_) {
+    if (wparam == 'G' && control_down) return true;
+    // The registration editor only owns Ctrl+G.  All other Ctrl chords
+    // remain application/Windows commands (Ctrl+C, Ctrl+W, Ctrl+S, ...).
+    if (control_down) return false;
+    return (wparam >= 'A' && wparam <= 'Z') ||
+           (wparam >= '0' && wparam <= '9') ||
+           (wparam >= VK_OEM_1 && wparam <= VK_OEM_8) ||
+           wparam == VK_OEM_102 || wparam == VK_SPACE ||
+           wparam == VK_BACK || wparam == VK_DELETE ||
+           wparam == VK_RETURN || wparam == VK_ESCAPE ||
+           wparam == VK_LEFT || wparam == VK_RIGHT ||
+           wparam == VK_UP || wparam == VK_DOWN ||
+           wparam == VK_HOME || wparam == VK_END ||
+           wparam == VK_F6 || wparam == VK_F7;
+  }
+  if (wparam == 'G' && control_down) return composing;
+  // Ctrl+J is handled before this predicate by both key callbacks and
+  // Ctrl+G was handled immediately above.  Never reinterpret any other
+  // Ctrl shortcut as a kana letter.
+  if (control_down) return false;
   return (wparam >= 'A' && wparam <= 'Z') ||             // letters
-         // Digits only mid-composition, like space and backspace below.
-         // Claimed unconditionally they were simply lost: DDSKK commits
-         // each kana as it is typed, so outside a composition it has no
-         // state a digit belongs to and returns nothing for it -- the key
-         // was eaten and produced no character. Field report: "ddskkの時
-         // に数字入力ができません", reproduced through windows/test-host
-         // as `1`/`2`/`3` all giving eaten=1 with an empty buffer.
-         //
-         // Mid-composition they must still be claimed: SKK selects a
-         // candidate by digit, and a lattice reading can contain them.
-         ((wparam >= '0' && wparam <= '9') && composing) ||
+         // The engine now inserts 0..9 and Japanese-layout Shift+digit
+         // symbols literally, including while a kana composition is open.
+         (wparam >= '0' && wparam <= '9') ||
          (wparam >= VK_OEM_1 && wparam <= VK_OEM_3) ||    // 0xBA-0xC0 punctuation
          (wparam >= VK_OEM_4 && wparam <= VK_OEM_8) ||    // 0xDB-0xDF punctuation
          wparam == VK_OEM_102 ||                          // 0xE2 JIS backslash
-         (wparam == VK_SPACE && composing) ||             // space converts only mid-composition
+         (wparam == VK_SPACE &&
+          (composing || realtime_frontend_.wide_latin())) ||
+         // Lattice owns segment navigation and all five standard
+         // transliterations.  DDSKK has one conversion segment: map its
+         // unshifted arrows to previous/next candidate and provide its
+         // lossless kana-class conversions on F6/F7.  Do not claim keys
+         // for an engine that cannot answer them.
+         ((engine_id_ == "lattice") &&
+          (wparam == VK_LEFT || wparam == VK_RIGHT ||
+           (wparam >= VK_F6 && wparam <= VK_F10)) && composing) ||
+         ((engine_id_ == "ddskk") &&
+          (((wparam == VK_LEFT || wparam == VK_RIGHT) &&
+            !(GetKeyState(VK_SHIFT) & 0x8000)) ||
+           wparam == VK_F6 || wparam == VK_F7) && composing) ||
          ((wparam == VK_BACK || wparam == VK_RETURN ||
            wparam == VK_ESCAPE) && composing);
 }
@@ -346,20 +966,28 @@ bool TextService::WouldClaimKey(WPARAM wparam, bool composing) const {
 HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
                                    BOOL* eaten) {
   if (eaten == nullptr) return E_POINTER;
+  tested_control_down_ = ControlDown();
   // Logs (wparam, handled, connect result, final eaten) with -1 for
   // whichever of handled/connect was never evaluated on this exit path.
   const auto debug_exit = [&](int handled, int connect) {
     DebugLog(L"OnTestKeyDown vk=%02X handled=%d connect=%d eaten=%d",
              static_cast<unsigned>(wparam), handled, connect, *eaten);
   };
-  const bool ctrl_j = wparam == 'J' && (GetKeyState(VK_CONTROL) & 0x8000);
-  if (!ddskk_engine_) {
+  const bool ctrl_j = wparam == 'J' && tested_control_down_;
+  if (!ddskk_engine_ || !keyboard_open_) {
     *eaten = FALSE;
     debug_exit(-1, -1);
     return S_OK;
   }
-  if (ctrl_j) {
-    *eaten = engine_.Connect(1500);
+  const bool realtime_claim = !provider_composition_active_ &&
+      last_engine_mode_ != L"candidate" && !registration_mode_;
+  if (ctrl_j && !registration_mode_ && realtime_claim) {
+    *eaten = TRUE;
+    debug_exit(-1, -1);
+    return S_OK;
+  }
+  if (ctrl_j && !registration_mode_) {
+    *eaten = engine_.Connect(kInteractiveTimeoutMs);
     debug_exit(-1, *eaten);
     return S_OK;
   }
@@ -379,7 +1007,12 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
     debug_exit(0, -1);
     return S_OK;
   }
-  const bool connected = engine_.Connect(1500);
+  if (realtime_claim) {
+    *eaten = TRUE;
+    debug_exit(1, -1);
+    return S_OK;
+  }
+  const bool connected = engine_.Connect(kInteractiveTimeoutMs);
   if (!connected) {
     // Leaking romaji into the document is strictly worse than swallowing a
     // key for one round-trip while the host respawns: OnKeyDown swallows
@@ -410,6 +1043,7 @@ void TextService::SelectInputEngine(bool ddskk) {
     kana_mode_ = false;
     last_engine_mode_ = L"latin";
     engine_pending_ = false;
+    provider_composition_active_ = false;
   } else if (!was_ddskk) {
     // Resuming DDSKK from passthrough. Passthrough never sends the engine
     // anything (see above), so the out-of-process session's own mode is
@@ -488,6 +1122,7 @@ void TextService::SelectInputMode(const std::wstring& label) {
 }
 
 std::wstring TextService::CurrentModeLabel() const {
+  if (!keyboard_open_) return L"--";
   return ModeIndicatorLabel(kana_mode_, last_engine_mode_);
 }
 
@@ -504,7 +1139,7 @@ ModeIndicatorPalette TextService::CurrentModePalette() const {
 // sumi-ui/verify/verify-settings-window-title.ps1, because a silent
 // mismatch here does not fail anything -- it just quietly goes back to
 // spawning a second window every time.
-static const wchar_t kSettingsWindowTitle[] = L"SKK 設定";
+static const wchar_t kSettingsWindowTitle[] = L"NeLisp IME 設定";
 
 // GTK4 gives every toplevel this window class on Windows.  The lookup
 // below needs it: FindWindowW with a null class does NOT match this
@@ -606,16 +1241,34 @@ void TextService::LoadSettings() {
 
     RegCloseKey(key);
   }
+  // Keep private harnesses and side-by-side provider probes isolated from
+  // the user's live registry selection.  The engine host already honours
+  // this variable; the DLL must select the same provider or the two ends
+  // can disagree about key capabilities during a test run.
+  wchar_t environment_engine[32]{};
+  const DWORD environment_engine_length = GetEnvironmentVariableW(
+      L"NELISP_IME_ENGINE", environment_engine,
+      static_cast<DWORD>(_countof(environment_engine)));
+  if (environment_engine_length > 0 &&
+      environment_engine_length < _countof(environment_engine)) {
+    wcscpy_s(engine, environment_engine);
+  }
   engine_id_ = NarrowUtf8(engine);
   ddskk_engine_ = engine_id_ != "passthrough";
+  realtime_frontend_.SetContinuousPreedit(engine_id_ != "ddskk");
   // Settings that belong to one engine live under its own key, so reread
   // the per-engine copy now that the engine id is known.  The value at the
   // root is the pre-per-engine location and remains the fallback.
   kana_mode_ = ddskk_engine_ &&
                ReadEngineDword(engine, L"InitialKanaMode", kana) != 0;
   engine_pending_ = false;
+  provider_composition_active_ = false;
+  deferred_provider_keys_.clear();
   debug_log_ = debug_log == 1;
-  engine_.SelectEngine(engine_id_, 1000);
+  // Activate runs on the application's UI thread.  Do not add a one-second
+  // startup stall when the shared engine is still cold; the background
+  // warm-up in Activate retries and selects the configured engine.
+  engine_.SelectEngine(engine_id_, 25);
 
   // CorvusSKK documents a [1, 60000] ms range for its equivalent setting.
   if (indicator_ms < 1) indicator_ms = 1;
@@ -636,6 +1289,11 @@ void TextService::LoadSettings() {
 
 void TextService::EnsureEngineHost() {
   if (engine_.Connect(1)) return;
+  wchar_t disable_spawn[2]{};
+  if (GetEnvironmentVariableW(L"NELISP_IME_DISABLE_HOST_SPAWN", disable_spawn,
+                              _countof(disable_spawn)) > 0 &&
+      disable_spawn[0] == L'1')
+    return;
   HKEY key = nullptr;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0,
                     KEY_READ, &key) != ERROR_SUCCESS) return;
@@ -714,16 +1372,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   if (eaten == nullptr) return E_POINTER;
   *eaten = FALSE;
   if (context == nullptr) return E_INVALIDARG;
-  if (engine_needs_cancel_) {
-    // OnCompositionTerminated saw the application end the previous
-    // composition on its own (focus change, app-driven edit, etc.); the
-    // out-of-process engine still thinks it owns half of that state, so it
-    // must be cancelled before this key is sent, or its stale text would
-    // re-render into a brand-new composition. The result is ignored: a
-    // failure here gets resynced by EngineClient's own needs_resync_
-    // handling on the next transaction.
-    engine_needs_cancel_ = false;
-    engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
+  if (active_context_ != context) {
+    const bool abandoned = active_context_ != nullptr &&
+        (engine_pending_ || registration_mode_ || composition_ != nullptr);
+    if (active_context_ != nullptr) active_context_->Release();
+    active_context_ = context;
+    active_context_->AddRef();
+    if (abandoned) ResetAbandonedComposition();
   }
   std::optional<ddskk::EngineState> state;
   const wchar_t* branch = L"?";
@@ -745,7 +1400,193 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
                static_cast<unsigned>(wparam), branch, final_eaten);
     }
   };
-  if (wparam == 'J' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+  /* Some hosts call KeyDown directly without first asking TestKeyDown.
+   * Keep that path identical to the claim decision: navigation, digits and
+   * F-keys that are not part of an active conversion must reach the
+   * application untouched.  Previously direct KeyDown still translated a
+   * digit/punctuation character and sent it to DDSKK, despite TestKeyDown
+   * having declined it, so those ordinary editor keys disappeared. */
+  const bool control_down = tested_control_down_ || ControlDown();
+  const bool ctrl_j = wparam == 'J' && control_down;
+  const bool ctrl_g = wparam == 'G' && control_down;
+  const bool composing = composition_ != nullptr || engine_pending_;
+  const bool katakana_q = engine_id_ == "ddskk" && composing &&
+                           wparam == 'Q' && ShiftDown();
+  const bool claimed = registration_mode_
+      ? (ctrl_g || WouldClaimKey(wparam, true))
+      : (ctrl_j || (kana_mode_ && WouldClaimKey(wparam, composing)));
+  tested_control_down_ = false;
+  if (!ddskk_engine_ || !keyboard_open_ || !claimed) {
+    branch = L"passthrough";
+    debug_exit(FALSE);
+    return S_OK;
+  }
+  if (provider_pending_.load(std::memory_order_acquire)) {
+    if (ctrl_g || wparam == VK_ESCAPE) {
+      // Cancellation is local and immediate. The detached lookup may still
+      // finish, but its stale sequence can no longer edit the document.
+      CancelPendingProvider();
+    } else {
+      // Preserve every claimed key that arrives behind an asynchronous
+      // provider request.  Mutating realtime_frontend_ here used to mix the
+      // next word into the raw-key snapshot of the preceding conversion;
+      // when its late reply arrived the visible text was then overwritten.
+      // Enter/Space/navigation remain semantic controls while queued.  The
+      // keyboard translator can also yield CR or a literal space for them;
+      // marking that as printable made registration batch Enter into
+      // FEED-KEYS and left the modal editor open forever.
+      const bool semantic_control = ctrl_j || wparam == VK_RETURN ||
+          wparam == VK_SPACE || wparam == VK_BACK || wparam == VK_ESCAPE ||
+          wparam == VK_LEFT || wparam == VK_RIGHT || wparam == VK_UP ||
+          wparam == VK_DOWN || wparam == VK_HOME || wparam == VK_END ||
+          (wparam >= VK_F6 && wparam <= VK_F10);
+      const auto codepoint = semantic_control
+          ? std::optional<char32_t>{} : TranslateKey(wparam, lparam);
+      deferred_provider_keys_.push_back(DeferredProviderKey{
+          wparam, codepoint.value_or(0), codepoint.has_value(), ShiftDown(),
+          ctrl_j});
+      branch = L"provider-queue";
+      *eaten = TRUE;
+      debug_exit(*eaten);
+      return S_OK;
+    }
+  }
+  if (provider_composition_active_ && !ctrl_g && wparam != VK_ESCAPE &&
+      !katakana_q) {
+    std::optional<ddskk::EngineControl> control;
+    if (wparam == VK_RETURN)
+      control = ddskk::EngineControl::kCommit;
+    else if (wparam == VK_SPACE)
+      control = ddskk::EngineControl::kConvert;
+    else if (wparam == VK_BACK)
+      control = ddskk::EngineControl::kBackspace;
+    else if (ctrl_j)
+      control = ddskk::EngineControl::kCancel;
+    else if (wparam == VK_LEFT)
+      control = engine_id_ == "lattice"
+          ? (ShiftDown() ? ddskk::EngineControl::kSegmentShrink
+                         : ddskk::EngineControl::kSegmentPrev)
+          : ddskk::EngineControl::kPrevious;
+    else if (wparam == VK_RIGHT)
+      control = engine_id_ == "lattice"
+          ? (ShiftDown() ? ddskk::EngineControl::kSegmentExtend
+                         : ddskk::EngineControl::kSegmentNext)
+          : ddskk::EngineControl::kConvert;
+    else if (wparam >= VK_F6 && wparam <= VK_F10) {
+      constexpr ddskk::EngineControl controls[] = {
+          ddskk::EngineControl::kToHiragana,
+          ddskk::EngineControl::kToKatakana,
+          ddskk::EngineControl::kToHalfKatakana,
+          ddskk::EngineControl::kToWideLatin,
+          ddskk::EngineControl::kToLatin};
+      control = controls[wparam - VK_F6];
+    }
+    if (control && BeginProviderControl(*control)) {
+      branch = L"provider-control";
+      *eaten = TRUE;
+      debug_exit(*eaten);
+      return S_OK;
+    }
+    const auto codepoint = TranslateKey(wparam, lparam);
+    if (codepoint) {
+      deferred_provider_keys_.push_back(DeferredProviderKey{
+          wparam, *codepoint, true, ShiftDown(), ctrl_j});
+      if (BeginProviderControl(ddskk::EngineControl::kCommit)) {
+        branch = L"provider-accept-and-queue";
+        *eaten = TRUE;
+        debug_exit(*eaten);
+        return S_OK;
+      }
+      deferred_provider_keys_.pop_back();
+    }
+  }
+  if (registration_mode_) {
+    branch = L"registration";
+    if (ctrl_j) {
+      // CorvusSKK marks Ctrl+J as invalid while the registration editor
+      // owns input: swallow it without confirming or leaking it.
+      *eaten = TRUE;
+      debug_exit(*eaten);
+      return S_OK;
+    }
+    if (!ctrl_g) {
+      std::optional<ddskk::EngineControl> control;
+      if (wparam == VK_BACK)
+        control = ddskk::EngineControl::kBackspace;
+      else if (wparam == VK_DELETE)
+        control = ddskk::EngineControl::kDelete;
+      else if (wparam == VK_SPACE)
+        control = ddskk::EngineControl::kConvert;
+      else if (wparam == VK_RETURN)
+        control = ddskk::EngineControl::kCommit;
+      else if (wparam == VK_ESCAPE)
+        control = ddskk::EngineControl::kQuit;
+      else if (wparam == VK_LEFT)
+        control = ddskk::EngineControl::kLeft;
+      else if (wparam == VK_RIGHT)
+        control = ddskk::EngineControl::kRight;
+      else if (wparam == VK_UP || wparam == VK_HOME)
+        control = ddskk::EngineControl::kHome;
+      else if (wparam == VK_DOWN || wparam == VK_END)
+        control = ddskk::EngineControl::kEnd;
+      else if (wparam == VK_F6 || wparam == VK_F7)
+        control = wparam == VK_F6 ? ddskk::EngineControl::kToHiragana
+                                 : ddskk::EngineControl::kToKatakana;
+      if (control && BeginProviderControl(*control)) {
+        branch = L"registration-async-control";
+        *eaten = TRUE;
+        debug_exit(*eaten);
+        return S_OK;
+      }
+      const auto codepoint = TranslateKey(wparam, lparam);
+      if (codepoint && BeginProviderKey(*codepoint)) {
+        branch = L"registration-async-key";
+        *eaten = TRUE;
+        debug_exit(*eaten);
+        return S_OK;
+      }
+    }
+    if (wparam == VK_BACK) {
+      state = engine_.SendControl(ddskk::EngineControl::kBackspace,
+                                  kInteractiveTimeoutMs);
+    } else if (wparam == VK_DELETE) {
+      state = engine_.SendControl(ddskk::EngineControl::kDelete,
+                                  kInteractiveTimeoutMs);
+    } else if (wparam == VK_SPACE) {
+      state = engine_.SendControl(ddskk::EngineControl::kConvert,
+                                  kConversionTimeoutMs);
+    } else if (wparam == VK_RETURN) {
+      state = engine_.SendControl(ddskk::EngineControl::kCommit,
+                                  kInteractiveTimeoutMs);
+    } else if (ctrl_g) {
+      // Restore the parked reading immediately. Provider checkpoint cleanup
+      // is asynchronous so Ctrl+G never waits behind dictionary work.
+      BeginProviderControl(ddskk::EngineControl::kQuit);
+      state = realtime_frontend_.RestorePreedit();
+    } else if (wparam == VK_ESCAPE) {
+      state = engine_.SendControl(ddskk::EngineControl::kQuit,
+                                  kInteractiveTimeoutMs);
+    } else if (wparam == VK_LEFT) {
+      state = engine_.SendControl(ddskk::EngineControl::kLeft,
+                                  kInteractiveTimeoutMs);
+    } else if (wparam == VK_RIGHT) {
+      state = engine_.SendControl(ddskk::EngineControl::kRight,
+                                  kInteractiveTimeoutMs);
+    } else if (wparam == VK_UP || wparam == VK_HOME) {
+      state = engine_.SendControl(ddskk::EngineControl::kHome,
+                                  kInteractiveTimeoutMs);
+    } else if (wparam == VK_DOWN || wparam == VK_END) {
+      state = engine_.SendControl(ddskk::EngineControl::kEnd,
+                                  kInteractiveTimeoutMs);
+    } else if (wparam == VK_F6 || wparam == VK_F7) {
+      state = engine_.SendControl(wparam == VK_F6
+          ? ddskk::EngineControl::kToHiragana
+          : ddskk::EngineControl::kToKatakana, kInteractiveTimeoutMs);
+    } else {
+      const auto codepoint = TranslateKey(wparam, lparam);
+      if (codepoint) state = engine_.SendKey(*codepoint, kInteractiveTimeoutMs);
+    }
+  } else if (ctrl_j) {
     branch = L"ctrlj";
     // C-j is not a toggle in DDSKK. `skk-kakutei' (bound to C-j via
     // `skk-kakutei-key' in every mode map -- skk.el:942-948, :456-457,
@@ -768,7 +1609,17 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     // return-to-kana is a different operation from keyboard-quit's
     // stepwise ▼->▽->clear/pending-drop, even though both happen to look
     // like "cancel" from outside.
-    state = engine_.SendControl(ddskk::EngineControl::kCancel, 1500);
+    if ((realtime_frontend_.composing() || realtime_frontend_.katakana() ||
+         realtime_frontend_.latin() || realtime_frontend_.wide_latin()) &&
+        !provider_composition_active_ && last_engine_mode_ != L"candidate") {
+      state = realtime_frontend_.Commit();
+      const auto hiragana = realtime_frontend_.ToHiragana();
+      if (state) state->mode = L"hiragana";
+      else state = hiragana;
+    } else {
+      state = engine_.SendControl(ddskk::EngineControl::kCancel,
+                                  kInteractiveTimeoutMs);
+    }
     if (!state) {
       // OnTestKeyDown already claimed Ctrl+J; letting it fall through here
       // would leak the raw keystroke into the document instead of just
@@ -794,24 +1645,124 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       debug_exit(*eaten);
       return S_OK;
     }
-    state = engine_.SendControl(ddskk::EngineControl::kBackspace, 1500);
+    if (realtime_frontend_.composing() && !provider_composition_active_ &&
+        last_engine_mode_ != L"candidate")
+      state = realtime_frontend_.Backspace();
+    else
+      state = engine_.SendControl(ddskk::EngineControl::kBackspace,
+                                  kInteractiveTimeoutMs);
   } else if (wparam == VK_SPACE) {
     branch = L"space";
-    // Space belongs to the IME only while something is actually being
-    // composed; otherwise let the application insert a plain space
-    // (OnTestKeyDown now only claims VK_SPACE mid-composition too).
-    if (composition_ == nullptr && !engine_pending_) {
+    if (engine_id_ == "ddskk" && realtime_frontend_.wide_latin()) {
+      state = realtime_frontend_.Feed(U' ');
+    } else {
+      // Space belongs to the IME only while something is actually being
+      // composed; otherwise let the application insert a plain space.
+      if (composition_ == nullptr && !engine_pending_) {
+        debug_exit(*eaten);
+        return S_OK;
+      }
+      if (realtime_frontend_.preedit() && !provider_composition_active_ &&
+          last_engine_mode_ != L"candidate") {
+        branch = L"provider-convert";
+        if (BeginProviderConversion(realtime_frontend_.raw_keys())) {
+          ShowProviderBusy(context);
+          *eaten = TRUE;
+          debug_exit(*eaten);
+          return S_OK;
+        }
+        state = engine_.ConvertKeys(realtime_frontend_.raw_keys(),
+                                    kConversionTimeoutMs);
+        if (state) realtime_frontend_.Reset();
+      } else {
+        state = engine_.SendControl(ddskk::EngineControl::kConvert,
+                                    kConversionTimeoutMs);
+      }
+    }
+  } else if (wparam == VK_LEFT || wparam == VK_RIGHT) {
+    if (engine_id_ == "ddskk") {
+      branch = L"candidate";
+      if ((GetKeyState(VK_SHIFT) & 0x8000) ||
+          (composition_ == nullptr && !engine_pending_)) {
+        debug_exit(*eaten);
+        return S_OK;
+      }
+      state = engine_.SendControl(wparam == VK_LEFT
+          ? ddskk::EngineControl::kPrevious : ddskk::EngineControl::kConvert,
+          wparam == VK_RIGHT ? kConversionTimeoutMs : kInteractiveTimeoutMs);
+    } else {
+      branch = (GetKeyState(VK_SHIFT) & 0x8000) ? L"segment-resize" : L"segment";
+      if (engine_id_ != "lattice" ||
+          (composition_ == nullptr && !engine_pending_)) {
+        debug_exit(*eaten);
+        return S_OK;
+      }
+      if (GetKeyState(VK_SHIFT) & 0x8000) {
+        state = engine_.SendControl(wparam == VK_LEFT
+            ? ddskk::EngineControl::kSegmentShrink
+            : ddskk::EngineControl::kSegmentExtend, kInteractiveTimeoutMs);
+      } else {
+        state = engine_.SendControl(wparam == VK_LEFT
+            ? ddskk::EngineControl::kSegmentPrev
+            : ddskk::EngineControl::kSegmentNext, kInteractiveTimeoutMs);
+      }
+    }
+  } else if (wparam >= VK_F6 && wparam <= VK_F10) {
+    branch = L"transliterate";
+    if ((engine_id_ != "lattice" &&
+         !(engine_id_ == "ddskk" && (wparam == VK_F6 || wparam == VK_F7))) ||
+        (composition_ == nullptr && !engine_pending_)) {
       debug_exit(*eaten);
       return S_OK;
     }
-    state = engine_.SendControl(ddskk::EngineControl::kConvert, 1500);
+    const ddskk::EngineControl controls[] = {
+        ddskk::EngineControl::kToHiragana, ddskk::EngineControl::kToKatakana,
+        ddskk::EngineControl::kToHalfKatakana, ddskk::EngineControl::kToWideLatin,
+        ddskk::EngineControl::kToLatin};
+    if (engine_id_ == "ddskk" && realtime_frontend_.preedit() &&
+        !provider_composition_active_) {
+      state = wparam == VK_F6 ? std::optional<ddskk::EngineState>(
+                                   realtime_frontend_.ToHiragana())
+                              : realtime_frontend_.ToKatakana();
+    } else if (engine_id_ == "lattice" && realtime_frontend_.preedit() &&
+               !provider_composition_active_ &&
+               last_engine_mode_ != L"candidate") {
+      deferred_provider_keys_.push_back(DeferredProviderKey{
+          wparam, 0, false, ShiftDown(), false});
+      if (BeginProviderConversion(realtime_frontend_.raw_keys())) {
+        ShowProviderBusy(context);
+        *eaten = TRUE;
+        debug_exit(*eaten);
+        return S_OK;
+      }
+      deferred_provider_keys_.pop_back();
+    } else {
+      state = engine_.SendControl(controls[wparam - VK_F6],
+                                  kInteractiveTimeoutMs);
+    }
+  } else if (katakana_q) {
+    branch = L"q-katakana";
+    // DDSKK's Shift+Q during ▽/▼ conversion is a kana-class
+    // conversion, not a literal uppercase Q.  Dispatch the same lossless
+    // operation as F7 so an active candidate is first restored to its
+    // reading and then converted without dropping the composition.
+    if (realtime_frontend_.preedit())
+      state = realtime_frontend_.CommitKatakana();
+    else
+      state = engine_.SendControl(ddskk::EngineControl::kToKatakana,
+                                  kInteractiveTimeoutMs);
   } else if (wparam == VK_RETURN) {
     branch = L"return";
     if (composition_ == nullptr && !engine_pending_) {
       debug_exit(*eaten);
       return S_OK;
     }
-    state = engine_.SendControl(ddskk::EngineControl::kCommit, 1500);
+    if (realtime_frontend_.composing() && !provider_composition_active_ &&
+        last_engine_mode_ != L"candidate")
+      state = realtime_frontend_.Commit();
+    else
+      state = engine_.SendControl(ddskk::EngineControl::kCommit,
+                                  kInteractiveTimeoutMs);
   } else if (wparam == VK_ESCAPE) {
     branch = L"escape";
     if (composition_ == nullptr && !engine_pending_) {
@@ -833,22 +1784,44 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     // like any other transaction failure -- the existing `if (!state)'
     // swallow-on-failure path below already handles that with no special
     // casing needed.
-    state = engine_.SendControl(ddskk::EngineControl::kQuit, 1500);
-  } else if (wparam == 'G' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+    if (provider_composition_active_ &&
+        realtime_frontend_.preedit())
+      state = realtime_frontend_.RestorePreedit();
+    else if (realtime_frontend_.composing())
+      state = realtime_frontend_.Quit();
+    else
+      state = engine_.SendControl(ddskk::EngineControl::kQuit,
+                                  kInteractiveTimeoutMs);
+  } else if (ctrl_g) {
     branch = L"ctrlg";
-    // Same stepwise keyboard-quit as Esc above (kQuit, not kCancel) --
-    // see that branch's comment for the CorvusSKK research this is based
-    // on. This condition mirrors OnTestKeyDown's ctrl_g branch exactly so
-    // claim and handling agree -- when nothing is composing, OnTestKeyDown
-    // already left this key unclaimed (*eaten stays FALSE, its
-    // top-of-function default), so this early-return is only ever reached
-    // in practice if that invariant somehow didn't hold; it is still made
-    // explicit here so this function is correct on its own.
+    // DDSKK keyboard-quit is deliberately stepwise: candidate -> original
+    // reading -> empty.  RESET here erased the reading on the first press.
     if (composition_ == nullptr && !engine_pending_) {
       debug_exit(*eaten);
       return S_OK;
     }
-    state = engine_.SendControl(ddskk::EngineControl::kQuit, 1500);
+    if (provider_composition_active_ &&
+        realtime_frontend_.preedit()) {
+      branch = L"ctrlg-local-restore";
+      state = realtime_frontend_.RestorePreedit();
+    } else if (realtime_frontend_.composing() &&
+               !provider_composition_active_) {
+      branch = L"ctrlg-local";
+      state = realtime_frontend_.Quit();
+    } else if (engine_roundtrip_failed_) {
+      // A preceding conversion already proved the pipe unresponsive.
+      // Retrying QUIT would merely add another timeout while leaving the
+      // TSF composition behind.  End it locally and resync lazily when the
+      // engine becomes reachable again.
+      branch = L"ctrlg-force";
+      ForceCancelComposition(context);
+      *eaten = TRUE;
+      debug_exit(*eaten);
+      return S_OK;
+    }
+    if (!state)
+      state = engine_.SendControl(ddskk::EngineControl::kQuit,
+                                  kInteractiveTimeoutMs);
   } else {
     branch = L"key";
     const auto codepoint = TranslateKey(wparam, lparam);
@@ -870,12 +1843,17 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       // while a VK it DOES want but that still fails to resolve a
       // character is still swallowed, to avoid leaking raw ASCII the
       // engine was never given a chance to process.
-      const bool composing = composition_ != nullptr || engine_pending_;
-      *eaten = WouldClaimKey(wparam, composing) ? TRUE : FALSE;
+      const bool key_composing = composition_ != nullptr || engine_pending_;
+      *eaten = WouldClaimKey(wparam, key_composing) ? TRUE : FALSE;
       debug_exit(*eaten);
       return S_OK;
     }
-    state = engine_.SendKey(*codepoint, 1500);
+    const bool realtime_path = !provider_composition_active_ &&
+        last_engine_mode_ != L"candidate" && !registration_mode_;
+    if (realtime_path)
+      state = realtime_frontend_.Feed(*codepoint);
+    else
+      state = engine_.SendKey(*codepoint, kInteractiveTimeoutMs);
   }
   if (!state) {
     // OnTestKeyDown already claimed this key, so letting it fall through
@@ -890,7 +1868,15 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     // own composing check, BACK/SPACE/RETURN/ESCAPE's composing check, or
     // WouldClaimKey() itself just above), so this key was always meant to
     // be ours regardless of which call order got us here.
-    CloseCandidateUi();
+    engine_roundtrip_failed_ = true;
+    if (ctrl_g) {
+      // QUIT itself timed out even though no earlier request had marked
+      // the connection bad.  Ctrl+G is the final escape hatch, so do not
+      // leave the application inside the stale TSF composition.
+      ForceCancelComposition(context);
+    } else {
+      CloseCandidateUi();
+    }
     *eaten = TRUE;
     debug_exit(*eaten);
     return S_OK;
@@ -900,6 +1886,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   // keystroke through would insert ASCII the engine also processed --
   // this exact path produced the "▽Kana " leak.
   *eaten = TRUE;
+  engine_roundtrip_failed_ = false;
   // Single point of truth for engine_pending_ and kana_mode_: every branch
   // above that reaches here (including the Ctrl+J case) has just obtained
   // a fresh state from the engine, so this always reflects the latest
@@ -908,9 +1895,44 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   // ever written by LoadSettings/Ctrl+J/ToggleInputMode, so a plain key
   // like `l' that silently switched the engine's own mode left it stale,
   // and OnTestKeyDown kept claiming keys the engine no longer wanted.
-  engine_pending_ = state->composition_start >= 0 || !state->pending_romaji.empty();
+  const bool was_registration = registration_mode_;
+  const bool was_candidate = last_engine_mode_ == L"candidate";
+  const bool was_provider_composition = provider_composition_active_;
+  registration_mode_ = state->mode == L"registration";
+  provider_composition_active_ = !registration_mode_ &&
+      state->composition_start >= 0 && !state->candidates.empty();
+  registration_commit_pending_ =
+      was_registration && !registration_mode_ &&
+      state->composition_start < 0 && state->pending_romaji.empty();
+  if (was_registration && !registration_mode_ &&
+      !registration_commit_pending_ && registration_range_ != nullptr) {
+    registration_range_->Release();
+    registration_range_ = nullptr;
+  }
+  engine_pending_ = registration_mode_ || state->composition_start >= 0 ||
+                    !state->pending_romaji.empty();
   kana_mode_ = ddskk::DeriveKanaMode(*state);
-  last_engine_mode_ = state->mode;
+  if (!registration_mode_) last_engine_mode_ = state->mode;
+  if ((was_candidate || was_registration || was_provider_composition) &&
+      state->mode != L"candidate" && state->composition_start < 0) {
+    realtime_frontend_.Reset();
+  }
+  if (registration_mode_) {
+    CloseCandidateUi();
+    if (!was_registration && registration_range_ == nullptr &&
+        composition_ != nullptr) {
+      const HRESULT saved = composition_->GetRange(&registration_range_);
+      DebugLog(L"Registration save_range hr=%X",
+               static_cast<unsigned>(saved));
+      if (FAILED(saved)) registration_range_ = nullptr;
+    }
+    // Keep the reading parked in its TSF composition while Sumi owns the
+    // modal registration editor.  The final engine state then replaces the
+    // same range exactly once.  If a host terminates the parked composition
+    // first, OnCompositionTerminated removes that provisional range instead.
+    debug_exit(*eaten);
+    return S_OK;
+  }
   UpdateCandidateUI(context, *state);
   auto* edit_session = new (std::nothrow) StateEditSession(this, context, *state);
   if (edit_session == nullptr) return E_OUTOFMEMORY;
@@ -946,6 +1968,80 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
 // from UpdateCandidateUI()'s own empty-candidates case below, from every
 // OnKeyDown failure path that abandons a composition, from
 // OnCompositionTerminated(), and from Deactivate().
+void TextService::ResetAbandonedComposition() {
+  // Do not send RESET here.  This callback can arrive late from an old
+  // Edge/Electron/Terminal context after another application has already
+  // started using the process-wide engine session; an immediate RESET then
+  // erases that other application's live reading/candidate.  Mark this
+  // client dirty and let EngineClient reset immediately before THIS client
+  // next transacts, when it actually owns input again.
+  CancelPendingProvider();
+  engine_.MarkNeedsResync();
+  realtime_frontend_.Reset();
+  if (composition_ != nullptr) {
+    composition_->Release();
+    composition_ = nullptr;
+  }
+  if (registration_range_ != nullptr) {
+    registration_range_->Release();
+    registration_range_ = nullptr;
+  }
+  registration_commit_pending_ = false;
+  CloseCandidateUi();
+  registration_mode_ = false;
+  engine_pending_ = false;
+  provider_composition_active_ = false;
+  deferred_provider_keys_.clear();
+  engine_roundtrip_failed_ = false;
+}
+
+void TextService::ForceCancelComposition(ITfContext* context) {
+  // Close this client's pipe even when the failure happened before an I/O
+  // operation was queued (Connect failure).  RESET is intentionally lazy:
+  // the engine is process-wide, and another application's live session
+  // must not be reset from this old context's cancellation callback.
+  CancelPendingProvider();
+  engine_.Disconnect();
+  engine_.MarkNeedsResync();
+  CloseCandidateUi();
+  registration_mode_ = false;
+  registration_commit_pending_ = false;
+  if (registration_range_ != nullptr) {
+    registration_range_->Release();
+    registration_range_ = nullptr;
+  }
+
+  bool cleared = composition_ == nullptr;
+  if (composition_ != nullptr && context != nullptr) {
+    ddskk::EngineState empty;
+    empty.mode = L"hiragana";
+    empty.composition_start = -1;
+    auto* edit_session =
+        new (std::nothrow) StateEditSession(this, context, std::move(empty));
+    if (edit_session != nullptr) {
+      HRESULT edit_result = E_FAIL;
+      const HRESULT request = context->RequestEditSession(
+          client_id_, edit_session, TF_ES_SYNC | TF_ES_READWRITE,
+          &edit_result);
+      edit_session->Release();
+      cleared = SUCCEEDED(request) && SUCCEEDED(edit_result) &&
+                composition_ == nullptr;
+    }
+  }
+  if (!cleared) {
+    // If the application denied the synchronous edit, at least relinquish
+    // local ownership so arrows and Windows Ctrl shortcuts are usable.
+    ResetAbandonedComposition();
+  }
+  registration_mode_ = false;
+  engine_pending_ = false;
+  provider_composition_active_ = false;
+  deferred_provider_keys_.clear();
+  engine_roundtrip_failed_ = false;
+  kana_mode_ = true;
+  last_engine_mode_ = L"hiragana";
+}
+
 void TextService::CloseCandidateUi() {
   if (candidate_ui_id_ != TF_INVALID_UIELEMENTID && thread_manager_ != nullptr) {
     ITfUIElementMgr* manager = nullptr;
@@ -998,6 +2094,7 @@ void TextService::UpdateCandidateUI(ITfContext* context,
 }
 
 HRESULT TextService::SelectCandidate(UINT index) {
+  if (provider_pending_.load(std::memory_order_acquire)) return E_PENDING;
   if (candidate_context_ == nullptr || candidate_index_ < 0 ||
       index >= candidate_count_) return E_INVALIDARG;
   std::optional<ddskk::EngineState> state;
@@ -1020,12 +2117,14 @@ HRESULT TextService::SelectCandidate(UINT index) {
 }
 
 HRESULT TextService::FinalizeCandidate() {
+  if (provider_pending_.load(std::memory_order_acquire)) return E_PENDING;
   if (candidate_context_ == nullptr) return E_UNEXPECTED;
   const auto state = engine_.SendControl(ddskk::EngineControl::kCommit, 1000);
   return state ? RequestStateEdit(*state) : E_FAIL;
 }
 
 HRESULT TextService::AbortCandidate() {
+  if (provider_pending_.load(std::memory_order_acquire)) return E_PENDING;
   if (candidate_context_ == nullptr) return E_UNEXPECTED;
   const auto state = engine_.SendControl(ddskk::EngineControl::kCancel, 1000);
   return state ? RequestStateEdit(*state) : E_FAIL;
@@ -1038,6 +2137,8 @@ HRESULT TextService::RequestStateEdit(const ddskk::EngineState& state) {
   // keep engine_pending_ current too (e.g. FinalizeCandidate committing the
   // composition must clear it).
   engine_pending_ = state.composition_start >= 0 || !state.pending_romaji.empty();
+  provider_composition_active_ = state.composition_start >= 0 &&
+      !state.candidates.empty();
   UpdateCandidateUI(candidate_context_, state);
   auto* edit_session =
       new (std::nothrow) StateEditSession(this, candidate_context_, state);
@@ -1048,13 +2149,17 @@ HRESULT TextService::RequestStateEdit(const ddskk::EngineState& state) {
   edit_session->Release();
   return request;
 }
-HRESULT TextService::OnTestKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* eaten) {
+HRESULT TextService::OnTestKeyUp(ITfContext*, WPARAM wparam, LPARAM, BOOL* eaten) {
   if (eaten == nullptr) return E_POINTER;
+  (void)wparam;
+  tested_control_down_ = false;
   *eaten = FALSE;
   return S_OK;
 }
-HRESULT TextService::OnKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* eaten) {
+HRESULT TextService::OnKeyUp(ITfContext*, WPARAM wparam, LPARAM, BOOL* eaten) {
   if (eaten == nullptr) return E_POINTER;
+  (void)wparam;
+  tested_control_down_ = false;
   *eaten = FALSE;
   return S_OK;
 }
@@ -1089,7 +2194,7 @@ HRESULT TextService::GetType(GUID* guid) {
 
 HRESULT TextService::GetDescription(BSTR* description) {
   if (description == nullptr) return E_POINTER;
-  *description = SysAllocString(L"DDSKK (NeLisp) settings");
+  *description = SysAllocString(L"NeLisp IME settings");
   return *description ? S_OK : E_OUTOFMEMORY;
 }
 
@@ -1112,19 +2217,62 @@ HRESULT TextService::Show(HWND, LANGID, REFGUID) {
 // FinalizeCandidate/AbortCandidate/OnKeyDown. Whatever was displayed is
 // now committed document text this DLL no longer owns, but the
 // out-of-process engine still thinks it owns its half of that state --
-// see engine_needs_cancel_'s declaration for how the next key resyncs it.
-HRESULT TextService::OnCompositionTerminated(TfEditCookie, ITfComposition*) {
+// the shared out-of-process engine must be reset at the same boundary.
+HRESULT TextService::OnCompositionTerminated(TfEditCookie edit_cookie,
+                                             ITfComposition* composition) {
   DebugLog(L"OnCompositionTerminated comp=%d", composition_ != nullptr ? 1 : 0);
-  if (composition_ != nullptr) {
-    composition_->Release();
-    composition_ = nullptr;
+  // EndComposition below may call this sink synchronously (the harness) or
+  // asynchronously after EndComposition returns (Electron/Claude).  Keep
+  // the actual COM object alive and match that acknowledgement by identity;
+  // resetting it would schedule an empty STATE over the range just committed
+  // and erase both the candidate and its reading.
+  if (ending_composition_ != nullptr) {
+    IUnknown* expected_identity = nullptr;
+    IUnknown* actual_identity = nullptr;
+    ending_composition_->QueryInterface(
+        IID_IUnknown, reinterpret_cast<void**>(&expected_identity));
+    if (composition != nullptr) {
+      composition->QueryInterface(
+          IID_IUnknown, reinterpret_cast<void**>(&actual_identity));
+    }
+    const bool own_termination =
+        composition == ending_composition_ ||
+        (expected_identity != nullptr && expected_identity == actual_identity);
+    if (expected_identity != nullptr) expected_identity->Release();
+    if (actual_identity != nullptr) actual_identity->Release();
+    if (own_termination) {
+      ending_composition_->Release();
+      ending_composition_ = nullptr;
+      return S_OK;
+    }
   }
-  // See CloseCandidateUi()'s own comment: the application ending this
-  // composition on its own is exactly the kind of path that must not
-  // leave a candidate UI element stranded open behind it.
-  CloseCandidateUi();
-  engine_pending_ = false;
-  engine_needs_cancel_ = true;
+  if (registration_mode_) {
+    // Some hosts terminate the parked document composition while the modal
+    // registration editor is active.  If its displayed reading is allowed
+    // to commit, the final registered word is inserted after it and appears
+    // twice when both strings match.  Remove that provisional range using
+    // the write cookie supplied by TSF, but keep the engine registration
+    // alive; its final state will insert exactly one registered word at the
+    // now-collapsed caret.
+    ITfComposition* owned = composition != nullptr ? composition : composition_;
+    ITfRange* range = nullptr;
+    if (owned != nullptr && SUCCEEDED(owned->GetRange(&range))) {
+      range->SetText(edit_cookie, 0, L"", 0);
+      range->Release();
+    }
+    if (composition_ != nullptr) {
+      composition_->Release();
+      composition_ = nullptr;
+    }
+    CloseCandidateUi();
+    engine_pending_ = true;
+    return S_OK;
+  }
+  // Reset immediately, not on this TextService instance's next key.  The
+  // engine is shared across applications; after focus moves, another app
+  // can send that next key first and would otherwise receive this stale
+  // composition before the old instance ever gets a chance to resync.
+  ResetAbandonedComposition();
   return S_OK;
 }
 
@@ -1159,9 +2307,11 @@ std::optional<char32_t> TextService::TranslateKey(WPARAM wparam,
 HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
                                       ITfContext* context,
                                       const ddskk::EngineState& state) {
+  const bool registration_target =
+      registration_commit_pending_ && registration_range_ != nullptr;
   const bool direct_commit = state.composition_start < 0 &&
                              state.pending_romaji.empty() &&
-                             composition_ == nullptr;
+                             composition_ == nullptr && !registration_target;
   const std::wstring committed = direct_commit ? state.text : std::wstring();
   // The wire protocol carries `text' and `pending_romaji' as separate
   // STATE fields; render both together so a pending-only romaji prefix
@@ -1177,6 +2327,14 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
     DebugLog(L"ApplyEngineState get_range hr=%X",
              static_cast<unsigned>(get_range));
     if (FAILED(get_range)) return get_range;
+  } else if (registration_target) {
+    // The application ended the TSF composition while Sumi's registration
+    // editor was active.  Replace the range captured at registration entry;
+    // inserting at the current selection would leave the provisional text
+    // behind and produce the registered word twice in real applications.
+    range = registration_range_;
+    range->AddRef();
+    DebugLog(L"ApplyEngineState registration_target=1");
   } else {
     TF_SELECTION selection{};
     ULONG fetched = 0;
@@ -1277,12 +2435,29 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
   // start.
   if (state.composition_start < 0 && state.pending_romaji.empty() &&
       composition_ != nullptr) {
+    if (ending_composition_ != nullptr) ending_composition_->Release();
+    ending_composition_ = composition_;
+    ending_composition_->AddRef();
     const HRESULT end = composition_->EndComposition(edit_cookie);
     DebugLog(L"ApplyEngineState end_composition hr=%X",
              static_cast<unsigned>(end));
+    if (FAILED(end) && ending_composition_ != nullptr) {
+      ending_composition_->Release();
+      ending_composition_ = nullptr;
+    }
     composition_->Release();
     composition_ = nullptr;
+    if (registration_commit_pending_) {
+      if (registration_range_ != nullptr) registration_range_->Release();
+      registration_range_ = nullptr;
+      registration_commit_pending_ = false;
+    }
     return end;
+  }
+  if (registration_commit_pending_) {
+    if (registration_range_ != nullptr) registration_range_->Release();
+    registration_range_ = nullptr;
+    registration_commit_pending_ = false;
   }
   return S_OK;
 }
@@ -1305,6 +2480,7 @@ void TextService::CaptureCaretRect(TfEditCookie edit_cookie, ITfContext* context
   if (FAILED(result)) return;
   last_caret_rect_ = rect;
   last_caret_valid_ = true;
+  PublishCaretRect(rect);
 }
 
 // The single choke point after every mode change: pops the transient
@@ -1321,8 +2497,7 @@ void TextService::MaybeShowModeIndicator(ITfContext* context,
   // (used by the input-mode item's GetIcon()/OnClick()) must reflect the
   // engine's last-reported mode even when the transient popup is disabled.
   if (state != nullptr) last_engine_mode_ = state->mode;
-  const std::wstring engine_mode = state != nullptr ? state->mode : std::wstring();
-  const std::wstring label = ModeIndicatorLabel(kana_mode_, engine_mode);
+  const std::wstring label = CurrentModeLabel();
   if (label == last_mode_label_) return;
   last_mode_label_ = label;
 

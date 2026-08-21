@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
-project(ddskk_ime_windows LANGUAGES CXX)
+project(ddskk_ime_windows LANGUAGES CXX RC)
 
 add_library(ddskk-ime SHARED
   src/ddskk-ime.def
+  src/ddskk-ime.rc
   src/dllmain.cpp
   src/candidate_ui.cpp
   src/candidate_ui.h
@@ -12,6 +13,8 @@ add_library(ddskk-ime SHARED
   src/langbar_button.h
   src/mode_indicator.cpp
   src/mode_indicator.h
+  src/realtime_frontend.cpp
+  src/realtime_frontend.h
   src/engine_client.cpp
   src/engine_client.h
   src/engine_protocol.cpp
@@ -89,6 +92,16 @@ target_compile_options(ddskk-mode-indicator-test PRIVATE /W4 /permissive- /utf-8
 target_link_libraries(ddskk-mode-indicator-test PRIVATE gdi32 user32)
 add_test(NAME ddskk-mode-indicator-test COMMAND ddskk-mode-indicator-test)
 
+add_executable(ddskk-realtime-frontend-test
+  test/realtime_frontend_test.cpp
+  src/realtime_frontend.cpp)
+target_include_directories(ddskk-realtime-frontend-test PRIVATE src)
+target_compile_features(ddskk-realtime-frontend-test PRIVATE cxx_std_20)
+target_compile_definitions(ddskk-realtime-frontend-test PRIVATE
+  UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(ddskk-realtime-frontend-test PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME ddskk-realtime-frontend-test COMMAND ddskk-realtime-frontend-test)
+
 add_executable(ddskk-registration-probe tools/registration_probe.cpp)
 target_include_directories(ddskk-registration-probe PRIVATE src)
 target_compile_features(ddskk-registration-probe PRIVATE cxx_std_20)
@@ -106,6 +119,13 @@ target_compile_features(register-categories PRIVATE cxx_std_20)
 target_compile_definitions(register-categories PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(register-categories PRIVATE /W4 /permissive- /utf-8)
 target_link_libraries(register-categories PRIVATE ole32 uuid)
+
+add_executable(set-profile-icon tools/set-profile-icon.cpp)
+target_include_directories(set-profile-icon PRIVATE src)
+target_compile_features(set-profile-icon PRIVATE cxx_std_20)
+target_compile_definitions(set-profile-icon PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(set-profile-icon PRIVATE /W4 /permissive- /utf-8)
+target_link_libraries(set-profile-icon PRIVATE ole32 uuid)
 
 add_executable(ddskk-ime-config WIN32 config/main.cpp)
 target_compile_features(ddskk-ime-config PRIVATE cxx_std_20)

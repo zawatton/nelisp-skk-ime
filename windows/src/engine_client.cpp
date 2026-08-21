@@ -16,6 +16,7 @@
 #include "engine_client.h"
 
 #include <array>
+#include <atomic>
 #include <sstream>
 
 namespace ddskk {
@@ -28,21 +29,36 @@ std::wstring PipeName() {
 }
 }
 
+EngineClient::EngineClient() {
+  static std::atomic<uint64_t> next_session{1};
+  session_id_ = std::to_string(GetCurrentProcessId()) + "-" +
+                std::to_string(next_session.fetch_add(1));
+}
+
+std::string EngineClient::SessionRequest(const std::string& request) const {
+  std::string line = request;
+  while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+    line.pop_back();
+  return "SESSION " + session_id_ + " " + line + "\n";
+}
+
 EngineClient::~EngineClient() { Disconnect(); }
 
 bool EngineClient::Connect(DWORD timeout_ms) {
-  if (pipe_ != INVALID_HANDLE_VALUE) return true;
+  if (pipe_.load(std::memory_order_acquire) != INVALID_HANDLE_VALUE) return true;
   const std::wstring pipe_name = PipeName();
   if (!WaitNamedPipeW(pipe_name.c_str(), timeout_ms)) return false;
   // FILE_FLAG_OVERLAPPED is required so Transact()/RawTransact() can bound
   // WriteFile/ReadFile with timeout_ms via WaitForSingleObject; without it
   // both calls block indefinitely regardless of any timeout passed here.
-  pipe_ = CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                      OPEN_EXISTING,
-                      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
-  if (pipe_ == INVALID_HANDLE_VALUE) return false;
+  HANDLE opened = CreateFileW(pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE,
+                              0, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
+                              nullptr);
+  if (opened == INVALID_HANDLE_VALUE) return false;
+  pipe_.store(opened, std::memory_order_release);
   DWORD mode = PIPE_READMODE_MESSAGE;
-  if (!SetNamedPipeHandleState(pipe_, &mode, nullptr, nullptr)) {
+  if (!SetNamedPipeHandleState(opened, &mode, nullptr, nullptr)) {
     Disconnect();
     return false;
   }
@@ -50,14 +66,21 @@ bool EngineClient::Connect(DWORD timeout_ms) {
 }
 
 void EngineClient::Disconnect() {
-  if (pipe_ != INVALID_HANDLE_VALUE) {
-    CloseHandle(pipe_);
-    pipe_ = INVALID_HANDLE_VALUE;
-  }
+  const HANDLE pipe = pipe_.exchange(INVALID_HANDLE_VALUE,
+                                     std::memory_order_acq_rel);
+  if (pipe != INVALID_HANDLE_VALUE) CloseHandle(pipe);
 }
+
+void EngineClient::CancelPendingIo() {
+  const HANDLE pipe = pipe_.load(std::memory_order_acquire);
+  if (pipe != INVALID_HANDLE_VALUE) CancelIoEx(pipe, nullptr);
+}
+
+void EngineClient::MarkNeedsResync() { needs_resync_ = true; }
 
 std::optional<std::string> EngineClient::Transact(const std::string& request,
                                                   DWORD timeout_ms) {
+  last_response_.clear();
   if (!Connect(timeout_ms)) return std::nullopt;
   if (needs_resync_) {
     // A previous transaction on an earlier connection may have timed out
@@ -70,15 +93,19 @@ std::optional<std::string> EngineClient::Transact(const std::string& request,
     // is confirmed to have gone through -- if it fails too, RawTransact()
     // has already disconnected us again and the flag stays set for the
     // next attempt.
-    const auto reset = RawTransact("RESET\n", timeout_ms);
+    const auto reset = RawTransact(SessionRequest("RESET"), timeout_ms);
     if (!reset) return std::nullopt;
     needs_resync_ = false;
   }
-  return RawTransact(request, timeout_ms);
+  auto response = RawTransact(SessionRequest(request), timeout_ms);
+  if (response) last_response_ = *response;
+  return response;
 }
 
 std::optional<std::string> EngineClient::RawTransact(const std::string& request,
                                                       DWORD timeout_ms) {
+  const HANDLE pipe = pipe_.load(std::memory_order_acquire);
+  if (pipe == INVALID_HANDLE_VALUE) return std::nullopt;
   OVERLAPPED overlapped{};
   overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (overlapped.hEvent == nullptr) return std::nullopt;
@@ -92,10 +119,10 @@ std::optional<std::string> EngineClient::RawTransact(const std::string& request,
   // ERROR_IO_PENDING); otherwise there is nothing pending to cancel and
   // GetOverlappedResult(..., TRUE) below would block forever waiting on a
   // completion event nobody will ever signal.
-  const auto cancel_pending_and_fail = [this, &overlapped] {
-    CancelIoEx(pipe_, &overlapped);
+  const auto cancel_pending_and_fail = [this, pipe, &overlapped] {
+    CancelIoEx(pipe, &overlapped);
     DWORD ignored = 0;
-    GetOverlappedResult(pipe_, &overlapped, &ignored, TRUE);
+    GetOverlappedResult(pipe, &overlapped, &ignored, TRUE);
     CloseHandle(overlapped.hEvent);
     Disconnect();
     needs_resync_ = true;
@@ -110,7 +137,7 @@ std::optional<std::string> EngineClient::RawTransact(const std::string& request,
   };
 
   DWORD written = 0;
-  if (!WriteFile(pipe_, request.data(), static_cast<DWORD>(request.size()),
+  if (!WriteFile(pipe, request.data(), static_cast<DWORD>(request.size()),
                  &written, &overlapped) &&
       GetLastError() != ERROR_IO_PENDING) {
     fail_immediately();
@@ -120,7 +147,7 @@ std::optional<std::string> EngineClient::RawTransact(const std::string& request,
   // event is signaled on completion either way, so waiting here is safe
   // (and returns immediately in the synchronous case).
   if (WaitForSingleObject(overlapped.hEvent, timeout_ms) != WAIT_OBJECT_0 ||
-      !GetOverlappedResult(pipe_, &overlapped, &written, FALSE) ||
+      !GetOverlappedResult(pipe, &overlapped, &written, FALSE) ||
       written != request.size()) {
     cancel_pending_and_fail();
     return std::nullopt;
@@ -129,14 +156,14 @@ std::optional<std::string> EngineClient::RawTransact(const std::string& request,
   ResetEvent(overlapped.hEvent);
   std::array<char, 8192> response{};
   DWORD read = 0;
-  if (!ReadFile(pipe_, response.data(), static_cast<DWORD>(response.size() - 1),
+  if (!ReadFile(pipe, response.data(), static_cast<DWORD>(response.size() - 1),
                &read, &overlapped) &&
       GetLastError() != ERROR_IO_PENDING) {
     fail_immediately();
     return std::nullopt;
   }
   if (WaitForSingleObject(overlapped.hEvent, timeout_ms) != WAIT_OBJECT_0 ||
-      !GetOverlappedResult(pipe_, &overlapped, &read, FALSE)) {
+      !GetOverlappedResult(pipe, &overlapped, &read, FALSE)) {
     cancel_pending_and_fail();
     return std::nullopt;
   }
@@ -145,10 +172,36 @@ std::optional<std::string> EngineClient::RawTransact(const std::string& request,
 }
 
 std::optional<EngineState> EngineClient::SendKey(char32_t codepoint,
-                                                 DWORD timeout_ms) {
+                                                  DWORD timeout_ms) {
   const std::string request = EncodeKeyRequest(codepoint);
   if (request.empty()) return std::nullopt;
   const auto response = Transact(request, timeout_ms);
+  return response ? ParseStateResponse(*response) : std::nullopt;
+}
+
+std::optional<EngineState> EngineClient::ConvertKeys(
+    const std::u32string& keys, DWORD timeout_ms) {
+  const std::string request = EncodeConvertKeysRequest(keys);
+  if (request.empty()) return std::nullopt;
+  const auto response = Transact(request, timeout_ms);
+  return response ? ParseStateResponse(*response) : std::nullopt;
+}
+
+std::optional<EngineState> EngineClient::SendKeys(
+    const std::u32string& keys, DWORD timeout_ms) {
+  const std::string request = EncodeFeedKeysRequest(keys);
+  if (request.empty()) return std::nullopt;
+  const auto response = Transact(request, timeout_ms);
+  return response ? ParseStateResponse(*response) : std::nullopt;
+}
+
+std::optional<EngineState> EngineClient::Reset(DWORD timeout_ms) {
+  const auto response = Transact("RESET\n", timeout_ms);
+  // RESET is the recovery primitive.  If even it cannot complete (including
+  // failure before a pipe connection is established), the next successful
+  // transaction must try RESET first rather than continuing a possibly
+  // stranded candidate/registration session.
+  if (!response) needs_resync_ = true;
   return response ? ParseStateResponse(*response) : std::nullopt;
 }
 

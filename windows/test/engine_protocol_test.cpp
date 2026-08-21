@@ -26,12 +26,26 @@
 int main() {
   assert(ddskk::EncodeKeyRequest(U'あ') == "KEY 12354\n");
   assert(ddskk::EncodeKeyRequest(0x110000).empty());
+  assert(ddskk::EncodeConvertKeysRequest(U"Kana") ==
+         "CONTROL CONVERT-KEYS 75,97,110,97\n");
+  assert(ddskk::EncodeConvertKeysRequest(U"").empty());
+  assert(ddskk::EncodeFeedKeysRequest(U"test") ==
+         "CONTROL FEED-KEYS 116,101,115,116\n");
+  assert(ddskk::EncodeFeedKeysRequest(U"").empty());
   assert(ddskk::EncodeControlRequest(ddskk::EngineControl::kBackspace) ==
          "CONTROL BACKSPACE\n");
   assert(ddskk::EncodeControlRequest(ddskk::EngineControl::kConvert) ==
          "CONTROL CONVERT\n");
   assert(ddskk::EncodeControlRequest(ddskk::EngineControl::kPrevious) ==
          "CONTROL PREVIOUS\n");
+  assert(ddskk::EncodeControlRequest(ddskk::EngineControl::kSegmentPrev) ==
+         "CONTROL SEGMENT-PREV\n");
+  assert(ddskk::EncodeControlRequest(ddskk::EngineControl::kSegmentExtend) ==
+         "CONTROL SEGMENT-EXTEND\n");
+  assert(ddskk::EncodeControlRequest(ddskk::EngineControl::kToKatakana) ==
+         "CONTROL TO-KATAKANA\n");
+  assert(ddskk::EncodeControlRequest(ddskk::EngineControl::kDelete) ==
+         "CONTROL DELETE\n");
 
   auto state = ddskk::ParseStateResponse(
       "STATE preedit 3 1 0025bd00304b00306a 00006e -1 -");
@@ -47,6 +61,12 @@ int main() {
   assert(candidates && candidates->candidate_index == 0);
   assert(candidates->candidates.size() == 2);
   assert(candidates->candidates[0] == L"仮名");
+
+  auto registration = ddskk::ParseStateResponse(
+      "STATE registration 2 -1 00304b00306a - -1 - 00308800307f");
+  assert(registration && registration->mode == L"registration");
+  assert(registration->text == L"かな");
+  assert(registration->registration_reading == L"よみ");
 
   auto empty = ddskk::ParseStateResponse("STATE hiragana 0 -1 - - -1 -");
   assert(empty && empty->text.empty() && empty->pending_romaji.empty());

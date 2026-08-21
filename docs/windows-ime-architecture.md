@@ -1,16 +1,19 @@
-# Windows IME architecture
+# NeLisp Input Hub architecture
 
 ## Goal
 
-DDSKK remains the canonical SKK implementation. Platform code adapts native
-input APIs to DDSKK events; it must not grow a second conversion engine.
+NeLisp Input Hub is the engine-neutral boundary behind the user-facing
+**NeLisp IME**. It adapts native input APIs to a common protocol and lets the
+user select DDSKK, Lattice, or future Japanese input engines without changing
+the Windows-facing IME.
 
 ```text
 Windows application
   <-> TSF in-process DLL (COM, composition, edit sessions)
   <-> per-user local IPC (versioned messages, bounded latency)
-  <-> NeLisp DDSKK engine process
-       -> existing skk.el / skk-search.el / user dictionary
+  <-> NeLisp Input Hub (engine selection + common protocol)
+       -> DDSKK adapter -> skk.el / skk-search.el / user dictionary
+       -> Lattice adapter -> dictionary lattice / learning
 ```
 
 The in-process DLL is intentionally small. Loading the full runtime into every
@@ -20,8 +23,10 @@ open and return the key to the application.
 
 ## Ownership boundary
 
-- DDSKK/NeLisp owns modes, romaji-to-kana rules, conversion, learning, and
-  dictionary registration.
+- The selected NeLisp engine owns modes, romaji-to-kana rules, conversion,
+  learning, and dictionary registration.
+- NeLisp Input Hub owns engine discovery, selection, and the common wire
+  contract used by the Windows host and Sumi.
 - The TSF host owns key normalization, `ITfComposition`, edit sessions,
   display attributes, caret rectangles, and Windows profile registration.
 - Candidate rendering follows CorvusSKK's compact vertical list and annotation

@@ -49,7 +49,7 @@
 (defconst nelisp-ime-stateline-version 1
   "Protocol version answered to HELLO.")
 
-(defconst nelisp-ime-stateline--session-id "stateline"
+(defvar nelisp-ime-stateline--session-id "stateline"
   "Session the line protocol drives.
 
 The wire format carries no session id: the host serializes every request
@@ -153,6 +153,33 @@ per `concat' argument."
       (setq index (1+ index)))
     ok))
 
+(defun nelisp-ime-stateline--convert-keys (encoded)
+  "Reset, replay comma-separated decimal codepoints, and convert atomically."
+  (let ((start 0)
+        (count (length encoded))
+        (valid (> (length encoded) 0))
+        (events nil))
+    (while (and valid (< start count))
+      (let* ((separator (string-match "," encoded start))
+             (end (or separator count))
+             (part (substring encoded start end)))
+        (if (not (nelisp-ime-stateline--decimal-p part))
+            (setq valid nil)
+          (let ((code (string-to-number part)))
+            (if (or (< code 1) (> code #x10ffff)
+                    (and (>= code #xd800) (<= code #xdfff)))
+                (setq valid nil)
+              (setq events (cons (list :op :key :key (char-to-string code))
+                                 events)))))
+        (setq start (if separator (1+ separator) count))))
+    (if (not valid)
+        "ERR CONVERT-KEYS"
+      (nelisp-ime-stateline--session)
+      (nelisp-ime-session-reset nelisp-ime-stateline--session-id)
+      (dolist (event (nreverse events))
+        (nelisp-ime-feed nelisp-ime-stateline--session-id event))
+      (nelisp-ime-stateline--feed '(:op :convert)))))
+
 (defun nelisp-ime-stateline--control (name)
   "Return the event plist for CONTROL NAME, or nil when unsupported."
   (cond
@@ -166,6 +193,15 @@ per `concat' argument."
    ;; :feed hook.
    ((equal name "CONVERT") '(:op :select-candidate :index :next))
    ((equal name "PREVIOUS") '(:op :select-candidate :index :previous))
+   ((equal name "SEGMENT-PREV") '(:op :select-segment :index :previous))
+   ((equal name "SEGMENT-NEXT") '(:op :select-segment :index :next))
+   ((equal name "SEGMENT-SHRINK") '(:op :resize-segment :direction :shrink))
+   ((equal name "SEGMENT-EXTEND") '(:op :resize-segment :direction :extend))
+   ((equal name "TO-HIRAGANA") '(:op :transliterate :target :hiragana))
+   ((equal name "TO-KATAKANA") '(:op :transliterate :target :katakana))
+   ((equal name "TO-HALF-KATAKANA") '(:op :transliterate :target :half-katakana))
+   ((equal name "TO-WIDE-LATIN") '(:op :transliterate :target :wide-latin))
+   ((equal name "TO-LATIN") '(:op :transliterate :target :latin))
    ;; CANCEL is the unconditional return to plain input; QUIT is the
    ;; stepwise escape the DLL has always sent for Escape and Ctrl+G
    ;; (`EngineControl::kQuit', chosen over kCancel for exactly this
@@ -194,10 +230,21 @@ per `concat' argument."
          ;; First CONVERT on a composition that has only been typed: the
          ;; user is asking for the conversion itself, not for the next
          ;; candidate of one that does not exist yet.
-         ((and (eq (plist-get event :index) :next)
+         ((and (eq (plist-get event :op) :select-candidate)
+               (eq (plist-get event :index) :next)
                (not (plist-get session :converted))
                (> (length (or (plist-get session :reading) "")) 0))
           (nelisp-ime-stateline--feed '(:op :convert)))
+         ((memq (plist-get event :op) '(:select-segment))
+          (let* ((count (length (or (plist-get session :segments) nil)))
+                 (current (or (plist-get session :active-segment) 0))
+                 (index (max 0 (min (1- count)
+                                    (+ current (if (eq (plist-get event :index) :next) 1 -1))))))
+            (if (= count 0)
+                (nelisp-ime-stateline--line
+                 (nelisp-ime-session-status nelisp-ime-stateline--session-id))
+              (nelisp-ime-stateline--feed
+               (list :op :select-segment :index index)))))
          (t
           ;; Resolve the relative move against the live session; with no
           ;; candidates there is nothing to step through, so report state.
@@ -212,7 +259,7 @@ per `concat' argument."
      (t (nelisp-ime-stateline--feed event)))))
 
 ;;;###autoload
-(defun nelisp-ime-stateline-dispatch (line)
+(defun nelisp-ime-stateline--dispatch-1 (line)
   "Handle one protocol LINE and return the response line.
 
 Every failure degrades to an `ERR <TOKEN>' line: the adapter treats a
@@ -230,7 +277,13 @@ the application, which is preferable to leaving the user unable to type."
        ((and (> (length line) 11) (equal (substring line 0 11) "ENGINE SET "))
         (let ((name (intern (substring line 11))))
           (if (nelisp-ime-engine-get name)
-              (progn (setq nelisp-ime-default-engine name)
+              (progn
+                     ;; The wire has one implicit session.  An engine switch
+                     ;; is therefore also a session boundary; retaining the
+                     ;; old reading/candidates would leak provider state.
+                     (remhash nelisp-ime-stateline--session-id
+                              nelisp-ime-sessions)
+                     (setq nelisp-ime-default-engine name)
                      (concat "OK ENGINE " (symbol-name name)))
             (concat "ERR ENGINE " (symbol-name name)))))
        ((equal line "RESET")
@@ -247,6 +300,9 @@ the application, which is preferable to leaving the user unable to type."
        ((equal line "COMPACT")
         (if (nelisp-ime-maintain 'compact) "OK COMPACT" "OK COMPACT NOOP"))
        ((equal line "QUIT") "OK BYE")
+       ((and (> (length line) 21)
+             (equal (substring line 0 21) "CONTROL CONVERT-KEYS "))
+        (nelisp-ime-stateline--convert-keys (substring line 21)))
        ((and (> (length line) 8) (equal (substring line 0 8) "CONTROL "))
         (nelisp-ime-stateline--dispatch-control (substring line 8)))
        ((and (> (length line) 4) (equal (substring line 0 4) "KEY "))
@@ -260,6 +316,43 @@ the application, which is preferable to leaving the user unable to type."
                  (list :op :key :key (char-to-string code))))))))
        (t "ERR REQUEST"))
     (error "ERR INTERNAL")))
+
+(defun nelisp-ime-stateline--session-id-valid-p (session-id)
+  "Return non-nil for a bounded wire-safe SESSION-ID."
+  (let ((index 0)
+        (count (length session-id))
+        (valid (and (> (length session-id) 0)
+                    (<= (length session-id) 96))))
+    (while (and valid (< index count))
+      (let ((char (aref session-id index)))
+        (unless (or (and (>= char ?a) (<= char ?z))
+                    (and (>= char ?A) (<= char ?Z))
+                    (and (>= char ?0) (<= char ?9))
+                    (memq char '(?- ?_ ?. ?:)))
+          (setq valid nil)))
+      (setq index (1+ index)))
+    valid))
+
+;;;###autoload
+(defun nelisp-ime-stateline-dispatch (line)
+  "Dispatch legacy LINE or a client-scoped `SESSION ID LINE' request."
+  (if (and (> (length line) 8)
+           (equal (substring line 0 8) "SESSION "))
+      (let ((separator (string-match " " line 8)))
+        (if (not separator)
+            "ERR SESSION"
+          (let ((session-id (substring line 8 separator))
+                (request (substring line (1+ separator))))
+            (if (or (not (nelisp-ime-stateline--session-id-valid-p session-id))
+                    (= (length request) 0))
+                "ERR SESSION"
+              (if (equal request "CLOSE")
+                  (progn
+                    (nelisp-ime-session-close session-id)
+                    "OK CLOSED")
+                (let ((nelisp-ime-stateline--session-id session-id))
+                  (nelisp-ime-stateline--dispatch-1 request)))))))
+    (nelisp-ime-stateline--dispatch-1 line)))
 
 (provide 'nelisp-ime-stateline)
 ;;; nelisp-ime-stateline.el ends here

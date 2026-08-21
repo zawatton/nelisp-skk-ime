@@ -67,9 +67,9 @@ bool InsideRoundedSquare(int x, int y, int size, int radius) {
   return dx * dx + dy * dy <= radius * radius;
 }
 
-// Builds a DPI-scaled 32bpp icon: a filled rounded-rect in `fill_color`
-// with a single centered white glyph. There are no .ico resources for
-// this -- the mode changes at runtime -- so the icon is synthesized via a
+// Builds a DPI-scaled 32bpp tray icon: a filled rounded rectangle with
+// either a centered white mode glyph or a red Hinomaru disc. It is
+// synthesized at runtime via a
 // top-down 32bpp DIB section painted through GDI for the color channels,
 // then a hand-rasterized alpha mask (see InsideRoundedSquare) rather than
 // relying on GDI to produce a usable alpha channel: GDI drawing calls do
@@ -78,7 +78,8 @@ bool InsideRoundedSquare(int x, int y, int size, int radius) {
 // its RGB value. This is the proper 32bpp-alpha CreateIconIndirect path;
 // legacy TEXTCOLORICON-style AND/XOR masking cannot express partial
 // alpha and is deliberately not used here.
-HICON CreateModeIcon(wchar_t glyph, COLORREF fill_color) {
+HICON CreateTrayIcon(wchar_t glyph, COLORREF fill_color,
+                     bool draw_hinomaru = false) {
   const UINT dpi = GetSystemDpiOrDefault();
   const int size = MulDiv(16, static_cast<int>(dpi), 96);
   if (size <= 0) return nullptr;
@@ -113,21 +114,33 @@ HICON CreateModeIcon(wchar_t glyph, COLORREF fill_color) {
   FillRect(mem_dc, &canvas, fill_brush);
   DeleteObject(fill_brush);
 
-  SetBkMode(mem_dc, TRANSPARENT);
-  SetTextColor(mem_dc, RGB(0xFF, 0xFF, 0xFF));
-  LOGFONTW font{};
-  font.lfHeight = -(size * 3 / 4);
-  font.lfWeight = FW_SEMIBOLD;
-  font.lfCharSet = DEFAULT_CHARSET;
-  font.lfQuality = CLEARTYPE_QUALITY;
-  wcscpy_s(font.lfFaceName, L"Yu Gothic UI");
-  HFONT glyph_font = CreateFontIndirectW(&font);
-  HGDIOBJ previous_font = nullptr;
-  if (glyph_font != nullptr) previous_font = SelectObject(mem_dc, glyph_font);
-  const wchar_t text[2] = {glyph, L'\0'};
-  DrawTextW(mem_dc, text, 1, &canvas, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-  if (previous_font != nullptr) SelectObject(mem_dc, previous_font);
-  if (glyph_font != nullptr) DeleteObject(glyph_font);
+  if (draw_hinomaru) {
+    const int margin = size / 4;
+    HBRUSH sun_brush = CreateSolidBrush(RGB(0xBC, 0x00, 0x2D));
+    HGDIOBJ previous_brush = SelectObject(mem_dc, sun_brush);
+    HGDIOBJ previous_pen = SelectObject(mem_dc, GetStockObject(NULL_PEN));
+    Ellipse(mem_dc, margin, margin, size - margin, size - margin);
+    SelectObject(mem_dc, previous_pen);
+    SelectObject(mem_dc, previous_brush);
+    DeleteObject(sun_brush);
+  } else {
+    SetBkMode(mem_dc, TRANSPARENT);
+    SetTextColor(mem_dc, RGB(0xFF, 0xFF, 0xFF));
+    LOGFONTW font{};
+    font.lfHeight = -(size * 3 / 4);
+    font.lfWeight = FW_SEMIBOLD;
+    font.lfCharSet = DEFAULT_CHARSET;
+    font.lfQuality = CLEARTYPE_QUALITY;
+    wcscpy_s(font.lfFaceName, L"Yu Gothic UI");
+    HFONT glyph_font = CreateFontIndirectW(&font);
+    HGDIOBJ previous_font = nullptr;
+    if (glyph_font != nullptr) previous_font = SelectObject(mem_dc, glyph_font);
+    const wchar_t text[2] = {glyph, L'\0'};
+    DrawTextW(mem_dc, text, 1, &canvas,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (previous_font != nullptr) SelectObject(mem_dc, previous_font);
+    if (glyph_font != nullptr) DeleteObject(glyph_font);
+  }
 
   GdiFlush();
   SelectObject(mem_dc, previous_bitmap);
@@ -216,14 +229,22 @@ HRESULT LangBarButton::GetInfo(TF_LANGBARITEMINFO* info) {
   if(!info) return E_POINTER; *info = {};
   info->clsidService=CLSID_DdskkTextService; info->guidItem=item_guid_;
   info->dwStyle=style_;
-  // The input-mode item sorts ahead of the settings item, matching where
-  // Windows' own taskbar input indicators typically sit relative to a
-  // TIP's other langbar buttons.
-  info->ulSort = kind_ == Kind::kInputMode ? 0 : 1;
+  // CorvusSKK uses the same sort value for both items; the well-known
+  // GUID_LBI_INPUTMODE lets the TSF host place the mode item separately.
+  info->ulSort = 1;
   wcscpy_s(info->szDescription, display_name_.c_str()); return S_OK;
 }
-HRESULT LangBarButton::GetStatus(DWORD* status) { if(!status)return E_POINTER; *status=shown_?0:TF_LBI_STATUS_HIDDEN; return S_OK; }
-HRESULT LangBarButton::Show(BOOL show) { shown_=show!=FALSE; return S_OK; }
+HRESULT LangBarButton::GetStatus(DWORD* status) {
+  if (!status) return E_POINTER;
+  // Do not turn the custom logo into TF_LBI_STATUS_HIDDEN when the
+  // taskbar host calls Show(FALSE). CorvusSKK deliberately keeps the
+  // item's status visible and treats Show as a request to refresh it.
+  *status = 0;
+  return S_OK;
+}
+HRESULT LangBarButton::Show(BOOL) {
+  return sink_ != nullptr ? sink_->OnUpdate(TF_LBI_STATUS) : S_OK;
+}
 HRESULT LangBarButton::GetTooltipString(BSTR* value) { if(!value)return E_POINTER; *value=SysAllocString(display_name_.c_str()); return *value?S_OK:E_OUTOFMEMORY; }
 HRESULT LangBarButton::OnClick(TfLBIClick click, POINT, const RECT*) {
   if (!handler_) return E_UNEXPECTED;
@@ -298,22 +319,44 @@ HRESULT LangBarButton::OnClick(TfLBIClick click, POINT, const RECT*) {
   if (command == 3) handler_->ShowSettings();
   return S_OK;
 }
-HRESULT LangBarButton::InitMenu(ITfMenu*) { return E_NOTIMPL; }
-HRESULT LangBarButton::OnMenuSelect(UINT) { return E_NOTIMPL; }
+HRESULT LangBarButton::InitMenu(ITfMenu* menu) {
+  if (menu == nullptr) return E_INVALIDARG;
+  if (kind_ != Kind::kSettings) return S_OK;
+  HRESULT result = menu->AddMenuItem(1, 0, nullptr, nullptr,
+                                     L"DDSKK", 5, nullptr);
+  if (SUCCEEDED(result)) {
+    result = menu->AddMenuItem(2, 0, nullptr, nullptr,
+                               L"パススルー", 5, nullptr);
+  }
+  if (SUCCEEDED(result)) {
+    result = menu->AddMenuItem(0, TF_LBMENUF_SEPARATOR, nullptr, nullptr,
+                               L"", 0, nullptr);
+  }
+  if (SUCCEEDED(result)) {
+    result = menu->AddMenuItem(3, 0, nullptr, nullptr,
+                               L"設定...", 5, nullptr);
+  }
+  return result;
+}
+HRESULT LangBarButton::OnMenuSelect(UINT id) {
+  if (handler_ == nullptr || kind_ != Kind::kSettings) return E_UNEXPECTED;
+  if (id == 1) handler_->SelectInputEngine(true);
+  if (id == 2) handler_->SelectInputEngine(false);
+  if (id == 3) handler_->ShowSettings();
+  return S_OK;
+}
 HRESULT LangBarButton::GetIcon(HICON* icon) {
   if (!icon) return E_POINTER;
-  if (kind_ != Kind::kInputMode || handler_ == nullptr) {
-    *icon = LoadIconW(nullptr, IDI_APPLICATION);
-    return *icon ? S_OK : E_FAIL;
+  if (kind_ == Kind::kSettings) {
+    *icon = CreateTrayIcon(L'\0', RGB(0xFF, 0xFF, 0xFF), true);
+    return *icon != nullptr ? S_OK : E_FAIL;
   }
-  // Mode-aware dynamic icon: no .ico resources, since the glyph/color
-  // depend on runtime state. Reuses the exact palette
-  // MaybeShowModeIndicator() would paint (see TextService::
-  // CurrentModePalette(), threaded from ModeIndicator's already-loaded
-  // registry overrides -- this never re-reads the registry itself).
+  if (handler_ == nullptr) return E_UNEXPECTED;
+  // GUID_LBI_INPUTMODE remains the current input mode; the custom-GUID
+  // item above owns the DDSKK identity logo.
   const std::wstring label = handler_->CurrentModeLabel();
-  const ModeIndicatorPalette palette = handler_->CurrentModePalette();
-  *icon = CreateModeIcon(GlyphForModeLabel(label), palette.background);
+  *icon = CreateTrayIcon(GlyphForModeLabel(label),
+                         handler_->CurrentModePalette().background);
   return *icon ? S_OK : E_FAIL;
 }
 HRESULT LangBarButton::GetText(BSTR* value) { if(!value)return E_POINTER; *value=SysAllocString(display_name_.c_str()); return *value?S_OK:E_OUTOFMEMORY; }

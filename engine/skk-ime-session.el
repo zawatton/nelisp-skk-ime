@@ -21,6 +21,53 @@
   buffer
   (last-command nil))
 
+;; CorvusSKK-style registration temporarily reuses the same DDSKK session.
+;; These are the buffer-local variables which must be checkpointed together
+;; with its text before that temporary reset, then restored on completion or
+;; cancellation.  Reusing one session is important on NeLisp Phase 7+B,
+;; whose buffer-local table is still process-wide rather than per-buffer.
+(defconst skk-ime-session--native-state-symbols
+  '(skk-mode skk-latin-mode skk-j-mode skk-katakana
+    skk-jisx0208-latin-mode skk-abbrev-mode skk-okurigana
+    skk-henkan-mode skk-kakutei-flag skk-kakutei-henkan-flag
+    skk-exit-show-candidates skk-insert-keysequence skk-current-rule-tree
+    skk-okuri-ari-min skk-okuri-ari-max skk-okuri-nasi-min
+    skk-previous-point skk-prefix skk-henkan-start-point
+    skk-henkan-end-point skk-kana-start-point skk-okurigana-start-point
+    skk-henkan-key skk-okuri-char skk-henkan-okurigana
+    skk-last-kakutei-henkan-key skk-henkan-list skk-henkan-count
+    skk-self-insert-non-undo-count skk-current-search-prog-list
+    skk-last-henkan-data skk-undo-kakutei-flag
+    skk-undo-kakutei-prev-state skk-undo-kakutei-previous-point
+    skk-undo-kakutei-previous-length skk-henkan-in-minibuff-flag
+    skk-okuri-index-min skk-okuri-index-max skk-after-prefix
+    skk-jisx0201-roman skk-jisx0201-mode skk-num-list skk-echo))
+
+(defun skk-ime-session--capture-native-state ()
+  (let (state)
+    (dolist (symbol skk-ime-session--native-state-symbols (nreverse state))
+      (when (boundp symbol)
+        (let ((value (symbol-value symbol)))
+          ;; A live marker is not a snapshot: `erase-buffer' in restore moves
+          ;; even a copied marker to point-min.  Store its numeric position
+          ;; behind a private tag and allocate a fresh marker only after the
+          ;; saved text has been inserted again.
+          (push (cons symbol
+                      (if (markerp value)
+                          (cons 'skk-ime-session--marker
+                                (marker-position value))
+                        value))
+                state))))))
+
+(defun skk-ime-session--restore-native-state (state)
+  (dolist (entry state)
+    (let ((value (cdr entry)))
+      (set (car entry)
+           (if (and (consp value)
+                    (eq (car value) 'skk-ime-session--marker))
+               (copy-marker (cdr value))
+             value)))))
+
 (defun skk-ime-session--initialize-buffer ()
   "Initialize the current buffer for the available runtime."
   (if (fboundp 'skk-ime-session--initialize-native-buffer)
@@ -28,14 +75,18 @@
     (setq-local skk-show-mode-enable nil)
     (setq-local skk-show-tooltip nil)
     (setq-local skk-status-indicator 'minor-mode)
-    (skk-mode 1)))
+    (skk-mode 1))
+  ;; Candidate presentation belongs to Sumi.  Never enter DDSKK's Emacs
+  ;; minibuffer selector after the fourth/fifth Space press; keep cycling
+  ;; the ordinary candidate list which is already on the wire.
+  (setq-local skk-show-candidates-nth-henkan-char 1000000))
 
 (defun skk-ime-session-create ()
   "Create and initialize an isolated DDSKK input session."
   (let ((buffer (generate-new-buffer " *ddskk-ime-session*")))
     (with-current-buffer buffer
-      (skk-ime-session--initialize-buffer))
-    (skk-ime-session--make :buffer buffer)))
+      (skk-ime-session--initialize-buffer)
+      (skk-ime-session--make :buffer buffer))))
 
 (defun skk-ime-session-live-p (session)
   "Return non-nil when SESSION still owns a live buffer."
@@ -57,6 +108,26 @@
        (error "DDSKK IME session is not live"))
      (with-current-buffer (skk-ime-session-buffer ,session)
        ,@body)))
+
+(defun skk-ime-session-checkpoint (session)
+  "Return a restorable snapshot of SESSION for modal registration."
+  (skk-ime-session--with-buffer session
+    (list :text (buffer-string)
+          :point (point)
+          :last-command (skk-ime-session-last-command session)
+          :native-state (skk-ime-session--capture-native-state))))
+
+(defun skk-ime-session-restore (session checkpoint)
+  "Restore SESSION from CHECKPOINT and return its state snapshot."
+  (skk-ime-session--with-buffer session
+    (erase-buffer)
+    (insert (plist-get checkpoint :text))
+    (goto-char (plist-get checkpoint :point))
+    (setf (skk-ime-session-last-command session)
+          (plist-get checkpoint :last-command))
+    (skk-ime-session--restore-native-state
+     (plist-get checkpoint :native-state))
+    (skk-ime-session-snapshot session)))
 
 (defun skk-ime-session-reset (session)
   "Clear SESSION and return it to hiragana direct-input mode."
@@ -122,7 +193,7 @@ calls it with 1, which is both arity-correct and semantically harmless."
         (funcall command 1)
       (wrong-number-of-arguments (funcall command))))))
 
-(defun skk-ime-session-feed-key (session key)
+(defun skk-ime-session-feed-key (session key &optional preserve-point)
   "Feed character KEY to DDSKK in SESSION and return a state snapshot.
 
 KEY is a character integer.  The key is dispatched through the DDSKK
@@ -140,17 +211,32 @@ instead of kana."
     ;; and this is the earliest point in THIS request where correcting it
     ;; cannot disturb DDSKK's own point sequencing for the key about to be
     ;; dispatched.
-    (goto-char (point-max))
-    (let* ((previous (skk-ime-session-last-command session))
-           (map (skk-ime-session--active-keymap))
-           (command (and map (lookup-key map (string key)))))
-      (unless (or (and (symbolp command) (fboundp command))
-                  (functionp command))
-        (setq command 'self-insert-command))
-      (setq last-command previous
-            last-command-event key
-            this-command command)
-      (skk-ime-session--call-command command)
+    (unless preserve-point (goto-char (point-max)))
+    (let ((previous (skk-ime-session-last-command session)))
+      (if (or (and (>= key ?0) (<= key ?9))
+              ;; Symbols produced by Shift+digits on Japanese and US
+              ;; layouts. Treat them as literal text, not DDSKK commands.
+              (memq key '(33 34 35 36 37 38 39 40 41 42 64 94)))
+          (progn
+            ;; DDSKK's kana keymap consumes ASCII digits/Shift+digit symbols
+            ;; without inserting them.  Finish a pending syllable/candidate,
+            ;; then insert the character literally in kana mode.
+            (when (skk-get-prefix skk-current-rule-tree)
+              (skk-kana-cleanup 'force))
+            (when (eq skk-henkan-mode 'active) (skk-kakutei))
+            (setq last-command previous
+                  last-command-event key
+                  this-command 'self-insert-command)
+            (insert (string key)))
+        (let* ((map (skk-ime-session--active-keymap))
+               (command (and map (lookup-key map (string key)))))
+          (unless (or (and (symbolp command) (fboundp command))
+                      (functionp command))
+            (setq command 'self-insert-command))
+          (setq last-command previous
+                last-command-event key
+                this-command command)
+          (skk-ime-session--call-command command)))
       (setf (skk-ime-session-last-command session) this-command))
     (skk-ime-session-snapshot session)))
 
@@ -162,11 +248,11 @@ instead of kana."
     (dolist (key (string-to-list string) snapshot)
       (setq snapshot (skk-ime-session-feed-key session key)))))
 
-(defun skk-ime-session-control (session control)
+(defun skk-ime-session-control (session control &optional argument)
   "Apply native CONTROL to SESSION and return its state snapshot.
 
 CONTROL is one of `backspace', `convert', `previous', `commit', `cancel',
-or `quit'.
+`quit', `to-hiragana', or `to-katakana'.
 
 Point-at-end invariant: this client never moves the caret inside a
 composition -- the TSF layer claims no arrow keys and the wire protocol
@@ -207,6 +293,48 @@ itself leaves it while that one request is still being processed."
        (when skk-henkan-mode (skk-start-henkan 1)))
       ('previous
        (when (eq skk-henkan-mode 'active) (skk-previous-candidate 1)))
+      ((or 'register 'register-and-commit)
+       ;; A native IME has no Emacs minibuffer.  The companion UI collects
+       ;; the new word, then this branch records it under DDSKK's current
+       ;; midasi and immediately reruns the normal candidate search.  Thus
+       ;; the registered word follows the same display/commit/learning path
+       ;; as every ordinary candidate.
+       (unless (and (eq skk-henkan-mode 'active)
+                    (stringp argument) (> (length argument) 0)
+                    (stringp skk-henkan-key))
+         (error "DDSKK registration is not active"))
+       (ddskk-user-jisyo--update argument)
+       (if (eq control 'register-and-commit)
+           ;; The native registration panel confirms immediately.  Replace
+           ;; the exhausted ▼ region directly: NeLisp markers are static, so
+           ;; the usual inactivate/reconvert sequence can duplicate the
+           ;; reading after a modal checkpoint restore.
+           (let ((start (and (markerp skk-henkan-start-point)
+                             (max (point-min)
+                                  (1- (marker-position
+                                       skk-henkan-start-point))))))
+             (unless start (error "DDSKK registration marker is missing"))
+             (delete-region start (point-max))
+             (goto-char start)
+             (insert argument)
+             (skk-kakutei-initialize))
+         ;; Legacy non-committing REGISTER keeps exposing the new candidate.
+         (let ((skk-search-prog-list
+                (cons (list 'list argument) skk-search-prog-list)))
+           (skk-henkan-inactivate)
+           (skk-start-henkan 1))))
+      ((or 'to-hiragana 'to-katakana)
+       ;; DDSKK has one conversion region, unlike lattice's selectable
+       ;; segments.  Restore its reading first when a candidate is shown,
+       ;; then force that region to the requested kana class.  These helpers
+       ;; preserve the ▽ marker and keep the composition open for further
+       ;; conversion or confirmation.
+       (when (eq skk-henkan-mode 'active) (skk-henkan-inactivate))
+       (when (eq skk-henkan-mode 'on)
+         (let ((start (marker-position skk-henkan-start-point)))
+           (pcase control
+             ('to-hiragana (skk-hiragana-region start (point-max)))
+             ('to-katakana (skk-katakana-region start (point-max)))))))
       ('cancel
        (when skk-henkan-mode
          (let ((start (and (markerp skk-henkan-start-point)
@@ -219,10 +347,10 @@ itself leaves it while that one request is still being processed."
        (setq skk-prefix "" skk-current-rule-tree nil)
        ;; The native host sends `cancel' for Ctrl+J when returning to kana
        ;; input.  In DDSKK the C-j binding exists in every mode map and ends
-       ;; up back in kana; mirror that here so the engine's mode cannot drift
-       ;; out of sync with the host's own flag.
+       ;; up specifically in hiragana; do not preserve `skk-katakana' here.
+       ;; Preserving it made Ctrl+J a no-op in direct katakana mode.
        (when (fboundp 'skk-j-mode-on)
-         (skk-j-mode-on (and (boundp 'skk-katakana) skk-katakana))))
+         (skk-j-mode-on nil)))
       ('quit
        ;; DDSKK's own keyboard-quit semantics (skk.el:5176-5197, the
        ;; `keyboard-quit' advice), also cross-checked against CorvusSKK

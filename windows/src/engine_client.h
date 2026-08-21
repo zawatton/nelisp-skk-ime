@@ -17,6 +17,7 @@
 
 #include "engine_protocol.h"
 
+#include <atomic>
 #include <optional>
 #include <string>
 #include <windows.h>
@@ -25,14 +26,26 @@ namespace ddskk {
 
 class EngineClient {
  public:
-  EngineClient() = default;
+  EngineClient();
   ~EngineClient();
   EngineClient(const EngineClient&) = delete;
   EngineClient& operator=(const EngineClient&) = delete;
 
   bool Connect(DWORD timeout_ms = 25);
   void Disconnect();
+  // Interrupt an overlapped read/write without closing the pipe. Safe to
+  // call from the UI thread while a provider worker owns Transact().
+  void CancelPendingIo();
+  // Defer RESET until this client next performs a real transaction.  Used
+  // on focus/composition abandonment so an old application's late callback
+  // cannot reset the single shared engine while another app is typing.
+  void MarkNeedsResync();
+  std::optional<EngineState> Reset(DWORD timeout_ms = 25);
   std::optional<EngineState> SendKey(char32_t codepoint, DWORD timeout_ms = 25);
+  std::optional<EngineState> ConvertKeys(const std::u32string& keys,
+                                         DWORD timeout_ms = 1500);
+  std::optional<EngineState> SendKeys(const std::u32string& keys,
+                                      DWORD timeout_ms = 1500);
   std::optional<EngineState> SendControl(EngineControl control,
                                          DWORD timeout_ms = 25);
   std::optional<std::vector<std::string>> ListEngines(DWORD timeout_ms = 1000);
@@ -43,8 +56,10 @@ class EngineClient {
   // thread to pay the engine's cold-load cost off the UI thread instead of
   // on the user's first keystroke.
   bool Ping(DWORD timeout_ms);
+  const std::string& last_response() const { return last_response_; }
 
  private:
+  std::string SessionRequest(const std::string& request) const;
   std::optional<std::string> Transact(const std::string& request,
                                       DWORD timeout_ms);
   // One write followed by one read over the already-connected pipe_, using
@@ -56,15 +71,15 @@ class EngineClient {
   // sending anything else.
   std::optional<std::string> RawTransact(const std::string& request,
                                          DWORD timeout_ms);
-  HANDLE pipe_ = INVALID_HANDLE_VALUE;
-  // Set whenever a transaction is abandoned mid-flight (timeout or I/O
-  // error) after the request was already written to the pipe. The host may
-  // still be sitting on that request and could apply it to the shared
-  // engine session after we have stopped listening for the reply, so the
-  // *next* Transact() call must send "RESET\n" first -- otherwise the
-  // display state here and the engine's actual state could silently
-  // diverge with no way to tell.
+  std::atomic<HANDLE> pipe_{INVALID_HANDLE_VALUE};
+  std::string session_id_;
+  // Set whenever a transaction is abandoned mid-flight, or when this
+  // client abandons a document composition. RESET is sent for this client's
+  // scoped engine checkpoint only when it next becomes active and transacts.
   bool needs_resync_ = false;
+  // Raw reply retained for diagnostics when a version/protocol mismatch
+  // makes ParseStateResponse fail. Never used to drive behavior.
+  std::string last_response_;
 };
 
 }  // namespace ddskk

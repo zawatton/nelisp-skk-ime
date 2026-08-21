@@ -24,7 +24,7 @@
 HMODULE g_module = nullptr;
 
 namespace {
-constexpr wchar_t kDescription[] = L"DDSKK (NeLisp)";
+constexpr wchar_t kDescription[] = L"NeLisp IME";
 constexpr LANGID kJapanese = MAKELANGID(LANG_JAPANESE, SUBLANG_DEFAULT);
 
 class ClassFactory final : public IClassFactory {
@@ -176,6 +176,11 @@ HRESULT RegisterCategories() {
         CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
         CLSID_DdskkTextService);
   }
+  if (SUCCEEDED(result)) {
+    result = categories->RegisterCategory(
+        CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT,
+        CLSID_DdskkTextService);
+  }
   // Needed for the Windows 10/11 taskbar host to treat this TIP as
   // tray-capable and actually render its langbar items (specifically
   // GUID_LBI_INPUTMODE -- see TextService::AddLangBarButton()) in the
@@ -211,6 +216,9 @@ void UnregisterCategories() {
         CLSID_DdskkTextService);
     categories->UnregisterCategory(
         CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+        CLSID_DdskkTextService);
+    categories->UnregisterCategory(
+        CLSID_DdskkTextService, GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT,
         CLSID_DdskkTextService);
     // Harmless if these were never registered (e.g. an older install);
     // UnregisterCategory on an absent registration is a no-op failure

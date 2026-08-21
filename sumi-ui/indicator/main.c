@@ -177,6 +177,8 @@ typedef struct {
   GtkApplication *gtk_app;
   GtkWidget *window;          /* the indicator pill; NULL in --settings-only mode */
   GtkWidget *drawing_area;
+  GtkWidget *candidate_window; /* Sumi-owned candidate list, below the pill */
+  GtkWidget *candidate_box;
   GtkWidget *popover;
   GtkWidget *settings_window; /* NULL when no settings window is open */
   PipeClient pipe;
@@ -186,6 +188,18 @@ typedef struct {
   gboolean have_state;     /* FALSE until the first poll completes */
   gboolean settings_only;  /* TRUE when launched with --settings: no pill, no poll */
   PangoFontDescription *label_font;
+  GPtrArray *candidates;   /* UTF-8 strings decoded from STATE field 8 */
+  int candidate_index;     /* zero-based selection; -1 when no list is open */
+  gboolean registration_active;
+  char *registration_reading;
+  char *registration_text;
+  char *registration_pending;
+  int registration_cursor;
+  char *last_state_reply;  /* suppress repeated STATUS redraw/reposition */
+  HANDLE state_map;
+  const volatile LONG *state_sequence;
+  const char *state_line;
+  LONG seen_state_sequence;
 } App;
 
 static void app_log_transition(App *app, int64_t new_mode) {
@@ -224,13 +238,309 @@ static int64_t mode_from_state_reply(const char *reply) {
   return mode_from_token(token);
 }
 
+/* STATE transports every Unicode scalar as six lowercase hexadecimal digits.
+ * Keep this decoder beside the STATUS parser, independent of the TSF DLL. */
+static char *utf8_from_state_hex(const char *hex) {
+  if (hex == NULL || strcmp(hex, "-") == 0 || (strlen(hex) % 6) != 0)
+    return g_strdup("");
+  const size_t count = strlen(hex) / 6;
+  char *out = g_malloc(count * 4 + 1);
+  char *write = out;
+  for (size_t i = 0; i < count; i++) {
+    char scalar[7];
+    memcpy(scalar, hex + i * 6, 6);
+    scalar[6] = '\0';
+    const gunichar codepoint = (gunichar)strtoul(scalar, NULL, 16);
+    if (!g_unichar_validate(codepoint)) continue;
+    write += g_unichar_to_utf8(codepoint, write);
+  }
+  *write = '\0';
+  return out;
+}
+
+static void app_apply_state_reply(App *app, const char *reply);
+
+/* Resolve the focused application's native text caret in screen
+ * coordinates. This is read-only Win32 state and never enters the IME
+ * engine mutex. Custom-rendered applications do not always publish a
+ * system caret, so retain the mouse position strictly as a fallback. */
+typedef struct {
+  volatile LONG sequence;
+  RECT rect;
+  DWORD process_id;
+} SharedImeCaret;
+
+static gboolean get_tsf_input_anchor(POINT *anchor) {
+  static HANDLE caret_map = NULL;
+  static const SharedImeCaret *caret_view = NULL;
+  if (caret_view == NULL) {
+    caret_map = OpenFileMappingW(FILE_MAP_READ, FALSE,
+                                 L"Local\\ddskk-ime-caret-v1");
+    if (caret_map == NULL) return FALSE;
+    caret_view = (const SharedImeCaret *)MapViewOfFile(
+        caret_map, FILE_MAP_READ, 0, 0, sizeof(SharedImeCaret));
+    if (caret_view == NULL) {
+      CloseHandle(caret_map);
+      caret_map = NULL;
+      return FALSE;
+    }
+  }
+  const LONG before = caret_view->sequence;
+  if (before == 0 || (before & 1)) return FALSE;
+  const RECT rect = caret_view->rect;
+  const DWORD process_id = caret_view->process_id;
+  MemoryBarrier();
+  const LONG after = caret_view->sequence;
+  if (before != after || (after & 1)) return FALSE;
+
+  const HWND foreground = GetForegroundWindow();
+  DWORD foreground_process_id = 0;
+  if (foreground == NULL) return FALSE;
+  GetWindowThreadProcessId(foreground, &foreground_process_id);
+  if (process_id == 0 || process_id != foreground_process_id) return FALSE;
+  anchor->x = rect.left;
+  anchor->y = rect.bottom;
+  return TRUE;
+}
+
+static gboolean get_input_anchor(POINT *anchor) {
+  if (get_tsf_input_anchor(anchor)) return TRUE;
+  const HWND foreground = GetForegroundWindow();
+  const DWORD thread_id = foreground != NULL
+      ? GetWindowThreadProcessId(foreground, NULL) : 0;
+  GUITHREADINFO info;
+  memset(&info, 0, sizeof(info));
+  info.cbSize = sizeof(info);
+  if (thread_id != 0 && GetGUIThreadInfo(thread_id, &info) &&
+      info.hwndCaret != NULL) {
+    POINT caret_bottom = {info.rcCaret.left, info.rcCaret.bottom};
+    if (ClientToScreen(info.hwndCaret, &caret_bottom)) {
+      *anchor = caret_bottom;
+      return TRUE;
+    }
+  }
+  return GetCursorPos(anchor);
+}
+
+static void app_refresh_candidate_window(App *app) {
+  if (app->candidate_window == NULL || app->candidate_box == NULL) return;
+  GtkWidget *child = gtk_widget_get_first_child(app->candidate_box);
+  while (child != NULL) {
+    GtkWidget *next = gtk_widget_get_next_sibling(child);
+    gtk_box_remove(GTK_BOX(app->candidate_box), child);
+    child = next;
+  }
+  const gboolean registering = app->registration_active;
+  const gboolean visible = registering ||
+                           (app->mode == MODE_CANDIDATE &&
+                            app->candidates->len > 0);
+  if (!visible) {
+    gtk_widget_set_visible(app->candidate_window, FALSE);
+    return;
+  }
+  /* Registration presents a focusable entry. Capture the editor caret
+   * first, before GetForegroundWindow() would resolve Sumi itself. */
+  POINT input_anchor = {0};
+  const gboolean have_input_anchor = get_input_anchor(&input_anchor);
+  if (registering) {
+    const char *text = app->registration_text ? app->registration_text : "";
+    const char *pending = app->registration_pending ? app->registration_pending : "";
+    const glong chars = g_utf8_strlen(text, -1);
+    const glong cursor = CLAMP(app->registration_cursor, 0, chars);
+    const char *split = g_utf8_offset_to_pointer(text, cursor);
+    char *before = g_strndup(text, split - text);
+    /* Match CorvusSKK's single-line registration shape.  Its native
+     * CandidateWindow measures this whole line on every update and sizes
+     * the popup to text-height + margins; it is not a dialog. */
+    char *display = g_strdup_printf("［登録］ %s：%s%s│%s",
+        app->registration_reading ? app->registration_reading : "",
+        before, pending, split);
+    GtkWidget *title = gtk_label_new(display);
+    g_free(display);
+    g_free(before);
+    gtk_label_set_xalign(GTK_LABEL(title), 0.0f);
+    gtk_widget_set_margin_start(title, 6);
+    gtk_widget_set_margin_end(title, 6);
+    gtk_widget_set_margin_top(title, 3);
+    gtk_widget_set_margin_bottom(title, 3);
+    gtk_box_append(GTK_BOX(app->candidate_box), title);
+  }
+  const guint limit = MIN(app->candidates->len, 9);
+  for (guint i = 0; i < limit; i++) {
+    const char *candidate = g_ptr_array_index(app->candidates, i);
+    char *text = g_strdup_printf(i == (guint)app->candidate_index
+                                 ? "▶ %u. %s" : "   %u. %s", i + 1, candidate);
+    GtkWidget *row = gtk_label_new(text);
+    g_free(text);
+    gtk_label_set_xalign(GTK_LABEL(row), 0.0f);
+    gtk_widget_set_margin_start(row, 10);
+    gtk_widget_set_margin_end(row, 14);
+    gtk_widget_set_margin_top(row, 3);
+    gtk_widget_set_margin_bottom(row, 3);
+    if (i == (guint)app->candidate_index) gtk_widget_add_css_class(row, "heading");
+    gtk_box_append(GTK_BOX(app->candidate_box), row);
+  }
+  if (app->candidates->len > limit) {
+    GtkWidget *more = gtk_label_new("…");
+    gtk_label_set_xalign(GTK_LABEL(more), 0.0f);
+    gtk_widget_set_margin_start(more, 10);
+    gtk_box_append(GTK_BOX(app->candidate_box), more);
+  }
+  /* A candidate list is an observer, never an input target.  In
+   * particular, gtk_window_present() activates a GtkWindow on Windows;
+   * that stole focus from the editor after every 500 ms STATUS poll and
+   * made its arrow keys appear dead.  Show the already-realized tool
+   * window without activation instead. */
+  gtk_widget_set_visible(app->candidate_window, TRUE);
+  GdkSurface *candidate_surface = gtk_native_get_surface(GTK_NATIVE(app->candidate_window));
+  if (candidate_surface != NULL && GDK_IS_WIN32_SURFACE(candidate_surface)) {
+    HWND candidate_hwnd = gdk_win32_surface_get_handle(candidate_surface);
+    MONITORINFO monitor = {0};
+    monitor.cbSize = sizeof(monitor);
+    if (have_input_anchor &&
+        GetMonitorInfoW(MonitorFromPoint(input_anchor, MONITOR_DEFAULTTONEAREST), &monitor)) {
+      /* CorvusSKK's _CalcWindowRect measures the current registration line
+       * or current candidate page and calls SetWindowPos with that exact
+       * size every time.  GTK's default size is only an initial hint and
+       * kept our old 250px window visually unchanged.  Measure the rebuilt
+       * box now, so one candidate is one row and N candidates are N rows;
+       * registration stays exactly one compact line unless nested
+       * conversion candidates are present. */
+      int min_width = 0, natural_width = 0;
+      int min_height = 0, natural_height = 0;
+      gtk_widget_measure(app->candidate_box, GTK_ORIENTATION_HORIZONTAL, -1,
+                         &min_width, &natural_width, NULL, NULL);
+      int width = MAX(min_width, natural_width);
+      const int work_width = monitor.rcWork.right - monitor.rcWork.left;
+      width = CLAMP(width, registering ? 72 : 96, MAX(96, work_width * 2 / 3));
+      gtk_widget_measure(app->candidate_box, GTK_ORIENTATION_VERTICAL, width,
+                         &min_height, &natural_height, NULL, NULL);
+      int height = MAX(min_height, natural_height);
+      const int work_height = monitor.rcWork.bottom - monitor.rcWork.top;
+      height = CLAMP(height, 1, MAX(1, work_height));
+      int x = input_anchor.x;
+      int y = input_anchor.y + 4;
+      /* Keep the list on the same monitor and off the taskbar. */
+      if (x + width > monitor.rcWork.right) x = monitor.rcWork.right - width;
+      if (y + height > monitor.rcWork.bottom) y = input_anchor.y - height - 4;
+      if (x < monitor.rcWork.left) x = monitor.rcWork.left;
+      if (y < monitor.rcWork.top) y = monitor.rcWork.top;
+      SetWindowPos(candidate_hwnd, HWND_TOPMOST, x, y, width, height,
+                   SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
+  }
+}
+
+static void app_apply_state_reply(App *app, const char *reply) {
+  /* STATUS is deliberately polled as a fallback, but a repeated reply is
+   * not a new conversion event.  Rebuilding the list in that case moved an
+   * open candidate window to the current mouse position, making it look as
+   * though the window followed the cursor. */
+  if (app->last_state_reply != NULL && strcmp(app->last_state_reply, reply) == 0)
+    return;
+  g_free(app->last_state_reply);
+  app->last_state_reply = g_strdup(reply);
+  const gboolean registration_reply = g_str_has_prefix(reply, "STATE registration ");
+  if (!registration_reply) app_apply_mode(app, mode_from_state_reply(reply));
+  g_ptr_array_set_size(app->candidates, 0);
+  app->candidate_index = -1;
+  app->registration_active = registration_reply;
+  if (strncmp(reply, "STATE ", 6) == 0) {
+    gchar **fields = g_strsplit(reply, " ", 9);
+    if (registration_reply && fields[2] != NULL && fields[4] != NULL &&
+        fields[5] != NULL && fields[8] != NULL) {
+      app->registration_cursor = (int)g_ascii_strtoll(fields[2], NULL, 10);
+      g_free(app->registration_text);
+      g_free(app->registration_pending);
+      g_free(app->registration_reading);
+      app->registration_text = utf8_from_state_hex(fields[4]);
+      app->registration_pending = utf8_from_state_hex(fields[5]);
+      app->registration_reading = utf8_from_state_hex(fields[8]);
+    }
+    if (fields[6] != NULL && fields[7] != NULL && strcmp(fields[7], "-") != 0) {
+      app->candidate_index = (int)g_ascii_strtoll(fields[6], NULL, 10);
+      gchar **encoded = g_strsplit(fields[7], ",", -1);
+      for (guint i = 0; encoded[i] != NULL; i++)
+        g_ptr_array_add(app->candidates, utf8_from_state_hex(encoded[i]));
+      g_strfreev(encoded);
+    }
+    g_strfreev(fields);
+  }
+  app_refresh_candidate_window(app);
+}
+
+/* The host publishes each already-completed key transaction to this shared
+ * snapshot.  Reading it never sends a request, so Sumi can react quickly
+ * without entering the engine mutex or delaying the next keystroke. */
+typedef struct {
+  volatile LONG sequence;
+  char line[8192];
+} SharedImeState;
+
+static void state_mirror_name(wchar_t *out, size_t capacity) {
+  wchar_t pipe_name[256] = {0};
+  const DWORD size = GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", pipe_name,
+                                               G_N_ELEMENTS(pipe_name));
+  if (size == 0 || size >= G_N_ELEMENTS(pipe_name)) {
+    wcsncpy(out, L"Local\\ddskk-ime-state-v1", capacity - 1);
+    out[capacity - 1] = L'\0';
+    return;
+  }
+  wchar_t suffix[256];
+  wcsncpy(suffix, pipe_name, G_N_ELEMENTS(suffix) - 1);
+  suffix[G_N_ELEMENTS(suffix) - 1] = L'\0';
+  for (wchar_t *cursor = suffix; *cursor != L'\0'; ++cursor) {
+    if (*cursor == L'\\' || *cursor == L'/') *cursor = L'_';
+  }
+  _snwprintf(out, capacity, L"Local\\ddskk-ime-state-v1-%ls", suffix);
+  out[capacity - 1] = L'\0';
+}
+
+static gboolean app_read_state_mirror(App *app) {
+  if (app->state_line == NULL) {
+    wchar_t map_name[512];
+    state_mirror_name(map_name, G_N_ELEMENTS(map_name));
+    app->state_map = OpenFileMappingW(FILE_MAP_READ, FALSE, map_name);
+    if (app->state_map == NULL) return FALSE;
+    const SharedImeState *view = MapViewOfFile(app->state_map, FILE_MAP_READ,
+                                                0, 0, sizeof(SharedImeState));
+    if (view == NULL) {
+      CloseHandle(app->state_map);
+      app->state_map = NULL;
+      return FALSE;
+    }
+    app->state_sequence = &view->sequence;
+    app->state_line = view->line;
+  }
+  /* The view is FILE_MAP_READ. InterlockedCompareExchange is not a pure
+   * load: when sequence is zero it attempts to write zero back, causing an
+   * access violation on this read-only mapping. An aligned LONG load is
+   * atomic on supported Windows targets; the barriers preserve the seqlock
+   * ordering around the line copy. */
+  const LONG before = *app->state_sequence;
+  if (before == 0 || (before & 1) || before == app->seen_state_sequence) return FALSE;
+  char reply[8192];
+  memcpy(reply, app->state_line, sizeof(reply) - 1);
+  reply[sizeof(reply) - 1] = '\0';
+  MemoryBarrier();
+  const LONG after = *app->state_sequence;
+  if (before != after || (after & 1)) return FALSE;
+  app->seen_state_sequence = after;
+  app_apply_state_reply(app, reply);
+  return TRUE;
+}
+
 /* ------------------------------------------------------------------ */
 /* Rendering. */
 
-static void set_source_from_rgb24(cairo_t *cr, int64_t rgb) {
-  const double r = ((rgb >> 16) & 0xff) / 255.0;
-  const double g = ((rgb >> 8) & 0xff) / 255.0;
-  const double b = (rgb & 0xff) / 255.0;
+/* Mode colours are persisted as Win32 COLORREF (0x00BBGGRR), shared with
+ * the DLL and the settings dialog.  Cairo wants RGB channels, so do not
+ * treat this as a conventional 0xRRGGBB integer: that swaps kana's red
+ * and blue every time the pill redraws. */
+static void set_source_from_colorref(cairo_t *cr, int64_t colorref) {
+  const double r = (colorref & 0xff) / 255.0;
+  const double g = ((colorref >> 8) & 0xff) / 255.0;
+  const double b = ((colorref >> 16) & 0xff) / 255.0;
   cairo_set_source_rgb(cr, r, g, b);
 }
 
@@ -288,7 +598,7 @@ static void draw_indicator(GtkDrawingArea *area, cairo_t *cr, int width,
   const int64_t label_code = skkui_label_for(mode, prev);
   const int64_t marker_code = skkui_composing_marker(mode);
 
-  set_source_from_rgb24(cr, rgb);
+  set_source_from_colorref(cr, rgb);
   cairo_paint(cr);
 
   /* Text color: near-white on every one of this app's default backgrounds
@@ -314,7 +624,7 @@ static void send_control_cancel_and_key(App *app, int64_t item) {
   char response[8192];
   if (!pipe_client_transact(&app->pipe, "CONTROL CANCEL\n", response, sizeof(response)))
     return;
-  app_apply_mode(app, mode_from_state_reply(response));
+  app_apply_state_reply(app, response);
 
   const int64_t keycode = skkui_menu_item_keycode(item);
   if (keycode <= 0) return; /* 0 = CONTROL CANCEL alone was enough; -1 = invalid */
@@ -322,7 +632,7 @@ static void send_control_cancel_and_key(App *app, int64_t item) {
   char request[32];
   snprintf(request, sizeof(request), "KEY %lld\n", (long long)keycode);
   if (!pipe_client_transact(&app->pipe, request, response, sizeof(response))) return;
-  app_apply_mode(app, mode_from_state_reply(response));
+  app_apply_state_reply(app, response);
 }
 
 static void on_menu_item_clicked(GtkButton *button, gpointer user_data) {
@@ -385,6 +695,7 @@ typedef struct {
    * as the dropdown changes, so an engine's options never appear under
    * another engine. */
   GtkWidget *engine_stack;
+  GtkWidget *dictionary_stack;
   /* kEngineChoices indices actually offered in the dropdown, in dropdown
    * order; experimental engines are absent unless enabled.  The dropdown's
    * own selection index means nothing without this mapping. */
@@ -560,6 +871,11 @@ static void on_engine_changed(GObject *dropdown, GParamSpec *pspec, gpointer use
     g_snprintf(name, sizeof(name), "%u", index);
     gtk_stack_set_visible_child_name(GTK_STACK(sw->engine_stack), name);
   }
+  if (sw->dictionary_stack) {
+    char name[32];
+    g_snprintf(name, sizeof(name), "%u", index);
+    gtk_stack_set_visible_child_name(GTK_STACK(sw->dictionary_stack), name);
+  }
 }
 
 /* One page per engine: its description plus whatever settings only that
@@ -574,28 +890,34 @@ static GtkWidget *build_engine_pages(SettingsWindow *sw) {
     gtk_box_append(GTK_BOX(page), note);
 
     if (wcscmp(kEngineChoices[i].id, L"ddskk") == 0) {
-      sw->check_okuri_auto = gtk_check_button_new_with_label(
-          "\xe9\x80\x81\xe3\x82\x8a\xe4\xbb\xae\xe5\x90\x8d\xe3\x82\x92\xe8\x87\xaa\xe5\x8b\x95\xe5\x87\xa6\xe7\x90\x86\xe3\x81\x99\xe3\x82\x8b" /* 送り仮名を自動処理する */);
-      gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_okuri_auto),
-                                  sw->app->settings.engine_okuri_auto != 0);
-      gtk_box_append(GTK_BOX(page), sw->check_okuri_auto);
-    } else if (wcscmp(kEngineChoices[i].id, L"lattice") == 0) {
-      GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-      GtkWidget *label = gtk_label_new(
-          "\xe5\x80\x99\xe8\xa3\x9c\xe3\x81\xae\xe8\xa1\xa8\xe7\xa4\xba\xe6\x95\xb0" /* 候補の表示数 */);
-      gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-      sw->spin_candidate_limit = gtk_spin_button_new_with_range(1, 30, 1);
-      gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_candidate_limit),
-                                sw->app->settings.engine_candidate_limit);
-      gtk_box_append(GTK_BOX(row), label);
-      gtk_box_append(GTK_BOX(row), sw->spin_candidate_limit);
-      gtk_box_append(GTK_BOX(page), row);
+      sw->check_okuri_strictly = gtk_check_button_new_with_label(
+          "\xe9\x80\x81\xe3\x82\x8a\xe4\xbb\xae\xe5\x90\x8d\xe3\x81\x8c\xe4\xb8\x80\xe8\x87\xb4\xe3\x81\x97\xe3\x81\x9f\xe5\x80\x99\xe8\xa3\x9c\xe3\x82\x92\xe5\x84\xaa\xe5\x85\x88\xe3\x81\x99\xe3\x82\x8b");
+      gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_okuri_strictly),
+                                  sw->app->settings.behavior_okuri_strictly != 0);
+      gtk_box_append(GTK_BOX(page), sw->check_okuri_strictly);
 
-      sw->check_lattice_learning = gtk_check_button_new_with_label(
-          "\xe7\xa2\xba\xe5\xae\x9a\xe3\x81\x97\xe3\x81\x9f\xe5\x80\x99\xe8\xa3\x9c\xe3\x82\x92\xe5\xad\xa6\xe7\xbf\x92\xe3\x81\x99\xe3\x82\x8b" /* 確定した候補を学習する */);
-      gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_lattice_learning),
-                                  sw->app->settings.engine_learning != 0);
-      gtk_box_append(GTK_BOX(page), sw->check_lattice_learning);
+      sw->check_delete_okuri_on_cancel = gtk_check_button_new_with_label(
+          "\xe5\x8f\x96\xe6\xb6\x88\xe3\x81\xae\xe3\x81\xa8\xe3\x81\x8d\xe9\x80\x81\xe3\x82\x8a\xe4\xbb\xae\xe5\x90\x8d\xe3\x82\x92\xe5\x89\x8a\xe9\x99\xa4\xe3\x81\x99\xe3\x82\x8b");
+      gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_delete_okuri_on_cancel),
+                                  sw->app->settings.behavior_delete_okuri_on_cancel != 0);
+      gtk_box_append(GTK_BOX(page), sw->check_delete_okuri_on_cancel);
+
+      sw->check_add_katakana_cand = gtk_check_button_new_with_label(
+          "\xe5\x80\x99\xe8\xa3\x9c\xe3\x81\xab\xe7\x89\x87\xe4\xbb\xae\xe5\x90\x8d\xe5\xa4\x89\xe6\x8f\x9b\xe3\x82\x92\xe8\xbf\xbd\xe5\x8a\xa0\xe3\x81\x99\xe3\x82\x8b");
+      gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_add_katakana_cand),
+                                  sw->app->settings.behavior_add_katakana_cand != 0);
+      gtk_box_append(GTK_BOX(page), sw->check_add_katakana_cand);
+
+      sw->check_learn_disabled = gtk_check_button_new_with_label(
+          "\xe5\xad\xa6\xe7\xbf\x92\xe3\x81\x97\xe3\x81\xaa\xe3\x81\x84\xef\xbc\x88\xe3\x83\x97\xe3\x83\xa9\xe3\x82\xa4\xe3\x83\x99\xe3\x83\xbc\xe3\x83\x88\xe3\x83\xa2\xe3\x83\xbc\xe3\x83\x89\xef\xbc\x89");
+      gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_learn_disabled),
+                                  sw->app->settings.behavior_learn_disabled != 0);
+      gtk_box_append(GTK_BOX(page), sw->check_learn_disabled);
+    } else {
+      GtkWidget *none = gtk_label_new(
+          "\xe3\x81\x93\xe3\x81\xae\xe5\x87\xa6\xe7\x90\x86\xe7\xb3\xbb\xe3\x81\xab\xe8\xbf\xbd\xe5\x8a\xa0\xe3\x81\xae\xe8\xa8\xad\xe5\xae\x9a\xe3\x81\xaf\xe3\x81\x82\xe3\x82\x8a\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93\xe3\x80\x82" /* この処理系に追加の設定はありません。 */);
+      gtk_label_set_xalign(GTK_LABEL(none), 0.0);
+      gtk_box_append(GTK_BOX(page), none);
     }
 
     char name[32];
@@ -638,35 +960,7 @@ static GtkWidget *build_tab_behavior(SettingsWindow *sw) {
   gtk_box_append(GTK_BOX(radio_box), sw->radio_latin);
   grid_add_row(GTK_GRID(grid), 1, "\xe5\x88\x9d\xe6\x9c\x9f\xe5\x85\xa5\xe5\x8a\x9b\xe3\x83\xa2\xe3\x83\xbc\xe3\x83\x89" /* 初期入力モード */, radio_box);
 
-  /* CorvusSKK-modeled behavior toggles (BehaviorOkuriStrictly/
-   * BehaviorDeleteOkuriOnCancel/BehaviorAddKatakanaCand/
-   * BehaviorLearnDisabled -- see settings.h). These take effect via
-   * engine restart, same as every other value on this tab; the shared
-   * status_label below the notebook (not tab-scoped) already shows the
-   * CorvusSKK-style "反映には..." note after Apply regardless of which
-   * tab is active, so no separate note is needed here. */
   int row = 2;
-  sw->check_okuri_strictly = gtk_check_button_new_with_label(
-      "\xe9\x80\x81\xe3\x82\x8a\xe4\xbb\xae\xe5\x90\x8d\xe3\x81\x8c\xe4\xb8\x80\xe8\x87\xb4\xe3\x81\x97\xe3\x81\x9f\xe5\x80\x99\xe8\xa3\x9c\xe3\x82\x92\xe5\x84\xaa\xe5\x85\x88\xe3\x81\x99\xe3\x82\x8b"
-      /* 送り仮名が一致した候補を優先する */);
-  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_okuri_strictly),
-                              sw->app->settings.behavior_okuri_strictly != 0);
-  gtk_grid_attach(GTK_GRID(grid), sw->check_okuri_strictly, 0, row++, 2, 1);
-
-  sw->check_delete_okuri_on_cancel = gtk_check_button_new_with_label(
-      "\xe5\x8f\x96\xe6\xb6\x88\xe3\x81\xae\xe3\x81\xa8\xe3\x81\x8d\xe9\x80\x81\xe3\x82\x8a\xe4\xbb\xae\xe5\x90\x8d\xe3\x82\x92\xe5\x89\x8a\xe9\x99\xa4\xe3\x81\x99\xe3\x82\x8b"
-      /* 取消のとき送り仮名を削除する */);
-  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_delete_okuri_on_cancel),
-                              sw->app->settings.behavior_delete_okuri_on_cancel != 0);
-  gtk_grid_attach(GTK_GRID(grid), sw->check_delete_okuri_on_cancel, 0, row++, 2, 1);
-
-  sw->check_add_katakana_cand = gtk_check_button_new_with_label(
-      "\xe5\x80\x99\xe8\xa3\x9c\xe3\x81\xab\xe7\x89\x87\xe4\xbb\xae\xe5\x90\x8d\xe5\xa4\x89\xe6\x8f\x9b\xe3\x82\x92\xe8\xbf\xbd\xe5\x8a\xa0\xe3\x81\x99\xe3\x82\x8b"
-      /* 候補に片仮名変換を追加する */);
-  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_add_katakana_cand),
-                              sw->app->settings.behavior_add_katakana_cand != 0);
-  gtk_grid_attach(GTK_GRID(grid), sw->check_add_katakana_cand, 0, row++, 2, 1);
-
   /* Engine-specific settings live on their own page, swapped by the
    * dropdown above, so an engine's options never show under another. */
   sw->engine_stack = build_engine_pages(sw);
@@ -676,13 +970,7 @@ static GtkWidget *build_tab_behavior(SettingsWindow *sw) {
                engine_choice_index(sw->app->settings.engine));
     gtk_stack_set_visible_child_name(GTK_STACK(sw->engine_stack), name);
   }
-
-  sw->check_learn_disabled = gtk_check_button_new_with_label(
-      "\xe5\xad\xa6\xe7\xbf\x92\xe3\x81\x97\xe3\x81\xaa\xe3\x81\x84\xef\xbc\x88\xe3\x83\x97\xe3\x83\xa9\xe3\x82\xa4\xe3\x83\x99\xe3\x83\xbc\xe3\x83\x88\xe3\x83\xa2\xe3\x83\xbc\xe3\x83\x89\xef\xbc\x89"
-      /* 学習しない（プライベートモード） */);
-  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_learn_disabled),
-                              sw->app->settings.behavior_learn_disabled != 0);
-  gtk_grid_attach(GTK_GRID(grid), sw->check_learn_disabled, 0, row++, 2, 1);
+  gtk_grid_attach(GTK_GRID(grid), sw->engine_stack, 0, row++, 2, 1);
 
   return grid;
 }
@@ -721,7 +1009,7 @@ static GtkWidget *build_tab_display(SettingsWindow *sw) {
   grid_add_row(GTK_GRID(grid), row++, "\xe5\x85\xa8\xe8\x8b\xb1\xe8\x89\xb2" /* 全英色 */, sw->color_wide_latin);
 
   sw->color_latin = make_color_button(sw->app->settings.color_latin);
-  grid_add_row(GTK_GRID(grid), row++, "SKK(\xe8\x8b\xb1\xe6\x95\xb0)\xe8\x89\xb2" /* SKK(英数)色 */, sw->color_latin);
+  grid_add_row(GTK_GRID(grid), row++, "\xe8\x8b\xb1\xe6\x95\xb0\xe8\x89\xb2" /* 英数色 */, sw->color_latin);
 
   sw->color_abbrev = make_color_button(sw->app->settings.color_abbrev);
   grid_add_row(GTK_GRID(grid), row++, "Abbrev\xe8\x89\xb2" /* Abbrev色 */, sw->color_abbrev);
@@ -754,7 +1042,7 @@ static void on_jisyo_browse_clicked(GtkButton *button, gpointer user_data) {
   g_object_unref(dialog);
 }
 
-static GtkWidget *build_tab_dictionary(SettingsWindow *sw) {
+static GtkWidget *build_ddskk_dictionary_page(SettingsWindow *sw) {
   GtkWidget *grid = gtk_grid_new();
   gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
   gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
@@ -801,6 +1089,37 @@ static GtkWidget *build_tab_dictionary(SettingsWindow *sw) {
   grid_add_row(GTK_GRID(grid), row++, "\xe4\xbf\x9d\xe5\xad\x98\xe9\x96\x93\xe9\x9a\x94 (\xe7\xa2\xba\xe5\xae\x9a\xe6\x95\xb0)" /* 保存間隔 (確定数) */, sw->spin_jisyo_batch);
 
   return grid;
+}
+
+static GtkWidget *build_tab_dictionary(SettingsWindow *sw) {
+  sw->dictionary_stack = gtk_stack_new();
+  for (guint i = 0; i < ENGINE_CHOICE_COUNT; i++) {
+    GtkWidget *page = NULL;
+    if (wcscmp(kEngineChoices[i].id, L"ddskk") == 0) {
+      page = build_ddskk_dictionary_page(sw);
+    } else {
+      page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+      gtk_widget_set_margin_top(page, 12);
+      gtk_widget_set_margin_bottom(page, 12);
+      gtk_widget_set_margin_start(page, 12);
+      gtk_widget_set_margin_end(page, 12);
+      const char *message = wcscmp(kEngineChoices[i].id, L"passthrough") == 0
+          ? "パススルーは辞書を使用しません。"
+          : "この処理系の辞書設定は、まだ設定画面から変更できません。";
+      GtkWidget *label = gtk_label_new(message);
+      gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+      gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+      gtk_box_append(GTK_BOX(page), label);
+    }
+    char name[32];
+    g_snprintf(name, sizeof(name), "%u", i);
+    gtk_stack_add_named(GTK_STACK(sw->dictionary_stack), page, name);
+  }
+  char current[32];
+  g_snprintf(current, sizeof(current), "%u",
+             engine_choice_index(sw->app->settings.engine));
+  gtk_stack_set_visible_child_name(GTK_STACK(sw->dictionary_stack), current);
+  return sw->dictionary_stack;
 }
 
 static GtkWidget *build_tab_maintenance(SettingsWindow *sw) {
@@ -875,16 +1194,15 @@ static void settings_read_from_widgets(SettingsWindow *sw, Settings *out) {
   out->dll_debug = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_dll_debug)) ? 1 : 0;
 }
 
-/* Shows/hides the indicator pill to match the just-applied (or just-
- * loaded) ModeIndicator setting. No-op in --settings-only mode, where
- * there is no pill (app->window is NULL). */
+/* The native TSF mode notification owns the short-lived cursor-adjacent
+ * "かな / カナ / SKK / 全英" display.  Sumi remains resident only for
+ * candidate/registration surfaces; its old persistent coloured glyph
+ * pill duplicated that notification and must stay hidden.  Do not change
+ * ModeIndicator here: the DLL uses that same registry value to control
+ * the native short-lived notification that we still want. */
 static void app_sync_pill_visibility(App *app) {
   if (!app->window) return;
-  if (app->settings.mode_indicator) {
-    gtk_window_present(GTK_WINDOW(app->window));
-  } else {
-    gtk_widget_set_visible(app->window, FALSE);
-  }
+  gtk_widget_set_visible(app->window, FALSE);
 }
 
 /* Status-label strings, as UTF-8 escapes like the rest of this file. */
@@ -1086,7 +1404,7 @@ static void open_settings_window(App *app) {
                           : gtk_window_new();
   sw->window = window;
   app->settings_window = window;
-  gtk_window_set_title(GTK_WINDOW(window), "SKK \xe8\xa8\xad\xe5\xae\x9a" /* SKK 設定 */);
+  gtk_window_set_title(GTK_WINDOW(window), "NeLisp IME \xe8\xa8\xad\xe5\xae\x9a" /* NeLisp IME 設定 */);
   gtk_window_set_default_size(GTK_WINDOW(window), 480, 360);
   g_object_set_data_full(G_OBJECT(window), "sw", sw, g_free);
   g_signal_connect(window, "close-request", G_CALLBACK(on_settings_close_request), sw);
@@ -1145,26 +1463,44 @@ static void on_right_click_released(GtkGestureClick *gesture, int n_press, doubl
 }
 
 /* ------------------------------------------------------------------ */
-/* Polling timer: 500 ms while the pill is shown (ModeIndicator != 0),
- * 2 s while it is hidden -- task brief: "Poll cadence may drop to 2 s
- * while hidden." Self-rescheduling (on_poll_tick always returns
+/* The pipe fallback runs at 500 ms while the pill is shown.  Once the host
+ * exposes its read-only state mirror, Sumi checks that memory every 16 ms;
+ * this never competes with a keystroke's pipe transaction.  Without the
+ * mirror it drops to 2 s while hidden.  Self-rescheduling (on_poll_tick
+ * always returns
  * G_SOURCE_REMOVE and arms the next tick itself) rather than a fixed
  * g_timeout_add() so the interval can change between ticks whenever
  * app->settings.mode_indicator changes (Apply, or the initial load). */
 
 #define SKKUI_POLL_INTERVAL_MS 500
 #define SKKUI_HIDDEN_POLL_INTERVAL_MS 2000
-
+#define SKKUI_STATE_MIRROR_INTERVAL_MS 16
 static gboolean on_poll_tick(gpointer user_data);
 
 static void schedule_poll(App *app) {
-  const guint interval = app->settings.mode_indicator ? SKKUI_POLL_INTERVAL_MS
-                                                       : SKKUI_HIDDEN_POLL_INTERVAL_MS;
+  const guint interval = app->state_line != NULL
+      ? SKKUI_STATE_MIRROR_INTERVAL_MS
+      : (app->settings.mode_indicator ? SKKUI_POLL_INTERVAL_MS
+                                      : SKKUI_HIDDEN_POLL_INTERVAL_MS);
   g_timeout_add(interval, on_poll_tick, app);
 }
 
 static gboolean on_poll_tick(gpointer user_data) {
   App *app = (App *)user_data;
+  const gboolean mirror_updated = app_read_state_mirror(app);
+  /* Once the host's state mirror is mapped, never issue a synchronous
+   * STATUS request from the resident UI.  STATUS and keystrokes share the
+   * engine mutex; even a health probe can therefore get ahead of a fast
+   * typist's next key and make input feel sticky.  REGISTER remains an
+   * explicit, user-triggered pipe transaction. */
+  if (app->state_line != NULL && (mirror_updated || app->have_state)) {
+    schedule_poll(app);
+    return G_SOURCE_REMOVE;
+  }
+  /* A newly-created mirror has sequence zero until the first engine
+   * transaction.  Bootstrap it with one STATUS request; otherwise Sumi
+   * maps the mirror, refuses all pipe polling, and never shows the initial
+   * hiragana state before the first user key. */
   if (pipe_client_in_backoff(&app->pipe)) {
     if (!app->have_state || app->mode != MODE_UNREACHABLE)
       app_apply_mode(app, MODE_UNREACHABLE);
@@ -1177,7 +1513,7 @@ static gboolean on_poll_tick(gpointer user_data) {
     schedule_poll(app);
     return G_SOURCE_REMOVE;
   }
-  app_apply_mode(app, mode_from_state_reply(response));
+  app_apply_state_reply(app, response);
   schedule_poll(app);
   return G_SOURCE_REMOVE;
 }
@@ -1203,6 +1539,19 @@ static void apply_always_on_top(GtkWidget *window) {
 
 static void on_realize(GtkWidget *window, gpointer user_data) {
   (void)user_data;
+  apply_always_on_top(window);
+}
+
+static void on_candidate_realize(GtkWidget *window, gpointer user_data) {
+  (void)user_data;
+  GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(window));
+  if (surface == NULL || !GDK_IS_WIN32_SURFACE(surface)) return;
+  HWND hwnd = gdk_win32_surface_get_handle(surface);
+  if (hwnd == NULL) return;
+  /* Set before the first show, so Windows never transfers keyboard focus
+   * to this purely visual popup.  TOOLWINDOW also keeps it out of Alt-Tab. */
+  const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
   apply_always_on_top(window);
 }
 
@@ -1236,6 +1585,28 @@ static void build_pill(App *app) {
   gtk_window_set_child(GTK_WINDOW(app->window), handle);
 
   g_signal_connect(app->window, "realize", G_CALLBACK(on_realize), NULL);
+
+  /* This is a Sumi surface, not a second TSF candidate element.  It only
+   * mirrors STATUS; the text service remains the sole owner of selection
+   * and commit. */
+  app->candidate_window = gtk_application_window_new(app->gtk_app);
+  gtk_window_set_title(GTK_WINDOW(app->candidate_window), "SKK 候補");
+  /* The actual size is content-measured in app_refresh_candidate_window,
+   * like CorvusSKK's _CalcWindowRect.  Keep no sticky minimum here. */
+  gtk_window_set_default_size(GTK_WINDOW(app->candidate_window), 1, 1);
+  gtk_window_set_resizable(GTK_WINDOW(app->candidate_window), FALSE);
+  gtk_window_set_decorated(GTK_WINDOW(app->candidate_window), FALSE);
+  gtk_window_set_transient_for(GTK_WINDOW(app->candidate_window),
+                               GTK_WINDOW(app->window));
+  app->candidate_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_widget_add_css_class(app->candidate_box, "card");
+  gtk_window_set_child(GTK_WINDOW(app->candidate_window), app->candidate_box);
+  g_signal_connect(app->candidate_window, "realize", G_CALLBACK(on_candidate_realize), NULL);
+  /* Pay GTK/Win32 surface creation at resident startup, not on the first
+   * Space conversion.  Showing an already-realized tool window then only
+   * rebuilds/measures its few labels and calls SetWindowPos. */
+  gtk_widget_realize(app->candidate_window);
+  gtk_widget_set_visible(app->candidate_window, FALSE);
 }
 
 static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
@@ -1255,6 +1626,7 @@ static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
 
   build_pill(app);
   app_sync_pill_visibility(app);
+  app_read_state_mirror(app);
   schedule_poll(app);
 }
 
@@ -1281,6 +1653,11 @@ int main(int argc, char **argv) {
   app.settings_only = settings_only;
   settings_defaults(&app.settings); /* overwritten by settings_load() in on_activate() */
   app.label_font = pango_font_description_from_string("Sans 14");
+  app.candidates = g_ptr_array_new_with_free_func(g_free);
+  app.candidate_index = -1;
+  app.registration_reading = g_strdup("");
+  app.registration_text = g_strdup("");
+  app.registration_pending = g_strdup("");
 
   /* NON_UNIQUE when opening settings: with the default GApplication
    * uniqueness, a second `sumi-skk-ui --settings` launch would merely
@@ -1318,5 +1695,9 @@ int main(int argc, char **argv) {
   g_object_unref(gtk_app);
   pango_font_description_free(app.label_font);
   pipe_client_disconnect(&app.pipe);
+  g_free(app.registration_reading);
+  g_free(app.registration_text);
+  g_free(app.registration_pending);
+  g_ptr_array_free(app.candidates, TRUE);
   return status;
 }

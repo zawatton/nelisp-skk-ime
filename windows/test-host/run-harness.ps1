@@ -58,6 +58,13 @@ param(
 
   [string]$TsfHostExe = "",
 
+  # Optional build-under-test overrides.  Defaults remain the installed
+  # registry values, but CI/development can now exercise a new host/protocol
+  # and repository snapshot without deploying either one live first.
+  [string]$EngineHostPath = "",
+  [string]$EngineExecutablePath = "",
+  [string]$RepositoryPath = "",
+
   [string]$Configuration = "Release",
 
   # Engine cold load has been measured anywhere from 3.4s (quiet machine)
@@ -120,6 +127,15 @@ $reg = Get-ItemProperty -Path $regPath
 $engineHost = $reg.EngineHost
 $engineExecutable = $reg.EngineExecutable
 $repository = $reg.Repository
+if (-not [string]::IsNullOrWhiteSpace($EngineHostPath)) {
+  $engineHost = [IO.Path]::GetFullPath($EngineHostPath)
+}
+if (-not [string]::IsNullOrWhiteSpace($EngineExecutablePath)) {
+  $engineExecutable = [IO.Path]::GetFullPath($EngineExecutablePath)
+}
+if (-not [string]::IsNullOrWhiteSpace($RepositoryPath)) {
+  $repository = [IO.Path]::GetFullPath($RepositoryPath)
+}
 
 if ([string]::IsNullOrWhiteSpace($engineHost)) {
   Write-Error "$regPath has no EngineHost value."
@@ -145,6 +161,8 @@ $tempJisyo = Join-Path $env:TEMP "ddskk-test-jisyo-$runId.jisyo"
 # its own E2E test already rely on (see host/main.cpp PipeName()).
 $env:DDSKK_PIPE_NAME = $pipeFullName
 $env:DDSKK_USER_JISYO = $tempJisyo
+$savedDisableHostSpawn = $env:NELISP_IME_DISABLE_HOST_SPAWN
+$env:NELISP_IME_DISABLE_HOST_SPAWN = '1'
 
 Write-Host "run-harness: pipe=$pipeFullName jisyo=$tempJisyo"
 Write-Host "run-harness: starting engine host: [$engineHost] [$engineExecutable] [$repository]"
@@ -198,6 +216,11 @@ try {
   }
   if (Test-Path -LiteralPath $tempJisyo) {
     Remove-Item -LiteralPath $tempJisyo -Force -ErrorAction SilentlyContinue
+  }
+  if ($null -eq $savedDisableHostSpawn) {
+    Remove-Item Env:NELISP_IME_DISABLE_HOST_SPAWN -ErrorAction SilentlyContinue
+  } else {
+    $env:NELISP_IME_DISABLE_HOST_SPAWN = $savedDisableHostSpawn
   }
 }
 

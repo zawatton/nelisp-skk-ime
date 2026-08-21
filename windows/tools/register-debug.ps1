@@ -34,4 +34,4 @@ if ($process.ExitCode -ne 0) {
   throw "regsvr32 failed with exit code $($process.ExitCode)"
 }
 $operation = if ($Unregister) { 'unregistered' } else { 'registered' }
-Write-Host "DDSKK IME ${operation}: $dll"
+Write-Host "NeLisp IME ${operation}: $dll"

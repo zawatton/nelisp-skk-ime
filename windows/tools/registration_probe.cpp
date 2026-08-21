@@ -22,7 +22,7 @@
 
 namespace {
 constexpr LANGID kJapanese = MAKELANGID(LANG_JAPANESE, SUBLANG_DEFAULT);
-constexpr wchar_t kDescription[] = L"DDSKK (NeLisp)";
+constexpr wchar_t kDescription[] = L"NeLisp IME";
 
 void Print(const wchar_t* stage, HRESULT result) {
   std::wcout << stage << L": 0x" << std::hex

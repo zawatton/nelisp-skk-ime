@@ -1,11 +1,10 @@
 # nelisp-skk-ime
 
-A Windows Text Services Framework (TSF) input method that runs the real
-DDSKK (Daredevil SKK) conversion engine on top of the
-[NeLisp](https://github.com/zawatton/nelisp)
-runtime, in-process with a C++ TSF host. Dictionary lookups are relayed by
-the C++ host to a running SKK dictionary server (skkserv-compatible) rather
-than performed inside the engine process.
+**NeLisp IME** is a Windows Text Services Framework (TSF) input method.
+Its internal architecture, **NeLisp Input Hub**, connects the Windows-facing
+IME to selectable Japanese input engines such as DDSKK and Lattice. The
+[NeLisp](https://github.com/zawatton/nelisp) runtime hosts those engines,
+while Sumi provides the indicator, candidate window, and settings UI.
 
 ## Layout
 
@@ -26,6 +25,92 @@ The engine process is launched by the C++ host as `nelisp.exe --load
 engine/ddskk-engine-stdio.el`, with its working directory set to this
 repository's root, so every `(load ...)` path inside `engine/` and `test/`
 is resolved relative to the repository root.
+
+## Emacs: switch between Emacs DDSKK and NeLisp IME
+
+Running Emacs DDSKK and the Windows NeLisp IME at the same time causes double
+conversion. The following example makes Emacs DDSKK the default and allows
+NeLisp IME to be selected per buffer. It also follows Evil state: NeLisp IME
+opens only in `insert` and `replace`, and closes in Normal state.
+
+```emacs-lisp
+(define-minor-mode my-nelisp-ime-mode
+  "Use the Windows NeLisp IME instead of Emacs DDSKK in this buffer."
+  :init-value nil
+  :lighter " NeIME"
+  (if my-nelisp-ime-mode
+      (when (bound-and-true-p skk-mode)
+        (skk-mode -1))
+    (unless (fboundp 'skk-mode)
+      (require 'skk))
+    (skk-mode 1))
+  (my-w32-sync-nelisp-ime))
+
+(defun my-w32-sync-nelisp-ime (&rest _)
+  "Synchronize NeLisp IME with the current buffer and Evil state."
+  (when (fboundp 'w32-set-ime-open-status)
+    (w32-set-ime-open-status
+     (and my-nelisp-ime-mode
+          (memq (and (boundp 'evil-state) evil-state) '(insert replace))
+          (not (bound-and-true-p skk-mode))))))
+
+(defun my-w32-sync-selected-buffer-ime (&rest _)
+  "Synchronize the IME using the selected window's buffer."
+  (when-let ((window (selected-window)))
+    (with-current-buffer (window-buffer window)
+      (my-w32-sync-nelisp-ime))))
+
+(defun my-w32-sync-after-skk-mode (&rest _)
+  "Disable NeLisp IME whenever Emacs DDSKK is enabled."
+  (when (bound-and-true-p skk-mode)
+    (setq my-nelisp-ime-mode nil))
+  (my-w32-sync-nelisp-ime))
+
+(defun my-use-emacs-ddskk ()
+  "Use Emacs DDSKK in the current buffer."
+  (interactive)
+  (my-nelisp-ime-mode -1)
+  (message "Japanese input: Emacs DDSKK"))
+
+(defun my-use-nelisp-ime ()
+  "Use NeLisp IME in the current buffer."
+  (interactive)
+  (my-nelisp-ime-mode 1)
+  (message "Japanese input: NeLisp IME"))
+
+(defun my-toggle-japanese-input-backend ()
+  "Toggle Emacs DDSKK and NeLisp IME in the current buffer."
+  (interactive)
+  (if my-nelisp-ime-mode
+      (my-use-emacs-ddskk)
+    (my-use-nelisp-ime)))
+
+(when (eq system-type 'windows-nt)
+  (add-hook 'focus-in-hook #'my-w32-sync-selected-buffer-ime)
+  (add-hook 'buffer-list-update-hook #'my-w32-sync-selected-buffer-ime)
+  (with-eval-after-load 'evil
+    (dolist (hook '(evil-normal-state-entry-hook
+                    evil-motion-state-entry-hook
+                    evil-visual-state-entry-hook
+                    evil-emacs-state-entry-hook
+                    evil-insert-state-entry-hook
+                    evil-replace-state-entry-hook))
+      (add-hook hook #'my-w32-sync-nelisp-ime)))
+  (with-eval-after-load 'skk
+    (add-hook 'skk-mode-hook #'my-w32-sync-after-skk-mode)
+    (unless (advice-member-p #'my-w32-sync-after-skk-mode 'skk-mode)
+      (advice-add 'skk-mode :after #'my-w32-sync-after-skk-mode))))
+```
+
+Use `M-x my-toggle-japanese-input-backend` for normal switching, or select a
+backend directly with `M-x my-use-emacs-ddskk` and `M-x my-use-nelisp-ime`.
+The `NeIME` mode-line indicator means that the current buffer uses NeLisp IME;
+otherwise it uses Emacs DDSKK. A key binding can be added if desired, for
+example:
+
+```emacs-lisp
+(global-set-key (kbd "C-c C-j") #'my-toggle-japanese-input-backend)
+```
 
 ## Build
 

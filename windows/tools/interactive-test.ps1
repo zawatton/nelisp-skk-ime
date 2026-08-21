@@ -43,7 +43,7 @@ try {
   if (-not $ready) { throw 'DDSKK engine host did not open its named pipe.' }
 
   Write-Host 'DDSKK engine host is ready.'
-  Write-Host 'Select "DDSKK (NeLisp)" from the Windows input switcher.'
+  Write-Host 'Select "NeLisp IME" from the Windows input switcher.'
   Write-Host 'Test in Notepad: kana -> かな, Kana -> ▽かな, Space -> ▼ candidate, Enter -> commit.'
   Write-Host 'Press Enter here after the interactive test.'
   Read-Host | Out-Null

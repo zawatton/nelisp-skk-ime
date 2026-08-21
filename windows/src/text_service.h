@@ -16,12 +16,16 @@
 #pragma once
 
 #include "engine_client.h"
+#include "realtime_frontend.h"
 #include "candidate_ui.h"
 #include "display_attribute.h"
 #include "guids.h"
 #include "langbar_button.h"
 #include "mode_indicator.h"
 
+#include <atomic>
+#include <deque>
+#include <mutex>
 #include <string>
 
 #include <msctf.h>
@@ -33,6 +37,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
                           public ITfFunctionProvider,
                           public ITfFnConfigure,
                           public ITfCompositionSink,
+                          public ITfCompartmentEventSink,
                           public CandidateUIHandler,
                           public LangBarButtonHandler {
  public:
@@ -70,6 +75,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
                                  REFGUID profile) override;
   HRESULT STDMETHODCALLTYPE OnCompositionTerminated(
       TfEditCookie ecWrite, ITfComposition* composition) override;
+  HRESULT STDMETHODCALLTYPE OnChange(REFGUID guid) override;
 
   HRESULT ApplyEngineState(TfEditCookie edit_cookie, ITfContext* context,
                            const ddskk::EngineState& state);
@@ -88,6 +94,10 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
  private:
   ~TextService();
   void UnadviseKeySink();
+  HRESULT AdviseOpenCloseCompartment();
+  void UnadviseOpenCloseCompartment();
+  bool ReadKeyboardOpen(bool fallback) const;
+  void ApplyKeyboardOpenChange();
   static std::optional<char32_t> TranslateKey(WPARAM wparam, LPARAM lparam);
   // Whether this VK would be part of OnTestKeyDown's claimed set, given
   // `composing' (= composition_ != nullptr || engine_pending_, computed
@@ -115,16 +125,66 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // evidence behind why every path that can abandon a composition must
   // call this, not just UpdateCandidateUI()'s normal empty-candidates case.
   void CloseCandidateUi();
+  // Emergency fallback used only after the engine stopped answering
+  // Ctrl+G.  Removes the document composition locally and makes the next
+  // engine transaction start with RESET, so a wedged conversion cannot
+  // leave the application trapped in IME-owned input.
+  void ForceCancelComposition(ITfContext* context);
+  // Drop local TSF composition state and mark this client's engine checkpoint
+  // for reset when focus/context loss abandons unconfirmed input.
+  void ResetAbandonedComposition();
   // Appends one line to %LOCALAPPDATA%\DDSKK\dll-debug.log when
   // debug_log_ is set (HKCU\Software\NativeIME\DllDebug == 1). No-op
   // otherwise, so this is safe to call unconditionally from hot paths.
   void DebugLog(const wchar_t* format, ...);
+  struct ProviderResult;
+  static LRESULT CALLBACK ProviderWindowProc(HWND window, UINT message,
+                                              WPARAM wparam, LPARAM lparam);
+  bool CreateProviderWindow();
+  bool BeginProviderConversion(const std::u32string& keys);
+  bool BeginProviderControl(ddskk::EngineControl control);
+  bool BeginProviderKey(char32_t key);
+  bool BeginProviderKeys(const std::u32string& keys);
+  void CancelPendingProvider();
+  void ApplyProviderResult(ProviderResult* result);
+  void ReplayDeferredProviderKeys();
+  void ShowProviderBusy(ITfContext* context);
+
+  struct DeferredProviderKey {
+    WPARAM virtual_key = 0;
+    char32_t codepoint = 0;
+    bool has_codepoint = false;
+    bool shift = false;
+    bool ctrl_j = false;
+  };
 
   LONG ref_count_ = 1;
   ITfThreadMgr* thread_manager_ = nullptr;
   TfClientId client_id_ = TF_CLIENTID_NULL;
   ddskk::EngineClient engine_;
+  ddskk::RealtimeFrontend realtime_frontend_;
+  HWND provider_window_ = nullptr;
+  std::mutex provider_engine_mutex_;
+  std::atomic<uint64_t> provider_sequence_{0};
+  std::atomic<bool> provider_pending_{false};
+  std::deque<DeferredProviderKey> deferred_provider_keys_;
   ITfComposition* composition_ = nullptr;
+  // AddRef'd identity of a composition ended by this TIP.  Some hosts send
+  // OnCompositionTerminated after EndComposition has already returned, so
+  // a stack-duration boolean cannot distinguish that acknowledgement from
+  // an application-abandoned composition.
+  ITfComposition* ending_composition_ = nullptr;
+  // Stable document range parked when Corvus-style registration begins.
+  // Some real TSF hosts terminate composition_ before the registration
+  // result arrives; this range still lets the result replace the original
+  // reading instead of inserting again at the caret.
+  ITfRange* registration_range_ = nullptr;
+  bool registration_commit_pending_ = false;
+  // Set when a claimed key could not obtain an engine STATE.  The next
+  // Ctrl+G must not wait on the same unresponsive pipe again; it takes the
+  // local emergency-cancel path instead.
+  bool engine_roundtrip_failed_ = false;
+  ITfContext* active_context_ = nullptr;
   CandidateUI* candidate_ui_ = nullptr;
   DWORD candidate_ui_id_ = TF_INVALID_UIELEMENTID;
   ITfContext* candidate_context_ = nullptr;
@@ -135,14 +195,27 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // romaji prefix.  Backspace / Enter / Escape belong to the IME only in
   // that state; otherwise they must reach the application.
   bool engine_pending_ = false;
-  // Set by OnCompositionTerminated when the application ends a composition
-  // on its own (focus change, app-driven edit, etc.) without going through
-  // FinalizeCandidate/AbortCandidate/OnKeyDown. The DLL's own composition_
-  // pointer is cleared immediately at that point, but the out-of-process
-  // engine still thinks it owns half of that state; the next key must
-  // cancel the engine first (see OnKeyDown), or its stale text would
-  // re-render into a brand-new composition.
-  bool engine_needs_cancel_ = false;
+  // True when a provider owns the converted composition. Lattice can have
+  // one candidate and still report "preedit", so mode alone is insufficient.
+  bool provider_composition_active_ = false;
+  // True while the engine's modal CorvusSKK-style dictionary registration
+  // editor owns input. The document composition remains parked on the
+  // reading while its checkpointed engine session edits registration text.
+  bool registration_mode_ = false;
+  // TSF may release/update Ctrl between OnTestKeyDown and OnKeyDown.
+  // Remember the modifier decision made for G so a claimed Ctrl+G cannot
+  // turn into an ordinary "g" by the time the real key callback arrives.
+  // Modifier snapshot captured in OnTestKeyDown.  Edge/Terminal can update
+  // the thread keyboard state before the paired OnKeyDown arrives; keeping
+  // it makes every Ctrl chord (not only Ctrl+G) reliably pass through.
+  bool tested_control_down_ = false;
+  // Mirrors TSF's standard keyboard-open compartment.  External clients
+  // such as Emacs' `w32-set-ime-open-status' change this value; false is
+  // CorvusSKK's direct/"--" state and must claim no keys.
+  bool keyboard_open_ = true;
+  bool mode_before_close_kana_ = true;
+  std::wstring engine_mode_before_close_ = L"hiragana";
+  DWORD open_close_cookie_ = TF_INVALID_COOKIE;
   // True while an engine that composes owns the keyboard; false under
   // passthrough, where OnTestKeyDown/OnKeyDown bail out immediately.
   bool ddskk_engine_ = true;

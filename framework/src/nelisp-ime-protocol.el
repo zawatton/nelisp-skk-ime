@@ -38,6 +38,8 @@
                               ("convert" . :convert)
                               ("select-segment" . :select-segment)
                               ("select-candidate" . :select-candidate)
+                              ("resize-segment" . :resize-segment)
+                              ("transliterate" . :transliterate)
                               ("commit" . :commit) ("cancel" . :cancel)
                               ("revert" . :revert)))))
     (or (cdr entry) (error "nelisp-ime: unsupported operation %S" value))))
@@ -56,7 +58,11 @@
         :key (gethash "key" object)
         :code (gethash "code" object)
         :shift (eq (gethash "shift" object) t)
-        :index (gethash "index" object)))
+        :index (gethash "index" object)
+        :direction (let ((value (gethash "direction" object)))
+                     (and (stringp value) (intern value)))
+        :target (let ((value (gethash "target" object)))
+                  (and (stringp value) (intern value)))))
 
 (defun nelisp-ime-protocol-dispatch (method params)
   "Dispatch protocol METHOD with JSON object PARAMS."
@@ -69,6 +75,9 @@
             :engine "nelisp-ime"
             :engines (vconcat (mapcar #'symbol-name
                                       (nelisp-ime-engine-names)))
+            :providers
+            (vconcat (mapcar #'nelisp-ime-engine-describe
+                              (nelisp-ime-engine-names)))
             :modes (vconcat (mapcar #'symbol-name nelisp-ime-modes))
             :capabilities ["kana" "romaji" "live-conversion" "learning"
                            "multi-session" "engine-select" "mode-report"

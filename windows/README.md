@@ -1,6 +1,7 @@
-# DDSKK Windows IME
+# NeLisp IME for Windows
 
-Windows Text Services Framework (TSF) host for running DDSKK through NeLisp.
+Windows Text Services Framework (TSF) frontend for NeLisp Input Hub. The hub
+can select DDSKK, Lattice, and additional Japanese input engines.
 The current Phase 0 DLL registers a Japanese text-service profile and activates
 inside TSF applications, but deliberately does not consume keys yet.
 

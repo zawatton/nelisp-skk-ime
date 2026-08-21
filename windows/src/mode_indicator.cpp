@@ -33,6 +33,7 @@ constexpr COLORREF kColorKatakanaBackground = RGB(0x1B, 0x7F, 0x3B);  // green
 constexpr COLORREF kColorLatinBackground = RGB(0x00, 0xA6, 0xC8);     // light blue
 constexpr COLORREF kColorWideLatinBackground = RGB(0x1E, 0x5A, 0xA8); // blue
 constexpr COLORREF kColorAbbrevBackground = RGB(0x6A, 0x2C, 0x91);    // purple
+constexpr COLORREF kColorDisabledBackground = RGB(0x70, 0x70, 0x70);  // gray
 
 // Border colors are this percentage of the background's brightness (i.e.
 // one shade darker); see Darken().
@@ -127,6 +128,8 @@ ModeIndicatorPalette ModeIndicatorColors(const std::wstring& label) {
     background = kColorWideLatinBackground;
   } else if (label == L"Abbrev") {
     background = kColorAbbrevBackground;
+  } else if (label == L"--") {
+    background = kColorDisabledBackground;
   }
   return ModeIndicatorPalette{background, Darken(background, kBorderDarkenPercent),
                               TextColorFor(background)};

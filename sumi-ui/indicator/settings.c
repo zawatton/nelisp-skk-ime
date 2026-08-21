@@ -132,7 +132,7 @@ void settings_defaults(Settings *s) {
   s->user_jisyo_path[SETTINGS_STR_LEN - 1] = L'\0';
   s->user_jisyo_batch = 10;
 
-  s->idle_gc_ms = 800;
+  s->idle_gc_ms = 10000;
   s->dll_debug = 0;
 }
 

@@ -97,7 +97,6 @@ class LangBarButton final : public ITfLangBarItemButton, public ITfSource {
  private:
   ~LangBarButton();
   LONG ref_count_ = 1;
-  bool shown_ = true;
   LangBarButtonHandler* handler_;
   GUID item_guid_;
   DWORD style_;

@@ -157,6 +157,26 @@ and pops the candidate window on each character."
                      (nth (plist-get state :candidate-index)
                           (plist-get state :candidates)))))))
 
+(ert-deftest nelisp-ime-conformance-test-segment-controls-keep-a-live-composition ()
+  "Segment navigation and kana transliteration return renderable STATE lines."
+  (nelisp-ime-conformance-test--isolated
+    (dolist (key '("KEY 107" "KEY 97" "KEY 107" "KEY 105"))
+      (nelisp-ime-conformance-test--send key))
+    ;; A navigation key has no segment to select before conversion; it must
+    ;; not accidentally act like Space and start one.
+    (let ((state (nelisp-ime-conformance-test--send "CONTROL SEGMENT-NEXT")))
+      (should (equal (nelisp-ime-conformance-test--display state) "かき"))
+      (should (equal (plist-get state :mode) "preedit")))
+    (nelisp-ime-conformance-test--send "CONTROL CONVERT")
+    (let ((state (nelisp-ime-conformance-test--send "CONTROL SEGMENT-NEXT")))
+      (should (equal (nelisp-ime-conformance-test--display state) "柿"))
+      (should (>= (plist-get state :composition-start) 0)))
+    (let ((state (nelisp-ime-conformance-test--send "CONTROL TO-KATAKANA")))
+      (should (equal (nelisp-ime-conformance-test--display state) "カキ"))
+      (should (>= (plist-get state :composition-start) 0)))
+    (let ((state (nelisp-ime-conformance-test--send "CONTROL TO-HALF-KATAKANA")))
+      (should (equal (nelisp-ime-conformance-test--display state) "ｶｷ")))))
+
 (ert-deftest nelisp-ime-conformance-test-quit-steps-back-once ()
   "CONTROL QUIT undoes one stage; it does not throw the composition away.
 
