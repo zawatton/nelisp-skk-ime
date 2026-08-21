@@ -336,7 +336,10 @@ the application, which is preferable to leaving the user unable to type."
 ;;;###autoload
 (defun nelisp-ime-stateline-dispatch (line)
   "Dispatch legacy LINE or a client-scoped `SESSION ID LINE' request."
-  (if (and (> (length line) 8)
+  (if (equal line "DIAG SESSION-COUNT")
+      (concat "SESSIONS " (number-to-string
+                           (hash-table-count nelisp-ime-sessions)))
+    (if (and (> (length line) 8)
            (equal (substring line 0 8) "SESSION "))
       (let ((separator (string-match " " line 8)))
         (if (not separator)
@@ -352,7 +355,7 @@ the application, which is preferable to leaving the user unable to type."
                     "OK CLOSED")
                 (let ((nelisp-ime-stateline--session-id session-id))
                   (nelisp-ime-stateline--dispatch-1 request)))))))
-    (nelisp-ime-stateline--dispatch-1 line)))
+      (nelisp-ime-stateline--dispatch-1 line))))
 
 (provide 'nelisp-ime-stateline)
 ;;; nelisp-ime-stateline.el ends here

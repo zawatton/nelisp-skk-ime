@@ -15,11 +15,12 @@ powershell -ExecutionPolicy Bypass -File windows\scripts\verify-v1.ps1
 
 It builds the Windows components, runs CTest (including real-provider E2E
 and provider-kill/host-restart recovery), framework/Lattice ERT, DDSKK and
-Lattice TSF behavior suites, the 10,000-key latency/integrity run, and all
-Sumi/settings checks. It uses private pipes and dictionaries and does not
-modify the live installation. `-SkipLongRun` substitutes the 1,000-key run
-for a quick development check. The elapsed 24-hour and seven-day release
-gates in `docs/v1-goals.md` remain separate recorded-use gates.
+Lattice TSF behavior suites, two-document focus/stale-reply isolation, the
+10,000-key latency/integrity run, and all Sumi/settings checks. It uses private
+pipes and dictionaries and does not modify the live installation.
+`-SkipLongRun` substitutes the 1,000-key run for a quick development check.
+The elapsed 24-hour and seven-day release gates in `docs/v1-goals.md` remain
+separate recorded-use gates.
 
 ## deploy-live.ps1
 

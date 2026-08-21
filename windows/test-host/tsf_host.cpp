@@ -977,12 +977,22 @@ HRESULT SetKeyboardOpen(ITfThreadMgr* thread_mgr, TfClientId client_id,
 
 void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
                ITfThreadMgr* thread_mgr, TfClientId client_id,
-               ITfContext* context, DocumentStore* store,
+               ITfContext* const contexts[2], DocumentStore* const stores[2],
+               ITfDocumentMgr* const documents[2],
                const std::wstring& script) {
   std::wstringstream stream(script);
   std::wstring token;
+  size_t active = 0;
   while (stream >> token) {
-    if (token.size() > 4 && token.starts_with(L"WAIT")) {
+    if (token == L"CTX1" || token == L"CTX2") {
+      active = token == L"CTX1" ? 0 : 1;
+      const HRESULT hr = thread_mgr->SetFocus(documents[active]);
+      PrintHrStr(Utf8FromWide(token), hr);
+    } else if (token == L"CHECK1" || token == L"CHECK2") {
+      const size_t observed = token == L"CHECK1" ? 0 : 1;
+      PrintAfterLine(token, stores[observed]);
+      continue;
+    } else if (token.size() > 4 && token.starts_with(L"WAIT")) {
       // Provider conversion completes through the TSF thread's message
       // queue. Sleeping here starves that queue and cannot test async IME
       // behavior, so keep pumping for the requested observation window.
@@ -999,12 +1009,12 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
     } else {
       KeyEvent key{};
       if (TokenToKey(token, &key)) {
-        SendScriptedKey(key_sink, keystroke_mgr, context, key, token);
+        SendScriptedKey(key_sink, keystroke_mgr, contexts[active], key, token);
       } else {
         PrintHrStr("UnknownToken:" + Utf8FromWide(token), E_INVALIDARG);
       }
     }
-    PrintAfterLine(token, store);
+    PrintAfterLine(token, stores[active]);
   }
 }
 
@@ -1022,12 +1032,15 @@ int wmain(int argc, wchar_t** argv) {
 
   ITfThreadMgr* thread_mgr = nullptr;
   ITfDocumentMgr* doc_mgr = nullptr;
+  ITfDocumentMgr* doc_mgr2 = nullptr;
   ITfContext* context = nullptr;
+  ITfContext* context2 = nullptr;
   ITfKeystrokeMgr* keystroke_mgr = nullptr;
   ITfTextInputProcessor* tip = nullptr;
   ITfKeyEventSink* key_sink = nullptr;
   bool tip_activated = false;
   DocumentStore* store = nullptr;
+  DocumentStore* store2 = nullptr;
   TfClientId client_id = TF_CLIENTID_NULL;
   bool thread_mgr_activated = false;
   HWND hwnd = nullptr;
@@ -1102,6 +1115,35 @@ int wmain(int argc, wchar_t** argv) {
       PrintHr("DocumentMgr::Push", hr);
       break;
     }
+
+    // A second independent document/context lets scripts reproduce Edge,
+    // Terminal and editor tab focus changes inside one TIP instance. The
+    // active composition must be ended in its original document before the
+    // first key is accepted in the new one.
+    store2 = new (std::nothrow) DocumentStore(hwnd);
+    if (store2 == nullptr) {
+      PrintHr("DocumentStore2Alloc", E_OUTOFMEMORY);
+      break;
+    }
+    hr = thread_mgr->CreateDocumentMgr(&doc_mgr2);
+    if (FAILED(hr)) {
+      PrintHr("CreateDocumentMgr2", hr);
+      break;
+    }
+    hr = doc_mgr2->CreateContext(
+        client_id, 0, static_cast<IUnknown*>(static_cast<ITextStoreACP*>(store2)),
+        &context2, &edit_cookie);
+    if (FAILED(hr)) {
+      PrintHr("CreateContext2", hr);
+      break;
+    }
+    hr = doc_mgr2->Push(context2);
+    if (FAILED(hr)) {
+      PrintHr("DocumentMgr2::Push", hr);
+      break;
+    }
+    std::printf("CONTEXTS first=%p second=%p\n",
+                static_cast<void*>(context), static_cast<void*>(context2));
 
     hr = thread_mgr->SetFocus(doc_mgr);
     if (FAILED(hr)) PrintHr("ThreadMgr::SetFocus", hr);
@@ -1210,8 +1252,11 @@ int wmain(int argc, wchar_t** argv) {
     }
     std::fflush(stdout);
     if (!script.empty()) {
+      ITfContext* contexts[2] = {context, context2};
+      DocumentStore* stores[2] = {store, store2};
+      ITfDocumentMgr* documents[2] = {doc_mgr, doc_mgr2};
       RunScript(key_sink, keystroke_mgr, thread_mgr, client_id,
-                context, store, script);
+                contexts, stores, documents, script);
       PrintFinalLine(store);
     }
   } while (false);
@@ -1220,9 +1265,13 @@ int wmain(int argc, wchar_t** argv) {
   if (tip_activated && tip != nullptr) tip->Deactivate();
   if (tip != nullptr) tip->Release();
   if (keystroke_mgr != nullptr) keystroke_mgr->Release();
+  if (doc_mgr2 != nullptr) doc_mgr2->Pop(TF_POPF_ALL);
   if (doc_mgr != nullptr) doc_mgr->Pop(TF_POPF_ALL);
+  if (context2 != nullptr) context2->Release();
   if (context != nullptr) context->Release();
+  if (doc_mgr2 != nullptr) doc_mgr2->Release();
   if (doc_mgr != nullptr) doc_mgr->Release();
+  if (store2 != nullptr) static_cast<ITextStoreACP*>(store2)->Release();
   if (store != nullptr) static_cast<ITextStoreACP*>(store)->Release();
   if (thread_mgr_activated && thread_mgr != nullptr) thread_mgr->Deactivate();
   if (thread_mgr != nullptr) thread_mgr->Release();

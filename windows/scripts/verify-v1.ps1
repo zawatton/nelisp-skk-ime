@@ -75,6 +75,12 @@ try {
       -ColdLoadSleepSec $ColdLoadSleepSec
   }
 
+  Invoke-Gate 'TSF context switch and stale-reply isolation' {
+    & powershell -ExecutionPolicy Bypass -File `
+      windows/test-host/test-context-switch.ps1 `
+      -ColdLoadSleepSec $ColdLoadSleepSec
+  }
+
   Invoke-Gate 'Ordinary-key latency and integrity' {
     $keyCount = if ($SkipLongRun) { 1000 } else { 10000 }
     & powershell -ExecutionPolicy Bypass -File `

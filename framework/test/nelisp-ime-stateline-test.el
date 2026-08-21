@@ -75,6 +75,8 @@
 
 (ert-deftest nelisp-ime-stateline-test-session-prefix-isolates-composition ()
   (nelisp-ime-stateline-test--isolated
+    (should (equal (nelisp-ime-stateline-dispatch "DIAG SESSION-COUNT")
+                   "SESSIONS 0"))
     (should (string-prefix-p "STATE "
                              (nelisp-ime-stateline-dispatch
                               "SESSION app-a KEY 107"))) ; k
@@ -87,6 +89,8 @@
       (should (equal (nelisp-ime-stateline-test--field app-b 5) "00006e")))
     (should (equal (nelisp-ime-stateline-dispatch "SESSION app-a CLOSE")
                    "OK CLOSED"))
+    (should (equal (nelisp-ime-stateline-dispatch "DIAG SESSION-COUNT")
+                   "SESSIONS 1"))
     (should-not (gethash "app-a" nelisp-ime-sessions))))
 
 (ert-deftest nelisp-ime-stateline-test-commit-and-reset ()

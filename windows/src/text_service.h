@@ -27,6 +27,7 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <msctf.h>
 #include <ctffunc.h>
@@ -130,6 +131,12 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // engine transaction start with RESET, so a wedged conversion cannot
   // leave the application trapped in IME-owned input.
   void ForceCancelComposition(ITfContext* context);
+  // Finalize the old document's visible preedit as plain text (stripping
+  // the ▽/▼ UI marker) before accepting input in a newly focused context.
+  void SettleContextComposition(ITfContext* context);
+  void TrackEndingComposition(ITfComposition* composition);
+  void UntrackEndingComposition(ITfComposition* composition);
+  bool AcknowledgeEndingComposition(ITfComposition* composition);
   // Drop local TSF composition state and mark this client's engine checkpoint
   // for reset when focus/context loss abandons unconfirmed input.
   void ResetAbandonedComposition();
@@ -169,11 +176,10 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   std::atomic<bool> provider_pending_{false};
   std::deque<DeferredProviderKey> deferred_provider_keys_;
   ITfComposition* composition_ = nullptr;
-  // AddRef'd identity of a composition ended by this TIP.  Some hosts send
-  // OnCompositionTerminated after EndComposition has already returned, so
-  // a stack-duration boolean cannot distinguish that acknowledgement from
-  // an application-abandoned composition.
-  ITfComposition* ending_composition_ = nullptr;
+  // AddRef'd identities of compositions ended by this TIP. Some hosts delay
+  // OnCompositionTerminated; a vector preserves every outstanding identity
+  // when a fast typist completes another episode before the earlier callback.
+  std::vector<ITfComposition*> ending_compositions_;
   // Stable document range parked when Corvus-style registration begins.
   // Some real TSF hosts terminate composition_ before the registration
   // result arrives; this range still lets the result replace the original

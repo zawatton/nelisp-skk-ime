@@ -1004,7 +1004,10 @@ The data carries the missing symbol name for `void-variable' /
 
 (defun ddskk-engine-dispatch-line (line)
   "Dispatch legacy LINE or a client-scoped `SESSION ID LINE' request."
-  (if (and (> (length line) 8)
+  (if (equal line "DIAG SESSION-COUNT")
+      (concat "SESSIONS " (number-to-string
+                           (hash-table-count ddskk-engine--sessions)))
+    (if (and (> (length line) 8)
            (equal (substring line 0 8) "SESSION "))
       (let ((separator (string-match " " line 8)))
         (if (not separator)
@@ -1015,7 +1018,7 @@ The data carries the missing symbol name for `void-variable' /
                     (= (length request) 0))
                 "ERR SESSION"
               (ddskk-engine--dispatch-session-line session-id request)))))
-    (ddskk-engine--dispatch-session-line "legacy" line)))
+      (ddskk-engine--dispatch-session-line "legacy" line))))
 
 (defun ddskk-engine-write-response (response)
   (nelisp--write-stdout-bytes (concat response "\n")))

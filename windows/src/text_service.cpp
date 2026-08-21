@@ -85,6 +85,64 @@ class StateEditSession final : public ITfEditSession {
   ITfContext* context_;
   ddskk::EngineState state_;
 };
+
+// Ends one exact composition even after TextService has moved on to another
+// ITfContext. A generic StateEditSession consults service_->composition_ at
+// execution time, which is necessarily the wrong object once an async edit
+// runs after a tab/focus switch.
+class TerminateCompositionEditSession final : public ITfEditSession {
+ public:
+  TerminateCompositionEditSession(ITfComposition* composition, bool settle)
+      : composition_(composition), settle_(settle) {
+    composition_->AddRef();
+  }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+    if (object == nullptr) return E_POINTER;
+    *object = nullptr;
+    if (iid != IID_IUnknown && iid != IID_ITfEditSession) return E_NOINTERFACE;
+    *object = static_cast<ITfEditSession*>(this);
+    AddRef();
+    return S_OK;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    return InterlockedIncrement(&ref_count_);
+  }
+  ULONG STDMETHODCALLTYPE Release() override {
+    const ULONG count = InterlockedDecrement(&ref_count_);
+    if (count == 0) delete this;
+    return count;
+  }
+  HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie edit_cookie) override {
+    ITfRange* range = nullptr;
+    HRESULT result = composition_->GetRange(&range);
+    if (SUCCEEDED(result)) {
+      if (settle_) {
+        wchar_t text[4096]{};
+        ULONG fetched = 0;
+        result = range->GetText(edit_cookie, 0, text,
+                                static_cast<ULONG>(_countof(text) - 1),
+                                &fetched);
+        if (SUCCEEDED(result)) {
+          const ULONG marker = fetched > 0 && (text[0] == L'\x25bd' ||
+                                               text[0] == L'\x25bc') ? 1 : 0;
+          result = range->SetText(edit_cookie, 0, text + marker,
+                                  static_cast<LONG>(fetched - marker));
+        }
+      } else {
+        result = range->SetText(edit_cookie, 0, L"", 0);
+      }
+      range->Release();
+    }
+    if (FAILED(result)) return result;
+    return composition_->EndComposition(edit_cookie);
+  }
+
+ private:
+  ~TerminateCompositionEditSession() { composition_->Release(); }
+  LONG ref_count_ = 1;
+  ITfComposition* composition_;
+  bool settle_;
+};
 std::string NarrowUtf8(const wchar_t* text) {
   if (!text || !*text) return {};
   const int size = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0,
@@ -173,7 +231,8 @@ TextService::~TextService() {
   if (registration_range_ != nullptr) registration_range_->Release();
   if (candidate_context_ != nullptr) candidate_context_->Release();
   if (candidate_ui_ != nullptr) candidate_ui_->Release();
-  if (ending_composition_ != nullptr) ending_composition_->Release();
+  for (ITfComposition* composition : ending_compositions_)
+    composition->Release();
   if (composition_ != nullptr) composition_->Release();
   UnadviseOpenCloseCompartment();
   UnadviseKeySink();
@@ -1375,10 +1434,18 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   if (active_context_ != context) {
     const bool abandoned = active_context_ != nullptr &&
         (engine_pending_ || registration_mode_ || composition_ != nullptr);
+    DebugLog(L"Context switch old=%p new=%p abandoned=%d pending=%d reg=%d comp=%d",
+             active_context_, context, abandoned ? 1 : 0,
+             engine_pending_ ? 1 : 0, registration_mode_ ? 1 : 0,
+             composition_ != nullptr ? 1 : 0);
+    // End the composition in the document that actually owns it BEFORE
+    // changing active_context_. Merely releasing composition_ after the
+    // switch leaves the old TSF context with a live composition/UI element;
+    // Edge/Terminal tab changes then strand navigation in that old editor.
+    if (abandoned) SettleContextComposition(active_context_);
     if (active_context_ != nullptr) active_context_->Release();
     active_context_ = context;
     active_context_->AddRef();
-    if (abandoned) ResetAbandonedComposition();
   }
   std::optional<ddskk::EngineState> state;
   const wchar_t* branch = L"?";
@@ -2003,6 +2070,7 @@ void TextService::ForceCancelComposition(ITfContext* context) {
   CancelPendingProvider();
   engine_.Disconnect();
   engine_.MarkNeedsResync();
+  realtime_frontend_.Reset();
   CloseCandidateUi();
   registration_mode_ = false;
   registration_commit_pending_ = false;
@@ -2013,20 +2081,32 @@ void TextService::ForceCancelComposition(ITfContext* context) {
 
   bool cleared = composition_ == nullptr;
   if (composition_ != nullptr && context != nullptr) {
-    ddskk::EngineState empty;
-    empty.mode = L"hiragana";
-    empty.composition_start = -1;
-    auto* edit_session =
-        new (std::nothrow) StateEditSession(this, context, std::move(empty));
+    ITfComposition* abandoned = composition_;
+    TrackEndingComposition(abandoned);
+    auto* edit_session = new (std::nothrow)
+        TerminateCompositionEditSession(abandoned, false);
     if (edit_session != nullptr) {
       HRESULT edit_result = E_FAIL;
-      const HRESULT request = context->RequestEditSession(
+      HRESULT request = context->RequestEditSession(
           client_id_, edit_session, TF_ES_SYNC | TF_ES_READWRITE,
           &edit_result);
+      if (FAILED(request) || FAILED(edit_result)) {
+        edit_result = E_FAIL;
+        request = context->RequestEditSession(
+            client_id_, edit_session, TF_ES_ASYNC | TF_ES_READWRITE,
+            &edit_result);
+      }
+      DebugLog(L"ForceCancel old-context edit request=%X result=%X",
+               static_cast<unsigned>(request),
+               static_cast<unsigned>(edit_result));
       edit_session->Release();
-      cleared = SUCCEEDED(request) && SUCCEEDED(edit_result) &&
-                composition_ == nullptr;
+      cleared = SUCCEEDED(request) && SUCCEEDED(edit_result);
+      if (cleared && composition_ == abandoned) {
+        composition_->Release();
+        composition_ = nullptr;
+      }
     }
+    if (!cleared) UntrackEndingComposition(abandoned);
   }
   if (!cleared) {
     // If the application denied the synchronous edit, at least relinquish
@@ -2040,6 +2120,98 @@ void TextService::ForceCancelComposition(ITfContext* context) {
   engine_roundtrip_failed_ = false;
   kana_mode_ = true;
   last_engine_mode_ = L"hiragana";
+}
+
+void TextService::SettleContextComposition(ITfContext* context) {
+  CancelPendingProvider();
+  engine_.Disconnect();
+  engine_.MarkNeedsResync();
+  realtime_frontend_.Reset();
+  CloseCandidateUi();
+
+  bool settled = composition_ == nullptr;
+  if (composition_ != nullptr && context != nullptr) {
+    ITfComposition* abandoned = composition_;
+    TrackEndingComposition(abandoned);
+    auto* edit_session = new (std::nothrow)
+        TerminateCompositionEditSession(abandoned, true);
+    if (edit_session != nullptr) {
+      HRESULT edit_result = E_FAIL;
+      HRESULT request = context->RequestEditSession(
+          client_id_, edit_session, TF_ES_SYNC | TF_ES_READWRITE,
+          &edit_result);
+      if (FAILED(request) || FAILED(edit_result)) {
+        edit_result = E_FAIL;
+        request = context->RequestEditSession(
+            client_id_, edit_session, TF_ES_ASYNC | TF_ES_READWRITE,
+            &edit_result);
+      }
+      edit_session->Release();
+      settled = SUCCEEDED(request) && SUCCEEDED(edit_result);
+      if (settled && composition_ == abandoned) {
+        composition_->Release();
+        composition_ = nullptr;
+      }
+    }
+    if (!settled) UntrackEndingComposition(abandoned);
+  }
+  if (!settled) ResetAbandonedComposition();
+  if (registration_range_ != nullptr) {
+    registration_range_->Release();
+    registration_range_ = nullptr;
+  }
+  registration_commit_pending_ = false;
+  registration_mode_ = false;
+  engine_pending_ = false;
+  provider_composition_active_ = false;
+  deferred_provider_keys_.clear();
+  engine_roundtrip_failed_ = false;
+  kana_mode_ = true;
+  last_engine_mode_ = L"hiragana";
+}
+
+namespace {
+bool SameComIdentity(IUnknown* left, IUnknown* right) {
+  if (left == nullptr || right == nullptr) return left == right;
+  IUnknown* left_identity = nullptr;
+  IUnknown* right_identity = nullptr;
+  left->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&left_identity));
+  right->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&right_identity));
+  const bool same = left_identity != nullptr && left_identity == right_identity;
+  if (left_identity != nullptr) left_identity->Release();
+  if (right_identity != nullptr) right_identity->Release();
+  return same;
+}
+}  // namespace
+
+void TextService::TrackEndingComposition(ITfComposition* composition) {
+  if (composition == nullptr) return;
+  for (ITfComposition* existing : ending_compositions_) {
+    if (SameComIdentity(existing, composition)) return;
+  }
+  composition->AddRef();
+  ending_compositions_.push_back(composition);
+}
+
+void TextService::UntrackEndingComposition(ITfComposition* composition) {
+  for (auto it = ending_compositions_.begin(); it != ending_compositions_.end();
+       ++it) {
+    if (!SameComIdentity(*it, composition)) continue;
+    (*it)->Release();
+    ending_compositions_.erase(it);
+    return;
+  }
+}
+
+bool TextService::AcknowledgeEndingComposition(ITfComposition* composition) {
+  for (auto it = ending_compositions_.begin(); it != ending_compositions_.end();
+       ++it) {
+    if (!SameComIdentity(*it, composition)) continue;
+    (*it)->Release();
+    ending_compositions_.erase(it);
+    return true;
+  }
+  return false;
 }
 
 void TextService::CloseCandidateUi() {
@@ -2214,10 +2386,9 @@ HRESULT TextService::Show(HWND, LANGID, REFGUID) {
 
 // TSF calls this when the application ends a composition on its own
 // (focus change, an app-driven edit, etc.) rather than through
-// FinalizeCandidate/AbortCandidate/OnKeyDown. Whatever was displayed is
-// now committed document text this DLL no longer owns, but the
-// out-of-process engine still thinks it owns its half of that state --
-// the shared out-of-process engine must be reset at the same boundary.
+// FinalizeCandidate/AbortCandidate/OnKeyDown. TSF leaves the displayed range
+// in the document, so settle it as plain text (without the ▽/▼ UI marker)
+// before dropping our state; otherwise tab changes visibly strand "▽かな".
 HRESULT TextService::OnCompositionTerminated(TfEditCookie edit_cookie,
                                              ITfComposition* composition) {
   DebugLog(L"OnCompositionTerminated comp=%d", composition_ != nullptr ? 1 : 0);
@@ -2226,26 +2397,7 @@ HRESULT TextService::OnCompositionTerminated(TfEditCookie edit_cookie,
   // the actual COM object alive and match that acknowledgement by identity;
   // resetting it would schedule an empty STATE over the range just committed
   // and erase both the candidate and its reading.
-  if (ending_composition_ != nullptr) {
-    IUnknown* expected_identity = nullptr;
-    IUnknown* actual_identity = nullptr;
-    ending_composition_->QueryInterface(
-        IID_IUnknown, reinterpret_cast<void**>(&expected_identity));
-    if (composition != nullptr) {
-      composition->QueryInterface(
-          IID_IUnknown, reinterpret_cast<void**>(&actual_identity));
-    }
-    const bool own_termination =
-        composition == ending_composition_ ||
-        (expected_identity != nullptr && expected_identity == actual_identity);
-    if (expected_identity != nullptr) expected_identity->Release();
-    if (actual_identity != nullptr) actual_identity->Release();
-    if (own_termination) {
-      ending_composition_->Release();
-      ending_composition_ = nullptr;
-      return S_OK;
-    }
-  }
+  if (AcknowledgeEndingComposition(composition)) return S_OK;
   if (registration_mode_) {
     // Some hosts terminate the parked document composition while the modal
     // registration editor is active.  If its displayed reading is allowed
@@ -2268,10 +2420,27 @@ HRESULT TextService::OnCompositionTerminated(TfEditCookie edit_cookie,
     engine_pending_ = true;
     return S_OK;
   }
-  // Reset immediately, not on this TextService instance's next key.  The
-  // engine is shared across applications; after focus moves, another app
-  // can send that next key first and would otherwise receive this stale
-  // composition before the old instance ever gets a chance to resync.
+  ITfComposition* owned = composition != nullptr ? composition : composition_;
+  ITfRange* range = nullptr;
+  if (owned != nullptr && SUCCEEDED(owned->GetRange(&range))) {
+    wchar_t text[4096]{};
+    ULONG fetched = 0;
+    if (SUCCEEDED(range->GetText(edit_cookie, 0, text,
+                                 static_cast<ULONG>(_countof(text) - 1),
+                                 &fetched))) {
+      const ULONG marker = fetched > 0 && (text[0] == L'\x25bd' ||
+                                           text[0] == L'\x25bc') ? 1 : 0;
+      range->SetText(edit_cookie, 0, text + marker,
+                     static_cast<LONG>(fetched - marker));
+    }
+    range->Release();
+  }
+  if (composition_ != nullptr) {
+    composition_->Release();
+    composition_ = nullptr;
+  }
+  // Reset this TextService's scoped provider/native state at the same
+  // boundary so it cannot reappear when focus returns.
   ResetAbandonedComposition();
   return S_OK;
 }
@@ -2435,16 +2604,11 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
   // start.
   if (state.composition_start < 0 && state.pending_romaji.empty() &&
       composition_ != nullptr) {
-    if (ending_composition_ != nullptr) ending_composition_->Release();
-    ending_composition_ = composition_;
-    ending_composition_->AddRef();
+    TrackEndingComposition(composition_);
     const HRESULT end = composition_->EndComposition(edit_cookie);
     DebugLog(L"ApplyEngineState end_composition hr=%X",
              static_cast<unsigned>(end));
-    if (FAILED(end) && ending_composition_ != nullptr) {
-      ending_composition_->Release();
-      ending_composition_ = nullptr;
-    }
+    if (FAILED(end)) UntrackEndingComposition(composition_);
     composition_->Release();
     composition_ = nullptr;
     if (registration_commit_pending_) {

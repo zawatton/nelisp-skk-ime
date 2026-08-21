@@ -95,6 +95,36 @@ bool ShutdownHost() {
   CloseHandle(pipe);
   return ok;
 }
+
+int SessionCount() {
+  HANDLE pipe = CreateFileW(kTestPipe, GENERIC_READ | GENERIC_WRITE, 0,
+                            nullptr, OPEN_EXISTING, 0, nullptr);
+  if (pipe == INVALID_HANDLE_VALUE) return -1;
+  constexpr char request[] = "DIAG SESSION-COUNT";
+  DWORD written = 0;
+  if (!WriteFile(pipe, request, sizeof(request) - 1, &written, nullptr)) {
+    CloseHandle(pipe);
+    return -1;
+  }
+  char response[64]{};
+  DWORD read = 0;
+  const bool ok = ReadFile(pipe, response, sizeof(response) - 1, &read, nullptr);
+  CloseHandle(pipe);
+  if (!ok) return -1;
+  int count = -1;
+  return sscanf_s(std::string(response, read).c_str(), "SESSIONS %d",
+                  &count) == 1 ? count : -1;
+}
+
+bool WaitForSessionCount(int expected) {
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::seconds(5);
+  do {
+    if (SessionCount() == expected) return true;
+    Sleep(10);
+  } while (std::chrono::steady_clock::now() < deadline);
+  return false;
+}
 }
 
 int wmain(int argc, wchar_t** argv) {
@@ -116,14 +146,33 @@ int wmain(int argc, wchar_t** argv) {
   assert(state->mode == L"hiragana");
   assert(state->text.empty());
   assert(state->pending_romaji == L"k");
-  // A second application may compose at the same time without replacing
-  // this client's pending romaji.  Returning to CLIENT must resume "k",
-  // so the next "a" becomes か (a shared singleton would produce あ).
-  ddskk::EngineClient other_client;
-  const auto other_state = other_client.SendKey(U'n', 10000);
-  assert(other_state && other_state->pending_romaji == L"n");
-  state = client.SendKey(U'a', 10000);
-  assert(state && state->text == L"か" && state->pending_romaji.empty());
+  // Model the four production targets (Notepad = client, plus Edge,
+  // Windows Terminal and Emacs) as four simultaneous cross-pipe clients.
+  // Each pending romaji must resume independently when requests interleave.
+  {
+    ddskk::EngineClient edge;
+    ddskk::EngineClient terminal;
+    ddskk::EngineClient emacs;
+    auto edge_state = edge.SendKey(U'n', 10000);
+    auto terminal_state = terminal.SendKey(U'm', 10000);
+    auto emacs_state = emacs.SendKey(U's', 10000);
+    assert(edge_state && edge_state->pending_romaji == L"n");
+    assert(terminal_state && terminal_state->pending_romaji == L"m");
+    assert(emacs_state && emacs_state->pending_romaji == L"s");
+    assert(WaitForSessionCount(4));
+    state = client.SendKey(U'a', 10000);
+    edge_state = edge.SendKey(U'a', 10000);
+    terminal_state = terminal.SendKey(U'a', 10000);
+    emacs_state = emacs.SendKey(U'a', 10000);
+    assert(state && state->text == L"か" && state->pending_romaji.empty());
+    assert(edge_state && edge_state->text == L"な");
+    assert(terminal_state && terminal_state->text == L"ま");
+    assert(emacs_state && emacs_state->text == L"さ");
+  }
+  // Destroying three target applications closes their pipes. The host must
+  // close the corresponding provider checkpoints rather than accumulating
+  // one session for every application activation over a long uptime.
+  assert(WaitForSessionCount(1));
   assert(client.Reset(10000));
   state = client.ConvertKeys(U"Kana", 10000);
   if (!state) {
@@ -183,9 +232,11 @@ int wmain(int argc, wchar_t** argv) {
   process = StartHost(argv);
   state = client.SendKey(U'a', 10000);
   assert(state && state->text == L"あ");
+  assert(WaitForSessionCount(1));
   std::fprintf(stderr, "E2E: same client recovered\n");
 
   client.Disconnect();
+  assert(WaitForSessionCount(0));
   std::fprintf(stderr, "E2E: requesting clean shutdown\n");
   const bool shutdown_requested = ShutdownHost();
   std::fprintf(stderr, "E2E: shutdown request=%d\n", shutdown_requested ? 1 : 0);
