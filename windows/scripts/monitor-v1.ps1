@@ -33,6 +33,14 @@ $native = Get-ItemProperty 'HKCU:\Software\NativeIME'
 $expectedHost = [IO.Path]::GetFullPath([string]$native.EngineHost)
 $expectedRepository = [IO.Path]::GetFullPath([string]$native.Repository)
 $expectedSumi = [IO.Path]::GetFullPath([string]$native.SettingsExe)
+$expectedDll = [IO.Path]::GetFullPath([string](Get-ItemProperty `
+  'HKCU:\Software\Classes\CLSID\{80B44B14-B866-4EF4-A394-4FF1D87D5185}\InprocServer32').'(default)')
+$appMatrix = [ordered]@{
+  notepad = $false
+  edge = $false
+  terminal = $false
+  emacs = $false
+}
 $started = Get-Date
 $wallDeadline = $started.AddDays($NormalUseDays)
 $soakSamplesNeeded = [Math]::Ceiling(($SoakHours * 3600) / $SampleSeconds)
@@ -53,7 +61,8 @@ function Write-Record($Record) {
 Write-Record ([ordered]@{
   type = 'start'; timestamp = $started.ToString('o'); schema = 1
   expected_host = $expectedHost; expected_repository = $expectedRepository
-  expected_sumi = $expectedSumi; sample_seconds = $SampleSeconds
+  expected_sumi = $expectedSumi; expected_dll = $expectedDll
+  sample_seconds = $SampleSeconds
   soak_hours = $SoakHours; normal_use_days = $NormalUseDays
   memory_limit_mib = $MemoryLimitMiB
 })
@@ -83,6 +92,28 @@ while ((Get-Date) -lt $wallDeadline -or $samples -lt $soakSamplesNeeded) {
   $maxChildBytes = [Math]::Max($maxChildBytes, $childBytes)
   $maxSumiBytes = [Math]::Max($maxSumiBytes, $sumiBytes)
   $limitBytes = [int64]$MemoryLimitMiB * 1MB
+
+  # Actual application evidence, not just synthetic client names: record once
+  # each required executable has loaded this exact versioned COM DLL. Existing
+  # processes may legitimately retain an older in-process DLL until the user
+  # next restarts them; the matrix fills naturally during the seven-day run.
+  $appProcesses = @{
+    notepad = @(Get-Process -Name 'Notepad' -ErrorAction SilentlyContinue)
+    edge = @(Get-Process -Name 'msedge' -ErrorAction SilentlyContinue)
+    terminal = @(Get-Process -Name 'WindowsTerminal' -ErrorAction SilentlyContinue)
+    emacs = @(Get-Process -Name 'emacs' -ErrorAction SilentlyContinue)
+  }
+  foreach ($appName in @('notepad','edge','terminal','emacs')) {
+    if ($appMatrix[$appName]) { continue }
+    foreach ($appProcess in $appProcesses[$appName]) {
+      try {
+        $loaded = @($appProcess.Modules | Where-Object {
+          $_.ModuleName -eq 'ddskk-ime.dll' -and
+          [IO.Path]::GetFullPath($_.FileName) -eq $expectedDll })
+        if ($loaded.Count -gt 0) { $appMatrix[$appName] = $true; break }
+      } catch {}
+    }
+  }
   $issues = @()
   if ($hostCim.Count -ne 1) { $issues += "host-count=$($hostCim.Count)" }
   if ($childCim.Count -ne 1) { $issues += "child-count=$($childCim.Count)" }
@@ -113,6 +144,7 @@ while ((Get-Date) -lt $wallDeadline -or $samples -lt $soakSamplesNeeded) {
     host_pid = $hostPid; child_pid = $childPid; sumi_pid = $sumiPid
     host_private_bytes = $hostBytes; child_private_bytes = $childBytes
     sumi_private_bytes = $sumiBytes; issues = $issues
+    app_matrix = $appMatrix
   })
 
   if (-not $soakRecorded -and $samples -ge $soakSamplesNeeded) {
@@ -129,6 +161,7 @@ while ((Get-Date) -lt $wallDeadline -or $samples -lt $soakSamplesNeeded) {
     log = $logPath; started = $started.ToString('o'); last_sample = $now.ToString('o')
     samples = $samples; failures = $failures; soak_complete = $soakRecorded
     normal_use_complete = ($now -ge $wallDeadline)
+    app_matrix = $appMatrix
     max_host_bytes = $maxHostBytes; max_child_bytes = $maxChildBytes
     max_sumi_bytes = $maxSumiBytes
   }) | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $statusPath -Encoding UTF8
@@ -137,12 +170,14 @@ while ((Get-Date) -lt $wallDeadline -or $samples -lt $soakSamplesNeeded) {
 }
 
 $finished = Get-Date
+$appMatrixComplete = -not ($appMatrix.Values -contains $false)
 Write-Record ([ordered]@{
   type = 'complete'; timestamp = $finished.ToString('o'); samples = $samples
   failures = $failures; soak_complete = $soakRecorded
   normal_use_complete = ($finished -ge $wallDeadline)
+  app_matrix = $appMatrix; app_matrix_complete = $appMatrixComplete
   max_host_bytes = $maxHostBytes; max_child_bytes = $maxChildBytes
   max_sumi_bytes = $maxSumiBytes; test_run = ($MaxSamples -gt 0)
-  pass = ($failures -eq 0)
+  pass = ($failures -eq 0 -and $appMatrixComplete)
 })
 exit $(if ($failures -eq 0) { 0 } else { 1 })

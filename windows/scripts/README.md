@@ -104,9 +104,12 @@ powershell -ExecutionPolicy Bypass -File windows\scripts\monitor-v1.ps1
 
 JSONL evidence and a current summary are written under
 `%LOCALAPPDATA%\DDSKK\verification`. Process loss/restart, wrong runtime
-paths, and private memory above 768 MiB are recorded as failures. User-visible
-P0/P1 reports still have to be correlated with this record; a process monitor
-cannot prove that text was semantically correct.
+paths, and private memory above 768 MiB are recorded as failures. The summary
+also records when actual Notepad, Edge, Windows Terminal, and Emacs processes
+have each loaded the exact versioned DLL under test; all four are required for
+the completed seven-day evidence. User-visible P0/P1 reports still have to be
+correlated with this record; a process monitor cannot prove that text was
+semantically correct.
 
 **Live snapshot frozen from the repository.** The engine host walks the
 `Repository` directory to load Elisp sources at boot. Pointing it
