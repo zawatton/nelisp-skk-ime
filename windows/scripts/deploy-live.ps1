@@ -479,6 +479,15 @@ if ($HostExe -or $Engine) {
     foreach ($cmd in 'STATUS', 'COMPACT') {
       Send-PipeCommand -Pipe $livePipe -Command $cmd | Out-Null
     }
+    # `かな' encoded as UTF-8 byte hex.  This read-only request proves that
+    # the deployed host has finished loading the immutable local dictionary
+    # used for the <=150 ms first-candidate surface. STATUS alone can pass
+    # even when that performance path is absent or still empty.
+    $preview = Send-PipeCommand -Pipe $livePipe `
+      -Command 'PREVIEW e3818be381aa'
+    if (-not $DryRun -and $preview -notmatch '^PREVIEW /.+/$') {
+      throw "live dictionary preview unavailable: $preview"
+    }
   } finally {
     if ($livePipe) { $livePipe.Dispose() }
   }
