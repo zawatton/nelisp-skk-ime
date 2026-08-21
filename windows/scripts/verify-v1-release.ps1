@@ -38,6 +38,8 @@ Assert-Gate (Test-Path -LiteralPath $StatusPath) "status not found: $StatusPath"
 $status = Get-Content -LiteralPath $StatusPath -Raw | ConvertFrom-Json
 Assert-Gate ($status.schema -eq 1) 'unsupported monitor status schema'
 Assert-Gate (Test-Path -LiteralPath $status.log) "JSONL log not found: $($status.log)"
+Assert-Gate (Test-Path -LiteralPath $status.incident_log) `
+  "incident ledger not found: $($status.incident_log)"
 Assert-Gate (Test-Path -LiteralPath $status.monitor_script) `
   "frozen monitor not found: $($status.monitor_script)"
 Assert-Gate ((Get-Sha256 $status.monitor_script) -eq $status.monitor_sha256) `
@@ -81,6 +83,30 @@ Assert-Gate ($soak.Count -eq 1 -and [bool]$soak[0].pass) `
   'passing soak milestone is absent from JSONL evidence'
 Assert-Gate ($complete.Count -eq 1 -and [bool]$complete[0].pass) `
   'passing final completion record is absent from JSONL evidence'
+
+$incidentRecords = @(Get-Content -LiteralPath $status.incident_log | ForEach-Object {
+  $_ | ConvertFrom-Json
+})
+$trackingStart = @($incidentRecords | Where-Object { $_.type -eq 'tracking-start' } |
+  Select-Object -First 1)
+Assert-Gate ($trackingStart.Count -eq 1 -and
+  [datetime]$trackingStart[0].monitor_started -eq [datetime]$status.started) `
+  'incident tracking did not begin with this monitor run'
+$incidentState = @{}
+foreach ($event in $incidentRecords) {
+  if ($event.type -eq 'incident') {
+    $incidentState[[string]$event.id] = $event
+  } elseif ($event.type -eq 'resolution' -and $incidentState.ContainsKey([string]$event.id)) {
+    $incidentState[[string]$event.id] = $event
+  }
+}
+$openCritical = @($incidentState.Values | Where-Object {
+  $_.type -eq 'incident' -and $_.status -eq 'open' -and
+  $_.severity -in @('P0', 'P1')
+})
+$openCriticalIds = @($openCritical | ForEach-Object { $_.id })
+Assert-Gate ($openCritical.Count -eq 0) `
+  "open P0/P1 incidents remain: $($openCriticalIds -join ', ')"
 
 Write-Host 'ELAPSED V1 RELEASE EVIDENCE: PASS'
 if (-not $SkipAutomated) {

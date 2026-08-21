@@ -47,6 +47,7 @@ $processMutex = [Threading.Mutex]::new($true, 'Local\NeLispImeV1ReleaseMonitor',
 if (-not $createdMutex) { Write-Host 'v1 monitor is already running'; exit 0 }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $logPath = Join-Path $OutputDirectory "v1-monitor-$stamp.jsonl"
+$incidentPath = Join-Path $OutputDirectory "v1-incidents-$stamp.jsonl"
 $statusPath = Join-Path $OutputDirectory 'v1-monitor-current.json'
 $startupKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $startupName = 'NeLisp IME v1 Release Monitor'
@@ -102,7 +103,8 @@ function Get-JsonProperty($Object, [string]$Name, $Default = $null) {
 function Write-CurrentStatus([datetime]$Now) {
   ([ordered]@{
     schema = 1
-    log = $logPath; started = $started.ToString('o'); last_sample = $Now.ToString('o')
+    log = $logPath; incident_log = $incidentPath
+    started = $started.ToString('o'); last_sample = $Now.ToString('o')
     samples = $samples; continuous_samples = $continuousSamples
     last_active_sample = if ($null -eq $lastActiveSample) { $null } else { $lastActiveSample.ToString('o') }
     failures = $failures; soak_complete = $soakRecorded
@@ -138,6 +140,10 @@ if ($Resume -and (Test-Path -LiteralPath $statusPath)) {
       (Get-JsonProperty $prior 'expected_dll') -eq $expectedDll -and
       -not $priorComplete) {
     $logPath = [string](Get-JsonProperty $prior 'log')
+    $priorIncidentPath = [string](Get-JsonProperty $prior 'incident_log' '')
+    if ($priorIncidentPath -and (Test-Path -LiteralPath $priorIncidentPath)) {
+      $incidentPath = $priorIncidentPath
+    }
     $started = [datetime]::Parse([string](Get-JsonProperty $prior 'started'))
     $wallDeadline = $started.AddDays($NormalUseDays)
     $samples = [int](Get-JsonProperty $prior 'samples' 0)
@@ -152,6 +158,11 @@ if ($Resume -and (Test-Path -LiteralPath $statusPath)) {
     $resumed = $true
   }
 }
+
+([ordered]@{
+  type = if ($resumed) { 'tracking-resume' } else { 'tracking-start' }
+  timestamp = (Get-Date).ToString('o'); monitor_started = $started.ToString('o')
+}) | ConvertTo-Json -Compress | Add-Content -LiteralPath $incidentPath -Encoding UTF8
 
 Write-Record ([ordered]@{
   type = if ($resumed) { 'resume' } else { 'start' }

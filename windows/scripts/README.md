@@ -135,6 +135,19 @@ the completed seven-day evidence. User-visible P0/P1 reports still have to be
 correlated with this record; a process monitor cannot prove that text was
 semantically correct.
 
+Record every user-visible defect during the run immediately. P0/P1 definitions
+come from `docs/v1-goals.md`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\scripts\record-v1-incident.ps1 `
+  -Severity P1 -Title "candidate window failed to open" -Note "Edge"
+
+powershell -ExecutionPolicy Bypass -File windows\scripts\record-v1-incident.ps1 `
+  -Resolve -Id P1-... -Note "fixed and redeployed"
+```
+
+The final release verifier rejects a missing ledger or any open P0/P1 entry.
+
 **Live snapshot frozen from the repository.** The engine host walks the
 `Repository` directory to load Elisp sources at boot. Pointing it
 directly at the working repository would mean any further work in that
