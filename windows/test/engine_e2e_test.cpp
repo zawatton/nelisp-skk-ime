@@ -130,6 +130,10 @@ bool WaitForSessionCount(int expected) {
 int wmain(int argc, wchar_t** argv) {
   assert(argc == 4);
   assert(SetEnvironmentVariableW(L"DDSKK_PIPE_NAME", kTestPipe));
+  const std::wstring fixture = std::wstring(argv[3]) +
+      L"\\windows\\test-host\\data\\behavior-jisyo.utf8";
+  assert(SetEnvironmentVariableW(L"DDSKK_DICTIONARY_FILES", fixture.c_str()));
+  assert(SetEnvironmentVariableW(L"DDSKK_SKKSERV_ENABLE", L"0"));
   PROCESS_INFORMATION process = StartHost(argv);
   ddskk::EngineClient client;
   std::optional<ddskk::EngineState> state;
@@ -146,6 +150,8 @@ int wmain(int argc, wchar_t** argv) {
   assert(state->mode == L"hiragana");
   assert(state->text.empty());
   assert(state->pending_romaji == L"k");
+  const auto preview = client.PreviewCandidates(L"かな", 1000);
+  assert(preview && !preview->empty() && (*preview)[0] == L"仮名");
   // Model the four production targets (Notepad = client, plus Edge,
   // Windows Terminal and Emacs) as four simultaneous cross-pipe clients.
   // Each pending romaji must resume independently when requests interleave.

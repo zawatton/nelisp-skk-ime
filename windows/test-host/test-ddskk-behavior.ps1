@@ -5,6 +5,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$utf8 = New-Object Text.UTF8Encoding($false)
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $harness = Join-Path $PSScriptRoot 'run-harness.ps1'
 $fixture = Join-Path $PSScriptRoot 'data\behavior-jisyo.utf8'
@@ -15,18 +19,20 @@ if ([string]::IsNullOrWhiteSpace($DllPath)) {
 
 $script = @(
   # One-character conversion and okuri-ari conversion.
-  'K a SPACE WAIT500 ENTER WAIT500'
-  'K i e R u SPACE WAIT500 ENTER WAIT500'
+  'K a SPACE WAIT1700 ENTER WAIT500'
+  'K i e R u SPACE WAIT1700 ENTER WAIT500'
   # DDSKK q conversion commits katakana without changing the base mode.
   'K a n a Q'
   # Candidate 5, learning, then local two-step Ctrl+G.
-  'K a n a SPACE WAIT500 SPACE SPACE SPACE SPACE ENTER WAIT500'
-  'K a n a SPACE WAIT500 CTRLG CTRLG'
+  'K a n a SPACE WAIT1700 SPACE SPACE SPACE SPACE ENTER WAIT500'
+  'K a n a SPACE WAIT1700 CTRLG CTRLG'
   # Digits/symbols plus application-owned navigation and Ctrl shortcuts.
   '0 1 2 3 4 5 6 7 8 9 S1 S2 S3 S4 S5 S6 S7 S8 S9'
   'LEFT RIGHT CTRLC CTRLZ CTRLW CTRLS CTRLA'
   # Missing candidate -> registration; confirm exactly once.
-  'P a p a p a SPACE WAIT500 t e s u t o ENTER WAIT500'
+  'P a p a p a SPACE WAIT1700 t e s u t o ENTER WAIT500'
+  # A second registration is cancelled locally and cannot leak into the next episode.
+  'P a p a p i SPACE WAIT1700 t e CTRLG WAIT500 k a ENTER WAIT500'
   # Direct katakana, wide Latin, F7/F6 and direct Latin modes.
   'q k a q L a S1 SPACE CTRLJ K a n a F7 F6 CTRLG l a CTRLJ'
 ) -join ' '
@@ -71,7 +77,7 @@ Require 'AFTER WAIT500 BUF=\[\u868a\].*COMP=-' 'one-character conversion'
 Require 'AFTER WAIT500 BUF=\[\u868a\u6d88\u3048\u308b\].*COMP=-' 'okuri-ari conversion'
 Require 'AFTER Q BUF=\[\u868a\u6d88\u3048\u308b\u30ab\u30ca\].*COMP=-' 'Shift+Q katakana commit'
 Require 'AFTER WAIT500 BUF=\[\u868a\u6d88\u3048\u308b\u30ab\u30ca\u4f73\u5948\].*COMP=-' 'candidate traversal beyond four'
-Require 'AFTER WAIT500 BUF=\[\u868a\u6d88\u3048\u308b\u30ab\u30ca\u4f73\u5948\u25bc\u4f73\u5948\]' 'committed candidate learning'
+Require 'AFTER WAIT1700 BUF=\[\u868a\u6d88\u3048\u308b\u30ab\u30ca\u4f73\u5948\u25bc\u4f73\u5948\]' 'committed candidate learning'
 Require 'AFTER CTRLG BUF=\[\u868a\u6d88\u3048\u308b\u30ab\u30ca\u4f73\u5948\u25bd\u304b\u306a\]' 'candidate cancellation restores reading'
 
 foreach ($token in @('0','1','2','3','4','5','6','7','8','9',
@@ -83,7 +89,9 @@ foreach ($token in @('LEFT','RIGHT','CTRLC','CTRLZ','CTRLW','CTRLS','CTRLA')) {
 }
 Require 'AFTER WAIT500 BUF=\[[^\]]*\u3066\u3059\u3068\].*COMP=-' 'registration confirm'
 if ($script:behaviorText -match '\u3066\u3059\u3068\u3066\u3059\u3068') { throw 'DDSKK behavior failed: registration duplicated text' }
-Require 'AFTER a BUF=\[[^\]]*\u3066\u3059\u3068\u30ab\].*COMP=-' 'direct katakana mode'
+Require '(?s)AFTER CTRLG BUF=\[[^\r\n]*\u25bd\u3071\u3071\u3074\].*?AFTER WAIT500 BUF=\[[^\r\n]*\u3066\u3059\u3068\].*COMP=-' 'registration Ctrl+G cancellation'
+Require 'AFTER ENTER BUF=\[[^\]]*\u3066\u3059\u3068\u304b\].*COMP=-' 'cancelled registration cannot leak later'
+Require 'AFTER a BUF=\[[^\]]*\u3066\u3059\u3068\u304b\u30ab\].*COMP=-' 'direct katakana mode'
 Require 'AFTER CTRLJ BUF=\[[^\]]*\uff41\uff01\u3000\].*COMP=-' 'wide Latin mode'
 Require 'AFTER F7 BUF=\[[^\]]*\u25bd\u30ab\u30ca\]' 'F7 katakana transliteration'
 Require 'AFTER F6 BUF=\[[^\]]*\u25bd\u304b\u306a\]' 'F6 hiragana transliteration'
@@ -98,5 +106,5 @@ if ($ctrlG.Count -lt 2 -or ($ctrlG | Measure-Object -Maximum).Maximum -gt 20000)
 [pscustomobject]@{
   Result = 'PASS'
   CtrlGMaxMs = [Math]::Round((($ctrlG | Measure-Object -Maximum).Maximum / 1000.0), 3)
-  Assertions = 43
+  Assertions = 45
 }

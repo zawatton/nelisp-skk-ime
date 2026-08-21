@@ -73,6 +73,15 @@ int main() {
       if (!WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()),
                      &written, nullptr) || written != response.size()) std::abort();
     }
+    read = 0;
+    ZeroMemory(request_buffer, sizeof(request_buffer));
+    if (!ReadFile(pipe, request_buffer, sizeof(request_buffer), &read, nullptr) ||
+        std::string(request_buffer, read) != "PREVIEW e3818be381aa\n")
+      std::abort();
+    const std::string preview = "PREVIEW /仮名/佳奈;name/";
+    DWORD written = 0;
+    if (!WriteFile(pipe, preview.data(), static_cast<DWORD>(preview.size()),
+                   &written, nullptr) || written != preview.size()) std::abort();
     FlushFileBuffers(pipe);
     DisconnectNamedPipe(pipe);
     CloseHandle(pipe);
@@ -94,6 +103,9 @@ int main() {
   assert(state->pending_romaji == L"k");
   state = client.ConvertKeys(U"Kana", 1000);
   assert(state && state->mode == L"candidate" && state->text == L"▼仮名");
+  const auto preview = client.PreviewCandidates(L"かな", 1000);
+  assert(preview && preview->size() == 2 && (*preview)[0] == L"仮名" &&
+         (*preview)[1] == L"佳奈;name");
   client.Disconnect();
   server.join();
   CloseHandle(ready);

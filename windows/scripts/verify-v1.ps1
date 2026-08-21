@@ -11,7 +11,7 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$RepoRoot = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)),
+  [string]$RepoRoot = '',
   [string]$EmacsExe = 'emacs',
   [string]$IndicatorExe = '',
   [int]$ColdLoadSleepSec = 12,
@@ -21,6 +21,14 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$utf8 = New-Object Text.UTF8Encoding($false)
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $RepoRoot) {
+  $RepoRoot = Split-Path -Parent (Split-Path -Parent $scriptRoot)
+}
 $RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
 if (-not $IndicatorExe) {
   $IndicatorExe = Join-Path $RepoRoot 'sumi-ui\target\sumi-skk-ui.exe'
@@ -78,6 +86,17 @@ try {
   Invoke-Gate 'TSF context switch and stale-reply isolation' {
     & powershell -ExecutionPolicy Bypass -File `
       windows/test-host/test-context-switch.ps1 `
+      -ColdLoadSleepSec $ColdLoadSleepSec
+  }
+
+  Invoke-Gate 'DDSKK conversion acknowledgement and candidate p95' {
+    & powershell -ExecutionPolicy Bypass -File `
+      windows/test-host/measure-conversion-latency.ps1 -Engine ddskk `
+      -ColdLoadSleepSec $ColdLoadSleepSec
+  }
+  Invoke-Gate 'Lattice conversion acknowledgement and candidate p95' {
+    & powershell -ExecutionPolicy Bypass -File `
+      windows/test-host/measure-conversion-latency.ps1 -Engine lattice `
       -ColdLoadSleepSec $ColdLoadSleepSec
   }
 

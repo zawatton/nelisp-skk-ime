@@ -37,6 +37,11 @@ class RealtimeFrontend {
   bool latin() const { return latin_; }
   bool wide_latin() const { return wide_latin_; }
   const std::u32string& raw_keys() const { return raw_keys_; }
+  // Completed okuri-nasi reading suitable for a non-authoritative native
+  // dictionary preview. Empty means the provider must be the first surface.
+  std::wstring preview_reading() const {
+    return preedit_ && pending_.empty() && !okuri_started_ ? text_ : L"";
+  }
 
  private:
   std::optional<EngineState> FeedAscii(char key, bool record);

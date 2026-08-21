@@ -5,6 +5,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$utf8 = New-Object Text.UTF8Encoding($false)
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $harness = Join-Path $PSScriptRoot 'run-harness.ps1'
 $hostExe = Join-Path $root 'windows\build\Release\ddskk-engine-host.exe'

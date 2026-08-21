@@ -716,6 +716,38 @@ std::string MergeBuiltinCandidates(const std::string& midasi) {
   merged += '/';
   return merged;
 }
+
+bool DecodeHexBytes(std::string_view encoded, std::string* decoded) {
+  if (encoded.empty() || encoded.size() > 8192 || encoded.size() % 2 != 0)
+    return false;
+  decoded->clear();
+  decoded->reserve(encoded.size() / 2);
+  const auto nibble = [](char value) -> int {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+    return -1;
+  };
+  for (size_t index = 0; index < encoded.size(); index += 2) {
+    const int high = nibble(encoded[index]);
+    const int low = nibble(encoded[index + 1]);
+    if (high < 0 || low < 0) return false;
+    decoded->push_back(static_cast<char>((high << 4) | low));
+  }
+  return true;
+}
+
+std::string PreviewBuiltinDictionary(std::string_view request) {
+  constexpr std::string_view prefix = "PREVIEW ";
+  std::string midasi;
+  if (!request.starts_with(prefix) ||
+      !DecodeHexBytes(request.substr(prefix.size()), &midasi) ||
+      !g_builtin_dictionary.ready.load(std::memory_order_acquire)) {
+    return "PREVIEW -";
+  }
+  const std::string candidates = MergeBuiltinCandidates(midasi);
+  return candidates.empty() ? "PREVIEW -" : "PREVIEW " + candidates;
+}
 // ---------------------------------------------------------------------------
 
 // The dictionary host name is read from the registry as UTF-16 (RegQueryValueExW)
@@ -1353,8 +1385,14 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     std::string response;
     bool publish_response = true;
     const bool is_shutdown = request == "SHUTDOWN";
+    const bool is_preview = request.rfind("PREVIEW ", 0) == 0;
     if (is_shutdown) {
       response = "OK";
+    } else if (is_preview) {
+      // Immutable built-in dictionary maps are safe to read without the
+      // NeLisp transaction mutex. This path is a display preview only: it
+      // never mutates or claims authority over the provider session.
+      response = PreviewBuiltinDictionary(request);
     } else {
       // Locked for the whole transaction, including any nested "SERVER "
       // dictionary exchanges inside Dispatch() -- see the block comment

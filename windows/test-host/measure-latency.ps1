@@ -21,6 +21,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$utf8 = New-Object Text.UTF8Encoding($false)
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
 if ($KeyCount -lt 2 -or ($KeyCount % 2) -ne 0) {
   throw 'KeyCount must be an even number of at least 2.'
 }

@@ -48,6 +48,10 @@ class EngineClient {
                                       DWORD timeout_ms = 1500);
   std::optional<EngineState> SendControl(EngineControl control,
                                          DWORD timeout_ms = 25);
+  // Host-local immutable dictionary preview. This never evaluates NeLisp or
+  // mutates the provider session; authoritative conversion still follows.
+  std::optional<std::vector<std::wstring>> PreviewCandidates(
+      const std::wstring& reading, DWORD timeout_ms = 8);
   std::optional<std::vector<std::string>> ListEngines(DWORD timeout_ms = 1000);
   std::optional<std::string> CurrentEngine(DWORD timeout_ms = 1000);
   bool SelectEngine(const std::string& engine_id, DWORD timeout_ms = 1000);

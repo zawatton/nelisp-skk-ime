@@ -1732,8 +1732,19 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       if (realtime_frontend_.preedit() && !provider_composition_active_ &&
           last_engine_mode_ != L"candidate") {
         branch = L"provider-convert";
+        std::optional<std::vector<std::wstring>> preview;
+        const std::wstring reading = realtime_frontend_.preview_reading();
+        if (!reading.empty()) preview = engine_.PreviewCandidates(reading, 8);
         if (BeginProviderConversion(realtime_frontend_.raw_keys())) {
-          ShowProviderBusy(context);
+          if (preview && !preview->empty()) {
+            ddskk::EngineState preview_state;
+            preview_state.mode = L"provider-preview";
+            preview_state.candidate_index = 0;
+            preview_state.candidates = std::move(*preview);
+            UpdateCandidateUI(context, preview_state);
+          } else {
+            ShowProviderBusy(context);
+          }
           *eaten = TRUE;
           debug_exit(*eaten);
           return S_OK;
@@ -2237,6 +2248,14 @@ void TextService::UpdateCandidateUI(ITfContext* context,
   if (state.candidates.empty()) {
     CloseCandidateUi();
     return;
+  }
+  wchar_t harness_diagnostics[2]{};
+  if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS",
+                              harness_diagnostics, 2) > 0) {
+    std::printf("CANDIDATEUI preview=%d count=%zu\n",
+                state.mode == L"provider-preview" ? 1 : 0,
+                state.candidates.size());
+    std::fflush(stdout);
   }
   if (thread_manager_ == nullptr) return;
   ITfUIElementMgr* manager = nullptr;

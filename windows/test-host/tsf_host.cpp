@@ -785,6 +785,14 @@ void PumpMessages(DWORD duration_ms) {
     }
     Sleep(1);
   } while (GetTickCount64() < deadline);
+
+  // A provider result can be posted during the final Sleep(1).  Drain once
+  // more at the observation boundary so the following scripted key cannot
+  // overtake a result that arrived within the requested wait interval.
+  while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+  }
 }
 
 // Drives the TIP's ITfKeyEventSink directly instead of routing through

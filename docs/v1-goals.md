@@ -21,7 +21,11 @@ increasing sequence and stale replies never alter the document.
 
 All warm measurements use the real DLL, TSF test host, private named pipe, and
 real provider.  `windows/test-host/measure-latency.ps1` is the measurement of
-record for ordinary keys.
+record for ordinary keys.  `windows/test-host/measure-conversion-latency.ps1`
+is the measurement of record for conversion acknowledgement and first-candidate
+surface latency.  The first surface may use the host's immutable local
+dictionary preview; the provider reply remains authoritative for selection,
+commit, registration, and learning.
 
 | Path | Gate |
 | --- | --- |

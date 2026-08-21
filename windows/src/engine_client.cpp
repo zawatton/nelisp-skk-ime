@@ -211,6 +211,51 @@ std::optional<EngineState> EngineClient::SendControl(EngineControl control,
   return response ? ParseStateResponse(*response) : std::nullopt;
 }
 
+std::optional<std::vector<std::wstring>> EngineClient::PreviewCandidates(
+    const std::wstring& reading, DWORD timeout_ms) {
+  if (reading.empty() || !Connect(timeout_ms)) return std::nullopt;
+  const int utf8_size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+      reading.data(), static_cast<int>(reading.size()), nullptr, 0, nullptr,
+      nullptr);
+  if (utf8_size <= 0) return std::nullopt;
+  std::string utf8(static_cast<size_t>(utf8_size), '\0');
+  if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, reading.data(),
+      static_cast<int>(reading.size()), utf8.data(), utf8_size, nullptr,
+      nullptr) != utf8_size) return std::nullopt;
+  static constexpr char hex[] = "0123456789abcdef";
+  std::string request = "PREVIEW ";
+  request.reserve(request.size() + utf8.size() * 2 + 1);
+  for (const unsigned char value : utf8) {
+    request.push_back(hex[value >> 4]);
+    request.push_back(hex[value & 0x0f]);
+  }
+  request.push_back('\n');
+  const auto response = RawTransact(request, timeout_ms);
+  if (!response || !response->starts_with("PREVIEW ")) return std::nullopt;
+  if (*response == "PREVIEW -") return std::vector<std::wstring>{};
+  std::vector<std::wstring> candidates;
+  const std::string_view raw(response->data() + 8, response->size() - 8);
+  size_t start = 0;
+  while (start <= raw.size()) {
+    size_t end = raw.find('/', start);
+    if (end == std::string_view::npos) end = raw.size();
+    if (end > start) {
+      const std::string_view candidate = raw.substr(start, end - start);
+      const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+          candidate.data(), static_cast<int>(candidate.size()), nullptr, 0);
+      if (size <= 0) return std::nullopt;
+      std::wstring wide(static_cast<size_t>(size), L'\0');
+      if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+          candidate.data(), static_cast<int>(candidate.size()), wide.data(),
+          size) != size) return std::nullopt;
+      candidates.push_back(std::move(wide));
+    }
+    if (end >= raw.size()) break;
+    start = end + 1;
+  }
+  return candidates;
+}
+
 std::optional<std::vector<std::string>> EngineClient::ListEngines(
     DWORD timeout_ms) {
   const auto response = Transact("ENGINE LIST\n", timeout_ms);
