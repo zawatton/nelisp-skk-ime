@@ -87,6 +87,20 @@ while ((Get-Date) -lt $wallDeadline -or $samples -lt $soakSamplesNeeded) {
   if ($hostCim.Count -ne 1) { $issues += "host-count=$($hostCim.Count)" }
   if ($childCim.Count -ne 1) { $issues += "child-count=$($childCim.Count)" }
   if ($sumiCim.Count -ne 1) { $issues += "sumi-count=$($sumiCim.Count)" }
+  if ($hostCim.Count -eq 1 -and
+      [string]$hostCim[0].CommandLine -notlike "*$expectedRepository*") {
+    $issues += 'host-repository-mismatch'
+  }
+  $currentNative = Get-ItemProperty 'HKCU:\Software\NativeIME'
+  if ([IO.Path]::GetFullPath([string]$currentNative.EngineHost) -ne $expectedHost) {
+    $issues += 'registry-host-changed'
+  }
+  if ([IO.Path]::GetFullPath([string]$currentNative.Repository) -ne $expectedRepository) {
+    $issues += 'registry-repository-changed'
+  }
+  if ([IO.Path]::GetFullPath([string]$currentNative.SettingsExe) -ne $expectedSumi) {
+    $issues += 'registry-sumi-changed'
+  }
   if ($null -ne $initialHostPid -and $hostPid -ne $initialHostPid) { $issues += 'host-pid-changed' }
   if ($null -ne $initialChildPid -and $childPid -ne $initialChildPid) { $issues += 'child-pid-changed' }
   if ($hostBytes -gt $limitBytes) { $issues += 'host-memory-limit' }
