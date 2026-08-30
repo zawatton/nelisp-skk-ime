@@ -17,8 +17,19 @@
 (declare-function nelisp-set-marker "../nelisp/src/nelisp-buffer")
 (declare-function nelisp-copy-marker "../nelisp/src/nelisp-buffer")
 
-(when (and (fboundp 'nelisp-generate-new-buffer)
-           (not (fboundp 'point)))
+;; NeLisp v1.1.0 compat: the standalone prelude now natively provides
+;; `point'/`point-min'/`point-max'/`goto-char'/`generate-new-buffer'
+;; against a single shared `nelisp--current-buffer' global
+;; (scripts/nelisp-stdlib-prelude.el).  This engine needs its own
+;; multi-buffer implementation (`../nelisp/src/nelisp-buffer.el',
+;; `nelisp-generate-new-buffer' etc.) wired in instead, so this whole
+;; block must still run even though `point' is now `fboundp' before we
+;; ever get here.  `nelisp-generate-new-buffer' alone is the correct
+;; guard: it is defined only by this engine's own nelisp-buffer.el, so
+;; it is nil both on GNU Emacs and on a NeLisp build that has not
+;; loaded that file, and the old `(not (fboundp 'point))' half of this
+;; check is no longer meaningful now that prelude defines `point'.
+(when (fboundp 'nelisp-generate-new-buffer)
   (defalias 'generate-new-buffer 'nelisp-generate-new-buffer)
   (defalias 'kill-buffer 'nelisp-kill-buffer)
   (defalias 'current-buffer 'nelisp-current-buffer)
@@ -954,6 +965,285 @@ Tests the record type tag directly (`recordp' + `nelisp--record-type' +
     (if (and (recordp value) (eq (nelisp--record-type value) 'nelisp-marker))
         (nelisp-marker-position value)
       value)))
+
+;; NeLisp v1.1.0 compat: `vendor/ddskk' `require's these old Emacs
+;; libraries at load time (skk-vars.el: wid-edit; skk-macs.el / skk.el:
+;; advice, easymenu) for editor-UI features (widget editing, old-style
+;; `defadvice', menu bars) this headless stdio engine never exercises.
+;; Pre-v1.1.0 `nelisp.exe' silently tolerated a file-missing `require';
+;; v1.1.0 correctly signals it, so these long-dormant unused requires now
+;; abort engine startup.  Pre-registering the feature short-circuits
+;; `require' without a real implementation.
+(unless (featurep 'wid-edit) (provide 'wid-edit))
+(unless (featurep 'advice) (provide 'advice))
+(unless (featurep 'easymenu) (provide 'easymenu))
+
+;; Built-in display globals `defcustom' default-value forms read; NeLisp
+;; does not define them.  Faithful defaults for a headless/terminal
+;; context (no window system, no frame).
+(unless (boundp 'frame-background-mode) (defvar frame-background-mode nil))
+(unless (boundp 'window-system) (defvar window-system nil))
+
+;; `charset-list' (void-variable): a real GNU Emacs value comes from the
+;; C-level charset/mule subsystem this runtime doesn't implement.
+;; `skk-vars.el' only reads it once, to build `skk-kcode-charset-list'
+;; via `(mapcar ... charset-list)' -- an empty list is a faithful
+;; "no multibyte charsets known" answer, and `skk-kcode-charset-list'
+;; itself is not read anywhere this engine's TSF-hosted I/O depends on.
+;; NB: `skk-vars.el' also has `(eval-when-compile (defvar charset-list))'
+;; at its own top -- a no-value declaration meant only to silence the
+;; byte-compiler in real Emacs (where the C runtime already bound it);
+;; interpreted here with no compiler, it declares the symbol special but
+;; leaves it void, so this stub must run first (this file is loaded
+;; before `skk-vars.el').
+(unless (boundp 'charset-list) (defvar charset-list nil))
+
+;; `convert-standard-filename' (void-function): used inside a `defcustom'
+;; default.  This engine's path-building code already uses host-native
+;; separators, so identity passthrough is correct here (no real Windows
+;; drive-letter/backslash translation needed).
+(unless (fboundp 'convert-standard-filename)
+  (defun convert-standard-filename (filename) filename))
+
+;; `make-variable-buffer-local' / `make-local-variable' /
+;; `local-variable-p' (void-function in NeLisp v1.1.0: no buffer-local
+;; variable subsystem exists at all).  This is a SAFE stub specifically
+;; for this engine, not a general-purpose one: `skk-ime-session--
+;; initialize-native-buffer' (engine/ddskk-engine.el) already resets the
+;; full list of session-critical DDSKK variables explicitly with `setq'
+;; on every session start/reset, precisely BECAUSE this runtime has no
+;; automatic buffer-local propagation to depend on -- see that function's
+;; own commentary for the かんじ/かk candidate-leak case this manual
+;; reset already guards against.  Vendor ddskk's own `defvar-local' calls
+;; (expanding to `make-variable-buffer-local') are declarative-only here:
+;; a pass-through stub lets them load without crashing, and this engine
+;; never relies on the calls actually producing per-buffer isolation.
+(unless (fboundp 'make-variable-buffer-local)
+  (defun make-variable-buffer-local (variable)
+    "Stub: accept VARIABLE and return it (see commentary above)."
+    variable))
+(unless (fboundp 'make-local-variable)
+  (defun make-local-variable (variable)
+    "Stub: accept VARIABLE and return it (see commentary above)."
+    variable))
+(unless (fboundp 'local-variable-p)
+  (defun local-variable-p (variable &optional buffer)
+    (ignore variable buffer) nil))
+(unless (fboundp 'kill-local-variable)
+  (defun kill-local-variable (variable) (ignore variable) nil))
+
+;; `make-obsolete-variable' (void-function): vendor/ddskk declares several
+;; obsolete-variable aliases at load time.  In real Emacs this only sets a
+;; deprecation-warning property with no functional effect on the variable
+;; itself, so a no-op stub is correct here, not just expedient.
+(unless (fboundp 'make-obsolete-variable)
+  (defun make-obsolete-variable (obsolete-name current-name when &optional access-type)
+    (ignore obsolete-name current-name when access-type) nil))
+(unless (fboundp 'make-obsolete)
+  (defun make-obsolete (obsolete-name current-name &optional when)
+    (ignore obsolete-name current-name when) nil))
+
+;; `defface' (void-function, and a macro in real Emacs): vendor/ddskk
+;; declares candidate/annotation faces at load time.  `skk-use-face' is
+;; already forced to nil in this engine (see engine/ddskk-engine.el's own
+;; commentary), so no code path here ever applies a face for display --
+;; only the symbol needs to exist so `:foreground'/`:inherit' references
+;; and `(face ...)' property setters elsewhere don't signal void-variable.
+(unless (fboundp 'defface)
+  (defmacro defface (face spec doc &rest args)
+    (ignore spec args)
+    `(defvar ,face ',face ,doc)))
+
+;; `selected-frame' / `frame-parameters' (void-function): this engine has
+;; no display of its own -- see the `skk-use-face' commentary above about
+;; the Windows TSF host owning all visual treatment.  `skk-cursor-
+;; default-color' (skk-vars.el) unconditionally calls `(frame-parameters
+;; (selected-frame))' with no `fboundp' guard, so both symbols must exist
+;; even though nothing here ever reads a real frame's cursor-color.
+;; Returning nil is faithful: `(cdr (assq 'cursor-color nil))' is nil,
+;; the same "no color known" answer a real headless/tty frame gives.
+(unless (fboundp 'selected-frame)
+  (defun selected-frame () nil))
+(unless (fboundp 'frame-parameters)
+  (defun frame-parameters (&optional frame) (ignore frame) nil))
+(unless (fboundp 'frame-char-height)
+  (defun frame-char-height (&optional frame) (ignore frame) 1))
+
+;; `data-directory' (void-variable): a real GNU Emacs value points at the
+;; installed etc/ tree, used here only as a `locate-file' search root for
+;; optional vendor assets (SKK.tut, SKK-JISYO.L) this engine's TSF host
+;; never loads through these defcustoms.  Empty string is a faithful
+;; "no data directory known" answer -- `locate-file' with it in the
+;; search list simply fails to find the file, same as a real install
+;; missing that asset.
+(unless (boundp 'data-directory) (defvar data-directory ""))
+
+;; `noninteractive' (void-variable, NeLisp v1.1.1): a real GNU Emacs C-level
+;; builtin, t under --batch.  `skk-vars.el' reads it once to decide whether
+;; to run an interactive `y-or-n-p' prompt for a first-time-use notice
+;; (skk-vars.el:5269, `(when (and (not noninteractive) ...))').  This
+;; engine's TSF host is always a headless/batch-style stdio process (no
+;; interactive minibuffer), so `t' is the faithful answer -- it makes that
+;; `when' a no-op, same as running real Emacs with `--batch'.
+(unless (boundp 'noninteractive) (defvar noninteractive t))
+
+;; `def-edebug-spec' (void-function): `skk-macs.el' uses it to register
+;; edebug (the Emacs Lisp interactive debugger) syntax for SKK's macros.
+;; This engine never runs under edebug -- it is a headless stdio process
+;; with no interactive Emacs session to debug into -- so a no-op is
+;; faithful: the declaration has no effect on how the macros it describes
+;; actually expand or evaluate, only on how a live edebug session would
+;; step through them.
+(unless (fboundp 'def-edebug-spec)
+  (defmacro def-edebug-spec (&rest _args) nil))
+
+;; `ja-dic-utl' (file-missing): a GNU Emacs-bundled library providing
+;; kana-kanji dictionary search helpers, `require'd inside
+;; `skk-emacs.el's `(eval-when-compile ...)' at load time and again
+;; inside `skk-search-ja-dic' (an alternate dictionary backend this
+;; engine's DDSKK sessions never invoke -- the TSF host always searches
+;; via SKK-JISYO.L / skkserv, never GNU Emacs's own ja-dic.el).  Pre-
+;; v1.1.0 `nelisp.exe' silently tolerated the file-missing `require'
+;; here (same root cause as the wid-edit/advice/easymenu stubs above);
+;; v1.1.1 correctly signals it.  Pre-registering the feature is
+;; sufficient: `skk-search-ja-dic's own two calls after the `require'
+;; (`locate-library "ja-dic/ja-dic"' and the dictionary lookup that
+;; follows) are already wrapped in `ignore-errors' or gated on
+;; `skkdic-okuri-nasi', so this function degrades to a no-op rather
+;; than crashing if that unused backend is ever reached.
+(unless (featurep 'ja-dic-utl) (provide 'ja-dic-utl))
+
+;; `tooltip' (file-missing): a GNU Emacs GUI library, `require'd inside
+;; the same `skk-emacs.el' `(eval-when-compile ...)' as `ja-dic-utl'
+;; above, and again inside `skk-tooltip-show-at-point' (a candidate-
+;; display function this headless engine never calls -- see the
+;; `skk-use-face'/`defface' commentary earlier in this file about the
+;; Windows TSF host owning all visual treatment, tooltip windows
+;; included).  Same root cause as `ja-dic-utl': pre-v1.1.0 tolerated
+;; the file-missing `require' silently, v1.1.1 does not.
+(unless (featurep 'tooltip) (provide 'tooltip))
+
+;; `advice-add' (void-function): `skk-emacs.el' has exactly one call site,
+;; `(advice-add 'tooltip-hide :after #'ccc-tooltip-hide-advice)' -- wiring
+;; a hook onto the GUI tooltip-hide function this headless engine's
+;; `tooltip' stub above never defines and never calls (see the `tooltip'
+;; commentary above; this file's own earlier `(provide 'advice)' already
+;; short-circuits the OLD `defadvice' surface for the same reason). A
+;; no-op is correct here, not just expedient: there is no `tooltip-hide'
+;; for this advice to ever fire on.
+(unless (fboundp 'advice-add)
+  (defun advice-add (&rest _args) nil))
+(unless (fboundp 'advice-remove)
+  (defun advice-remove (&rest _args) nil))
+
+;; `load-path' (file-missing, e.g. `require': "skk-tankan"): NeLisp
+;; standalone's built-in `load-path' points only at its own `lisp'/`src'/
+;; `packages/*/src' tree -- it has no reason to know about this
+;; downstream project's own `vendor/ddskk' checkout.  `skk.el' itself
+;; `require's every sibling module in that directory (skk-tankan,
+;; skk-cdb, skk-cursor, skk-version, skk-cus, ccc, ...) once it loads,
+;; on top of the three (skk-vars/skk-macs/skk-emacs) this engine already
+;; loads explicitly by path.  Pre-v1.1.0 tolerated the file-missing
+;; `require's silently (same root cause as every other file-missing fix
+;; in this file); v1.1.1 does not, and this is the one gap that isn't a
+;; missing GNU Emacs primitive -- vendor/ddskk's own files are simply
+;; not on the search path `require' uses.  `default-directory' is this
+;; repository's root for the whole life of the engine process (see this
+;; project's own README.md), so a single relative entry is stable.
+(unless (member "vendor/ddskk" load-path)
+  (setq load-path (cons "vendor/ddskk" load-path)))
+
+;; `charsetp' (void-function): `skk-tankan.el' (単漢字, single-kanji
+;; conversion) gates two blocks of `japanese-jisx0213-1'-specific
+;; character/annotation data behind `(charsetp 'japanese-jisx0213-1)'.
+;; This runtime has no C-level charset/mule subsystem at all (see the
+;; `charset-list' commentary earlier in this file, which this stub is
+;; consistent with: an empty charset universe answers "no charset is
+;; ever valid"), so `nil' is the faithful answer -- both blocks become
+;; no-ops, same as running on a build with no JIS X 0213 support.
+(unless (fboundp 'charsetp)
+  (defun charsetp (_charset) nil))
+
+;; `faces' (file-missing): a GNU Emacs built-in display library, pulled
+;; in transitively through `skk-tankan''s own require chain.  Same
+;; category as `wid-edit'/`advice'/`easymenu'/`tooltip' above: this
+;; engine already forces `skk-use-face' off and defines `defface' as a
+;; no-op earlier in this file, so nothing here ever reaches an actual
+;; face object: pre-registering the feature is sufficient to satisfy
+;; the `require' without a real implementation.
+(unless (featurep 'faces) (provide 'faces))
+
+;; `cus-edit' (file-missing): GNU Emacs's interactive Customize UI,
+;; pulled in transitively (`skk-cus.el' -> ... -> `cus-edit').  Same
+;; category as `faces' above: this headless stdio engine has no
+;; interactive `M-x customize' session to render, so pre-registering
+;; the feature is sufficient.
+(unless (featurep 'cus-edit) (provide 'cus-edit))
+
+;; `custom' (file-missing): GNU Emacs's Customize declaration library
+;; (`defcustom'/`defgroup' machinery itself), pulled in transitively
+;; alongside `cus-edit'/`faces' above.  This engine's own `defcustom'/
+;; `defgroup' already work as plain `defvar'/no-ops via the standalone
+;; prelude (every `vendor/ddskk' defcustom in this smoke test has
+;; already loaded successfully by this point), so nothing here depends
+;; on the real `custom' library existing -- pre-registering the
+;; feature is sufficient.
+(unless (featurep 'custom) (provide 'custom))
+
+;; Keymap primitives (void-function, the whole family): this engine's
+;; own README.md already documents the design reason -- "Native hosts
+;; do not need Emacs keymaps, modelines, hooks, or cursor changes"
+;; (test/nelisp-session-smoke.el's own comment on
+;; `skk-ime-session--initialize-native-buffer').  Key events reach SKK
+;; through `skk-ime-session-feed-key'/`-feed-string' calling DDSKK's
+;; command functions directly, never through a real
+;; `lookup-key'/`define-key' dispatch loop -- vendor/ddskk's own
+;; `*-mode-map' keymaps are built at load time (skk-tankan.el and
+;; others) but never consulted by this engine's dispatch path.
+;; Faithful minimal stubs: a keymap is any cons whose car is `keymap'
+;; (matching GNU Emacs's own `keymapp' contract), `define-key'/
+;; `set-keymap-parent'/`use-local-map' are no-ops (there is no
+;; dispatch loop for a binding to ever affect), `lookup-key'/
+;; `current-local-map' answer "no binding"/"no map", consistent with a
+;; keymap that describes something no code path here ever asks it about.
+(unless (fboundp 'make-sparse-keymap)
+  (defun make-sparse-keymap (&optional _string) (list 'keymap)))
+(unless (fboundp 'make-keymap)
+  (defun make-keymap (&optional _string) (list 'keymap)))
+(unless (fboundp 'keymapp)
+  (defun keymapp (object) (and (consp object) (eq (car object) 'keymap))))
+(unless (fboundp 'define-key)
+  (defun define-key (&rest _args) nil))
+(unless (fboundp 'lookup-key)
+  (defun lookup-key (&rest _args) nil))
+(unless (fboundp 'use-local-map)
+  (defun use-local-map (&rest _args) nil))
+(unless (fboundp 'current-local-map)
+  (defun current-local-map () nil))
+(unless (fboundp 'set-keymap-parent)
+  (defun set-keymap-parent (keymap _parent) keymap))
+
+;; `widget-keymap' (void-variable): `wid-edit''s own keymap, referenced
+;; directly (`(set-keymap-parent some-map widget-keymap)') by code that
+;; assumed `(provide 'wid-edit)' above meant the real library loaded.
+;; It did not -- see that `provide' stub's own commentary -- so any
+;; variable/function `wid-edit' would have defined has to be supplied
+;; here too, as each one is actually reached.  An empty keymap is
+;; faithful for the same reason `make-keymap' is above: nothing in
+;; this engine's dispatch path ever consults it.
+(unless (boundp 'widget-keymap) (defvar widget-keymap (list 'keymap)))
+
+;; `defadvice' (void-function): the OLD-style advice macro, used by
+;; `skk-defadvice' (skk-macs.el) on exactly four GNU Emacs interactive
+;; commands -- `keyboard-quit', `abort-minibuffers',
+;; `abort-recursive-edit', `exit-minibuffer' -- all of them minibuffer/
+;; keyboard-interrupt handling this headless stdio engine's dispatch
+;; path (`skk-ime-session-feed-key'/`-feed-string', direct function
+;; calls, no minibuffer, no interactive command loop) never invokes.
+;; A no-op is correct for the same reason `advice-add' is above: there
+;; is no live call site for the advice to ever wrap.
+(unless (fboundp 'defadvice)
+  (defmacro defadvice (&rest _args) nil))
 
 (provide 'skk-nelisp-compat)
 
