@@ -395,8 +395,13 @@ offset into that string, or nil outside ▽/▼ mode.  `:pending-romaji' contain
 an incomplete DDSKK rule-tree prefix such as the letter n."
   (skk-ime-session--with-buffer session
     (let* ((composition-p (memq skk-henkan-mode '(on active)))
+           ;; `skk-set-marker' is overridden in ddskk-engine.el to store a
+           ;; plain position rather than a marker -- markers cannot be
+           ;; compared with `<' on this runtime without making that
+           ;; primitive 1.3-1.4x slower for everything.  So accept either.
            (start (and composition-p
-                       (markerp skk-henkan-start-point)
+                       (or (numberp skk-henkan-start-point)
+                           (markerp skk-henkan-start-point))
                        (marker-position skk-henkan-start-point))))
       (list :mode (cond
                    ((eq skk-henkan-mode 'active) 'candidate)

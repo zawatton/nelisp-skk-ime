@@ -30,6 +30,87 @@
 ;; after `skk-macs.el' has been loaded but before `skk.el' runs.
 (defun skk-char-to-unibyte-string (char) (string char))
 
+;; Defer `skk-tankan.el'.  It is 単漢字検索 -- looking a single kanji up by
+;; radical or stroke count -- and on this runtime it costs 3.5-4.0s to
+;; load, about 30% of the whole cold start, because
+;; `skk-tankan-name-radical-alist' (skk-tankan.el:1836) builds a ~640-entry
+;; alist through a multibyte `split-string' and a padded `format' per
+;; entry.  `skk.el' pulls the file in from its `eval-and-compile' require
+;; block and never touches a symbol from it; the engine host therefore paid
+;; the whole cost before it could answer its first keystroke, for a feature
+;; the first keystroke cannot reach.
+;;
+;; What makes deferring safe rather than merely faster: the one entry point
+;; that the DEFAULT `skk-search-prog-list' reaches, `skk-tankan-search', is
+;; a no-op unless the reading ends with `skk-tankan-search-key' (@) --
+;; see its own `when' at skk-tankan.el:1950.  So the stub below can decide
+;; whether the real thing is needed using only `skk-vars.el' data, which is
+;; already loaded, and an ordinary conversion never loads the file at all.
+;; The cost moves to the first ACTUAL 単漢字 lookup instead of every start.
+;;
+;; `autoload' is void on standalone NeLisp, so these are hand-written: each
+;; stub loads the file (which redefines it) and then re-dispatches.
+(defvar ddskk-engine--tankan-loaded nil)
+(defun ddskk-engine--load-tankan ()
+  (unless ddskk-engine--tankan-loaded
+    (setq ddskk-engine--tankan-loaded t)
+    (load "vendor/ddskk/skk-tankan.el")))
+(defun skk-tankan-search (func &rest args)
+  "Load `skk-tankan.el' on demand, then run the real `skk-tankan-search'.
+Answers nil without loading anything unless the reading actually asks for
+単漢字変換, which is the same condition the real function tests first."
+  (when (and (boundp 'skk-henkan-key)
+             (stringp skk-henkan-key)
+             (boundp 'skk-tankan-search-key)
+             (string-match (format "%s$"
+                                   (regexp-quote
+                                    (char-to-string skk-tankan-search-key)))
+                           skk-henkan-key))
+    (ddskk-engine--load-tankan)
+    (apply 'skk-tankan-search func args)))
+(defun skk-tankan (arg)
+  "Load `skk-tankan.el' on demand, then run the real `skk-tankan'."
+  (ddskk-engine--load-tankan)
+  (skk-tankan arg))
+(provide 'skk-tankan)
+
+;; Henkan points as plain positions, not markers.
+;;
+;; DDSKK keeps `skk-henkan-start-point' and friends in markers and then
+;; does ordinary arithmetic on them -- `skk-start-henkan' guards with
+;; `(< pos skk-henkan-start-point)'.  In GNU Emacs that is fine: `<' accepts
+;; a marker, which is what `number-or-marker-p' in its error message names.
+;; On standalone NeLisp a marker is an ordinary struct, so that comparison
+;; signalled `wrong-type-argument' and every conversion failed.
+;;
+;; The runtime now accepts markers in `1-', `max' and `min' (see
+;; `nelisp-marker-install-arithmetic', ../nelisp/src/nelisp-buffer.el), but
+;; deliberately NOT in `<': measured interleaved on this engine's own load,
+;; wrapping `<' costs 1.30-1.42x and wrapping the whole arithmetic family
+;; 2.8-3.6x, because this runtime charges a basic operation per call and
+;; those are the hottest primitives it has.
+;;
+;; So the marker is removed from the hot path instead of the check being
+;; added to it.  This runtime's markers do not adjust on insertion anyway
+;; (see the `set-marker' commentary in skk-nelisp-compat.el), so for these
+;; variables a marker carries nothing an integer does not -- and every
+;; henkan point is set through this one macro, so overriding it covers all
+;; of them at once rather than call site by call site.
+;;
+;; It must be redefined BEFORE `skk.el' is loaded: it is a macro, and
+;; `skk.el' expands it at load time.
+(defmacro skk-set-marker (marker position &optional _buffer)
+  "Set MARKER to POSITION as a plain position (NeLisp override)."
+  (list 'setq marker position))
+
+;; `marker-position' is then handed an integer by anything that still asks
+;; a henkan point for its position (`skk-emacs.el' does).  Answer it rather
+;; than signal: the value IS the position.
+(unless (fboundp 'nelisp-skk--native-marker-position)
+  (defalias 'nelisp-skk--native-marker-position (symbol-function 'marker-position))
+  (defun marker-position (m)
+    (if (numberp m) m (nelisp-skk--native-marker-position m))))
+
 (load "vendor/ddskk/skk.el")
 
 ;; `skk-okurigana-prefix' in DDSKK derives the romaji prefix of an
@@ -198,9 +279,38 @@
         skk-okuri-index-max -1 skk-exit-show-candidates nil
         skk-henkan-okurigana nil skk-current-search-prog-list nil)
   (unless skk-rule-tree
-    (setq skk-rule-tree
-          (skk-compile-rule-list skk-rom-kana-base-rule-list
-                                 skk-rom-kana-rule-list))))
+    (setq skk-rule-tree (ddskk-engine--rule-tree))))
+
+(defvar ddskk-engine--rule-tree-cache nil
+  "Pre-built romaji rule tree, loaded from `skk-rule-tree-cache.el'.")
+
+(defun ddskk-engine--rule-tree ()
+  "Return the compiled romaji rule tree, from the generated cache if valid.
+
+`skk-compile-rule-list' costs ~1.7-2.3s on this runtime and is the largest
+single item left on the path the TSF host's first keystroke has to walk.
+Its inputs are two constants, so `engine/gen-rule-tree.el' builds the tree
+once and writes it out as data: measured 1.738s to build against 0.008s to
+load, with the two trees `equal'.
+
+The cache carries `sxhash-equal' of both input lists and is used only when
+they still match -- `skk-rom-kana-rule-list' is a `defcustom', so the
+premise that the inputs are constant is a claim about a particular
+configuration, not about the program.  A cache whose inputs moved costs the time it was meant
+to save and nothing else; it never yields a tree that does not match the
+rules in force."
+  (let ((cache-file (expand-file-name "engine/skk-rule-tree-cache.el")))
+    (when (and (null ddskk-engine--rule-tree-cache)
+               (file-exists-p cache-file))
+      (load cache-file))
+    (or (and ddskk-engine--rule-tree-cache
+             (equal (plist-get ddskk-engine--rule-tree-cache :base-hash)
+                    (sxhash-equal skk-rom-kana-base-rule-list))
+             (equal (plist-get ddskk-engine--rule-tree-cache :extra-hash)
+                    (sxhash-equal skk-rom-kana-rule-list))
+             (plist-get ddskk-engine--rule-tree-cache :tree))
+        (skk-compile-rule-list skk-rom-kana-base-rule-list
+                               skk-rom-kana-rule-list))))
 
 (defvar ddskk-engine--session nil)
 (defvar ddskk-engine--registration-checkpoint nil)
