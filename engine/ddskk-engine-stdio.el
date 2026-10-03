@@ -26,6 +26,11 @@
 
 (load "engine/ddskk-engine.el")
 
+;; The host gives each blue-green child its own selection. DDSKK used to
+;; require an ENGINE SET from the first client even for passthrough startup.
+(when (equal (getenv "NELISP_IME_ENGINE") "passthrough")
+  (ddskk-engine-dispatch-line "ENGINE SET passthrough"))
+
 (defun ddskk-engine-read-stdio-line ()
   "Read one protocol line from NeLisp stdin, or return nil at EOF."
   (let ((line (read-stdin-bytes 8192)))

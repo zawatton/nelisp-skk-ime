@@ -58,11 +58,21 @@ Windows may require reopening the target app or signing out once before showing
 a newly registered item. The Windows taskbar setting "Input Indicator" must be
 enabled; Windows 11 may still group the button inside its input flyout.
 
-The taskbar button now also selects the input engine. `DDSKK` runs the existing
-DDSKK/NeLisp path; `passthrough` is an experimental provider that returns all
-keys to the application. The IPC contract exposes `ENGINE LIST`,
-`ENGINE CURRENT`, and `ENGINE SET <id>` so additional engines can be added
-without changing TSF key/composition plumbing.
+The taskbar menu selects DDSKK, かな漢字変換 (lattice), or パススルー by
+writing the Engine setting. Open applications follow the change after their
+current composition ends. エンジン再起動 sends `ENGINE RELOAD`; the host
+warms a replacement child while the old engine continues serving requests.
+The IPC contract also exposes `ENGINE SWITCH <id>`, `ENGINE CURRENT`,
+`ENGINE LIST`, and the compatible `ENGINE SET <id>` selection command.
+
+For isolated verification, build into a private directory and pass explicit
+`-TsfHostExe`, `-EngineHostPath`, `-EngineExecutablePath`, and `-RepositoryPath`
+to `test-host/run-harness.ps1`. It creates a private pipe, registry key
+(`NATIVEIME_REGISTRY_KEY`) and user dictionary, then removes its key on exit.
+Harness scripts can use `ENGINE:lattice`, `KILLCHILD` and `KILLHOST` to
+exercise changes within one activation. `test-host/test-hot-swap.ps1` accepts
+the host/runtime paths and `-BuildDirectory` and verifies the host lifecycle
+with a persistent client connection.
 
 Windows can keep an in-process TSF DLL loaded in `ctfmon`, Explorer, or a text
 application after registration. If relinking reports `LNK1168`, build into a

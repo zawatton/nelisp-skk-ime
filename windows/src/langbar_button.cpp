@@ -307,41 +307,48 @@ HRESULT LangBarButton::OnClick(TfLBIClick click, POINT, const RECT*) {
 
   // Kind::kSettings: unchanged engine-selection + settings menu.
   AppendMenuW(menu, MF_STRING, 1, L"DDSKK");
+  AppendMenuW(menu, MF_STRING, 4, L"かな漢字変換 (lattice)");
   AppendMenuW(menu, MF_STRING, 2, L"パススルー");
+  AppendMenuW(menu, MF_STRING, 5, L"エンジン再起動");
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(menu, MF_STRING, 3, L"設定...");
   POINT cursor{}; GetCursorPos(&cursor);
   const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
       cursor.x, cursor.y, 0, GetForegroundWindow(), nullptr);
   DestroyMenu(menu);
-  if (command == 1) handler_->SelectInputEngine(true);
-  if (command == 2) handler_->SelectInputEngine(false);
+  if (command == 1) handler_->SelectEngineId("ddskk");
+  if (command == 2) handler_->SelectEngineId("passthrough");
+  if (command == 4) handler_->SelectEngineId("lattice");
+  if (command == 5) handler_->ReloadEngine();
   if (command == 3) handler_->ShowSettings();
   return S_OK;
 }
 HRESULT LangBarButton::InitMenu(ITfMenu* menu) {
   if (menu == nullptr) return E_INVALIDARG;
   if (kind_ != Kind::kSettings) return S_OK;
-  HRESULT result = menu->AddMenuItem(1, 0, nullptr, nullptr,
-                                     L"DDSKK", 5, nullptr);
-  if (SUCCEEDED(result)) {
-    result = menu->AddMenuItem(2, 0, nullptr, nullptr,
-                               L"パススルー", 5, nullptr);
-  }
-  if (SUCCEEDED(result)) {
-    result = menu->AddMenuItem(0, TF_LBMENUF_SEPARATOR, nullptr, nullptr,
-                               L"", 0, nullptr);
-  }
-  if (SUCCEEDED(result)) {
-    result = menu->AddMenuItem(3, 0, nullptr, nullptr,
-                               L"設定...", 5, nullptr);
+  struct Item { UINT id; const wchar_t* text; };
+  static constexpr Item items[] = {
+    {1, L"DDSKK"}, {4, L"かな漢字変換 (lattice)"},
+    {2, L"パススルー"}, {5, L"エンジン再起動"}, {3, L"設定..."}
+  };
+  HRESULT result = S_OK;
+  for (const auto& item : items) {
+    if (item.id == 3) {
+      result = menu->AddMenuItem(0, TF_LBMENUF_SEPARATOR, nullptr, nullptr, L"", 0, nullptr);
+      if (FAILED(result)) break;
+    }
+    result = menu->AddMenuItem(item.id, 0, nullptr, nullptr,
+        item.text, static_cast<ULONG>(wcslen(item.text)), nullptr);
+    if (FAILED(result)) break;
   }
   return result;
 }
 HRESULT LangBarButton::OnMenuSelect(UINT id) {
   if (handler_ == nullptr || kind_ != Kind::kSettings) return E_UNEXPECTED;
-  if (id == 1) handler_->SelectInputEngine(true);
-  if (id == 2) handler_->SelectInputEngine(false);
+  if (id == 1) handler_->SelectEngineId("ddskk");
+  if (id == 2) handler_->SelectEngineId("passthrough");
+  if (id == 4) handler_->SelectEngineId("lattice");
+  if (id == 5) handler_->ReloadEngine();
   if (id == 3) handler_->ShowSettings();
   return S_OK;
 }

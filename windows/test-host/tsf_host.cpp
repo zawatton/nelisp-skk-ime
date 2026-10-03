@@ -62,6 +62,7 @@
 // CMakeLists.txt's target_compile_definitions(tsf-host ...), matching the
 // rest of this project's targets.
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include <objidl.h>
 #include <olectl.h>
@@ -103,9 +104,8 @@ void PrintHrStr(const std::string& where, HRESULT hr) {
 // been deployed over that registered path, especially when the
 // registered copy is locked (in use by some other already-running
 // process) and can't simply be overwritten in place either. Returns
-// nullptr (never touching the registry or CoCreateInstance itself) if
-// the env var is unset or anything along the way fails; the caller falls
-// back to the normal CoCreateInstance() path in that case.
+// nullptr if loading fails. The harness fails closed in that case; it never
+// falls back to the installed COM service.
 ITfTextInputProcessor* CreateTipFromDllPath() {
   wchar_t dll_path[MAX_PATH]{};
   const DWORD size =
@@ -992,7 +992,49 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   std::wstring token;
   size_t active = 0;
   while (stream >> token) {
-    if (token == L"CTX1" || token == L"CTX2") {
+    if (token.starts_with(L"ENGINE:")) {
+      wchar_t path[1024]{};
+      GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", path, _countof(path));
+      if (std::wstring(path).starts_with(L"Software\\NativeIME-test-")) {
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+          const std::wstring id = token.substr(7);
+          RegSetValueExW(key, L"Engine", 0, REG_SZ,
+              reinterpret_cast<const BYTE*>(id.c_str()), static_cast<DWORD>((id.size()+1)*sizeof(wchar_t)));
+          RegCloseKey(key);
+        }
+      }
+    } else if (token == L"KILLHOST" || token == L"KILLCHILD") {
+      wchar_t value[32]{};
+      GetEnvironmentVariableW(L"NATIVEIME_TEST_HOST_PID", value, _countof(value));
+      DWORD pid = wcstoul(value, nullptr, 10);
+      const DWORD parent_pid = pid;
+      if (token == L"KILLCHILD") {
+        wchar_t engine_name[MAX_PATH]{};
+        GetEnvironmentVariableW(L"NATIVEIME_TEST_ENGINE_NAME", engine_name, _countof(engine_name));
+        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        PROCESSENTRY32W entry{}; entry.dwSize = sizeof(entry);
+        DWORD child = 0;
+        if (Process32FirstW(snapshot, &entry)) do {
+          if (entry.th32ParentProcessID == pid && engine_name[0] &&
+              _wcsicmp(entry.szExeFile, engine_name) == 0) {
+            child = entry.th32ProcessID; break;
+          }
+        } while (Process32NextW(snapshot, &entry));
+        CloseHandle(snapshot); pid = child;
+      }
+      if (pid != 0) {
+        HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+        const BOOL killed = process && TerminateProcess(process, 1);
+        std::printf("TEST_KILL token=%s parent=%lu target=%lu success=%d error=%lu\n",
+            Utf8FromWide(token).c_str(), parent_pid, pid, killed, killed ? 0 : GetLastError());
+        if (process) CloseHandle(process);
+        if (!killed) std::exit(1);
+      } else {
+        std::printf("TEST_KILL token=%s parent=%lu target=0 success=0\n", Utf8FromWide(token).c_str(), parent_pid);
+        std::exit(1);
+      }
+    } else if (token == L"CTX1" || token == L"CTX2") {
       active = token == L"CTX1" ? 0 : 1;
       const HRESULT hr = thread_mgr->SetFocus(documents[active]);
       PrintHrStr(Utf8FromWide(token), hr);
@@ -1029,6 +1071,15 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+  wchar_t private_key[1024]{}, private_pipe[256]{}, private_dll[32768]{};
+  GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", private_key, _countof(private_key));
+  GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", private_pipe, _countof(private_pipe));
+  GetEnvironmentVariableW(L"DDSKK_HARNESS_DLL_PATH", private_dll, _countof(private_dll));
+  if (!std::wstring(private_key).starts_with(L"Software\\NativeIME-test-") ||
+      !std::wstring(private_pipe).starts_with(L"\\\\.\\pipe\\ddskk-test-") || !private_dll[0]) {
+    std::fprintf(stderr, "tsf-host requires private registry/pipe and an explicit DLL; use run-harness.ps1\n");
+    return 2;
+  }
   SetConsoleOutputCP(CP_UTF8);
   // Join every argument: callers (notably PowerShell's Start-Process) may
   // deliver the space-separated script as one argv entry per token.
@@ -1076,7 +1127,13 @@ int wmain(int argc, wchar_t** argv) {
       break;
     }
 
-    hr = thread_mgr->Activate(&client_id);
+    ITfThreadMgrEx* isolated_manager = nullptr;
+    hr = thread_mgr->QueryInterface(IID_ITfThreadMgrEx,
+        reinterpret_cast<void**>(&isolated_manager));
+    if (SUCCEEDED(hr)) {
+      hr = isolated_manager->ActivateEx(&client_id, TF_TMAE_NOACTIVATETIP);
+      isolated_manager->Release();
+    }
     if (FAILED(hr)) {
       PrintHr("ThreadMgr::Activate", hr);
       break;
@@ -1202,48 +1259,24 @@ int wmain(int argc, wchar_t** argv) {
     // back to routing keys through ITfKeystrokeMgr, which reaches TSF's
     // instance instead.
     tip = CreateTipFromDllPath();
-    hr = tip != nullptr
-        ? S_OK
-        : CoCreateInstance(CLSID_DdskkTextService, nullptr,
-                          CLSCTX_INPROC_SERVER, IID_ITfTextInputProcessor,
-                          reinterpret_cast<void**>(&tip));
+    hr = tip != nullptr ? S_OK : E_FAIL;
     std::printf("TIP_DIRECT create hr=%08lx\n", static_cast<unsigned long>(hr));
     if (SUCCEEDED(hr)) {
-      // TSF may have auto-activated its own instance of this TIP at
-      // thread-manager activation (the profile stays session-active once
-      // force-activated in an earlier run), and that instance holds the
-      // key-event-sink slot for its client id. Register the direct
-      // instance under a separate client id so both can coexist.
-      // {D3B26A70-5C11-4B41-9ED4-6E0371C9E1B3} -- harness-local, random.
-      static const GUID kHarnessClientGuid = {
-          0xd3b26a70, 0x5c11, 0x4b41,
-          {0x9e, 0xd4, 0x6e, 0x03, 0x71, 0xc9, 0xe1, 0xb3}};
+      // ActivateEx disabled automatic TIP activation. Use the manager's
+      // activated client id; a GetClientId-only id is not an active client.
       TfClientId direct_client_id = client_id;
-      ITfClientId* client_id_source = nullptr;
-      if (SUCCEEDED(thread_mgr->QueryInterface(
-              IID_ITfClientId, reinterpret_cast<void**>(&client_id_source)))) {
-        TfClientId fresh = TF_CLIENTID_NULL;
-        if (SUCCEEDED(client_id_source->GetClientId(kHarnessClientGuid,
-                                                    &fresh)) &&
-            fresh != TF_CLIENTID_NULL) {
-          direct_client_id = fresh;
-        }
-        client_id_source->Release();
-      }
       std::printf("TIP_DIRECT client_id=%u (host=%u)\n",
                   static_cast<unsigned>(direct_client_id),
                   static_cast<unsigned>(client_id));
       hr = tip->Activate(thread_mgr, direct_client_id);
       std::printf("TIP_DIRECT activate hr=%08lx\n",
                   static_cast<unsigned long>(hr));
-      // Activate() builds all the state the key path needs (thread
-      // manager, client id, settings, engine connection) BEFORE its
-      // AdviseKeyEventSink call, and only that advise can fail here (TSF
-      // rejects a second foreground key sink on the thread when its own
-      // auto-activated instance holds one). Sink registration is
-      // irrelevant to direct driving -- we call OnTestKeyDown/OnKeyDown
-      // ourselves -- so proceed with the sink either way.
       tip_activated = true;
+      // This private manager has no registered TIP profile. Windows rejects
+      // its foreground key-sink advise; the harness drives the real sink
+      // directly, as before. Other activation failures remain fatal.
+      if (FAILED(hr) && hr != E_INVALIDARG) break;
+      if (hr == E_INVALIDARG) std::printf("TIP_DIRECT driving key sink without registered profile\n");
       if (FAILED(tip->QueryInterface(IID_ITfKeyEventSink,
                                      reinterpret_cast<void**>(&key_sink)))) {
         key_sink = nullptr;
@@ -1263,7 +1296,7 @@ int wmain(int argc, wchar_t** argv) {
       // Drain deferred TSF focus/activation notifications before accepting
       // input. A notification left from SetFocus can otherwise terminate
       // the composition created by the first scripted character.
-      PumpMessages(0);
+      PumpMessages(500);
       ITfContext* contexts[2] = {context, context2};
       DocumentStore* stores[2] = {store, store2};
       ITfDocumentMgr* documents[2] = {doc_mgr, doc_mgr2};

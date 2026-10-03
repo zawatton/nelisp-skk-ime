@@ -29,7 +29,7 @@
 #endif
 
 namespace {
-constexpr wchar_t kTestPipe[] = L"\\\\.\\pipe\\ddskk-ime-e2e-v1";
+wchar_t kTestPipe[256]{};
 
 PROCESS_INFORMATION StartHost(wchar_t** argv) {
   std::fprintf(stderr, "E2E: starting host\n");
@@ -129,7 +129,7 @@ bool WaitForSessionCount(int expected) {
 
 int wmain(int argc, wchar_t** argv) {
   assert(argc == 4);
-  assert(SetEnvironmentVariableW(L"DDSKK_PIPE_NAME", kTestPipe));
+  assert(GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", kTestPipe, _countof(kTestPipe)) > 0);
   const std::wstring fixture = std::wstring(argv[3]) +
       L"\\windows\\test-host\\data\\behavior-jisyo.utf8";
   assert(SetEnvironmentVariableW(L"DDSKK_DICTIONARY_FILES", fixture.c_str()));

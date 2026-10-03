@@ -23,6 +23,9 @@ if ([string]::IsNullOrWhiteSpace($DllPath)) {
 }
 
 $script = @(
+  # Warm the first real lattice conversion in the second document. Returning
+  # to CTX1 leaves the measured document empty and preserves all thresholds.
+  'CTX2 a i SPACE WAIT3000 ENTER WAIT500 CTX1'
   # Conversion and explicit learning (the second candidate for はし is 端).
   'k a n a SPACE WAIT150 ENTER WAIT100'
   'h a s i SPACE WAIT500 SPACE ENTER WAIT500'

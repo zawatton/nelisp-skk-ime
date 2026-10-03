@@ -18,6 +18,7 @@
 #include "engine_protocol.h"
 
 #include <atomic>
+#include <functional>
 #include <optional>
 #include <string>
 #include <windows.h>
@@ -40,6 +41,9 @@ class EngineClient {
   // on focus/composition abandonment so an old application's late callback
   // cannot reset the single shared engine while another app is typing.
   void MarkNeedsResync();
+  void SetConnectionFailureHandler(std::function<void()> handler) {
+    connection_failure_ = std::move(handler);
+  }
   std::optional<EngineState> Reset(DWORD timeout_ms = 25);
   std::optional<EngineState> SendKey(char32_t codepoint, DWORD timeout_ms = 25);
   std::optional<EngineState> ConvertKeys(const std::u32string& keys,
@@ -55,6 +59,7 @@ class EngineClient {
   std::optional<std::vector<std::string>> ListEngines(DWORD timeout_ms = 1000);
   std::optional<std::string> CurrentEngine(DWORD timeout_ms = 1000);
   bool SelectEngine(const std::string& engine_id, DWORD timeout_ms = 1000);
+  bool ReloadEngine(DWORD timeout_ms = 1000);
   // Sends a lightweight "GC\n" request and reports whether the host
   // answered within timeout_ms. Used by TextService::Activate's warm-up
   // thread to pay the engine's cold-load cost off the UI thread instead of
@@ -81,6 +86,7 @@ class EngineClient {
   // client abandons a document composition. RESET is sent for this client's
   // scoped engine checkpoint only when it next becomes active and transacts.
   bool needs_resync_ = false;
+  std::function<void()> connection_failure_;
   // Raw reply retained for diagnostics when a version/protocol mismatch
   // makes ParseStateResponse fail. Never used to drive behavior.
   std::string last_response_;
