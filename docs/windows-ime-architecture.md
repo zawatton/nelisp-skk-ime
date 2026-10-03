@@ -111,8 +111,33 @@ else `ddskk`:
 
 Both runners speak the same line protocol, so nothing below `StartChild()` —
 the dictionary relay, idle GC, the named-pipe server — can tell them apart.
-The host exports `NELISP_IME_ENGINE` to the framework runner so it starts on
-the configured engine; `ENGINE SET` still switches at runtime.
+The host supplies `NELISP_IME_ENGINE` in each child's private environment.
+`ENGINE SWITCH <id>` returns `OK SWITCHING <id>` immediately and prepares
+the appropriate runner in the background. `ENGINE RELOAD` returns
+`OK RELOADING` and prepares a fresh process for the active engine. The old
+child serves transactions until the replacement answers `ENGINE CURRENT`.
+Publication holds the engine mutex between transactions, waits up to five
+seconds for composing sessions, and resets owned sessions when it swaps.
+The old process stops afterwards. `ENGINE SET` remains a compatibility alias
+for selection; selecting the already active engine is an immediate no-op.
+
+The host watches the registry Engine value and automatically replaces dead
+children, with exponential retry back-off from one to thirty seconds. Its
+job object owns all children so killing the host also kills warming processes.
+Dictionary relay, idle GC and the state mirror always use the active child.
+
+Each DLL watches the settings key on a background waiter and applies changes
+at the next idle key or focus event. Engine identity remains fixed during a
+composition. Failed connections trigger throttled host startup, at most once
+per five seconds, followed by the existing session resynchronization.
+
+`NATIVEIME_REGISTRY_KEY` overrides the HKCU-relative key path in the DLL and
+host, including per-engine settings and dictionary configuration. Windows
+tests use a unique `Software\NativeIME-test-<uuid>` key, private pipe and user
+dictionary. The harness requires explicit executable/repository paths and
+creates/deletes its own settings key; it never derives defaults from the
+installed IME. `windows/test-host/test-hot-swap.ps1` exercises switching,
+reload, child recovery and registry notifications on one connection.
 
 An engine whose runner is not present in the deployed repository falls back to
 DDSKK with a line on stderr. This is not defensive tidiness: the settings

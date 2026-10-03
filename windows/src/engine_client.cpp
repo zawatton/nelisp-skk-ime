@@ -81,7 +81,11 @@ void EngineClient::MarkNeedsResync() { needs_resync_ = true; }
 std::optional<std::string> EngineClient::Transact(const std::string& request,
                                                   DWORD timeout_ms) {
   last_response_.clear();
-  if (!Connect(timeout_ms)) return std::nullopt;
+  if (!Connect(timeout_ms)) {
+    needs_resync_ = true;
+    if (connection_failure_) connection_failure_();
+    return std::nullopt;
+  }
   if (needs_resync_) {
     // A previous transaction on an earlier connection may have timed out
     // (or hit an I/O error) after the request had already reached the
@@ -126,6 +130,7 @@ std::optional<std::string> EngineClient::RawTransact(const std::string& request,
     CloseHandle(overlapped.hEvent);
     Disconnect();
     needs_resync_ = true;
+    if (connection_failure_) connection_failure_();
   };
   // Used when WriteFile/ReadFile failed outright (anything other than
   // ERROR_IO_PENDING): nothing was queued, so skip the cancel/wait dance
@@ -134,6 +139,7 @@ std::optional<std::string> EngineClient::RawTransact(const std::string& request,
     CloseHandle(overlapped.hEvent);
     Disconnect();
     needs_resync_ = true;
+    if (connection_failure_) connection_failure_();
   };
 
   DWORD written = 0;
@@ -277,11 +283,17 @@ bool EngineClient::SelectEngine(const std::string& engine_id, DWORD timeout_ms) 
       "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") !=
       std::string::npos) return false;
   const auto response = Transact("ENGINE SET " + engine_id + "\n", timeout_ms);
-  return response && *response == "OK ENGINE " + engine_id;
+  return response && (*response == "OK ENGINE " + engine_id ||
+                      *response == "OK SWITCHING " + engine_id);
 }
 
 bool EngineClient::Ping(DWORD timeout_ms) {
   return Transact("GC\n", timeout_ms).has_value();
+}
+
+bool EngineClient::ReloadEngine(DWORD timeout_ms) {
+  const auto response = Transact("ENGINE RELOAD\n", timeout_ms);
+  return response && *response == "OK RELOADING";
 }
 
 }  // namespace ddskk

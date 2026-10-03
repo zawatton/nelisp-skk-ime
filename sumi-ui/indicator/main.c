@@ -798,9 +798,9 @@ typedef struct {
 static const EngineChoice kEngineChoices[] = {
     {L"ddskk", "DDSKK (SKK)",
      "SKK の変換規則をそのまま使います。", FALSE},
-    {L"lattice", "かな漢字変換 (nelisp-ime)",
+    {L"lattice", "かな漢字変換 (lattice)",
      "辞書ラティスで文全体を変換します。変換精度はまだ素朴です。", FALSE},
-    {L"dictionary", "完全一致変換 (nelisp-ime)",
+    {L"dictionary", "完全一致変換 (dictionary)",
      "読みが完全一致する候補だけを出します。", TRUE},
     {L"passthrough", "パススルー (実験用)",
      "変換せずアプリへ渡します。", FALSE},

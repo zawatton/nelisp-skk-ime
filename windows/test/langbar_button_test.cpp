@@ -25,6 +25,10 @@
 
 class Handler final : public LangBarButtonHandler {
  public: void SelectInputEngine(bool ddskk) override { selected = ddskk; }
+  void SelectEngineId(const std::string& id) override { selected_id = id; }
+  void ReloadEngine() override { reloaded = true; }
+  std::string selected_id;
+  bool reloaded = false;
   void ToggleInputMode() override { toggled = true; }
   void ShowSettings() override { settings = true; }
   void SelectInputMode(const std::wstring& label) override { selected_mode = label; }
@@ -51,6 +55,10 @@ int main() {
   assert(info.ulSort == 1);
   DWORD status = 0;
   assert(SUCCEEDED(settings_button->GetStatus(&status)) && status == 0);
+  assert(SUCCEEDED(settings_button->OnMenuSelect(1)) && handler.selected_id == "ddskk");
+  assert(SUCCEEDED(settings_button->OnMenuSelect(4)) && handler.selected_id == "lattice");
+  assert(SUCCEEDED(settings_button->OnMenuSelect(2)) && handler.selected_id == "passthrough");
+  assert(SUCCEEDED(settings_button->OnMenuSelect(5)) && handler.reloaded);
   HICON logo_icon = nullptr;
   assert(SUCCEEDED(settings_button->GetIcon(&logo_icon)) &&
          logo_icon != nullptr);

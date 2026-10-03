@@ -28,6 +28,8 @@
 class LangBarButtonHandler {
  public:
   virtual void SelectInputEngine(bool ddskk) = 0;
+  virtual void SelectEngineId(const std::string& id) = 0;
+  virtual void ReloadEngine() = 0;
   virtual void ToggleInputMode() = 0;
   virtual void ShowSettings() = 0;
   // Routes a right-click mode selection from the input-mode item's menu

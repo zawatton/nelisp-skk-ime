@@ -30,6 +30,11 @@ target_link_libraries(ddskk-ime PRIVATE ole32 oleaut32 advapi32 uuid gdi32 user3
 set_target_properties(ddskk-ime PROPERTIES OUTPUT_NAME "ddskk-ime")
 
 enable_testing()
+function(nativeime_test target)
+  add_test(NAME ${target} COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+    -File "${CMAKE_CURRENT_SOURCE_DIR}/test/run-isolated-test.ps1"
+    -Executable $<TARGET_FILE:${target}> ${ARGN})
+endfunction()
 add_executable(ddskk-engine-protocol-test
   test/engine_protocol_test.cpp
   src/engine_protocol.cpp)
@@ -37,7 +42,7 @@ target_include_directories(ddskk-engine-protocol-test PRIVATE src)
 target_compile_features(ddskk-engine-protocol-test PRIVATE cxx_std_20)
 target_compile_definitions(ddskk-engine-protocol-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(ddskk-engine-protocol-test PRIVATE /W4 /permissive- /utf-8)
-add_test(NAME ddskk-engine-protocol-test COMMAND ddskk-engine-protocol-test)
+nativeime_test(ddskk-engine-protocol-test)
 
 add_executable(ddskk-engine-client-test
   test/engine_client_test.cpp
@@ -47,7 +52,7 @@ target_include_directories(ddskk-engine-client-test PRIVATE src)
 target_compile_features(ddskk-engine-client-test PRIVATE cxx_std_20)
 target_compile_definitions(ddskk-engine-client-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(ddskk-engine-client-test PRIVATE /W4 /permissive- /utf-8)
-add_test(NAME ddskk-engine-client-test COMMAND ddskk-engine-client-test)
+nativeime_test(ddskk-engine-client-test)
 
 add_executable(ddskk-candidate-ui-test
   test/candidate_ui_test.cpp src/candidate_ui.cpp)
@@ -56,7 +61,7 @@ target_compile_features(ddskk-candidate-ui-test PRIVATE cxx_std_20)
 target_compile_definitions(ddskk-candidate-ui-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(ddskk-candidate-ui-test PRIVATE /W4 /permissive- /utf-8)
 target_link_libraries(ddskk-candidate-ui-test PRIVATE oleaut32 uuid)
-add_test(NAME ddskk-candidate-ui-test COMMAND ddskk-candidate-ui-test)
+nativeime_test(ddskk-candidate-ui-test)
 
 add_executable(ddskk-display-attribute-test
   test/display_attribute_test.cpp src/display_attribute.cpp)
@@ -65,7 +70,7 @@ target_compile_features(ddskk-display-attribute-test PRIVATE cxx_std_20)
 target_compile_definitions(ddskk-display-attribute-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(ddskk-display-attribute-test PRIVATE /W4 /permissive- /utf-8)
 target_link_libraries(ddskk-display-attribute-test PRIVATE oleaut32 uuid)
-add_test(NAME ddskk-display-attribute-test COMMAND ddskk-display-attribute-test)
+nativeime_test(ddskk-display-attribute-test)
 
 add_executable(ddskk-langbar-button-test
   test/langbar_button_test.cpp src/langbar_button.cpp)
@@ -77,7 +82,7 @@ target_compile_options(ddskk-langbar-button-test PRIVATE /W4 /permissive- /utf-8
 # section, GDI text/fill, CreateIconIndirect) and menu handling now pull
 # in both.
 target_link_libraries(ddskk-langbar-button-test PRIVATE oleaut32 uuid gdi32 user32)
-add_test(NAME ddskk-langbar-button-test COMMAND ddskk-langbar-button-test)
+nativeime_test(ddskk-langbar-button-test)
 
 add_executable(ddskk-mode-indicator-test
   test/mode_indicator_test.cpp src/mode_indicator.cpp)
@@ -90,7 +95,7 @@ target_compile_options(ddskk-mode-indicator-test PRIVATE /W4 /permissive- /utf-8
 # since it is linked as a directly-specified object file (not a static
 # library member), those symbols must still resolve at link time.
 target_link_libraries(ddskk-mode-indicator-test PRIVATE gdi32 user32)
-add_test(NAME ddskk-mode-indicator-test COMMAND ddskk-mode-indicator-test)
+nativeime_test(ddskk-mode-indicator-test)
 
 add_executable(ddskk-realtime-frontend-test
   test/realtime_frontend_test.cpp
@@ -100,7 +105,15 @@ target_compile_features(ddskk-realtime-frontend-test PRIVATE cxx_std_20)
 target_compile_definitions(ddskk-realtime-frontend-test PRIVATE
   UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(ddskk-realtime-frontend-test PRIVATE /W4 /permissive- /utf-8)
-add_test(NAME ddskk-realtime-frontend-test COMMAND ddskk-realtime-frontend-test)
+nativeime_test(ddskk-realtime-frontend-test)
+
+add_executable(nativeime-registry-settings-test test/registry_settings_test.cpp)
+target_include_directories(nativeime-registry-settings-test PRIVATE src)
+target_compile_features(nativeime-registry-settings-test PRIVATE cxx_std_20)
+target_compile_definitions(nativeime-registry-settings-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(nativeime-registry-settings-test PRIVATE /W4 /permissive- /utf-8)
+target_link_libraries(nativeime-registry-settings-test PRIVATE advapi32)
+nativeime_test(nativeime-registry-settings-test)
 
 add_executable(ddskk-registration-probe tools/registration_probe.cpp)
 target_include_directories(ddskk-registration-probe PRIVATE src)
@@ -148,7 +161,7 @@ target_compile_definitions(ddskk-engine-e2e-test PRIVATE UNICODE _UNICODE WIN32_
 target_compile_options(ddskk-engine-e2e-test PRIVATE /W4 /permissive- /utf-8)
 set(NELISP_EXECUTABLE "" CACHE FILEPATH "NeLisp executable for DDSKK E2E tests")
 if(NELISP_EXECUTABLE)
-  add_test(NAME ddskk-engine-e2e-test COMMAND ddskk-engine-e2e-test
+  nativeime_test(ddskk-engine-e2e-test
     $<TARGET_FILE:ddskk-engine-host>
     "${NELISP_EXECUTABLE}"
     "${CMAKE_SOURCE_DIR}/..")
@@ -164,4 +177,4 @@ target_include_directories(tsf-host PRIVATE src)
 target_compile_features(tsf-host PRIVATE cxx_std_20)
 target_compile_definitions(tsf-host PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(tsf-host PRIVATE /W4 /permissive- /utf-8)
-target_link_libraries(tsf-host PRIVATE ole32 oleaut32 uuid user32)
+target_link_libraries(tsf-host PRIVATE ole32 oleaut32 uuid user32 advapi32)

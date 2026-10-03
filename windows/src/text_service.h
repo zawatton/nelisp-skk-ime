@@ -22,6 +22,7 @@
 #include "guids.h"
 #include "langbar_button.h"
 #include "mode_indicator.h"
+#include "registry_watcher.h"
 
 #include <atomic>
 #include <deque>
@@ -86,6 +87,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   HRESULT FinalizeCandidate() override;
   HRESULT AbortCandidate() override;
   void SelectInputEngine(bool ddskk) override;
+  void SelectEngineId(const std::string& id) override;
+  void ReloadEngine() override;
   void ToggleInputMode() override;
   void ShowSettings() override;
   void SelectInputMode(const std::wstring& label) override;
@@ -114,6 +117,9 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   HRESULT AddLangBarButton();
   void RemoveLangBarButton();
   void LoadSettings();
+  void FollowSettings();
+  RegistryWatcher settings_watcher_;
+  std::atomic<ULONGLONG> last_host_spawn_{0};
   void EnsureEngineHost();
   void CaptureCaretRect(TfEditCookie edit_cookie, ITfContext* context,
                         ITfRange* range);

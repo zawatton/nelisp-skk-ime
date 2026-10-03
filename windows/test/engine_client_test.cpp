@@ -30,11 +30,12 @@
 #endif
 
 int main() {
-  constexpr wchar_t kTestPipe[] = L"\\\\.\\pipe\\ddskk-ime-client-test-v1";
-  assert(SetEnvironmentVariableW(L"DDSKK_PIPE_NAME", kTestPipe));
+  wchar_t private_pipe[256]{};
+  assert(GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", private_pipe, _countof(private_pipe)) > 0);
+  const wchar_t* kTestPipe = private_pipe;
   HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   assert(ready != nullptr);
-  std::thread server([ready] {
+  std::thread server([ready, kTestPipe] {
     HANDLE pipe = CreateNamedPipeW(
         kTestPipe, PIPE_ACCESS_DUPLEX,
         PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, 1, 8192, 8192,
@@ -50,6 +51,8 @@ int main() {
              std::pair{"ENGINE LIST\n", "ENGINES ddskk experimental"},
              std::pair{"ENGINE CURRENT\n", "ENGINE ddskk"},
              std::pair{"ENGINE SET experimental\n", "OK ENGINE experimental"},
+             std::pair{"ENGINE SET lattice\n", "OK SWITCHING lattice"},
+             std::pair{"ENGINE RELOAD\n", "OK RELOADING"},
              std::pair{"RESET\n", "STATE hiragana 0 -1 - - -1 -"},
              std::pair{"KEY 107\n", "STATE hiragana 0 -1 - 00006b -1 -"},
              std::pair{"CONTROL CONVERT-KEYS 75,97,110,97\n",
@@ -93,6 +96,8 @@ int main() {
   assert(engines && engines->size() == 2 && (*engines)[0] == "ddskk");
   assert(client.CurrentEngine(1000) == "ddskk");
   assert(client.SelectEngine("experimental", 1000));
+  assert(client.SelectEngine("lattice", 1000));
+  assert(client.ReloadEngine(1000));
   assert(!client.SelectEngine("invalid id", 1000));
   const auto reset = client.Reset(1000);
   assert(reset && reset->mode == L"hiragana" && reset->text.empty());
@@ -110,11 +115,17 @@ int main() {
   server.join();
   CloseHandle(ready);
 
+  int failures = 0;
+  client.SetConnectionFailureHandler([&failures] { ++failures; });
+  assert(!client.Reset(2));
+  assert(failures == 1);
+  client.SetConnectionFailureHandler({});
+
   // A provider timeout must never trap the UI behind the full transaction
   // deadline. CancelPendingIo is invoked by local Ctrl+G and interrupts an
   // already-issued overlapped read from another thread.
-  constexpr wchar_t kHungPipe[] =
-      L"\\\\.\\pipe\\ddskk-ime-client-hung-test-v1";
+  const std::wstring hung_pipe = std::wstring(private_pipe) + L"-hung";
+  const wchar_t* kHungPipe = hung_pipe.c_str();
   assert(SetEnvironmentVariableW(L"DDSKK_PIPE_NAME", kHungPipe));
   HANDLE hung_ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   HANDLE request_seen = CreateEventW(nullptr, TRUE, FALSE, nullptr);

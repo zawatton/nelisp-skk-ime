@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "text_service.h"
+#include "registry_settings.h"
 
 #include <cstdarg>
 #include <cstdio>
@@ -161,7 +162,7 @@ std::string NarrowUtf8(const wchar_t* text) {
 DWORD ReadEngineDword(const wchar_t* engine_id, const wchar_t* name,
                       DWORD fallback) {
   if (!engine_id || !*engine_id) return fallback;
-  std::wstring subkey = L"Software\\NativeIME\\Engines\\";
+  std::wstring subkey = NativeImeRegistryKey() + L"\\Engines\\";
   subkey += engine_id;
   HKEY key = nullptr;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, subkey.c_str(), 0, KEY_READ, &key) !=
@@ -223,9 +224,13 @@ struct TextService::ProviderResult {
   std::optional<ddskk::EngineState> state;
 };
 
-TextService::TextService() { InterlockedIncrement(&g_object_count); }
+TextService::TextService() {
+  InterlockedIncrement(&g_object_count);
+  engine_.SetConnectionFailureHandler([this] { EnsureEngineHost(); });
+}
 
 TextService::~TextService() {
+  settings_watcher_.Stop();
   if (provider_window_ != nullptr) DestroyWindow(provider_window_);
   if (active_context_ != nullptr) active_context_->Release();
   if (registration_range_ != nullptr) registration_range_->Release();
@@ -688,18 +693,20 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
   }
   EnsureEngineHost();
   LoadSettings();
+  settings_watcher_.Start();
   // The engine's cold load was measured at 3.4 s. Pay that cost here, on a
   // detached background thread at activation, instead of on the user's
   // first keystroke -- that removes the first-key freeze. This thread
   // constructs its own EngineClient and never touches engine_, which is
   // UI-thread-only.
-  const std::string selected_engine = engine_id_;
-  std::thread([selected_engine] {
+  // Read-only warm-up: a captured selection could arrive after a registry
+  // switch and switch the shared host back to a stale engine.
+  std::thread([] {
     ddskk::EngineClient warm_up_client;
     const ULONGLONG deadline = GetTickCount64() + 20000;
     while (GetTickCount64() < deadline) {
       if (warm_up_client.Connect(2000)) {
-        warm_up_client.SelectEngine(selected_engine, 1000);
+        warm_up_client.CurrentEngine(1000);
         return;
       }
       Sleep(250);
@@ -737,6 +744,7 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
 }
 
 HRESULT TextService::Deactivate() {
+  settings_watcher_.Stop();
   CancelPendingProvider();
   RemoveLangBarButton();
   UnadviseOpenCloseCompartment();
@@ -978,6 +986,7 @@ void TextService::ApplyKeyboardOpenChange() {
 }
 
 HRESULT TextService::OnSetFocus(BOOL foreground) {
+  FollowSettings();
   (void)foreground;
   // Thread-focus notifications are not document-ownership boundaries.
   // Edge/Electron and even TSF UI surfaces can briefly report FALSE while
@@ -1064,6 +1073,7 @@ bool TextService::WouldClaimKey(WPARAM wparam, bool composing) const {
 // Only claim printable keys while the out-of-process engine is reachable.
 HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
                                    BOOL* eaten) {
+  FollowSettings();
   if (eaten == nullptr) return E_POINTER;
   tested_control_down_ = ControlDown();
   // Logs (wparam, handled, connect result, final eaten) with -1 for
@@ -1163,6 +1173,28 @@ void TextService::SelectInputEngine(bool ddskk) {
   // No ITfContext is available from this langbar-triggered path; the
   // indicator falls back to the mouse cursor position.
   MaybeShowModeIndicator(nullptr, nullptr);
+}
+
+void TextService::SelectEngineId(const std::string& id) {
+  if (id != "ddskk" && id != "lattice" && id != "dictionary" && id != "passthrough") return;
+  const std::wstring wide(id.begin(), id.end());
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,
+      nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) == ERROR_SUCCESS) {
+    if (RegSetValueExW(key, L"Engine", 0, REG_SZ,
+        reinterpret_cast<const BYTE*>(wide.c_str()),
+        static_cast<DWORD>((wide.size()+1)*sizeof(wchar_t))) == ERROR_SUCCESS)
+      settings_watcher_.dirty.store(true);
+    RegCloseKey(key);
+    FollowSettings();
+  }
+}
+
+void TextService::ReloadEngine() {
+  // A separate connection keeps this immediate host command out of an
+  // in-flight provider transaction on this service's session.
+  ddskk::EngineClient control;
+  control.ReloadEngine(100);
 }
 
 void TextService::ToggleInputMode() {
@@ -1275,7 +1307,7 @@ void TextService::ShowSettings() {
   wchar_t settings_exe[32768]{};
   DWORD settings_exe_bytes = sizeof(settings_exe);
   HKEY key = nullptr;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0, KEY_READ,
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ,
                     &key) == ERROR_SUCCESS) {
     const LONG status = RegQueryValueExW(
         key, L"SettingsExe", nullptr, nullptr,
@@ -1296,6 +1328,8 @@ void TextService::ShowSettings() {
 }
 
 void TextService::LoadSettings() {
+  for (const wchar_t* label : {L"かな", L"カナ", L"SKK", L"全英", L"Abbrev"})
+    mode_indicator_.SetPaletteOverride(label, ModeIndicatorColors(label).background);
   HKEY key = nullptr;
   wchar_t engine[32] = L"ddskk";
   DWORD bytes = sizeof(engine), kana = 1, kana_bytes = sizeof(kana);
@@ -1303,7 +1337,7 @@ void TextService::LoadSettings() {
   DWORD indicator_enabled = 1, indicator_enabled_bytes = sizeof(indicator_enabled);
   DWORD indicator_scale = 100, indicator_scale_bytes = sizeof(indicator_scale);
   DWORD debug_log = 0, debug_log_bytes = sizeof(debug_log);
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0,
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,
                     KEY_READ, &key) == ERROR_SUCCESS) {
     RegQueryValueExW(key, L"Engine", nullptr, nullptr,
                      reinterpret_cast<BYTE*>(engine), &bytes);
@@ -1386,15 +1420,30 @@ void TextService::LoadSettings() {
   last_mode_label_ = ModeIndicatorLabel(kana_mode_, last_engine_mode_);
 }
 
+void TextService::FollowSettings() {
+  if (composition_ || engine_pending_ || registration_mode_ ||
+      provider_pending_.load() || provider_composition_active_ ||
+      realtime_frontend_.preedit()) return;
+  if (!settings_watcher_.dirty.exchange(false)) return;
+  std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+  LoadSettings();
+  engine_.MarkNeedsResync();
+  MaybeShowModeIndicator(nullptr, nullptr);
+}
+
 void TextService::EnsureEngineHost() {
   if (engine_.Connect(1)) return;
+  const ULONGLONG now = GetTickCount64();
+  ULONGLONG previous = last_host_spawn_.load();
+  if (previous && now - previous < 5000) return;
+  if (!last_host_spawn_.compare_exchange_strong(previous, now)) return;
   wchar_t disable_spawn[2]{};
   if (GetEnvironmentVariableW(L"NELISP_IME_DISABLE_HOST_SPAWN", disable_spawn,
                               _countof(disable_spawn)) > 0 &&
       disable_spawn[0] == L'1')
     return;
   HKEY key = nullptr;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0,
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,
                     KEY_READ, &key) != ERROR_SUCCESS) return;
   auto read = [key](const wchar_t* name) {
     wchar_t value[32768]{}; DWORD bytes = sizeof(value);
@@ -1468,6 +1517,7 @@ void TextService::DebugLog(const wchar_t* format, ...) {
 
 HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
                                BOOL* eaten) {
+  FollowSettings();
   if (eaten == nullptr) return E_POINTER;
   *eaten = FALSE;
   if (context == nullptr) return E_INVALIDARG;

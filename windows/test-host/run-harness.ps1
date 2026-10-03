@@ -5,9 +5,8 @@
   session or interactively-registered engine host.
 
 .DESCRIPTION
-  1. Uses explicit EngineHost / EngineExecutable / Repository overrides.
-     If any are missing, reads defaults from HKCU:\Software\NativeIME.
-     With all three supplied it performs no registry access.
+  1. Requires explicit EngineHost / EngineExecutable / Repository paths,
+     and creates a disposable Software\NativeIME-test-<uuid> key.
   2. Generates a unique named-pipe name and points DDSKK_PIPE_NAME at it,
      and DDSKK_USER_JISYO at a fresh temp file, so this run never touches
      anyone else's dictionary or collides with another running host.
@@ -57,10 +56,9 @@ param(
   [string]$Script = "",
 
   [string]$TsfHostExe = "",
+  [string]$DllPath = "",
 
-  # Optional build-under-test overrides.  Defaults remain the installed
-  # registry values, but CI/development can now exercise a new host/protocol
-  # and repository snapshot without deploying either one live first.
+  # Required build-under-test paths; no installed registry defaults.
   [string]$EngineHostPath = "",
   [string]$EngineExecutablePath = "",
   [string]$RepositoryPath = "",
@@ -122,18 +120,13 @@ if ([string]::IsNullOrWhiteSpace($TsfHostExe)) {
 }
 $TsfHostExe = [System.IO.Path]::GetFullPath($TsfHostExe)
 
-$regPath = "HKCU:\Software\NativeIME"
+$runId = [guid]::NewGuid().ToString("N").Substring(0, 12)
+$registryKey = "Software\NativeIME-test-$runId"
+$regPath = "HKCU:\$registryKey"
 if ([string]::IsNullOrWhiteSpace($EngineHostPath) -or
     [string]::IsNullOrWhiteSpace($EngineExecutablePath) -or
     [string]::IsNullOrWhiteSpace($RepositoryPath)) {
-  if (-not (Test-Path $regPath)) {
-    Write-Error "Registry key $regPath not found -- supply all three engine path overrides."
-    exit 1
-  }
-  $reg = Get-ItemProperty -Path $regPath
-  $engineHost = $reg.EngineHost
-  $engineExecutable = $reg.EngineExecutable
-  $repository = $reg.Repository
+  throw 'Private harness requires EngineHostPath, EngineExecutablePath and RepositoryPath.'
 }
 if (-not [string]::IsNullOrWhiteSpace($EngineHostPath)) {
   $engineHost = [IO.Path]::GetFullPath($EngineHostPath)
@@ -157,8 +150,13 @@ if (-not (Test-Path -LiteralPath $TsfHostExe)) {
   Write-Error "tsf-host.exe not found at $TsfHostExe -- build the tsf-host CMake target first."
   exit 1
 }
+if (-not $DllPath) {
+  $DllPath = if ($env:DDSKK_HARNESS_DLL_PATH) { $env:DDSKK_HARNESS_DLL_PATH }
+    else { Join-Path ([IO.Path]::GetDirectoryName($TsfHostExe)) 'ddskk-ime.dll' }
+}
+$DllPath = [IO.Path]::GetFullPath($DllPath)
+if (-not (Test-Path -LiteralPath $DllPath)) { throw "Private test DLL not found: $DllPath" }
 
-$runId = [guid]::NewGuid().ToString("N").Substring(0, 12)
 $pipeShortName = "ddskk-test-$runId"
 $pipeFullName = "\\.\pipe\$pipeShortName"
 $tempJisyo = Join-Path $env:TEMP "ddskk-test-jisyo-$runId.jisyo"
@@ -167,23 +165,53 @@ $tempJisyo = Join-Path $env:TEMP "ddskk-test-jisyo-$runId.jisyo"
 # current process's environment block at start time, same as the
 # CreateProcessW(..., lpEnvironment=nullptr, ...) convention the host and
 # its own E2E test already rely on (see host/main.cpp PipeName()).
+$savedEnvironment = @{}
+foreach ($name in @('DDSKK_PIPE_NAME','DDSKK_USER_JISYO','NATIVEIME_REGISTRY_KEY',
+    'LOCALAPPDATA','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH')) {
+  $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
+}
+$hostProcess = $null
+$exitCode = 1
+$savedDisableHostSpawn = $env:NELISP_IME_DISABLE_HOST_SPAWN
+try {
+$env:DDSKK_HARNESS_DLL_PATH = $DllPath
 $env:DDSKK_PIPE_NAME = $pipeFullName
 $env:DDSKK_USER_JISYO = $tempJisyo
-$savedDisableHostSpawn = $env:NELISP_IME_DISABLE_HOST_SPAWN
-$env:NELISP_IME_DISABLE_HOST_SPAWN = '1'
+$env:NATIVEIME_REGISTRY_KEY = $registryKey
+# Seed the private settings, including the host's dictionary bridge, even
+# when every executable path is supplied explicitly.
+New-Item -Path $regPath -Force | Out-Null
+$initialEngine = if ($env:NELISP_IME_ENGINE) { $env:NELISP_IME_ENGINE } else { 'ddskk' }
+foreach ($entry in @{
+  EngineHost=$engineHost; EngineExecutable=$engineExecutable; Repository=$repository
+  Engine=$initialEngine; UserJisyoPath=$tempJisyo
+  DictionaryFiles=(Join-Path $PSScriptRoot 'data\behavior-jisyo.utf8')
+}.GetEnumerator()) {
+  New-ItemProperty -Path $regPath -Name $entry.Key -Value $entry.Value -PropertyType String -Force | Out-Null
+}
+New-ItemProperty -Path $regPath -Name SkkServEnable -Value 0 -PropertyType DWord -Force | Out-Null
+New-ItemProperty -Path $regPath -Name InitialKanaMode -Value 1 -PropertyType DWord -Force | Out-Null
+# Logs and user data must also stay out of the installed IME's directory.
+$env:LOCALAPPDATA = Join-Path ([IO.Path]::GetDirectoryName($TsfHostExe)) "harness-$runId"
+New-Item -ItemType Directory -Path $env:LOCALAPPDATA -Force | Out-Null
+$hostOutput = Join-Path $env:LOCALAPPDATA 'host.stdout.log'
+$hostError = Join-Path $env:LOCALAPPDATA 'host.stderr.log'
+$tsfOutput = Join-Path $env:LOCALAPPDATA 'tsf.stdout.log'
+$tsfError = Join-Path $env:LOCALAPPDATA 'tsf.stderr.log'
+# The registry is authoritative for live-switch tests, so do not pin the DLL.
+Remove-Item Env:NELISP_IME_ENGINE -ErrorAction SilentlyContinue
+Remove-Item Env:NELISP_IME_DISABLE_HOST_SPAWN -ErrorAction SilentlyContinue
 
 Write-Host "run-harness: pipe=$pipeFullName jisyo=$tempJisyo"
 Write-Host "run-harness: starting engine host: [$engineHost] [$engineExecutable] [$repository]"
 
-$hostArgs = @($engineExecutable)
-if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += $repository }
+$hostArgs = @("`"$engineExecutable`"")
+if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repository`"" }
 
-$hostProcess = $null
-$exitCode = 1
-
-try {
   $hostProcess = Start-Process -FilePath $engineHost -ArgumentList $hostArgs `
-    -WindowStyle Hidden -PassThru
+    -WindowStyle Hidden -PassThru -RedirectStandardOutput $hostOutput -RedirectStandardError $hostError
+  $env:NATIVEIME_TEST_HOST_PID = [string]$hostProcess.Id
+  $env:NATIVEIME_TEST_ENGINE_NAME = [IO.Path]::GetFileName($engineExecutable)
 
   Write-Host "run-harness: waiting up to ${PipeWaitTimeoutSec}s for the pipe..."
   if (-not (Wait-ForNamedPipe -PipeFullName $pipeFullName -TimeoutSec $PipeWaitTimeoutSec)) {
@@ -199,9 +227,10 @@ try {
   if (-not [string]::IsNullOrEmpty($Script)) { $tsfArgs = @($Script) }
 
   $tsfProcess = Start-Process -FilePath $TsfHostExe -ArgumentList $tsfArgs `
-    -NoNewWindow -PassThru
+    -NoNewWindow -PassThru -RedirectStandardOutput $tsfOutput -RedirectStandardError $tsfError
   try {
     Wait-Process -Id $tsfProcess.Id -Timeout $TsfHostTimeoutSec -ErrorAction Stop
+    $tsfProcess.Refresh()
     $exitCode = $tsfProcess.ExitCode
   } catch {
     Write-Warning "tsf-host.exe did not exit within ${TsfHostTimeoutSec}s; killing it."
@@ -209,6 +238,8 @@ try {
     $exitCode = 124
   }
 } finally {
+  # The private pipe also reaches a host respawned by this test's DLL.
+  Send-ShutdownRequest -PipeShortName $pipeShortName | Out-Null
   if ($hostProcess -ne $null) {
     $stillRunning = $false
     try { $stillRunning = -not $hostProcess.HasExited } catch { $stillRunning = $false }
@@ -225,10 +256,23 @@ try {
   if (Test-Path -LiteralPath $tempJisyo) {
     Remove-Item -LiteralPath $tempJisyo -Force -ErrorAction SilentlyContinue
   }
+  Remove-Item -LiteralPath $regPath -Recurse -Force -ErrorAction SilentlyContinue
+  foreach ($entry in $savedEnvironment.GetEnumerator()) {
+    [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value)
+  }
   if ($null -eq $savedDisableHostSpawn) {
     Remove-Item Env:NELISP_IME_DISABLE_HOST_SPAWN -ErrorAction SilentlyContinue
   } else {
     $env:NELISP_IME_DISABLE_HOST_SPAWN = $savedDisableHostSpawn
+  }
+}
+
+# In particular, a host respawned by the DLL must not inherit a caller's
+# captured stderr stream: a normal host diagnostic becomes NativeCommandError
+# under PowerShell 5.1's ErrorActionPreference=Stop and can strand that caller.
+foreach ($outputFile in @($tsfOutput, $tsfError, $hostOutput, $hostError)) {
+  if ($outputFile -and (Test-Path -LiteralPath $outputFile)) {
+    Get-Content -LiteralPath $outputFile -Encoding UTF8
   }
 }
 

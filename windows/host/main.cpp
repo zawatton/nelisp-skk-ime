@@ -23,6 +23,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include "../src/registry_settings.h"
 
 #include <algorithm>
 #include <array>
@@ -34,12 +35,15 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace {
+std::atomic<bool> g_stopping{false};
+HANDLE g_child_job = nullptr;
 constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\ddskk-ime-v1";
 constexpr wchar_t kStateMapName[] = L"Local\\ddskk-ime-state-v1";
 
@@ -134,13 +138,13 @@ constexpr wchar_t kFrameworkRunner[] = L"framework/nelisp-ime-stdio.el";
 // value the settings UI writes, then the historical default -- the same
 // env-first order as PipeName()/UseNativeEntry() above, so a harness can
 // exercise an engine without touching the live configuration.
-std::wstring ConfiguredEngineId() {
+std::wstring ConfiguredEngineId(bool use_environment = true) {
   wchar_t value[64]{};
   const DWORD size = GetEnvironmentVariableW(L"NELISP_IME_ENGINE", value, 64);
-  if (size > 0 && size < 64) return value;
+  if (use_environment && size > 0 && size < 64) return value;
 
   HKEY key = nullptr;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0, KEY_READ,
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ,
                     &key) != ERROR_SUCCESS) return L"ddskk";
   wchar_t engine[64]{};
   // One wchar_t short of the buffer, so a value stored without its
@@ -152,6 +156,12 @@ std::wstring ConfiguredEngineId() {
   RegCloseKey(key);
   if (status != ERROR_SUCCESS || engine[0] == L'\0') return L"ddskk";
   return engine;
+}
+
+std::string NarrowEngineId(const std::wstring& id) {
+  std::string result;
+  for (wchar_t ch : id) result.push_back(static_cast<char>(ch));
+  return result;
 }
 
 // `ddskk' and `passthrough' are the two ids the DDSKK runner answers to
@@ -169,20 +179,16 @@ bool FileExists(const std::wstring& path) {
          (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
-// Returns the repository-relative runner script for the configured engine,
-// and exports NELISP_IME_ENGINE for the child when that is the framework
-// runner so it starts on the configured engine rather than its own
-// default. (The child inherits this process's environment: CreateProcessW
-// is called with lpEnvironment=nullptr, same as ApplyEngineEnvFromRegistry
-// relies on.)
+// Returns the runner for an explicit child selection. StartChild supplies
+// NELISP_IME_ENGINE in the child's own environment block.
 //
 // Falling back to DDSKK when the repository has no framework runner is
 // deliberate rather than defensive tidiness. Field incident: the settings
 // UI offered an engine the running stack could not serve, the user
 // selected it, and conversion stopped working entirely. A configured
 // engine that cannot be launched must degrade to the one that always can.
-std::wstring EngineRunnerScript(const std::wstring& repository) {
-  const std::wstring id = ConfiguredEngineId();
+std::wstring EngineRunnerScript(const std::wstring& repository,
+                                const std::wstring& id) {
   if (IsDdskkEngineId(id)) return kDdskkRunner;
   if (!FileExists(repository + L"\\framework\\nelisp-ime-stdio.el")) {
     std::fwprintf(stderr,
@@ -191,7 +197,6 @@ std::wstring EngineRunnerScript(const std::wstring& repository) {
                   id.c_str(), kFrameworkRunner);
     return kDdskkRunner;
   }
-  SetEnvironmentVariableW(L"NELISP_IME_ENGINE", id.c_str());
   return kFrameworkRunner;
 }
 
@@ -230,7 +235,12 @@ bool WriteAll(HANDLE handle, const std::string& text) {
 
 bool ReadLine(HANDLE handle, std::string* line) {
   line->clear();
+  const ULONGLONG deadline = GetTickCount64() + 90000;
   for (;;) {
+    DWORD available = 0;
+    if (g_stopping.load() || GetTickCount64() >= deadline ||
+        !PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr)) return false;
+    if (available == 0) { Sleep(2); continue; }
     char value = 0;
     DWORD read = 0;
     if (!ReadFile(handle, &value, 1, &read, nullptr) || read != 1) return false;
@@ -258,8 +268,17 @@ bool ReadLine(HANDLE handle, std::string* line) {
 // flags under test, etc.), and leaving an already-set value alone keeps
 // every one of them working unchanged.
 void ApplyEngineEnvFromRegistry() {
+  // Only explicit inherited overrides stay pinned. Values imported on a
+  // previous spawn must be refreshed (or removed) for ENGINE RELOAD.
+  static std::vector<const wchar_t*> imported;
+  for (const wchar_t* name : imported) SetEnvironmentVariableW(name, nullptr);
+  imported.clear();
+  const auto set_imported = [&](const wchar_t* name, const wchar_t* value) {
+    SetEnvironmentVariableW(name, value);
+    imported.push_back(name);
+  };
   HKEY key = nullptr;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0, KEY_READ,
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ,
                     &key) != ERROR_SUCCESS) return;
 
   // GetEnvironmentVariableW(name, nullptr, 0) returns 0 only when the
@@ -282,9 +301,9 @@ void ApplyEngineEnvFromRegistry() {
       std::vector<wchar_t> expanded(expanded_size > 0 ? expanded_size : 1);
       if (expanded_size > 0 &&
           ExpandEnvironmentStringsW(path, expanded.data(), expanded_size) > 0) {
-        SetEnvironmentVariableW(L"DDSKK_USER_JISYO", expanded.data());
+        set_imported(L"DDSKK_USER_JISYO", expanded.data());
       } else {
-        SetEnvironmentVariableW(L"DDSKK_USER_JISYO", path);
+        set_imported(L"DDSKK_USER_JISYO", path);
       }
     }
   }
@@ -310,7 +329,7 @@ void ApplyEngineEnvFromRegistry() {
     if (RegQueryValueExW(key, bridge.registry_name, nullptr, nullptr,
                          reinterpret_cast<BYTE*>(&value), &value_bytes) ==
         ERROR_SUCCESS) {
-      SetEnvironmentVariableW(bridge.env_name,
+      set_imported(bridge.env_name,
                               std::to_wstring(value).c_str());
     }
   }
@@ -319,12 +338,15 @@ void ApplyEngineEnvFromRegistry() {
 }
 
 bool StartChild(const std::wstring& engine, const std::wstring& repository,
-                Child* child) {
+                Child* child, const std::wstring& id, bool warming = false) {
   SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
   HANDLE stdout_read = nullptr, stdout_write = nullptr;
   HANDLE stdin_read = nullptr, stdin_write = nullptr;
   if (!CreatePipe(&stdout_read, &stdout_write, &security, 0) ||
-      !CreatePipe(&stdin_read, &stdin_write, &security, 0)) return false;
+      !CreatePipe(&stdin_read, &stdin_write, &security, 0)) {
+    Close(stdout_read); Close(stdout_write); Close(stdin_read); Close(stdin_write);
+    return false;
+  }
   SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
   SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0);
 
@@ -337,7 +359,7 @@ bool StartChild(const std::wstring& engine, const std::wstring& repository,
   PROCESS_INFORMATION process{};
   std::wstring command = L"\"" + engine + L"\"";
   if (!repository.empty()) {
-    const std::wstring runner = EngineRunnerScript(repository);
+    const std::wstring runner = EngineRunnerScript(repository, id);
     // The AOT-backed native entry exists for the DDSKK runner only, so an
     // engine served by the framework runner always takes the --load path.
     command += (UseNativeEntry() && runner == kDdskkRunner)
@@ -347,8 +369,29 @@ bool StartChild(const std::wstring& engine, const std::wstring& repository,
   const wchar_t* working_directory =
       repository.empty() ? nullptr : repository.c_str();
   ApplyEngineEnvFromRegistry();
+  // Each child receives its own engine selection. Do not mutate the host's
+  // environment: registry notifications must not see a previous spawn's id.
+  std::vector<std::wstring> entries;
+  wchar_t* inherited = GetEnvironmentStringsW();
+  if (!inherited) { Close(stdin_read); Close(stdin_write); Close(stdout_read); Close(stdout_write); return false; }
+  for (const wchar_t* entry = inherited; *entry; entry += wcslen(entry) + 1) {
+    if (_wcsnicmp(entry, L"NELISP_IME_ENGINE=", 18) == 0) continue;
+    entries.emplace_back(entry);
+  }
+  FreeEnvironmentStringsW(inherited);
+  const std::wstring selection = L"NELISP_IME_ENGINE=" + id;
+  entries.push_back(selection);
+  std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+    return _wcsicmp(a.c_str(), b.c_str()) < 0;
+  });
+  std::vector<wchar_t> environment;
+  for (const auto& entry : entries)
+    environment.insert(environment.end(), entry.c_str(), entry.c_str() + entry.size() + 1);
+  environment.push_back(L'\0');
   const BOOL started = CreateProcessW(
-      nullptr, command.data(), nullptr, nullptr, TRUE, 0, nullptr,
+      nullptr, command.data(), nullptr, nullptr, TRUE,
+      CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED |
+          (warming ? BELOW_NORMAL_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS), environment.data(),
       working_directory, &startup, &process);
   Close(stdin_read);
   Close(stdout_write);
@@ -357,6 +400,15 @@ bool StartChild(const std::wstring& engine, const std::wstring& repository,
     Close(stdin_write);
     return false;
   }
+  if (g_child_job && !AssignProcessToJobObject(g_child_job, process.hProcess)) {
+    TerminateProcess(process.hProcess, 1);
+    CloseHandle(process.hProcess);
+    CloseHandle(process.hThread);
+    Close(stdout_read);
+    Close(stdin_write);
+    return false;
+  }
+  ResumeThread(process.hThread);
   CloseHandle(process.hThread);
   child->process = process.hProcess;
   child->input = stdin_write;
@@ -435,7 +487,7 @@ void LoadDictionaryServerConfig(DictionaryServerConfig* config) {
   DWORD start_command_bytes = sizeof(start_command);
   wchar_t dictionary_files[32768]{};
   DWORD dictionary_files_bytes = sizeof(dictionary_files);
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0,
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,
                     KEY_READ, &key) == ERROR_SUCCESS) {
     RegQueryValueExW(key, L"SkkServHost", nullptr, nullptr,
                      reinterpret_cast<BYTE*>(host), &host_bytes);
@@ -1006,6 +1058,9 @@ void ShutdownDictionaryServer() {
 // ---------------------------------------------------------------------------
 
 bool Dispatch(Child& child, const std::string& request, std::string* response) {
+  const ULONGLONG started = GetTickCount64();
+  const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
+  if (debug) std::fprintf(stderr, "dispatch pid=%lu request=%s\n", GetProcessId(child.process), request.c_str());
   if (!WriteAll(child.input, request + "\n")) return false;
   // Bounded guard: a buggy/adversarial engine that keeps emitting
   // "SERVER " lines instead of ever producing a real response must not be
@@ -1024,6 +1079,7 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
       continue;
     }
     *response = line;
+    if (debug) std::fprintf(stderr, "dispatch done pid=%lu ms=%llu\n", GetProcessId(child.process), GetTickCount64()-started);
     return true;
   }
 }
@@ -1101,7 +1157,13 @@ bool DispatchConvertKeys(Child& child, const std::string& request,
 // ---------------------------------------------------------------------------
 Child g_child;
 std::mutex g_engine_mutex;
-std::atomic<bool> g_stopping{false};
+std::wstring g_executable, g_repository;
+std::string g_current_engine;
+std::mutex g_switch_mutex;
+std::string g_requested_engine;
+std::string g_published_engine; // guarded by g_switch_mutex
+uint64_t g_switch_generation = 0;
+uint64_t g_completed_generation = 0;
 std::wstring g_pipe_name;  // Set once in wmain before any thread starts.
 std::atomic<uint64_t> g_next_client_id{1};
 // Guarded by g_engine_mutex.  Retained for pre-SESSION clients only; scoped
@@ -1218,6 +1280,138 @@ void NoteActivity() {
   g_engine_active.store(true, std::memory_order_release);
 }
 
+bool ValidEngineId(const std::string& id) {
+  return id == "ddskk" || id == "passthrough" || id == "lattice" || id == "dictionary";
+}
+
+void QueueReplacement(const std::string& id, bool force = false) {
+  std::lock_guard<std::mutex> lock(g_switch_mutex);
+  if (!force && g_switch_generation != g_completed_generation &&
+      g_requested_engine == id) return;
+  g_requested_engine = id;
+  ++g_switch_generation;
+}
+
+// One worker owns all replacement children. Startup/readiness never holds
+// the engine mutex; the old child continues to serve complete transactions.
+void ReplacementLoop() {
+  DWORD backoff = 1000;
+  ULONGLONG retry_at = 0;
+  while (!g_stopping.load()) {
+    Sleep(100);
+    std::string id;
+    uint64_t generation;
+    {
+      std::lock_guard<std::mutex> lock(g_switch_mutex);
+      generation = g_switch_generation;
+      if (generation != g_completed_generation) id = g_requested_engine;
+    }
+    if (id.empty()) {
+      std::lock_guard<std::mutex> lock(g_engine_mutex);
+      if (g_child.process && WaitForSingleObject(g_child.process, 0) == WAIT_TIMEOUT) continue;
+      id = g_current_engine;
+    }
+    if (GetTickCount64() < retry_at) continue;
+    Child next;
+    std::string reply;
+    const std::wstring wide_id(id.begin(), id.end());
+    bool ready = StartChild(g_executable, g_repository, &next, wide_id, true) &&
+        WriteAll(next.input, "ENGINE CURRENT\n") && ReadLine(next.output, &reply);
+    // DDSKK's runner defaults to ddskk; select passthrough before publication.
+    if (ready && reply != "ENGINE " + id) {
+      ready = WriteAll(next.input, "ENGINE SET " + id + "\n") &&
+          ReadLine(next.output, &reply) && reply == "OK ENGINE " + id;
+    }
+    std::string replacement_state;
+    if (ready) ready = WriteAll(next.input, "RESET\n") &&
+        ReadLine(next.output, &replacement_state) && replacement_state.starts_with("STATE ");
+    std::vector<std::string> prepared_sessions;
+    if (ready) {
+      {
+        std::lock_guard<std::mutex> lock(g_engine_mutex);
+        for (const auto& owner : g_session_owners) prepared_sessions.push_back(owner.first);
+      }
+      // Session creation/reset can itself be cold. Pay it on the unpublished
+      // child, never inside the active engine's transaction mutex.
+      for (const auto& session : prepared_sessions) {
+        ready = WriteAll(next.input, "SESSION " + session + " RESET\n") &&
+            ReadLine(next.output, &reply) && reply.starts_with("STATE ");
+        if (!ready) break;
+      }
+    }
+    if (!ready || g_stopping.load()) {
+      StopChild(next);
+      retry_at = GetTickCount64() + backoff;
+      backoff = (std::min)(backoff * 2, DWORD{30000});
+      continue;
+    }
+    Child old;
+    bool swapped = false;
+    const ULONGLONG deadline = GetTickCount64() + 5000;
+    while (!g_stopping.load()) {
+      {
+        std::lock_guard<std::mutex> engine_lock(g_engine_mutex);
+        std::unique_lock<std::mutex> switch_lock(g_switch_mutex);
+        if (generation != g_switch_generation) break; // superseded
+        if (g_composing_sessions.empty() || GetTickCount64() >= deadline) {
+          old = g_child;
+          g_child = next;
+          SetPriorityClass(g_child.process, NORMAL_PRIORITY_CLASS);
+          next = {};
+          g_current_engine = id;
+          g_published_engine = id;
+          g_completed_generation = generation;
+          switch_lock.unlock();
+          // Prepared sessions are reset already. Sessions opened during
+          // preparation have no checkpoint in the fresh process and start
+          // empty on first use. Preserve the host's connection ownership.
+          g_composing_sessions.clear();
+          g_session_composing.store(false);
+          g_active_input_client = 0;
+          PublishStateMirror(replacement_state);
+          swapped = true;
+        }
+      }
+      if (swapped) break;
+      Sleep(50);
+    }
+    StopChild(old);
+    StopChild(next);
+    if (swapped && !g_stopping.load()) {
+      std::lock_guard<std::mutex> lock(g_engine_mutex);
+      for (const auto& session : prepared_sessions) {
+        if (!g_session_owners.contains(session)) {
+          std::string ignored;
+          Dispatch(g_child, "SESSION " + session + " CLOSE", &ignored);
+        }
+      }
+    }
+    backoff = 1000;
+    retry_at = 0;
+  }
+}
+
+void WatchEngineRegistry(std::wstring previous) {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,
+                    KEY_NOTIFY, &key) != ERROR_SUCCESS) return;
+  HANDLE changed = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  while (!g_stopping.load()) {
+    if (RegNotifyChangeKeyValue(key, FALSE, REG_NOTIFY_CHANGE_LAST_SET,
+                                changed, TRUE) != ERROR_SUCCESS) break;
+    const std::wstring id = ConfiguredEngineId(false);
+    const std::string narrow = NarrowEngineId(id);
+    if (id != previous && ValidEngineId(narrow)) QueueReplacement(narrow);
+    previous = id;
+    DWORD result;
+    do { result = WaitForSingleObject(changed, 100); }
+    while (result == WAIT_TIMEOUT && !g_stopping.load());
+    if (result != WAIT_OBJECT_0) break;
+  }
+  CloseHandle(changed);
+  RegCloseKey(key);
+}
+
 // Mirrors LoadDictionaryServerConfig()'s idiom exactly: env var checked
 // first (lets a benchmarking harness override the interval per-run
 // without touching the registry, matching PipeName()/UseNativeEntry()'s
@@ -1241,7 +1435,7 @@ DWORD IdleGcIntervalMs() {
 
   HKEY key = nullptr;
   DWORD interval = kDefaultIdleGcMs, interval_bytes = sizeof(interval);
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0, KEY_READ,
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ,
                     &key) == ERROR_SUCCESS) {
     RegQueryValueExW(key, L"IdleGcMs", nullptr, nullptr,
                      reinterpret_cast<BYTE*>(&interval), &interval_bytes);
@@ -1285,13 +1479,8 @@ void IdleGcLoop() {
 
       std::string response;
       if (!Dispatch(g_child, "GC", &response)) {
-        // Mirrors ServeClient()'s own "child appears to have exited"
-        // check below: whichever thread notices first is the one that
-        // requests the full shutdown.
-        if (g_child.process == nullptr ||
-            WaitForSingleObject(g_child.process, 0) != WAIT_TIMEOUT) {
-          RequestStop();
-        }
+        // Recovery belongs to ReplacementLoop, including death at idle.
+        continue;
       }
       // response is intentionally discarded: the host does not need the
       // engine's "OK GC" / "ERR GC ..." payload, only that the request/
@@ -1310,10 +1499,7 @@ void IdleGcLoop() {
       // no special handling is needed beyond the same child-exit check.
       std::string response2;
       if (!Dispatch(g_child, "COMPACT", &response2)) {
-        if (g_child.process == nullptr ||
-            WaitForSingleObject(g_child.process, 0) != WAIT_TIMEOUT) {
-          RequestStop();
-        }
+        continue;
       }
     }
   }
@@ -1383,11 +1569,33 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     while (!request.empty() && (request.back() == '\n' || request.back() == '\r'))
       request.pop_back();
     std::string response;
+    std::string engine_request = request;
+    const auto scoped_id = SessionIdFromRequest(request);
+    if (!scoped_id.empty()) engine_request = request.substr(9 + scoped_id.size());
     bool publish_response = true;
     const bool is_shutdown = request == "SHUTDOWN";
     const bool is_preview = request.rfind("PREVIEW ", 0) == 0;
     if (is_shutdown) {
       response = "OK";
+    } else if (engine_request == "ENGINE RELOAD") {
+      std::string id;
+      { std::lock_guard<std::mutex> lock(g_switch_mutex); id = g_published_engine; }
+      QueueReplacement(id, true);
+      response = "OK RELOADING";
+    } else if (engine_request.starts_with("ENGINE SWITCH ") ||
+               engine_request.starts_with("ENGINE SET ")) {
+      const bool switching = engine_request.starts_with("ENGINE SWITCH ");
+      const std::string id = engine_request.substr(switching ? 14 : 11);
+      if (!ValidEngineId(id)) response = "ERR ENGINE";
+      else {
+        bool different;
+        { std::lock_guard<std::mutex> lock(g_switch_mutex); different = id != g_published_engine; }
+        if (switching || different) QueueReplacement(id);
+        response = switching || different ? "OK SWITCHING " + id : "OK ENGINE " + id;
+      }
+    } else if (engine_request == "DIAG CHILD-PID") {
+      std::lock_guard<std::mutex> lock(g_engine_mutex);
+      response = "PID " + std::to_string(g_child.process ? GetProcessId(g_child.process) : 0);
     } else if (is_preview) {
       // Immutable built-in dictionary maps are safe to read without the
       // NeLisp transaction mutex. This path is a display preview only: it
@@ -1452,8 +1660,13 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
         const std::string mode = mode_end == std::string::npos
             ? response.substr(mode_start)
             : response.substr(mode_start, mode_end - mode_start);
+        std::istringstream fields(response);
+        std::string tag, state_mode, text, pending;
+        int cursor = 0, start = -1;
+        fields >> tag >> state_mode >> cursor >> start >> text >> pending;
         const bool composing = mode == "preedit" || mode == "candidate" ||
-                               mode == "registration";
+                               mode == "registration" || start >= 0 ||
+                               (!pending.empty() && pending != "-");
         const std::string state_owner = scoped_session
             ? session_id
             : "legacy:" + std::to_string(client_id);
@@ -1506,10 +1719,7 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
   }
   g_session_composing.store(!g_composing_sessions.empty(),
                             std::memory_order_release);
-  if (g_child.process == nullptr ||
-      WaitForSingleObject(g_child.process, 0) != WAIT_TIMEOUT) {
-    RequestStop();
-  }
+  // ReplacementLoop observes process death and recovers with back-off.
 }
 }  // namespace
 
@@ -1562,7 +1772,20 @@ int wmain(int argc, wchar_t** argv) {
   // on process exit either way, so leaking the handle here is fine.
 
   const std::wstring repository = argc == 3 ? argv[2] : L"";
-  if (!StartChild(argv[1], repository, &g_child)) {
+  // All children, including warming replacements, die if their host is
+  // killed. This also gives private crash tests deterministic tree cleanup.
+  g_child_job = CreateJobObjectW(nullptr, nullptr);
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (!g_child_job || !SetInformationJobObject(g_child_job,
+      JobObjectExtendedLimitInformation, &limits, sizeof(limits))) return 3;
+  g_executable = argv[1];
+  g_repository = repository;
+  const std::wstring configured = ConfiguredEngineId();
+  const std::wstring initial_registry_engine = ConfiguredEngineId(false);
+  g_current_engine = NarrowEngineId(configured);
+  g_published_engine = g_current_engine;
+  if (!StartChild(argv[1], repository, &g_child, configured)) {
     StopChild(g_child);
     return 3;
   }
@@ -1638,6 +1861,8 @@ int wmain(int argc, wchar_t** argv) {
   // on shutdown this thread simply notices g_stopping within one 100 ms
   // poll tick and returns, and the process exiting reaps it regardless.
   std::thread(IdleGcLoop).detach();
+  std::thread replacement_worker(ReplacementLoop);
+  std::thread registry_worker(WatchEngineRegistry, initial_registry_engine);
   // Accept loop: each iteration blocks in ConnectNamedPipe() on `pipe` (the
   // one spare, not-yet-connected instance), then immediately opens the next
   // spare instance before handing the newly connected one to its own
@@ -1683,6 +1908,9 @@ int wmain(int argc, wchar_t** argv) {
     }
   }
   if (pipe != INVALID_HANDLE_VALUE) CloseHandle(pipe);
+  g_stopping.store(true);
+  replacement_worker.join();
+  registry_worker.join();
   // Holding g_engine_mutex here waits for any worker thread currently
   // mid-transaction to finish first, so the child's pipes are never closed
   // out from under an in-flight read/write. A worker that acquires the
