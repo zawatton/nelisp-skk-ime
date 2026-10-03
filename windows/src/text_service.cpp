@@ -261,7 +261,15 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
 
 bool TextService::CreateProviderWindow() {
   if (provider_window_ != nullptr) return true;
-  const HINSTANCE instance = GetModuleHandleW(nullptr);
+  // Scope the class to this DLL, not the host EXE. A registered live TIP
+  // and a side-by-side test DLL may coexist in one process; sharing an
+  // EXE-scoped class dispatches ProviderResult through the other DLL's
+  // window procedure and its incompatible state layout.
+  HMODULE instance = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                         GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCWSTR>(&TextService::ProviderWindowProc),
+                         &instance)) return false;
   WNDCLASSW window_class{};
   window_class.lpfnWndProc = &TextService::ProviderWindowProc;
   window_class.hInstance = instance;
@@ -2436,7 +2444,8 @@ HRESULT TextService::GetDisplayAttributeInfo(
   if (info == nullptr) return E_POINTER;
   *info = nullptr;
   if (guid != GUID_DdskkPreeditAttribute &&
-      guid != GUID_DdskkCandidateAttribute) return E_INVALIDARG;
+      guid != GUID_DdskkCandidateAttribute &&
+      guid != GUID_DdskkConvertedAttribute) return E_INVALIDARG;
   *info = CreateDisplayAttributeInfo(guid);
   return *info ? S_OK : E_OUTOFMEMORY;
 }
@@ -2559,6 +2568,13 @@ std::optional<char32_t> TextService::TranslateKey(WPARAM wparam,
 HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
                                       ITfContext* context,
                                       const ddskk::EngineState& state) {
+  wchar_t diagnostics[2]{};
+  if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", diagnostics, 2) > 0) {
+    std::printf("ENGINE_APPLY mode=%ls text_units=%zu segments=%zu active=%d\n",
+                state.mode.c_str(), state.text.size(), state.segments.size(),
+                state.active_segment);
+    std::fflush(stdout);
+  }
   const bool registration_target =
       registration_commit_pending_ && registration_range_ != nullptr;
   const bool direct_commit = state.composition_start < 0 &&
@@ -2646,23 +2662,38 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       edit_cookie, 0, display.data(), static_cast<LONG>(display.size()));
   DebugLog(L"ApplyEngineState set_text hr=%X", static_cast<unsigned>(set_text));
   if (SUCCEEDED(set_text)) {
+    // SetText can shrink the display (ぼく -> 僕). Bind both composition
+    // anchors to the updated replacement range before the next provider
+    // result arrives; retaining an old end leaves stale text at commit.
+    if (composition_ != nullptr) {
+      composition_->ShiftStart(edit_cookie, range);
+      composition_->ShiftEnd(edit_cookie, range);
+    }
     ApplyDisplayAttribute(edit_cookie, context, range,
+        !state.segments.empty() ? GUID_DdskkConvertedAttribute :
         state.mode == L"candidate" ? GUID_DdskkCandidateAttribute
                                     : GUID_DdskkPreeditAttribute);
+    if (!state.segments.empty() && state.active_segment >= 0) {
+      const auto& segment = state.segments[state.active_segment];
+      ITfRange* target = nullptr;
+      if (SUCCEEDED(range->Clone(&target))) {
+        LONG moved = 0;
+        target->Collapse(edit_cookie, TF_ANCHOR_START);
+        target->ShiftEnd(edit_cookie, segment.start + segment.length, &moved, nullptr);
+        target->ShiftStart(edit_cookie, segment.start, &moved, nullptr);
+        ApplyDisplayAttribute(edit_cookie, context, target, GUID_DdskkCandidateAttribute);
+        target->Release();
+      }
+    }
     ITfRange* caret = nullptr;
     if (SUCCEEDED(range->Clone(&caret))) {
-      // The caret always goes to the END of the display. This IME never
-      // moves the caret inside a composition (arrow keys are deliberately
-      // unclaimed and fall through to the application), and DDSKK's own
-      // point is at the insertion end throughout ▽/▼/pending states and
-      // after every kakutei. The engine's state.cursor field is NOT a
-      // reliable display position across all flows: on the okuri-ari
-      // commit ("KanaSimi" -> 悲し + み) it points inside the committed
-      // text at the okurigana boundary, which parked the caret between
-      // 悲 and し so the trailing み landed in the middle ("悲みし").
-      // Deriving the caret from display.size() alone removes that whole
-      // bug class.
-      const LONG relative_cursor = static_cast<LONG>(display.size());
+      // Segment metadata gives the active displayed end in UTF-16. Legacy
+      // DDSKK states retain the end-of-display caret: their cursor can
+      // instead denote an okurigana boundary inside committed text.
+      const LONG relative_cursor = state.segments.empty()
+          ? static_cast<LONG>(display.size())
+          : state.segments[state.active_segment].start +
+            state.segments[state.active_segment].length;
       LONG moved = 0;
       caret->Collapse(edit_cookie, TF_ANCHOR_START);
       caret->ShiftEnd(edit_cookie, relative_cursor, &moved, nullptr);

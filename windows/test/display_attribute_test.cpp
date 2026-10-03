@@ -27,6 +27,12 @@
 int main() {
   auto* preedit = CreateDisplayAttributeInfo(GUID_DdskkPreeditAttribute);
   auto* candidate = CreateDisplayAttributeInfo(GUID_DdskkCandidateAttribute);
+  auto* converted = CreateDisplayAttributeInfo(GUID_DdskkConvertedAttribute);
+  assert(converted);
+  TF_DISPLAYATTRIBUTE inactive{};
+  assert(SUCCEEDED(converted->GetAttributeInfo(&inactive)));
+  assert(inactive.bAttr == TF_ATTR_CONVERTED && !inactive.fBoldLine);
+  assert(inactive.lsStyle == TF_LS_SOLID);
   assert(preedit && candidate);
   TF_DISPLAYATTRIBUTE value{};
   assert(SUCCEEDED(preedit->GetAttributeInfo(&value)));
@@ -36,4 +42,5 @@ int main() {
          value.bAttr == TF_ATTR_TARGET_CONVERTED);
   preedit->Release();
   candidate->Release();
+  converted->Release();
 }

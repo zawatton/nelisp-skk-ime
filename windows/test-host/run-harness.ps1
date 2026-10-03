@@ -5,9 +5,9 @@
   session or interactively-registered engine host.
 
 .DESCRIPTION
-  1. Reads EngineHost / EngineExecutable / Repository from
-     HKCU:\Software\NativeIME (written by the IME's own installer/config
-     tool; this script only reads it, never writes to the registry).
+  1. Uses explicit EngineHost / EngineExecutable / Repository overrides.
+     If any are missing, reads defaults from HKCU:\Software\NativeIME.
+     With all three supplied it performs no registry access.
   2. Generates a unique named-pipe name and points DDSKK_PIPE_NAME at it,
      and DDSKK_USER_JISYO at a fresh temp file, so this run never touches
      anyone else's dictionary or collides with another running host.
@@ -123,14 +123,18 @@ if ([string]::IsNullOrWhiteSpace($TsfHostExe)) {
 $TsfHostExe = [System.IO.Path]::GetFullPath($TsfHostExe)
 
 $regPath = "HKCU:\Software\NativeIME"
-if (-not (Test-Path $regPath)) {
-  Write-Error "Registry key $regPath not found -- register/configure ddskk-ime first."
-  exit 1
+if ([string]::IsNullOrWhiteSpace($EngineHostPath) -or
+    [string]::IsNullOrWhiteSpace($EngineExecutablePath) -or
+    [string]::IsNullOrWhiteSpace($RepositoryPath)) {
+  if (-not (Test-Path $regPath)) {
+    Write-Error "Registry key $regPath not found -- supply all three engine path overrides."
+    exit 1
+  }
+  $reg = Get-ItemProperty -Path $regPath
+  $engineHost = $reg.EngineHost
+  $engineExecutable = $reg.EngineExecutable
+  $repository = $reg.Repository
 }
-$reg = Get-ItemProperty -Path $regPath
-$engineHost = $reg.EngineHost
-$engineExecutable = $reg.EngineExecutable
-$repository = $reg.Repository
 if (-not [string]::IsNullOrWhiteSpace($EngineHostPath)) {
   $engineHost = [IO.Path]::GetFullPath($EngineHostPath)
 }

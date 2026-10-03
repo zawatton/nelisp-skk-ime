@@ -61,6 +61,22 @@ int main() {
   assert(candidates && candidates->candidate_index == 0);
   assert(candidates->candidates.size() == 2);
   assert(candidates->candidates[0] == L"仮名");
+  assert(candidates->segments.empty() && candidates->active_segment == -1);
+
+  auto segmented = ddskk::ParseStateResponse(
+      "STATE candidate 1 0 0050d5009054 - 1 00307c00304f,0050d5 0:1,1:1;0");
+  assert(segmented && segmented->text == L"僕達");
+  assert(segmented->segments.size() == 2 && segmented->active_segment == 0);
+  assert(segmented->segments[1].start == 1 && segmented->segments[1].length == 1);
+  auto scalar_segments = ddskk::ParseStateResponse(
+      "STATE candidate 2 0 01f600009054 - 0 009054 0:1,1:1;1");
+  assert(scalar_segments && scalar_segments->segments[0].length == 2);
+  assert(scalar_segments->segments[1].start == 2);
+  for (const auto* field : {"0:1,1:1;2", "0:3;0", "-1:1;0", "0:0;0",
+                           "0:1,0:1;0", "0:1,;0", "0:1;bad", "0:1;0;0"}) {
+    assert(!ddskk::ParseStateResponse(
+        std::string("STATE candidate 1 0 0050d5009054 - 0 - ") + field));
+  }
 
   auto registration = ddskk::ParseStateResponse(
       "STATE registration 2 -1 00304b00306a - -1 - 00308800307f");

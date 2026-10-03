@@ -21,6 +21,11 @@
 
 namespace ddskk {
 
+struct EngineSegment {
+  int start = 0;   // UTF-16 offsets after decoding the code-point wire field.
+  int length = 0;
+};
+
 struct EngineState {
   std::wstring mode;
   int cursor = 0;
@@ -29,6 +34,8 @@ struct EngineState {
   std::wstring pending_romaji;
   int candidate_index = -1;
   std::vector<std::wstring> candidates;
+  std::vector<EngineSegment> segments;
+  int active_segment = -1;
   // Non-empty only for the CorvusSKK-style nine-field registration STATE.
   // `text'/`pending_romaji'/`candidates' then describe the nested
   // registration session, while this preserves the parked main reading.

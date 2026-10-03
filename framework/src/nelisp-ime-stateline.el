@@ -27,10 +27,18 @@
 ;;   ENGINE SET <name>            -> OK ENGINE <name>
 ;;   QUIT                         -> OK BYE
 ;;
-;; A STATE line has eight space-separated fields:
+;; A STATE line has eight space-separated fields and an optional ninth:
 ;;
 ;;   STATE <mode> <cursor> <composition-start> <hex-text> <hex-pending>
 ;;         <candidate-index> <hex-candidates-comma-separated>
+;;         [<start:length,...;active>]
+;;
+;; Segment starts and lengths are decimal code-point offsets in displayed
+;; text, not reading offsets.  Active is a zero-based segment index.  The
+;; field is emitted only for a converted composition with segments; cursor
+;; then marks the active segment's end.  Candidates describe that segment.
+;; Eight-field replies remain valid.  Registration's ninth field retains
+;; its existing hex-reading meaning and is not a segment field.
 ;;
 ;; Strings are fixed-width 6-digit lowercase scalar hex; an empty string is
 ;; "-".  Numeric fields are decimal, with -1 standing for "absent".  The
@@ -107,6 +115,26 @@ call, so the shape of this loop is most of the per-key budget."
           (setq index (1- index)))
         (mapconcat #'identity parts ",")))))
 
+(defun nelisp-ime-stateline--segments (snapshot)
+  "Return (FIELD . CURSOR) for SNAPSHOT's displayed segments, or nil."
+  (let ((segments (plist-get snapshot :segments)))
+    (when (and (equal (plist-get snapshot :mode) "candidate")
+               (> (length segments) 0))
+      (let ((offset (length (or (plist-get snapshot :preedit) "")))
+            (active (or (plist-get snapshot :active-segment) 0))
+            (index 0) parts cursor)
+        ;; Any settled prefix precedes the currently converted segments.
+        (dotimes (i (length segments))
+          (setq offset (- offset (length (plist-get (aref segments i) :candidate)))))
+        (dotimes (i (length segments))
+          (let ((size (length (plist-get (aref segments i) :candidate))))
+            (push (concat (number-to-string offset) ":" (number-to-string size)) parts)
+            (setq offset (+ offset size))
+            (when (= index active) (setq cursor offset))
+            (setq index (1+ index))))
+        (cons (concat (mapconcat #'identity (nreverse parts) ",") ";"
+                      (number-to-string active)) cursor)))))
+
 (defun nelisp-ime-stateline--line (snapshot)
   "Return the wire STATE line for SNAPSHOT.
 
@@ -115,18 +143,25 @@ live preedit otherwise.  The wire has one text field and the host writes
 it over the composition before closing it, so a commit that sent the
 now-empty preedit would erase the composition instead of settling it.
 
+Converted segments append START:LENGTH,...;ACTIVE as the optional ninth
+field. Offsets count displayed code points; ACTIVE is zero-based. Candidates
+belong to that segment, and cursor is its displayed end. Without segments
+the eight-field form is unchanged; registration has its own ninth field.
+
 Assembled with `concat' rather than one `format': the seven directives a
 `format' would need cost ~23ms per call on this runtime, against ~136us
 per `concat' argument."
-  (concat "STATE "
+  (let ((segments (nelisp-ime-stateline--segments snapshot)))
+   (concat "STATE "
           (or (plist-get snapshot :mode) "hiragana") " "
-          (number-to-string (or (plist-get snapshot :cursor) 0)) " "
+          (number-to-string (or (cdr segments) (plist-get snapshot :cursor) 0)) " "
           (number-to-string (or (plist-get snapshot :composition-start) -1)) " "
           (nelisp-ime-stateline--hex (or (plist-get snapshot :commit)
                                          (plist-get snapshot :preedit))) " "
           (nelisp-ime-stateline--hex (plist-get snapshot :pending)) " "
           (number-to-string (or (plist-get snapshot :candidate-index) -1)) " "
-          (nelisp-ime-stateline--candidates snapshot)))
+          (nelisp-ime-stateline--candidates snapshot)
+          (if segments (concat " " (car segments)) ""))))
 
 (defun nelisp-ime-stateline--session ()
   "Return the protocol's session, opening it when absent."
