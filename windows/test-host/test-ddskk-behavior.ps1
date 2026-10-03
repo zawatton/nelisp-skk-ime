@@ -1,7 +1,10 @@
 [CmdletBinding()]
 param(
   [int]$ColdLoadSleepSec = 12,
-  [string]$DllPath = ""
+  [string]$DllPath = "",
+  [string]$TsfHostExe = "",
+  [string]$EngineHostPath = "",
+  [string]$EngineExecutablePath = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,6 +16,7 @@ $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $harness = Join-Path $PSScriptRoot 'run-harness.ps1'
 $fixture = Join-Path $PSScriptRoot 'data\behavior-jisyo.utf8'
 $hostExe = Join-Path $root 'windows\build\Release\ddskk-engine-host.exe'
+if ($EngineHostPath) { $hostExe = $EngineHostPath }
 if ([string]::IsNullOrWhiteSpace($DllPath)) {
   $DllPath = Join-Path $root 'windows\build\Release\ddskk-ime.dll'
 }
@@ -50,6 +54,7 @@ try {
   $env:DDSKK_SKKSERV_ENABLE = '0'
   $lines = @(& powershell -ExecutionPolicy Bypass -File $harness `
       -Script $script -EngineHostPath $hostExe -RepositoryPath $root `
+      -TsfHostExe $TsfHostExe -EngineExecutablePath $EngineExecutablePath `
       -ColdLoadSleepSec $ColdLoadSleepSec 2>&1)
   if ($LASTEXITCODE -ne 0) {
     $lines | ForEach-Object { Write-Host $_ }

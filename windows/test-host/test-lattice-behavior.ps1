@@ -1,7 +1,11 @@
 [CmdletBinding()]
 param(
   [int]$ColdLoadSleepSec = 12,
-  [string]$DllPath = ""
+  [string]$DllPath = "",
+  [string]$TsfHostExe = "",
+  [string]$EngineHostPath = "",
+  [string]$EngineExecutablePath = "",
+  [string]$RepositoryPath = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,8 +14,10 @@ $utf8 = New-Object Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $utf8
 $OutputEncoding = $utf8
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+if ($RepositoryPath) { $root = [IO.Path]::GetFullPath($RepositoryPath) }
 $harness = Join-Path $PSScriptRoot 'run-harness.ps1'
 $hostExe = Join-Path $root 'windows\build\Release\ddskk-engine-host.exe'
+if ($EngineHostPath) { $hostExe = $EngineHostPath }
 if ([string]::IsNullOrWhiteSpace($DllPath)) {
   $DllPath = Join-Path $root 'windows\build\Release\ddskk-ime.dll'
 }
@@ -41,6 +47,7 @@ try {
   $env:DDSKK_HARNESS_DLL_PATH = [IO.Path]::GetFullPath($DllPath)
   $lines = @(& powershell -ExecutionPolicy Bypass -File $harness `
       -Script $script -EngineHostPath $hostExe -RepositoryPath $root `
+      -TsfHostExe $TsfHostExe -EngineExecutablePath $EngineExecutablePath `
       -ColdLoadSleepSec $ColdLoadSleepSec 2>&1)
   if ($LASTEXITCODE -ne 0) {
     $lines | ForEach-Object { Write-Host $_ }

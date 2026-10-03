@@ -598,7 +598,8 @@ non-modal engine's mode indicator should show anyway."
          (mode (and hook (funcall hook session))))
     (cond
      ((memq mode nelisp-ime-modes) mode)
-     ((> (length (or (plist-get session :candidates) nil)) 1) 'candidate)
+     ((or (plist-get session :converted)
+          (> (length (or (plist-get session :candidates) nil)) 1)) 'candidate)
      ((or (> (length (or (plist-get session :reading) "")) 0)
           (> (length (or (plist-get session :pending) "")) 0))
       'preedit)
@@ -812,6 +813,7 @@ where they were instead of starting over."
     (setq session (plist-put session :candidate-index index))
     (if segment
         (progn
+          (setq segment (plist-put segment :candidate-index index))
           (setq segment (plist-put segment :candidate (nth index candidates)))
           (setcar (nthcdr active segments) segment)
           (setq session (plist-put session :segments segments))
@@ -826,9 +828,11 @@ where they were instead of starting over."
   (let ((segments (plist-get session :segments)))
     (unless (and (integerp index) (>= index 0) (< index (length segments)))
       (error "nelisp-ime: segment index out of range"))
-    (let ((candidates (plist-get (nth index segments) :candidates)))
+    (let* ((segment (nth index segments))
+           (candidates (plist-get segment :candidates)))
       (setq session (plist-put session :active-segment index))
-      (setq session (plist-put session :candidate-index 0))
+      (setq session (plist-put session :candidate-index
+                               (or (plist-get segment :candidate-index) 0)))
       (setq session (plist-put session :candidates candidates))
       (nelisp-ime--store session-id session))))
 
@@ -962,6 +966,7 @@ where they were instead of starting over."
                       (plist-get segment :reading) target)))
       (setq segment (plist-put segment :candidate candidate))
       (setq segment (plist-put segment :candidates (list candidate)))
+      (setq segment (plist-put segment :candidate-index 0))
       (setcar (nthcdr active segments) segment)
       (setq session (plist-put session :segments segments))
       (setq session (plist-put session :preedit

@@ -31,7 +31,7 @@
     ("ます" "ます") ("でした" "でした") ("ました" "ました")
     ("する" "する") ("します" "します") ("して" "して") ("した" "した")
     ("いる" "いる") ("ある" "ある") ("ない" "ない")
-    ("いい" "いい"))
+    ("いい" "いい") ("く" "く"))
   "Readings whose grammatical kana form must precede dictionary homophones.")
 
 (defvar nelisp-ime-lattice-candidate-cap 64
@@ -200,7 +200,13 @@ invalidation."
          (base (substring reading 0 end))
          (code (substring reading end))
          (forms (cdr (assoc code nelisp-ime--okuri-forms))))
-    (dolist (form forms)
+    ;; 出来る is ichidan: its negative is できない, not できらない.
+    (when (and (equal base "でき") (equal code "r"))
+      (setq forms (cons '("ない" . "ない") forms)))
+    ;; ASCII abbreviations (k /κ/, i /ι/, etc.) are not okuri stems.
+    ;; Expanding them creates bogus kana entries such as く /κく/.
+    (dolist (form (and (> (length base) 0)
+                      (>= (aref base 0) #x3041) forms))
       (let ((key (concat base (car form)))
             surfaces)
         (dolist (candidate candidates)

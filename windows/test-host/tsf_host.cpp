@@ -1260,6 +1260,10 @@ int wmain(int argc, wchar_t** argv) {
     }
     std::fflush(stdout);
     if (!script.empty()) {
+      // Drain deferred TSF focus/activation notifications before accepting
+      // input. A notification left from SetFocus can otherwise terminate
+      // the composition created by the first scripted character.
+      PumpMessages(0);
       ITfContext* contexts[2] = {context, context2};
       DocumentStore* stores[2] = {store, store2};
       ITfDocumentMgr* documents[2] = {doc_mgr, doc_mgr2};

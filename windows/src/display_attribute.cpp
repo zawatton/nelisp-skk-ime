@@ -42,7 +42,9 @@ DisplayAttributeInfo* CreateDisplayAttributeInfo(REFGUID guid) {
   value.lsStyle = guid == GUID_DdskkCandidateAttribute ? TF_LS_SQUIGGLE : TF_LS_SOLID;
   value.fBoldLine = guid == GUID_DdskkCandidateAttribute;
   value.bAttr = guid == GUID_DdskkCandidateAttribute ? TF_ATTR_TARGET_CONVERTED : TF_ATTR_INPUT;
+  if (guid == GUID_DdskkConvertedAttribute) value.bAttr = TF_ATTR_CONVERTED;
   const wchar_t* description = guid == GUID_DdskkCandidateAttribute
-      ? L"NeLisp IME candidate" : L"NeLisp IME preedit";
+      ? L"NeLisp IME candidate" : guid == GUID_DdskkConvertedAttribute
+      ? L"NeLisp IME converted" : L"NeLisp IME preedit";
   return new (std::nothrow) DisplayAttributeInfo(guid, description, value);
 }

@@ -112,7 +112,6 @@ std::optional<EngineState> ParseStateResponse(const std::string& line) {
   for (std::string field; input >> field;) fields.push_back(std::move(field));
   if ((fields.size() != 8 && fields.size() != 9) || fields[0] != "STATE")
     return std::nullopt;
-  if (fields.size() == 9 && fields[1] != "registration") return std::nullopt;
   EngineState state;
   if (!ParseInt(fields[2], &state.cursor) ||
       !ParseInt(fields[3], &state.composition_start) ||
@@ -135,10 +134,43 @@ std::optional<EngineState> ParseStateResponse(const std::string& line) {
       start = end + 1;
     }
   }
-  if (fields.size() == 9) {
+  if (fields.size() == 9 && fields[1] == "registration") {
     auto reading = DecodeScalarHex(fields[8]);
     if (!reading) return std::nullopt;
     state.registration_reading = std::move(*reading);
+  } else if (fields.size() == 9) {
+    // Translate scalar offsets once; TSF ranges count UTF-16 code units.
+    std::vector<int> offsets{0};
+    for (size_t i = 0; i < state.text.size(); ++i) {
+      if (state.text[i] >= 0xd800 && state.text[i] <= 0xdbff) ++i;
+      offsets.push_back(static_cast<int>(i + 1));
+    }
+    const auto separator = fields[8].find(';');
+    if (separator == std::string::npos ||
+        !ParseInt(fields[8].substr(separator + 1), &state.active_segment))
+      return std::nullopt;
+    size_t begin = 0;
+    int previous_end = 0;
+    while (begin < separator) {
+      const auto comma = fields[8].find(',', begin);
+      const size_t end = comma == std::string::npos ? separator : comma;
+      const auto colon = fields[8].find(':', begin);
+      int start = 0, length = 0;
+      if (end > separator || colon == std::string::npos || colon >= end ||
+          !ParseInt(fields[8].substr(begin, colon - begin), &start) ||
+          !ParseInt(fields[8].substr(colon + 1, end - colon - 1), &length) ||
+          start < previous_end || length <= 0 || start < 0 ||
+          static_cast<size_t>(start) >= offsets.size() ||
+          static_cast<size_t>(length) >= offsets.size() - start)
+        return std::nullopt;
+      previous_end = start + length;
+      state.segments.push_back({offsets[start], offsets[previous_end] - offsets[start]});
+      begin = end + 1;
+      if (end != separator && begin == separator) return std::nullopt;
+    }
+    if (state.active_segment < 0 ||
+        static_cast<size_t>(state.active_segment) >= state.segments.size())
+      return std::nullopt;
   }
   return state;
 }

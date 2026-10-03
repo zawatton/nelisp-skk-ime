@@ -91,6 +91,26 @@ continues to configure the development NeLisp runtime as a fallback.
 
 ## Engine session API
 
+The lattice runner (`framework/nelisp-ime-stdio.el`) replies with
+`STATE mode cursor composition-start hex-text hex-pending candidate-index hex-candidates`.
+Strings are six hex digits per Unicode scalar, `-` for empty, and candidates
+are comma separated. A converted composition may append one ninth field:
+`start:length,start:length,...;active`. Starts and lengths count code points
+in displayed text (including any settled prefix), and `active` is a zero-based
+segment index. For example `0:1,1:1;1` describes `僕達` with `達` active.
+The cursor is the active segment's displayed end; composition-start still
+marks the whole composition. Candidates and candidate-index belong only to
+the active segment. The Windows parser accepts eight-field replies and
+translates segment offsets to UTF-16 for TSF. The indicator can still read
+candidates from field 7. Registration's existing ninth hex-reading field
+keeps its original meaning.
+
+In candidate state, Space/previous cycle the active segment, Right/Left move
+focus (`SEGMENT-NEXT`/`SEGMENT-PREV`), and Shift+Right/Left move its reading
+boundary one kana (`SEGMENT-EXTEND`/`SEGMENT-SHRINK`). Enter commits exactly
+the displayed text. TSF marks the active segment as target converted and the
+other segments as converted.
+
 `skk-ime-session.el` wraps the existing DDSKK command path in an isolated hidden
 buffer. Native hosts use `skk-ime-session-create`, `skk-ime-session-feed-key`,
 `skk-ime-session-snapshot`, and `skk-ime-session-destroy`; no SKK conversion

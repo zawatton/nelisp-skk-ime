@@ -3,6 +3,144 @@
 (require 'ert)
 (require 'nelisp-ime)
 (require 'nelisp-ime-stateline)
+(require 'nelisp-ime-lattice)
+
+(defmacro nelisp-ime-stateline-test--lattice (&rest body)
+  "Run BODY with isolated lattice sessions and a small kana dictionary."
+  (declare (indent 0))
+  `(let ((nelisp-ime-sessions (make-hash-table :test 'equal))
+         (nelisp-ime-learning (make-hash-table :test 'equal))
+         (nelisp-ime-dictionary-index (make-hash-table :test 'equal))
+         (nelisp-ime-dictionary nil)
+         (nelisp-ime-default-engine 'lattice))
+     (nelisp-ime-dictionary-install
+      '(("ぼく" "ぼく" "僕") ("たち" "たち" "達")
+        ("ぼ" "母") ("く" "く") ("できない" "出来ない" "できない")
+        ("は" "葉")))
+     ,@body))
+
+(defun nelisp-ime-stateline-test--type (text)
+  "Type romaji TEXT through the wire protocol."
+  (mapc (lambda (char)
+          (nelisp-ime-stateline-dispatch (concat "KEY " (number-to-string char))))
+        text))
+
+(ert-deftest nelisp-ime-stateline-test-lattice-active-candidates-and-commit ()
+  (nelisp-ime-stateline-test--lattice
+    (nelisp-ime-stateline-test--type "bokutati")
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL CONVERT")))
+      (should (equal (nelisp-ime-stateline-test--field line 8) "0:2,2:2;0"))
+      (should (equal (nelisp-ime-stateline-test--field line 7)
+                     "00307c00304f,0050d5")))
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL CONVERT")))
+      (should (equal (nelisp-ime-stateline-test--field line 4) "0050d500305f003061")))
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL SEGMENT-NEXT")))
+      (should (equal (nelisp-ime-stateline-test--field line 8) "0:1,1:2;1"))
+      (should (equal (nelisp-ime-stateline-test--field line 7)
+                     "00305f003061,009054")))
+    (nelisp-ime-stateline-dispatch "CONTROL CONVERT")
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL COMMIT")))
+      (should (equal (nelisp-ime-stateline-test--field line 4) "0050d5009054"))
+      (should (equal (nelisp-ime-stateline-test--field line 3) "-1"))
+      (should (= (length (split-string line " ")) 8)))))
+
+(ert-deftest nelisp-ime-stateline-test-lattice-focus-retains-selection ()
+  (nelisp-ime-stateline-test--lattice
+    (nelisp-ime-stateline-test--type "bokutati")
+    (nelisp-ime-stateline-dispatch "CONTROL CONVERT")
+    (nelisp-ime-stateline-dispatch "CONTROL CONVERT")
+    (nelisp-ime-stateline-dispatch "CONTROL SEGMENT-NEXT")
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL SEGMENT-PREV")))
+      (should (equal (nelisp-ime-stateline-test--field line 6) "1")))
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL PREVIOUS")))
+      (should (equal (nelisp-ime-stateline-test--field line 4)
+                     "00307c00304f00305f003061")))))
+
+(ert-deftest nelisp-ime-stateline-test-lattice-particle-stays-kana ()
+  (nelisp-ime-stateline-test--lattice
+    (nelisp-ime-stateline-test--type "hadekinai")
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL CONVERT")))
+      (should (equal (nelisp-ime-stateline-test--field line 4)
+                     (nelisp-ime-stateline--hex "は出来ない"))))
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL SEGMENT-NEXT")))
+      (should (equal (nelisp-ime-stateline-test--field line 8) "0:1,1:4;1"))
+      (should (equal (nelisp-ime-stateline-test--field line 7)
+                     (concat (nelisp-ime-stateline--hex "出来ない") ","
+                             (nelisp-ime-stateline--hex "できない")))))))
+
+(ert-deftest nelisp-ime-stateline-test-lattice-resize-preserves-readings ()
+  (nelisp-ime-stateline-test--lattice
+    (nelisp-ime-stateline-test--type "bokutati")
+    (nelisp-ime-stateline-dispatch "CONTROL CONVERT")
+    (nelisp-ime-stateline-dispatch "CONTROL SEGMENT-SHRINK")
+    (let* ((session (nelisp-ime-stateline--session))
+           (segments (plist-get session :segments)))
+      (should (equal (mapcar (lambda (s) (plist-get s :reading)) segments)
+                     '("ぼ" "く" "たち")))
+      (should (equal (mapcar (lambda (s) (list (plist-get s :from) (plist-get s :to)))
+                            segments) '((0 1) (1 2) (2 4)))))
+    (nelisp-ime-stateline-dispatch "CONTROL SEGMENT-EXTEND")
+    (should (equal (mapcar (lambda (s) (plist-get s :reading))
+                          (plist-get (nelisp-ime-stateline--session) :segments))
+                   '("ぼく" "たち")))))
+
+(ert-deftest nelisp-ime-stateline-test-segment-field-uses-display-offsets ()
+  (let ((line (nelisp-ime-stateline--line
+               '(:mode "candidate" :preedit "前😀達" :cursor 3
+                 :composition-start 0 :active-segment 0
+                 :segments [(:reading "ぼく" :candidate "😀")
+                            (:reading "たち" :candidate "達")]
+                 :candidates ["😀"] :candidate-index 0))))
+    (should (equal (nelisp-ime-stateline-test--field line 8) "1:1,2:1;0"))
+    (should (equal (nelisp-ime-stateline-test--field line 2) "2"))))
+
+(ert-deftest nelisp-ime-stateline-test-old-eight-field-reader-compatible ()
+  (nelisp-ime-stateline-test--lattice
+    (nelisp-ime-stateline-test--type "bokutati")
+    (let* ((line (nelisp-ime-stateline-dispatch "CONTROL CONVERT"))
+           (fields (split-string line " "))
+           (old-form (mapconcat #'identity (cl-subseq fields 0 8) " ")))
+      (should (= (length (split-string old-form " ")) 8))
+      (should (equal (nelisp-ime-stateline-test--field old-form 7)
+                     (nelisp-ime-stateline-test--field line 7))))))
+
+(ert-deftest nelisp-ime-stateline-test-skk-abbreviations-not-okuri ()
+  (nelisp-ime-stateline-test--lattice
+    (let ((table (make-hash-table :test 'equal)))
+      (nelisp-ime--skk-line "k /κ/ケイ/" table t)
+      (nelisp-ime--skk-line "i /ι/" table t)
+      (nelisp-ime--skk-line "Greek /Α/" table t)
+      (should-not (gethash "く" table))
+      (should-not (gethash "い" table))
+      (should-not (gethash "Greeく" table))
+      (nelisp-ime--skk-line "かk /書/" table t)
+      (should (equal (gethash "かいた" table) '("書いた"))))))
+
+(defconst nelisp-ime-stateline-test--dictionary-file
+  (expand-file-name "../../engines/lattice/data/nelisp-ime-dictionary-data.el"
+                    (file-name-directory (or load-file-name buffer-file-name))))
+
+(ert-deftest nelisp-ime-stateline-test-shipped-lattice-segments ()
+  (nelisp-ime-stateline-test--lattice
+    (load nelisp-ime-stateline-test--dictionary-file nil t)
+    (nelisp-ime-stateline-test--type "bokutati")
+    (nelisp-ime-stateline-dispatch "CONTROL CONVERT")
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL SEGMENT-SHRINK")))
+      (should (equal (nelisp-ime-stateline-test--field line 4)
+                     (nelisp-ime-stateline--hex "母く達"))))
+    (nelisp-ime-stateline-dispatch "CONTROL SEGMENT-EXTEND")
+    (dotimes (_ 3) (nelisp-ime-stateline-dispatch "CONTROL CONVERT"))
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL SEGMENT-NEXT")))
+      (should (equal (nelisp-ime-stateline-test--field line 8) "0:1,1:1;1")))
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL COMMIT")))
+      (should (equal (nelisp-ime-stateline-test--field line 4)
+                     (nelisp-ime-stateline--hex "僕達"))))
+    (nelisp-ime-stateline-test--type "hadekinai")
+    (nelisp-ime-stateline-dispatch "CONTROL CONVERT")
+    (let ((line (nelisp-ime-stateline-dispatch "CONTROL SEGMENT-NEXT")))
+      (should (equal (nelisp-ime-stateline-test--field line 8) "0:1,1:4;1"))
+      (should (equal (nelisp-ime-stateline-test--field line 4)
+                     (nelisp-ime-stateline--hex "は出来ない"))))))
 
 (defmacro nelisp-ime-stateline-test--isolated (&rest body)
   "Run BODY with isolated sessions and dictionary."
