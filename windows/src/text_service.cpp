@@ -293,6 +293,14 @@ bool TextService::BeginProviderConversion(const std::u32string& keys) {
       DebugLog(L"Provider convert done seq=%llu state=%d raw=%hs",
                static_cast<unsigned long long>(sequence), state ? 1 : 0,
                engine_.last_response().c_str());
+      wchar_t harness_diagnostics[2]{};
+      if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS",
+                                  harness_diagnostics, 2) > 0) {
+        std::printf("PROVIDER done seq=%llu state=%d raw=%.160s\n",
+                    static_cast<unsigned long long>(sequence), state ? 1 : 0,
+                    engine_.last_response().c_str());
+        std::fflush(stdout);
+      }
       auto* result = new (std::nothrow) ProviderResult{this, sequence,
                                                        std::move(state)};
       if (result == nullptr ||
@@ -413,6 +421,30 @@ void TextService::CancelPendingProvider() {
   provider_pending_.store(false, std::memory_order_release);
   deferred_provider_keys_.clear();
   engine_.CancelPendingIo();
+}
+
+// A local Escape/Ctrl+G restore puts the reading back from
+// realtime_frontend_, but the engine session is still in the candidate
+// state the provider conversion left it in.  The host publishes that state
+// to Sumi and answers its STATUS polls from it, so Sumi's candidate window
+// stayed open after the user had cancelled.  The frontend owns the reading
+// and the next Space reconverts from raw keys, so the engine side is simply
+// cancelled; its reply is not applied to the document.  A just-cancelled
+// provider thread may still hold the client: CancelPendingProvider() has
+// already aborted its I/O, so taking the same mutex waits only for that
+// thread to unwind instead of racing it on the pipe.
+void TextService::ReleaseEngineConversion() {
+  std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+  const auto state = engine_.SendControl(ddskk::EngineControl::kCancel,
+                                         kInteractiveTimeoutMs);
+  wchar_t harness_diagnostics[2]{};
+  if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS",
+                              harness_diagnostics, 2) > 0) {
+    std::printf("ENGINE_RELEASE ok=%d candidates=%zu raw=%s\n", state ? 1 : 0,
+                state ? state->candidates.size() : 0,
+                engine_.last_response().c_str());
+    std::fflush(stdout);
+  }
 }
 
 void TextService::ApplyProviderResult(ProviderResult* result) {
@@ -1454,6 +1486,17 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   // right before returning.
   const auto debug_exit = [&](BOOL final_eaten, HRESULT request_hr = S_OK,
                               HRESULT edit_hr = S_OK) {
+    wchar_t harness_diagnostics[2]{};
+    if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS",
+                                harness_diagnostics, 2) > 0) {
+      std::printf("KEYBRANCH vk=%02X branch=%ls state=%d provider_active=%d "
+                  "provider_pending=%d frontend_preedit=%d\n",
+                  static_cast<unsigned>(wparam), branch, state ? 1 : 0,
+                  provider_composition_active_ ? 1 : 0,
+                  provider_pending_.load(std::memory_order_acquire) ? 1 : 0,
+                  realtime_frontend_.preedit() ? 1 : 0);
+      std::fflush(stdout);
+    }
     if (state) {
       DebugLog(L"OnKeyDown vk=%02X branch=%ls state=1 mode=%ls tlen=%zu "
                L"plen=%zu req=%X edit=%X eaten=%d",
@@ -1488,11 +1531,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     debug_exit(FALSE);
     return S_OK;
   }
+  bool cancelled_provider = false;
   if (provider_pending_.load(std::memory_order_acquire)) {
     if (ctrl_g || wparam == VK_ESCAPE) {
       // Cancellation is local and immediate. The detached lookup may still
       // finish, but its stale sequence can no longer edit the document.
       CancelPendingProvider();
+      cancelled_provider = true;
     } else {
       // Preserve every claimed key that arrives behind an asynchronous
       // provider request.  Mutating realtime_frontend_ here used to mix the
@@ -1863,13 +1908,16 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     // swallow-on-failure path below already handles that with no special
     // casing needed.
     if (provider_composition_active_ &&
-        realtime_frontend_.preedit())
+        realtime_frontend_.preedit()) {
+      ReleaseEngineConversion();
       state = realtime_frontend_.RestorePreedit();
-    else if (realtime_frontend_.composing())
+    } else if (realtime_frontend_.composing()) {
+      if (cancelled_provider) ReleaseEngineConversion();
       state = realtime_frontend_.Quit();
-    else
+    } else {
       state = engine_.SendControl(ddskk::EngineControl::kQuit,
                                   kInteractiveTimeoutMs);
+    }
   } else if (ctrl_g) {
     branch = L"ctrlg";
     // DDSKK keyboard-quit is deliberately stepwise: candidate -> original
@@ -1881,10 +1929,12 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     if (provider_composition_active_ &&
         realtime_frontend_.preedit()) {
       branch = L"ctrlg-local-restore";
+      ReleaseEngineConversion();
       state = realtime_frontend_.RestorePreedit();
     } else if (realtime_frontend_.composing() &&
                !provider_composition_active_) {
       branch = L"ctrlg-local";
+      if (cancelled_provider) ReleaseEngineConversion();
       state = realtime_frontend_.Quit();
     } else if (engine_roundtrip_failed_) {
       // A preceding conversion already proved the pipe unresponsive.
@@ -2226,6 +2276,13 @@ bool TextService::AcknowledgeEndingComposition(ITfComposition* composition) {
 }
 
 void TextService::CloseCandidateUi() {
+  wchar_t harness_diagnostics[2]{};
+  if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS",
+                              harness_diagnostics, 2) > 0) {
+    std::printf("CANDIDATEUI close open=%d\n",
+                candidate_ui_id_ != TF_INVALID_UIELEMENTID ? 1 : 0);
+    std::fflush(stdout);
+  }
   if (candidate_ui_id_ != TF_INVALID_UIELEMENTID && thread_manager_ != nullptr) {
     ITfUIElementMgr* manager = nullptr;
     if (SUCCEEDED(thread_manager_->QueryInterface(
@@ -2276,7 +2333,14 @@ void TextService::UpdateCandidateUI(ITfContext* context,
   if (candidate_ui_ != nullptr) {
     if (candidate_ui_id_ == TF_INVALID_UIELEMENTID) {
       BOOL show = TRUE;
-      manager->BeginUIElement(candidate_ui_, &show, &candidate_ui_id_);
+      const HRESULT begun =
+          manager->BeginUIElement(candidate_ui_, &show, &candidate_ui_id_);
+      if (harness_diagnostics[0] != L'\0') {
+        std::printf("CANDIDATEUI begin hr=%08lx show=%d id=%lu\n",
+                    static_cast<unsigned long>(begun), show ? 1 : 0,
+                    static_cast<unsigned long>(candidate_ui_id_));
+        std::fflush(stdout);
+      }
     } else {
       manager->UpdateUIElement(candidate_ui_id_);
     }

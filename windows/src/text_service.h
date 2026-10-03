@@ -153,6 +153,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   bool BeginProviderKey(char32_t key);
   bool BeginProviderKeys(const std::u32string& keys);
   void CancelPendingProvider();
+  void ReleaseEngineConversion();
   void ApplyProviderResult(ProviderResult* result);
   void ReplayDeferredProviderKeys();
   void ShowProviderBusy(ITfContext* context);
