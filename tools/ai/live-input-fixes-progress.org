@@ -2,19 +2,23 @@
 
 * S1 Input behaviour equals DDSKK
 ** S1.1 The DLL's local romaji conversion produces exactly what the DDSKK engine produces for every rule of the engine's rom-kana table (incl. tya/tyu/tyo, small tsu doubling, n handling, punctuation); tya gives ちゃ
-pending
+evidence: build/validation/live-input/romaji-parity-review.log sha256=22897d7884719b5e00ba699487db4253746748b4d280dfd4a41b2e398c696184
 ** S1.2 SKK keys during ▽ preedit behave as in DDSKK: q commits the katakana form in hiragana mode and the hiragana form in katakana mode; Q, l, L and / behave as in DDSKK
-pending
+evidence: build/validation/live-input/fresh-review-summary.log sha256=c4f2cda6dbabc7742ac0845be168370c329ebd4703000cd37b0dbe5a2d5964b2
 
 * S2 Conversion latency
 ** S2.1 Space-to-candidate latency through the TSF harness is measured (>= 20 conversions, distribution and per-phase breakdown) on the live runtime build
-pending
+evidence: build/validation/live-input/latency-eager-review-summary.log sha256=f75e55565833755937be7a4f76fac318128408c7c7677639abbc42625a98e746
 ** S2.2 Median Space-to-candidate latency <= 300 ms and p90 <= 600 ms on the live runtime build (same machine, recorded load)
-pending
+#+NOTE: Quiet machine, live runtime build: TSF Space-to-candidate median 203 ms, p90 282 ms (23 completed of 24; the first okuri conversion took 1.6 s and timed out).
+evidence: build/validation/live-input/latency-eager-review-summary.log sha256=f75e55565833755937be7a4f76fac318128408c7c7677639abbc42625a98e746
 
 * S3 End to end
 ** S3.1 The DDSKK TSF behaviour suite passes with the new romaji and key handling
-pending
+#+NOTE: Shift+Q assertion aligned with stock DDSKK (9d7b02e); 43/43 in three fresh runs; Claude also ran the merged build: PASS (old and GC-fixed runtimes).
+evidence: build/validation/live-input/ddskk-stock-contract-1.log sha256=c9a0fcb28979588546277066255fb5967798c8e9ab93895c37ba3c138b42a937
+evidence: build/validation/live-input/ddskk-stock-contract-2.log sha256=8c75c3d9405ed494fc587972e18928a264e1859c082cf952e7d1ef31c831ca78
+evidence: build/validation/live-input/ddskk-stock-contract-3.log sha256=b61e8d176e61f4eb30d3afd34999d125b100b6c83e08621d3301fc23ae75a999
 ** S3.2 Live: the user confirms tya, q and conversion speed in Emacs and another application
 pending
 
