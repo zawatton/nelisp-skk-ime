@@ -1,35 +1,49 @@
 # Bundled dictionary
 
-`SKK-JISYO.M` is the medium dictionary used by default. `SKK-JISYO.S` is kept
-as a reduced-footprint option. Both are distributed by the official
-[skk-dev/dict](https://github.com/skk-dev/dict) project. Its copyright and
-license notice is retained in each file. The sources are EUC-JP. The medium
-dictionary was selected because it converts common phrases correctly while
-remaining practical for the current standalone NeLisp loader; the large
-dictionary currently exceeds its comfortable startup footprint.
+`SKK-JISYO.M` defines the medium dictionary footprint; `SKK-JISYO.S` is
+retained as a smaller option. Both EUC-JP dictionaries come from
+[skk-dev/dict](https://github.com/skk-dev/dict), with license notices intact.
+The original large SKK dictionary supplies richer genuine candidates.
 
-`nelisp-ime-dictionary-data.el` is the generated UTF-8 representation loaded
-by standalone NeLisp. Regenerate it from the repository root with:
+Regenerate from the repository root using the recipe also recorded beside
+`generate-skk-data.el`. Save the HEAD portable dictionary before writing:
 
 ```sh
-emacs --batch -Q -L ../nelisp-ime/packages/nelisp-ime/src -L src \
-  -l data/generate-skk-data.el
-```
-
-A larger SKK dictionary can be converted by setting `NELISP_IME_SKK_INPUT`
-and `NELISP_IME_SKK_OUTPUT`. The checked-in generated dictionary uses the
-medium dictionary as its entry set and the official large dictionary for
-candidate ordering:
-
-```sh
+git show HEAD:engines/lattice/data/nelisp-ime-dictionary-data.el > before.el
+NELISP_IME_SKK_INPUT=engines/lattice/data/SKK-JISYO.M \
+NELISP_IME_SKK_OUTPUT=engines/lattice/data/nelisp-ime-dictionary-data.el \
 NELISP_IME_SKK_RANKING=/path/to/SKK-JISYO.L \
-  emacs --batch -Q -L ../nelisp-ime/packages/nelisp-ime/src -L src \
-  -l data/generate-skk-data.el
+NELISP_IME_SKK_RANKING_DATA=before.el \
+NELISP_IME_VERB_CLASSES=/path/to/ipadic/Verb.csv \
+emacs -Q --batch -L framework/src -L engines/lattice/src \
+  -l engines/lattice/data/generate-skk-data.el
 ```
 
-The ranking source used for the checked-in artifact was official
-`SKK-JISYO.L` with SHA-256
-`c791f578d1b4040fce282db29bc22b2cc7ea46f83e269fab2e0fa779e2967e40`.
+`NELISP_IME_SKK_CODING` and `NELISP_IME_SKK_RANKING_CODING` override the
+EUC-JP source codings. IPAdic Verb.csv and its sibling Adj.csv/Adverb.csv/Noun*.csv/Suffix.csv are EUC-JP
+and used only for generation-time class attestation; costs are not read.
+The IPAdic license is retained in `IPADIC-COPYING`. Runtime and bundled-data
+ERT tests require no MeCab installation.
 
-Okuri-ari entries are expanded into conservative common conjugations during
-generation, so the runtime does not need an external morphological process.
+The portable reference supplies ordering only. A reference candidate can
+survive only if the raw SKK sources and IPAdic attestation admit it. Verb
+spelling, reading, and class must match; ambiguous classes generate nothing.
+Non-verb row expansions require IPAdic spelling/reading attestation. An
+adjective's candidate + い must be a basic form of 形容詞・アウオ段,
+形容詞・イ段 or 形容詞・イイ. Only HEAD's adjective suffixes are retained:
+`i`: い, くない, かった, くて, ければ, そう; `k`: く; `s`: そう.
+Other row suffixes are not adjective forms. Attested na-adjective stems
+also admit そう; noun/adverb row forms require an exact full surface/reading
+match. This retains 賄い without admitting bare verb onbin stems such as
+聞い, 咲い and 弄い. No IPAdic costs are read.
+
+Valid legacy expansions retain their HEAD placement ahead of genuine words;
+newly attested forms retain the append-after-existing behavior used for
+ichidan additions. Among competing legacy entries, the code matching the
+first generated okurigana kana wins; SKK candidate order remains stable.
+Generated volitionals follow genuine okuri-nasi words. Dictionary-form う
+is distinguished from a volitional: 囲う is still a dictionary-form verb.
+Learning can promote any candidate at runtime.
+
+The ranking SKK source has SHA-256
+`aae6e2e4cb178de68afe706f053723a6d061d97bed7978008892eedd11c72ca6`.
