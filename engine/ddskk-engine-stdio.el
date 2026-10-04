@@ -44,20 +44,16 @@
 
 (defun ddskk-engine-run-stdio ()
   (let ((running t)
-        line)
+        request)
     (while running
-      (setq line (ddskk-engine-read-stdio-line))
-      (if (not line)
+      (setq request (ddskk-engine-read-stdio-line))
+      (if (not request)
           (setq running nil)
-        (if (and (> (length line) 4)
-                 (= (aref line 0) 75)
-                 (= (aref line 1) 69)
-                 (= (aref line 2) 89)
-                 (= (aref line 3) 32))
-            (ddskk-engine-dispatch-key-to-stdout
-             (string-to-number (substring line 4)))
-          (ddskk-engine-dispatch-line-to-stdout line))
-        (when (equal line "QUIT") (setq running nil))))
+        (progn
+          ;; Keep every request on the session dispatcher. A separate KEY
+          ;; path bypasses modal registration and legacy session ownership.
+          (ddskk-engine-dispatch-line-to-stdout request)
+          (when (equal request "QUIT") (setq running nil)))))
     (ddskk-engine-stop)))
 
 (ddskk-engine-run-stdio)

@@ -453,7 +453,8 @@ from entering the line protocol."
 
 (defun ddskk-engine--decode-codepoints (encoded)
   "Decode comma-separated decimal Unicode scalars in ENCODED, or nil."
-  (when (and (stringp encoded) (> (length encoded) 0))
+  (when (and (stringp encoded) (> (length encoded) 0)
+             (/= (aref encoded (1- (length encoded))) ?,))
     (let ((start 0) (out "") (valid t) end)
       (while (and valid (< start (length encoded)))
         (setq end (or (string-match "," encoded start) (length encoded)))
@@ -650,7 +651,8 @@ misses exhaustion after one or more real candidates."
     ;; the pre-registration reading, so perform the equivalent ▼ -> ▽ state
     ;; transition directly and leave the reading editable.
     (with-current-buffer (skk-ime-session-buffer ddskk-engine--session)
-      (let* ((marker-pos (and (markerp skk-henkan-start-point)
+      (let* ((marker-pos (and (or (numberp skk-henkan-start-point)
+                                 (markerp skk-henkan-start-point))
                               (marker-position skk-henkan-start-point)))
              (marker-char-pos
               (max (point-min) (1- (or marker-pos (1+ (point-min)))))))
@@ -659,7 +661,7 @@ misses exhaustion after one or more real candidates."
         (insert "▽")
         (setq skk-henkan-mode 'on skk-henkan-count -1
               skk-henkan-list nil skk-current-search-prog-list nil)
-        (set-marker skk-henkan-start-point (1+ marker-char-pos))
+        (skk-set-marker skk-henkan-start-point (1+ marker-char-pos))
         (goto-char (point-max))))
     (ddskk-engine--raw-state-line
      (skk-ime-session-snapshot ddskk-engine--session))))
@@ -719,27 +721,25 @@ misses exhaustion after one or more real candidates."
           (let ((codepoint (string-to-number (match-string 1 line))))
             (if (or (< codepoint 0) (> codepoint 1114111))
                 "ERR CODEPOINT"
-              (skk-ime-session-feed-key
-               ddskk-engine--session codepoint)
-              (ddskk-engine--registration-flush
-               (skk-ime-session-snapshot ddskk-engine--session))
-              (ddskk-engine--registration-state-line))))
+              (progn
+                (skk-ime-session-feed-key
+                 ddskk-engine--session codepoint)
+                ;; Serialization owns the flush; avoid a second snapshot and
+                ;; flush on the same key, including batched registration input.
+                (ddskk-engine--registration-state-line)))))
          ((and (> (length line) 18)
                (equal (substring line 0 18) "CONTROL FEED-KEYS "))
           (let ((keys (ddskk-engine--decode-codepoints (substring line 18))))
             (if (not keys)
                 "ERR FEED-KEYS"
-              (skk-ime-session-feed-string ddskk-engine--session keys)
-              (ddskk-engine--registration-flush
-               (skk-ime-session-snapshot ddskk-engine--session))
-              (ddskk-engine--registration-state-line))))
+              (progn
+                (skk-ime-session-feed-string ddskk-engine--session keys)
+                (ddskk-engine--registration-state-line)))))
          ((equal line "CONTROL COMMIT")
           (if (ddskk-engine--registration-composing-p state)
               (progn
                 (skk-ime-session-control
                   ddskk-engine--session 'commit)
-                (ddskk-engine--registration-flush
-                 (skk-ime-session-snapshot ddskk-engine--session))
                 (ddskk-engine--registration-state-line))
             (let ((word (aref ddskk-engine--registration-editor 0)))
               (if (or (= (length word) 0)

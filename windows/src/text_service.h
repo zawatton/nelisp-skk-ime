@@ -155,7 +155,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
                                               WPARAM wparam, LPARAM lparam);
   bool CreateProviderWindow();
   bool BeginProviderConversion(const std::u32string& keys);
-  bool BeginProviderControl(ddskk::EngineControl control);
+  bool BeginProviderControl(ddskk::EngineControl control, bool apply_state = true);
   bool BeginProviderKey(char32_t key);
   bool BeginProviderKeys(const std::u32string& keys);
   void CancelPendingProvider();
@@ -181,6 +181,10 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   std::mutex provider_engine_mutex_;
   std::atomic<uint64_t> provider_sequence_{0};
   std::atomic<bool> provider_pending_{false};
+  // Retain a failed lookup's identity until cancellation or a new request,
+  // so Ctrl+G restores its reading even after the worker has timed out.
+  bool provider_conversion_active_ = false;
+  bool provider_cleanup_pending_ = false;
   std::deque<DeferredProviderKey> deferred_provider_keys_;
   ITfComposition* composition_ = nullptr;
   // AddRef'd identities of compositions ended by this TIP. Some hosts delay

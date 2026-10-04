@@ -309,7 +309,8 @@ itself leaves it while that one request is still being processed."
            ;; the exhausted ▼ region directly: NeLisp markers are static, so
            ;; the usual inactivate/reconvert sequence can duplicate the
            ;; reading after a modal checkpoint restore.
-           (let ((start (and (markerp skk-henkan-start-point)
+           (let ((start (and (or (numberp skk-henkan-start-point)
+                                (markerp skk-henkan-start-point))
                              (max (point-min)
                                   (1- (marker-position
                                        skk-henkan-start-point))))))
