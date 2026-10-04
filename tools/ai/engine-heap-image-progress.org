@@ -1,0 +1,26 @@
+#+TITLE: Boot IME engines from a NeLisp heap image (cold image)
+
+* S1 NeLisp heap image on Windows
+** S1.1 A Windows nelisp.exe dumps its heap and a fresh process cold-loads it with variables, functions and hash tables intact (tiny round trip)
+#+NOTE: Known red at 2026-10-04: nelisp--arena-dump-image-stream writes 0 bytes then exits 139 (segfault); --cold-load-from also exits 139 (77b4dee-era IME runtime).
+cmd: grep -q 'ROUNDTRIP-OK' build/validation/heap-image/roundtrip.log
+** S1.2 Missing, empty, truncated and stale images fail with a non-zero exit and a message, never a crash
+pending
+** S1.3 Linux cold-image behaviour is unchanged (scripts/cold-image-org-e2e.sh passes)
+pending
+** S1.4 End to end: both engines (ddskk, lattice) loaded in one process, dumped, cold-booted, and a conversion answers identically to a source boot
+pending
+
+* S2 IME engines boot from the image
+** S2.1 A reproducible build step produces the engine image (load, warm up with representative conversions, reset session state, dump), keyed by a fingerprint of runtime binary, engine sources and data
+pending
+** S2.2 The host starts the engine from the image when the fingerprint matches and falls back to the source boot when the image is missing, stale or fails to start
+pending
+** S2.3 Same machine and session, >= 10 runs per engine: process start to first answered conversion is at least 3x faster than the source boot
+pending
+** S2.4 The first conversion after an image boot is within the p90 of a warmed engine (no first-use warm-up)
+pending
+** S2.5 Existing DDSKK and lattice TSF behaviour suites pass with image-booted engines
+pending
+** S2.6 Live: ENGINE SWITCH and ENGINE RELOAD on the installed IME take effect through the image path
+pending
