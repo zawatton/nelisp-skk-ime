@@ -32,6 +32,13 @@ constexpr DWORD kInteractiveTimeoutMs = 350;
 constexpr DWORD kConversionTimeoutMs = 1500;
 constexpr UINT kProviderResultMessage = WM_APP + 0x4e1;
 constexpr wchar_t kProviderWindowClass[] = L"NeLispImeProviderResultWindow";
+constexpr UINT kPublishStateMessage = WM_APP + 91;
+constexpr UINT kModeIndicatorMessage = WM_APP + 92;
+std::atomic<DWORD> process_publication_sequence{0};
+std::atomic<unsigned> process_publishers{0};
+// Writers serialize outside key callbacks. Queuing never acquires this mutex.
+std::mutex process_publication_writer;
+DWORD process_flushed_sequence = 0;
 
 bool ControlDown() {
   // Some TSF hosts update the thread-local keyboard state after dispatching
@@ -231,6 +238,7 @@ TextService::TextService() {
 }
 
 TextService::~TextService() {
+  RemovePublishedState();
   settings_watcher_.Stop();
   if (provider_window_ != nullptr) DestroyWindow(provider_window_);
   if (active_context_ != nullptr) active_context_->Release();
@@ -255,6 +263,14 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
   }
   auto* service = reinterpret_cast<TextService*>(
       GetWindowLongPtrW(window, GWLP_USERDATA));
+  if (message == kPublishStateMessage && service != nullptr) {
+    service->FlushPublishedState();
+    return 0;
+  }
+  if (message == kModeIndicatorMessage && service != nullptr) {
+    service->FlushModeIndicator();
+    return 0;
+  }
   if (message == kProviderResultMessage) {
     std::unique_ptr<ProviderResult> result(
         reinterpret_cast<ProviderResult*>(lparam));
@@ -568,6 +584,8 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   kana_mode_ = ddskk::DeriveKanaMode(*result->state);
   if (!registration_mode_) last_engine_mode_ = result->state->mode;
   if (registration_mode_) {
+    last_engine_mode_ = result->state->mode;
+    QueuePublishedState(&*result->state);
     CloseCandidateUi();
     if (!was_registration && registration_range_ == nullptr &&
         composition_ != nullptr) {
@@ -715,7 +733,11 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
   }
   EnsureEngineHost();
   LoadSettings();
+  publication_active_ = true;
   settings_watcher_.Start();
+  // Pay the watcher's initial race-covering settings refresh at activation,
+  // rather than adding registry and palette work to the first ordinary key.
+  FollowSettings();
   // The engine's cold load was measured at 3.4 s. Pay that cost here, on a
   // detached background thread at activation, instead of on the user's
   // first keystroke -- that removes the first-key freeze. This thread
@@ -750,6 +772,7 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
     return advise;
   }
   const HRESULT open_close = AdviseOpenCloseCompartment();
+  QueuePublishedState(nullptr);
   DebugLog(L"Activate open-close=%X open=%d",
            static_cast<unsigned>(open_close), keyboard_open_ ? 1 : 0);
   // The langbar settings button is cosmetic. Hosts without a language bar
@@ -766,6 +789,7 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
 }
 
 HRESULT TextService::Deactivate() {
+  RemovePublishedState();
   settings_watcher_.Stop();
   CancelPendingProvider();
   RemoveLangBarButton();
@@ -962,6 +986,7 @@ HRESULT TextService::OnChange(REFGUID guid) {
 }
 
 void TextService::ApplyKeyboardOpenChange() {
+  if (publish_state_ || application_open_mode_ != L"restore") FollowSettings();
   const bool open = ReadKeyboardOpen(keyboard_open_);
   if (open == keyboard_open_) return;
   if (!open) {
@@ -1003,7 +1028,24 @@ void TextService::ApplyKeyboardOpenChange() {
   } else if (open) {
     kana_mode_ = mode_before_close_kana_;
     last_engine_mode_ = engine_mode_before_close_;
+    if (application_open_mode_ != L"restore" && ddskk_engine_) {
+      // The native frontend is authoritative for ordinary keys. Reset both
+      // checkpoints at this explicit application boundary, never in a key callback.
+      CancelPendingProvider();
+      std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+      engine_.MarkNeedsResync();
+      auto state = engine_.SendControl(ddskk::EngineControl::kCancel, 1000);
+      realtime_frontend_.SetInputMode(application_open_mode_);
+      if (application_open_mode_ == L"latin") {
+        state = engine_.SendKey(U'l', 1000);
+      } else if (application_open_mode_ == L"katakana") {
+        state = engine_.SendKey(U'q', 1000);
+      }
+      kana_mode_ = application_open_mode_ != L"latin";
+      last_engine_mode_ = application_open_mode_;
+    }
   }
+  if (!open) published_composing_ = 0;
   MaybeShowModeIndicator(nullptr, nullptr);
 }
 
@@ -1349,7 +1391,112 @@ void TextService::ShowSettings() {
   ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+void TextService::LoadApplicationSettings() {
+  wchar_t executable[32768]{};
+  GetModuleFileNameW(nullptr, executable, _countof(executable));
+  std::wstring name(executable);
+  name = name.substr(name.find_last_of(L"\\/") + 1);
+  CharLowerBuffW(name.data(), static_cast<DWORD>(name.size()));
+  const std::wstring path = NativeImeRegistryKey() + L"\\Apps\\" + name;
+  application_open_mode_ = L"restore";
+  bool enabled = false;
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_QUERY_VALUE,
+                    &key) == ERROR_SUCCESS) {
+    wchar_t mode[32]{};
+    DWORD bytes = sizeof(mode), type = 0, value = 0;
+    if (RegQueryValueExW(key, L"OpenMode", nullptr, &type,
+        reinterpret_cast<BYTE*>(mode), &bytes) == ERROR_SUCCESS &&
+        type == REG_SZ && bytes >= sizeof(wchar_t) &&
+        bytes <= sizeof(mode) && mode[bytes / sizeof(wchar_t) - 1] == 0) {
+      if (wcscmp(mode, L"latin") == 0 || wcscmp(mode, L"hiragana") == 0 ||
+          wcscmp(mode, L"katakana") == 0) application_open_mode_ = mode;
+    }
+    bytes = sizeof(value);
+    enabled = RegQueryValueExW(key, L"PublishState", nullptr, &type,
+        reinterpret_cast<BYTE*>(&value), &bytes) == ERROR_SUCCESS &&
+        type == REG_DWORD && bytes == sizeof(value) && value == 1;
+    RegCloseKey(key);
+  }
+  if (publish_state_ && !enabled) RemovePublishedState();
+  publish_state_ = enabled;
+  if (enabled && thread_manager_ != nullptr && !publication_registered_) {
+    ++process_publishers;
+    publication_registered_ = true;
+    publication_active_ = true;
+  }
+}
+
+void TextService::QueuePublishedState(const ddskk::EngineState* state) {
+  if (!publish_state_ || !publication_active_) return;
+  if (state != nullptr) {
+    published_composing_ = !state->candidates.empty() ||
+        state->mode == L"candidate" || provider_composition_active_ ? 2 :
+        state->composition_start >= 0 || !state->pending_romaji.empty() ? 1 : 0;
+  }
+  PublishedState next;
+  next.mode = last_engine_mode_.empty() ? L"hiragana" : last_engine_mode_;
+  next.open = keyboard_open_ ? 1 : 0;
+  next.composing = keyboard_open_ ? published_composing_ : 0;
+  if (next.mode == last_publication_.mode && next.open == last_publication_.open &&
+      next.composing == last_publication_.composing) return;
+  next.sequence = ++process_publication_sequence;
+  last_publication_ = next;
+  publications_.push_back(std::move(next));
+  // This callback only queues snapshots. Registry I/O runs after TSF returns
+  // to the message pump; retain every transition, including rapid toggles.
+  if (!publication_queued_ && provider_window_ != nullptr)
+    publication_queued_ = PostMessageW(provider_window_, kPublishStateMessage, 0, 0) != 0;
+}
+
+void TextService::FlushPublishedState() {
+  publication_queued_ = false;
+  if (!publication_active_ || !publish_state_) return;
+  std::lock_guard<std::mutex> writer(process_publication_writer);
+  const std::wstring path = NativeImeRegistryKey() + L"\\Clients\\" +
+      std::to_wstring(GetCurrentProcessId());
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, nullptr, 0,
+      KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return;
+  for (const auto& state : publications_) {
+    if (state.sequence <= process_flushed_sequence) continue;
+    const auto write = [key](const wchar_t* name, DWORD value) {
+      return RegSetValueExW(key, name, 0, REG_DWORD,
+          reinterpret_cast<const BYTE*>(&value), sizeof(value));
+    };
+    // An odd revision fences a partial multi-value registry write. Readers
+    // require the same even revision before and after their snapshot.
+    write(L"revision", state.sequence * 2 - 1);
+    RegSetValueExW(key, L"mode", 0, REG_SZ,
+        reinterpret_cast<const BYTE*>(state.mode.c_str()),
+        static_cast<DWORD>((state.mode.size() + 1) * sizeof(wchar_t)));
+    write(L"open", state.open);
+    write(L"composing", state.composing);
+    write(L"sequence", state.sequence);
+    write(L"revision", state.sequence * 2);
+    process_flushed_sequence = state.sequence;
+  }
+  RegCloseKey(key);
+  publications_.clear();
+}
+
+void TextService::RemovePublishedState() {
+  publication_active_ = false;
+  publications_.clear();
+  publication_queued_ = false;
+  if (!publication_registered_) return;
+  publication_registered_ = false;
+  --process_publishers;
+  last_publication_ = {};
+  std::lock_guard<std::mutex> writer(process_publication_writer);
+  if (process_publishers.load() != 0) return;
+  const std::wstring path = NativeImeRegistryKey() + L"\\Clients\\" +
+      std::to_wstring(GetCurrentProcessId());
+  RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str());
+}
+
 void TextService::LoadSettings() {
+  LoadApplicationSettings();
   for (const wchar_t* label : {L"かな", L"カナ", L"SKK", L"全英", L"Abbrev"})
     mode_indicator_.SetPaletteOverride(label, ModeIndicatorColors(label).background);
   HKEY key = nullptr;
@@ -2133,6 +2280,8 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     realtime_frontend_.Reset();
   }
   if (registration_mode_) {
+    last_engine_mode_ = state->mode;
+    QueuePublishedState(&*state);
     CloseCandidateUi();
     if (!was_registration && registration_range_ == nullptr &&
         composition_ != nullptr) {
@@ -2208,6 +2357,8 @@ void TextService::ResetAbandonedComposition() {
   provider_composition_active_ = false;
   deferred_provider_keys_.clear();
   engine_roundtrip_failed_ = false;
+  published_composing_ = 0;
+  QueuePublishedState(nullptr);
 }
 
 void TextService::ForceCancelComposition(ITfContext* context) {
@@ -2268,6 +2419,8 @@ void TextService::ForceCancelComposition(ITfContext* context) {
   engine_roundtrip_failed_ = false;
   kana_mode_ = true;
   last_engine_mode_ = L"hiragana";
+  published_composing_ = 0;
+  QueuePublishedState(nullptr);
 }
 
 void TextService::SettleContextComposition(ITfContext* context) {
@@ -2854,9 +3007,26 @@ void TextService::MaybeShowModeIndicator(ITfContext* context,
   // (used by the input-mode item's GetIcon()/OnClick()) must reflect the
   // engine's last-reported mode even when the transient popup is disabled.
   if (state != nullptr) last_engine_mode_ = state->mode;
+  QueuePublishedState(state);
   const std::wstring label = CurrentModeLabel();
   if (label == last_mode_label_) return;
   last_mode_label_ = label;
+
+  if (context != nullptr && last_caret_valid_) {
+    mode_indicator_anchor_.x = last_caret_rect_.left;
+    mode_indicator_anchor_.y = last_caret_rect_.bottom;
+  } else {
+    GetCursorPos(&mode_indicator_anchor_);
+  }
+  // Taskbar NotifyUpdate and first popup creation can take tens of ms in a
+  // fully activated Windows TSF host. Defer both beyond the key callback.
+  if (!indicator_update_queued_ && provider_window_ != nullptr)
+    indicator_update_queued_ = PostMessageW(provider_window_, kModeIndicatorMessage, 0, 0) != 0;
+}
+
+void TextService::FlushModeIndicator() {
+  indicator_update_queued_ = false;
+  if (thread_manager_ == nullptr) return;
 
   // Independent of mode_indicator_enabled_ below: the taskbar icon and the
   // transient popup are two separate UI surfaces, and TSF should still
@@ -2866,14 +3036,7 @@ void TextService::MaybeShowModeIndicator(ITfContext* context,
   }
 
   if (!mode_indicator_enabled_) return;
-  POINT anchor{};
-  if (context != nullptr && last_caret_valid_) {
-    anchor.x = last_caret_rect_.left;
-    anchor.y = last_caret_rect_.bottom;
-  } else {
-    GetCursorPos(&anchor);
-  }
-  mode_indicator_.Show(label, anchor);
+  mode_indicator_.Show(last_mode_label_, mode_indicator_anchor_);
 }
 
 HRESULT TextService::ApplyDisplayAttribute(TfEditCookie edit_cookie,

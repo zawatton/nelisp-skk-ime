@@ -12,7 +12,7 @@ int main() {
   assert(key_path.starts_with(L"Software\\NativeIME-test-"));
   HKEY key = nullptr;
   assert(RegOpenKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0,
-                      KEY_SET_VALUE, &key) == ERROR_SUCCESS);
+                      KEY_SET_VALUE | KEY_CREATE_SUB_KEY, &key) == ERROR_SUCCESS);
   RegistryWatcher watcher;
   watcher.Start();
   watcher.dirty.store(false);
@@ -26,6 +26,18 @@ int main() {
     Sleep(20);
   }
   assert(watcher.dirty.exchange(false));
+  // Telemetry beneath Clients must not reset modes on the next idle key.
+  Sleep(100);
+  watcher.dirty.store(false);
+  HKEY client = nullptr;
+  assert(RegCreateKeyExW(key, L"Clients\\123", 0, nullptr, 0,
+      KEY_SET_VALUE, nullptr, &client, nullptr) == ERROR_SUCCESS);
+  const DWORD sequence = 1;
+  assert(RegSetValueExW(client, L"sequence", 0, REG_DWORD,
+      reinterpret_cast<const BYTE*>(&sequence), sizeof(sequence)) == ERROR_SUCCESS);
+  RegCloseKey(client);
+  Sleep(100);
+  assert(!watcher.dirty.load());
   watcher.Stop();
   RegCloseKey(key);
 }

@@ -31,6 +31,12 @@ class RealtimeFrontend {
   EngineState ToHiragana();
 
   void Reset();
+  void SetInputMode(const std::wstring& mode) {
+    Reset();
+    katakana_ = mode == L"katakana";
+    latin_ = mode == L"latin";
+    wide_latin_ = mode == L"wide-latin";
+  }
   bool composing() const { return preedit_ || !pending_.empty(); }
   bool preedit() const { return preedit_; }
   bool katakana() const { return katakana_; }

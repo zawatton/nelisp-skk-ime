@@ -1,0 +1,60 @@
+#+TITLE: NeLisp IME: GNU Emacs integration
+
+* GNU Emacs / evil on Windows
+Add the repository's =emacs/= directory to =load-path=, then:
+#+begin_src emacs-lisp
+(require 'nelisp-ime-emacs)
+(add-hook 'nelisp-ime-emacs-before-open-hook #'nelisp-ime-emacs-outside-org-src-p)
+(nelisp-ime-emacs-mode 1)
+#+end_src
+The global mode follows evil, including evil loaded later: entering
+insert/replace opens the TSF IME; entering other states closes it and restores
+evil's cursor. Only state entries in the selected window's buffer change the
+IME. Enabling the mode, focus changes, buffer/window switches, temporary
+buffers and timer ticks never open or close it. Without evil, polling still
+shows the IME mode but leaves opening and closing to the user. The optional
+predicate above vetoes opening inside Org source blocks.
+Customize =nelisp-ime-emacs-open-states=, =nelisp-ime-emacs-poll-interval=
+(0.1 seconds), =nelisp-ime-emacs-dark-colors= / =nelisp-ime-emacs-light-colors=,
+and =nelisp-ime-emacs-mode-line=. Registry polling only reads while a frame
+has focus. Keep Emacs DDSKK disabled when using TSF.
+
+Once, import these settings (the library cannot write the registry):
+#+begin_src conf
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Software\NativeIME\Apps\emacs.exe]
+"OpenMode"="latin"
+"PublishState"=dword:00000001
+#+end_src
+Choose =hiragana= or =katakana= to open in kana. =restore= (default) preserves
+the prior mode. Other applications retain existing behavior unless configured
+under =Apps\<lowercase executable filename>=. The library warns once when
+=PublishState= is off. A private installation must set the DLL environment
+=NATIVEIME_REGISTRY_KEY= and =nelisp-ime-emacs-registry-key= to the same
+HKCU-relative key.
+
+With =PublishState=1 the DLL queues changed snapshots to =Clients\<pid>=:
+=mode= (REG_SZ, the engine's own name), =open= (DWORD 0/1), =composing= (DWORD
+0 none, 1 reading/pending romaji, 2 candidates), and =sequence= (DWORD,
+incremented on each transition). Writes run through the message queue,
+outside TSF key callbacks; unchanged snapshots are not rewritten.
+An additional =revision= DWORD is odd during a multi-value write and even
+when complete; the Emacs reader requires matching even revisions around
+its snapshot.
+Deactivation removes the entry. The host sweeps dead PIDs once per second,
+including forcibly terminated applications.
+Observed engine names in native/frontend and stateline sources are
+=hiragana=, =katakana=, =latin=, =wide-latin=, =abbrev=, =preedit=, =candidate=,
+=registration=. The frontend UI also uses =provider-preview= and
+=provider-busy=. The cursor retains its prior script during composition.
+Color alists additionally accept =jisx0201= for half-width katakana; current
+engines produce that as a transliteration rather than a persistent input mode.
+
+Portable tests:
+#+begin_src sh
+emacs -Q --batch -L emacs -l emacs/nelisp-ime-emacs-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+Native harness: =windows/test-host/test-emacs-integration.ps1=, with explicit
+=-DllPath=, =-TsfHostExe=, =-EngineHostPath=, =-EngineExecutablePath= and
+=-ColdLoadSleepSec 45=. It uses only disposable registry/pipe settings.

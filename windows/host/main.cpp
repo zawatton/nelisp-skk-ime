@@ -1387,11 +1387,46 @@ void QueueReplacement(const std::string& id, bool force = false) {
 
 // One worker owns all replacement children. Startup/readiness never holds
 // the engine mutex; the old child continues to serve complete transactions.
+// A killed application cannot run TextService::Deactivate. Sweep only dead
+// process IDs, conservatively retaining entries we cannot inspect.
+void RemoveDeadClients() {
+  const std::wstring path = NativeImeRegistryKey() + L"\\Clients";
+  HKEY clients = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0,
+      KEY_ENUMERATE_SUB_KEYS | KEY_WRITE, &clients) != ERROR_SUCCESS) return;
+  DWORD index = 0;
+  wchar_t name[64]{};
+  DWORD length = _countof(name);
+  while (RegEnumKeyExW(clients, index, name, &length, nullptr, nullptr,
+                       nullptr, nullptr) == ERROR_SUCCESS) {
+    wchar_t* end = nullptr;
+    const unsigned long pid = wcstoul(name, &end, 10);
+    bool dead = false;
+    if (pid != 0 && end != name && *end == 0) {
+      HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid);
+      if (process != nullptr) {
+        dead = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
+        CloseHandle(process);
+      } else {
+        dead = GetLastError() == ERROR_INVALID_PARAMETER;
+      }
+    }
+    if (!dead || RegDeleteTreeW(clients, name) != ERROR_SUCCESS) ++index;
+    length = _countof(name);
+  }
+  RegCloseKey(clients);
+}
+
 void ReplacementLoop() {
   DWORD backoff = 1000;
   ULONGLONG retry_at = 0;
+  ULONGLONG next_client_sweep = 0;
   while (!g_stopping.load()) {
     Sleep(100);
+    if (GetTickCount64() >= next_client_sweep) {
+      RemoveDeadClients();
+      next_client_sweep = GetTickCount64() + 1000;
+    }
     std::string id;
     uint64_t generation;
     {

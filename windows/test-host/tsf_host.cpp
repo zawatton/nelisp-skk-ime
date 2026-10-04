@@ -106,6 +106,58 @@ void PrintHrStr(const std::string& where, HRESULT hr) {
 // process) and can't simply be overwritten in place either. Returns
 // nullptr if loading fails. The harness fails closed in that case; it never
 // falls back to the installed COM service.
+// The unregistered direct TIP has no Windows foreground-sink slot. Supply
+// only that slot locally, while all document/compartment interfaces remain
+// the real isolated Windows TSF manager. Scripted keys call the real TIP.
+class DirectThreadMgr final : public ITfThreadMgr, public ITfKeystrokeMgr {
+ public:
+  explicit DirectThreadMgr(ITfThreadMgr* manager) : manager_(manager) { manager_->AddRef(); }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+    if (!out) return E_POINTER;
+    if (iid == IID_IUnknown || iid == IID_ITfThreadMgr) *out = static_cast<ITfThreadMgr*>(this);
+    else if (iid == IID_ITfKeystrokeMgr) *out = static_cast<ITfKeystrokeMgr*>(this);
+    else return manager_->QueryInterface(iid, out);
+    AddRef(); return S_OK;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
+  ULONG STDMETHODCALLTYPE Release() override { const ULONG n = --refs_; if (!n) delete this; return n; }
+  HRESULT STDMETHODCALLTYPE Activate(TfClientId* id) override { return manager_->Activate(id); }
+  HRESULT STDMETHODCALLTYPE Deactivate() override { return manager_->Deactivate(); }
+  HRESULT STDMETHODCALLTYPE CreateDocumentMgr(ITfDocumentMgr** out) override { return manager_->CreateDocumentMgr(out); }
+  HRESULT STDMETHODCALLTYPE EnumDocumentMgrs(IEnumTfDocumentMgrs** out) override { return manager_->EnumDocumentMgrs(out); }
+  HRESULT STDMETHODCALLTYPE GetFocus(ITfDocumentMgr** out) override { return manager_->GetFocus(out); }
+  HRESULT STDMETHODCALLTYPE SetFocus(ITfDocumentMgr* doc) override { return manager_->SetFocus(doc); }
+  HRESULT STDMETHODCALLTYPE AssociateFocus(HWND window, ITfDocumentMgr* doc, ITfDocumentMgr** old) override { return manager_->AssociateFocus(window, doc, old); }
+  HRESULT STDMETHODCALLTYPE IsThreadFocus(BOOL* value) override { return manager_->IsThreadFocus(value); }
+  HRESULT STDMETHODCALLTYPE GetFunctionProvider(REFCLSID id, ITfFunctionProvider** out) override { return manager_->GetFunctionProvider(id, out); }
+  HRESULT STDMETHODCALLTYPE EnumFunctionProviders(IEnumTfFunctionProviders** out) override { return manager_->EnumFunctionProviders(out); }
+  HRESULT STDMETHODCALLTYPE GetGlobalCompartment(ITfCompartmentMgr** out) override { return manager_->GetGlobalCompartment(out); }
+  HRESULT STDMETHODCALLTYPE AdviseKeyEventSink(TfClientId, ITfKeyEventSink* sink, BOOL) override {
+    if (!sink || sink_) return E_INVALIDARG;
+    sink_ = sink; sink_->AddRef(); return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE UnadviseKeyEventSink(TfClientId) override {
+    if (sink_) { auto* sink = sink_; sink_ = nullptr; sink->Release(); } return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetForeground(CLSID*) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE TestKeyDown(WPARAM, LPARAM, BOOL*) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE TestKeyUp(WPARAM, LPARAM, BOOL*) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE KeyDown(WPARAM, LPARAM, BOOL*) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE KeyUp(WPARAM, LPARAM, BOOL*) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetPreservedKey(ITfContext*, const TF_PRESERVEDKEY*, GUID*) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE IsPreservedKey(REFGUID, const TF_PRESERVEDKEY*, BOOL*) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE PreserveKey(TfClientId, REFGUID, const TF_PRESERVEDKEY*, const WCHAR*, ULONG) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE UnpreserveKey(REFGUID, const TF_PRESERVEDKEY*) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE SetPreservedKeyDescription(REFGUID, const WCHAR*, ULONG) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetPreservedKeyDescription(REFGUID, BSTR*) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE SimulatePreservedKey(ITfContext*, REFGUID, BOOL*) override { return E_NOTIMPL; }
+ private:
+  ~DirectThreadMgr() { manager_->Release(); }
+  ULONG refs_ = 1;
+  ITfThreadMgr* manager_;
+  ITfKeyEventSink* sink_ = nullptr;
+};
+
 ITfTextInputProcessor* CreateTipFromDllPath() {
   wchar_t dll_path[MAX_PATH]{};
   const DWORD size =
@@ -992,7 +1044,37 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   std::wstring token;
   size_t active = 0;
   while (stream >> token) {
-    if (token.starts_with(L"ENGINE:")) {
+    if (token == L"EXITNOW") {
+      wchar_t root[1024]{};
+      GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", root, _countof(root));
+      if (!std::wstring(root).starts_with(L"Software\\NativeIME-test-")) std::exit(1);
+      std::printf("CLIENT_ABRUPT_EXIT pid=%lu\n", GetCurrentProcessId());
+      std::fflush(stdout);
+      ExitProcess(0); // Deliberately skips COM/TIP teardown for dead-PID cleanup.
+    } else if (token == L"CLIENT") {
+      PumpMessages(30);
+      wchar_t root[1024]{};
+      GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", root, _countof(root));
+      if (!std::wstring(root).starts_with(L"Software\\NativeIME-test-")) std::exit(1);
+      const std::wstring path = std::wstring(root) + L"\\Clients\\" +
+          std::to_wstring(GetCurrentProcessId());
+      HKEY key = nullptr;
+      if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_READ, &key) != ERROR_SUCCESS) {
+        std::printf("CLIENT missing=1\n");
+      } else {
+        wchar_t mode[64]{};
+        DWORD bytes = sizeof(mode), open = 0, composing = 0, sequence = 0;
+        RegQueryValueExW(key, L"mode", nullptr, nullptr, reinterpret_cast<BYTE*>(mode), &bytes);
+        auto read = [key](const wchar_t* name, DWORD* value) {
+          DWORD size = sizeof(*value);
+          RegQueryValueExW(key, name, nullptr, nullptr, reinterpret_cast<BYTE*>(value), &size);
+        };
+        read(L"open", &open); read(L"composing", &composing); read(L"sequence", &sequence);
+        RegCloseKey(key);
+        std::printf("CLIENT mode=%s open=%lu composing=%lu sequence=%lu\n",
+                    Utf8FromWide(mode).c_str(), open, composing, sequence);
+      }
+    } else if (token.starts_with(L"ENGINE:")) {
       wchar_t path[1024]{};
       GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", path, _countof(path));
       if (std::wstring(path).starts_with(L"Software\\NativeIME-test-")) {
@@ -1268,15 +1350,19 @@ int wmain(int argc, wchar_t** argv) {
       std::printf("TIP_DIRECT client_id=%u (host=%u)\n",
                   static_cast<unsigned>(direct_client_id),
                   static_cast<unsigned>(client_id));
-      hr = tip->Activate(thread_mgr, direct_client_id);
+      auto* direct_manager = new DirectThreadMgr(thread_mgr);
+      hr = tip->Activate(direct_manager, direct_client_id);
+      direct_manager->Release();
       std::printf("TIP_DIRECT activate hr=%08lx\n",
                   static_cast<unsigned long>(hr));
       tip_activated = true;
-      // This private manager has no registered TIP profile. Windows rejects
-      // its foreground key-sink advise; the harness drives the real sink
-      // directly, as before. Other activation failures remain fatal.
-      if (FAILED(hr) && hr != E_INVALIDARG) break;
-      if (hr == E_INVALIDARG) std::printf("TIP_DIRECT driving key sink without registered profile\n");
+      if (FAILED(hr)) break;
+      // Full TIP/langbar activation can reset this minimal host's initially
+      // open compartment. Establish the same open starting condition again
+      // after activation, through Windows' real compartment and event sink.
+      hr = SetKeyboardOpen(thread_mgr, client_id, true);
+      PrintHr("TIP_DIRECT post-activate open", hr);
+      if (FAILED(hr)) break;
       if (FAILED(tip->QueryInterface(IID_ITfKeyEventSink,
                                      reinterpret_cast<void**>(&key_sink)))) {
         key_sink = nullptr;
