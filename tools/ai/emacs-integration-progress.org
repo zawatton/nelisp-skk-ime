@@ -1,0 +1,17 @@
+#+TITLE: Emacs <-> NeLisp IME integration (evil state, cursor color)
+
+* S1 IME side (per-application behaviour and published state)
+** S1.1 HKCU\Software\NativeIME\Apps\<exe>\OpenMode (restore | latin | hiragana | katakana) is applied when the keyboard open compartment turns on in that process
+pending
+** S1.2 With Apps\<exe>\PublishState=1 the DLL publishes Clients\<pid> (mode, open, composing, sequence) on every change, off the keystroke path, and the entry disappears when the process or text service goes away
+pending
+** S1.3 No keystroke latency regression: ordinary keys stay within the existing 25 ms check of the lattice suite and the DDSKK suite passes as before
+pending
+
+* S2 Emacs side
+** S2.1 emacs/nelisp-ime-emacs.el ERT passes on GNU Emacs with mocked w32 functions (evil state -> open/close, mode -> cursor colour and mode-line label, focus/buffer reapply, src-block predicate)
+pending
+** S2.2 capture/init.org and ~/.emacs.d/init.el load and configure it on Windows (NeLisp IME is the default input method in Emacs)
+pending
+** S2.3 Live: in the user's Emacs, evil insert opens the IME (in the configured mode), normal state closes it, and the cursor colour follows the IME mode
+pending
