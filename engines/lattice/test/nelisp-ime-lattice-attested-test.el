@@ -215,14 +215,71 @@
            skk 'utf-8 (make-hash-table :test 'equal) table provenance
            (nelisp-ime-generate--literal-spellings csv nil adjectives na-adjectives)
            adjectives na-adjectives)
-          (dolist (suffix '("い" "く" "くない" "かった" "くて" "ければ" "そう"))
+          (dolist (suffix '("い" "く" "くない" "かった" "くて" "ければ" "さ" "そう"))
             (should (equal (gethash (concat "あお" suffix) table) (list (concat "青" suffix)))))
           (should (equal (gethash "じょうずそう" table) '("上手そう")))
           (should (equal (gethash "よく" table) '("能く")))
-          (should (= (hash-table-count table) 9))
+          (should (= (hash-table-count table) 10))
           (should (plist-get (car (gethash '("あおく" . "青く") provenance)) :matching))
           (dolist (reading '("あおかない" "あおきます" "あおいた" "あおす" "じょうずす" "おうぎくない"))
             (should-not (gethash reading table))))
       (delete-file csv) (delete-file skk))))
+
+
+(ert-deftest nelisp-ime-lattice-attested-adjective-paradigm-preedit ()
+  "Adjectives listed only under i convert as a complete word."
+  (nelisp-ime-lattice-test--isolated
+    (load nelisp-ime-lattice-attested-test-data nil t)
+    (dolist (pair '(("おおきく" . "大きく") ("あかく" . "赤く")
+                    ("ちいさく" . "小さく") ("あたらしく" . "新しく")
+                    ("あつく" . "熱く") ("たかく" . "高く") ("うまく" . "旨く")))
+      (ert-info ((format "Adjective preedit %s -> %s" (car pair) (cdr pair)))
+        (should (equal (plist-get (nelisp-ime-lattice-convert (car pair) nil) :preedit)
+                       (cdr pair)))))))
+
+
+(ert-deftest nelisp-ime-lattice-attested-adjective-paradigm-all-codes ()
+  "Each code emits the full paradigm in candidate order without duplicates."
+  (let ((adjectives (make-hash-table :test 'equal)) (file (make-temp-file "ime-adjective-code-")))
+    (puthash '("青い" . "あおい") t adjectives)
+    (puthash '("蒼い" . "あおい") t adjectives)
+    (unwind-protect
+        (dolist (code '("i" "k" "s" "t"))
+          (let ((table (make-hash-table :test 'equal))
+                (provenance (make-hash-table :test 'equal)))
+            (let ((coding-system-for-write 'utf-8-unix))
+              (with-temp-file file
+                (insert "あお" code " /青/蒼/\nあお" code " /青/蒼/\n")))
+            (nelisp-ime-generate--conjugations file 'utf-8 (make-hash-table :test 'equal)
+                                               table provenance nil adjectives)
+            (nelisp-ime-generate--rank table (make-hash-table :test 'equal) provenance
+                                       (make-hash-table :test 'equal))
+            (dolist (suffix '("い" "く" "くない" "かった" "くて" "ければ" "さ" "そう"))
+              (should (equal (gethash (concat "あお" suffix) table)
+                             (list (concat "青" suffix) (concat "蒼" suffix)))))
+            (should (= (hash-table-count table) 8))
+            (should-not (cl-some (lambda (record) (plist-get record :volitional))
+                                 (gethash '("あおそう" . "青そう") provenance)))))
+      (delete-file file))))
+
+
+(ert-deftest nelisp-ime-lattice-attested-adjective-omitted-kana ()
+  (let ((adjectives (make-hash-table :test 'equal)) (table (make-hash-table :test 'equal))
+        (file (make-temp-file "ime-adjective-prefix-")))
+    (puthash '("大きい" . "おおきい") t adjectives)
+    (puthash '("広い" . "ひらい") t adjectives)
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'utf-8-unix))
+            (with-temp-file file (insert "おおk /大/\nおおi /大/\nひろi /広/\n")))
+          (nelisp-ime-generate--conjugations file 'utf-8 (make-hash-table :test 'equal)
+                                             table nil nil adjectives)
+          (dolist (suffix '("い" "く" "くない" "かった" "くて" "ければ" "さ" "そう"))
+            (should (equal (gethash (concat "おおき" suffix) table)
+                           (list (concat "大き" suffix)))))
+          (should (= (hash-table-count table) 8))
+          (should-not (gethash "おおく" table))
+          (should-not (gethash "ひろく" table)))
+      (delete-file file))))
 
 (provide 'nelisp-ime-lattice-attested-test)

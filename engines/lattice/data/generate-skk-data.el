@@ -17,8 +17,8 @@
 ;; against the original SKK sources and IPAdic classes. Volitionals follow
 ;; genuine words; competing legacy expansions prefer the matching okuri code.
 ;; Adj.csv, Adverb.csv, Noun*.csv and Suffix.csv attest non-verbs.
-;; Adjectives use only HEAD row suffixes: i = い/くない/かった/くて/ければ/そう,
-;; k = く, s = そう; na-adjective stems additionally admit s = そう.
+;; Every attested adjective entry generates い/く/くない/かった/くて/ければ/さ/そう,
+;; regardless of its okuri code. Na-adjective stems additionally admit s = そう.
 ;; IPAdic is required ONLY at generation time; runtime and tests use the
 ;; bundled table. Its license notice is retained in IPADIC-COPYING.
 ;; A legacy portable ranking table has lost okuri provenance and contains
@@ -57,6 +57,8 @@
 (defun nelisp-ime-generate--suffixes (class)
   "Return dictionary ending and common suffixes attested by verb CLASS."
   (cond
+   ((equal class "形容詞")
+    '("い" "い" "く" "くない" "かった" "くて" "ければ" "さ" "そう"))
    ((equal class "一段")
     '("る" "る" "ない" "ます" "た" "て" "よう" "れば" "られる"))
    ((equal class "五段・カ行促音便")
@@ -111,6 +113,14 @@ SKK consonant can describe a past form (よn /読/), not the verb row."
      classes)
     table))
 
+(defun nelisp-ime-generate--adjective-attestations (adjectives)
+  "Index adjective stems, including omitted kana as in おおk /大/.
+The omitted kana must match both the IPAdic surface and its reading."
+  (let ((classes (make-hash-table :test 'equal)))
+    (when adjectives
+      (maphash (lambda (key _) (puthash key '("形容詞") classes)) adjectives))
+    (nelisp-ime-generate--attestations classes)))
+
 (defun nelisp-ime-generate--append (reading surface table)
   "Append SURFACE to READING in TABLE, without duplicates."
   (let ((existing (gethash reading table)))
@@ -153,7 +163,8 @@ Also index basic ADJECTIVES and NA-ADJECTIVES when those tables are supplied."
   "Append attested forms from SKK FILE and record their PROVENANCE.
 Legacy forms retain their HEAD positions; newly attested forms are appended.
 An i code alone does not attest a standalone word (聞い is onbin)."
-  (let ((coding-system-for-read coding))
+  (let ((coding-system-for-read coding)
+        (adjective-stems (nelisp-ime-generate--adjective-attestations adjectives)))
     (with-temp-buffer
       (insert-file-contents file)
       (dolist (line (split-string (buffer-substring-no-properties (point-min) (point-max)) "\n" t))
@@ -162,25 +173,36 @@ An i code alone does not attest a standalone word (聞い is onbin)."
             (dolist (part (cdr (split-string line "/")))
               (let ((candidate (nelisp-ime--skk-candidate part)))
                 (when candidate
-                  ;; Non-verbs retain only HEAD's row forms. An adjective
-                  ;; lemma attests its paradigm; other words must match the
+                  ;; An adjective lemma attests the whole paradigm regardless
+                  ;; of entry code. Other non-verbs must match the
                   ;; whole surface/reading, except na-adjective stem + そう.
-                  (let ((adjective (and adjectives
-                                        (gethash (cons (concat candidate "い") (concat base "い")) adjectives))))
-                    (dolist (form (cdr (assoc code nelisp-ime--okuri-forms)))
+                  (let* ((records (gethash (cons candidate base) adjective-stems))
+                         (adjective-forms
+                          (cl-mapcan (lambda (record)
+                                       (mapcar (lambda (suffix)
+                                                 (let ((okuri (concat (plist-get record :prefix) suffix)))
+                                                   (cons okuri okuri)))
+                                               (plist-get record :suffixes))) records)))
+                    (dolist (form (delete-dups
+                                   (append adjective-forms
+                                           (copy-sequence (cdr (assoc code nelisp-ime--okuri-forms))))))
                       (let* ((suffix (cdr form)) (reading (concat base suffix))
                              (surface (concat candidate suffix)))
-                        (when (or (and adjective (member suffix '("い" "く" "くない" "かった" "くて" "ければ" "そう")))
+                        (when (or (member form adjective-forms)
                                   (and literals (gethash (cons surface reading) literals))
                                   (and (equal suffix "そう") na-adjectives
                                        (gethash (cons candidate base) na-adjectives)))
                           (nelisp-ime-generate--append reading surface table)
                           (when provenance
                             (let ((key (cons reading surface)))
-                              (puthash key (append (gethash key provenance)
-                                                   (list (list :legacy t
-                                                               :matching (equal code (nelisp-ime-generate--okuri-code suffix)))))
-                                       provenance)))))))
+                              (let* ((matching (equal code (nelisp-ime-generate--okuri-code suffix)))
+                                     (record (list :legacy t :matching matching :adjective (and (member form adjective-forms) t)))
+                                     (existing (gethash key provenance)))
+                                ;; Keep matching provenance first, including
+                                ;; when another code already emitted the pair.
+                                (puthash key (if matching (cons record existing)
+                                               (append existing (list record)))
+                                       provenance))))))))
                   (dolist (record (gethash (cons candidate base) attestations))
                     (dolist (suffix (plist-get record :suffixes))
                       (let* ((okuri (concat (plist-get record :prefix) suffix))
@@ -282,13 +304,18 @@ all generated volitionals follow genuine words. Plain SKK order is stable."
                    footprint)))
       (let ((plain (copy-hash-table base)))
 	(nelisp-ime-generate--conjugations input coding attestations base provenance literals adjectives na-adjectives)
-	;; Keep M's expanded reading footprint while enriching its forms from L.
+	;; Enrich the M footprint from L, including every attested adjective
+        ;; paradigm even when its new form is outside the old row footprint.
 	(when ranking
           (let ((expanded (make-hash-table :test 'equal)))
             (nelisp-ime-generate--conjugations ranking ranking-coding attestations expanded
                                                provenance literals adjectives na-adjectives)
             (maphash (lambda (reading candidates)
-                       (when (or (gethash reading base) (gethash reading footprint))
+                       (when (or (gethash reading base) (gethash reading footprint)
+                                 (cl-some (lambda (candidate)
+                                            (cl-some (lambda (record) (plist-get record :adjective))
+                                                     (gethash (cons reading candidate) provenance)))
+                                          candidates))
 			 (dolist (candidate candidates)
                            (nelisp-ime-generate--append reading candidate base))))
                      expanded)))
