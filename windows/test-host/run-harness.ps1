@@ -64,6 +64,9 @@ param(
   [string]$RepositoryPath = "",
 
   [string]$Configuration = "Release",
+  [ValidateSet('restore','latin','hiragana','katakana')]
+  [string]$OpenMode = 'restore',
+  [switch]$PublishState,
 
   # Engine cold load has been measured anywhere from 3.4s (quiet machine)
   # to ~12s (loaded machine); a 6s default let the first scripted keys race
@@ -81,6 +84,37 @@ $utf8 = New-Object Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $utf8
 $OutputEncoding = $utf8
 
+# Record only children of the host we started, so a forced host shutdown
+# cannot strand its runtime or accidentally kill another worker's process.
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public static class NativeImeHarnessChildren {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+  public struct Entry {
+    public uint size, usage, pid; public UIntPtr heap;
+    public uint module, threads, parent; public int priority; public uint flags;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)] public string name;
+  }
+  [DllImport("kernel32.dll")] static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern bool Process32FirstW(IntPtr h, ref Entry e);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern bool Process32NextW(IntPtr h, ref Entry e);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  public static extern bool WaitNamedPipeW(string name, uint timeout);
+  public static int[] Find(int parent, string name) {
+    var found = new List<int>(); var h = CreateToolhelp32Snapshot(2, 0);
+    if (h == new IntPtr(-1)) return found.ToArray();
+    var e = new Entry(); e.size = (uint)Marshal.SizeOf(e);
+    if (Process32FirstW(h, ref e)) do {
+      if (e.parent == parent && String.Equals(e.name, name, StringComparison.OrdinalIgnoreCase)) found.Add((int)e.pid);
+    } while (Process32NextW(h, ref e));
+    CloseHandle(h); return found.ToArray();
+  }
+}
+'@
+
 function Wait-ForNamedPipe {
   param(
     [Parameter(Mandatory)] [string]$PipeFullName,
@@ -88,7 +122,9 @@ function Wait-ForNamedPipe {
   )
   $deadline = (Get-Date).AddSeconds($TimeoutSec)
   while ((Get-Date) -lt $deadline) {
-    if (Test-Path -LiteralPath $PipeFullName) { return $true }
+    # A filesystem probe opens/closes a pipe and can race ConnectNamedPipe
+    # into ERROR_NO_DATA. WaitNamedPipe observes readiness without a client.
+    if ([NativeImeHarnessChildren]::WaitNamedPipeW($PipeFullName, 100)) { return $true }
     Start-Sleep -Milliseconds 150
   }
   return $false
@@ -171,6 +207,7 @@ foreach ($name in @('DDSKK_PIPE_NAME','DDSKK_USER_JISYO','NATIVEIME_REGISTRY_KEY
   $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 $hostProcess = $null
+$startedChildren = @()
 $exitCode = 1
 $savedDisableHostSpawn = $env:NELISP_IME_DISABLE_HOST_SPAWN
 try {
@@ -191,6 +228,12 @@ foreach ($entry in @{
 }
 New-ItemProperty -Path $regPath -Name SkkServEnable -Value 0 -PropertyType DWord -Force | Out-Null
 New-ItemProperty -Path $regPath -Name InitialKanaMode -Value 1 -PropertyType DWord -Force | Out-Null
+if ($PublishState -or $OpenMode -ne 'restore') {
+  $appPath = Join-Path $regPath ('Apps\' + [IO.Path]::GetFileName($TsfHostExe).ToLowerInvariant())
+  New-Item -Path $appPath -Force | Out-Null
+  New-ItemProperty -Path $appPath -Name OpenMode -Value $OpenMode -PropertyType String -Force | Out-Null
+  New-ItemProperty -Path $appPath -Name PublishState -Value ([int][bool]$PublishState) -PropertyType DWord -Force | Out-Null
+}
 # Logs and user data must also stay out of the installed IME's directory.
 $env:LOCALAPPDATA = Join-Path ([IO.Path]::GetDirectoryName($TsfHostExe)) "harness-$runId"
 New-Item -ItemType Directory -Path $env:LOCALAPPDATA -Force | Out-Null
@@ -221,6 +264,9 @@ if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repositor
 
   Write-Host "run-harness: pipe up; sleeping ${ColdLoadSleepSec}s for engine cold load..."
   Start-Sleep -Seconds $ColdLoadSleepSec
+  $startedChildren = @([NativeImeHarnessChildren]::Find($hostProcess.Id, [IO.Path]::GetFileName($engineExecutable)) |
+    ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+  foreach ($child in $startedChildren) { Write-Host "HARNESS_CHILD pid=$($child.Id) parent=$($hostProcess.Id)" }
 
   Write-Host "run-harness: launching tsf-host.exe..."
   $tsfArgs = @()
@@ -228,15 +274,29 @@ if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repositor
 
   $tsfProcess = Start-Process -FilePath $TsfHostExe -ArgumentList $tsfArgs `
     -NoNewWindow -PassThru -RedirectStandardOutput $tsfOutput -RedirectStandardError $tsfError
+  # Cache the handle before exit. Windows PowerShell's Wait-Process can
+  # otherwise leave Start-Process's ExitCode null, silently skipping checks.
+  $tsfHandle = $tsfProcess.Handle
   try {
-    Wait-Process -Id $tsfProcess.Id -Timeout $TsfHostTimeoutSec -ErrorAction Stop
-    $tsfProcess.Refresh()
+    if (-not $tsfProcess.WaitForExit($TsfHostTimeoutSec * 1000)) { throw 'TSF host timeout' }
     $exitCode = $tsfProcess.ExitCode
+    if ($null -eq $exitCode) { throw 'TSF host exit code unavailable' }
   } catch {
     Write-Warning "tsf-host.exe did not exit within ${TsfHostTimeoutSec}s; killing it."
     Stop-Process -Id $tsfProcess.Id -Force -ErrorAction SilentlyContinue
     $exitCode = 124
   }
+    if ($PublishState -and $exitCode -eq 0) {
+      $clientPath = Join-Path $regPath "Clients\$($tsfProcess.Id)"
+      # Normal deactivation removes it immediately; a forcibly terminated
+      # process relies on the host's dead-PID sweep.
+      $deadline = (Get-Date).AddSeconds(3)
+      while ((Test-Path -LiteralPath $clientPath) -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 100
+      }
+      if (Test-Path -LiteralPath $clientPath) { throw 'Client entry survived tsf-host exit' }
+      Write-Host 'CLIENT_EXIT_REMOVED=1'
+    }
 } finally {
   # The private pipe also reaches a host respawned by this test's DLL.
   Send-ShutdownRequest -PipeShortName $pipeShortName | Out-Null
@@ -245,13 +305,23 @@ if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repositor
     try { $stillRunning = -not $hostProcess.HasExited } catch { $stillRunning = $false }
     if ($stillRunning) {
       Send-ShutdownRequest -PipeShortName $pipeShortName | Out-Null
-      Start-Sleep -Milliseconds 300
+      $hostProcess.WaitForExit(6000) | Out-Null
       try { $stillRunning = -not $hostProcess.HasExited } catch { $stillRunning = $false }
     }
     if ($stillRunning) {
       Write-Host "run-harness: force-killing host pid=$($hostProcess.Id)."
       Stop-Process -Id $hostProcess.Id -Force -ErrorAction SilentlyContinue
     }
+  }
+  foreach ($child in $startedChildren) {
+    try {
+      $child.Refresh()
+      if (-not $child.HasExited) {
+        Stop-Process -Id $child.Id -Force -ErrorAction Stop
+        $child.WaitForExit(5000) | Out-Null
+      }
+      Write-Host "HARNESS_CHILD_EXITED pid=$($child.Id) exited=$($child.HasExited)"
+    } catch { Write-Warning "Could not verify owned runtime pid=$($child.Id): $_" }
   }
   if (Test-Path -LiteralPath $tempJisyo) {
     Remove-Item -LiteralPath $tempJisyo -Force -ErrorAction SilentlyContinue

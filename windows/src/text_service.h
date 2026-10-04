@@ -117,6 +117,22 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   HRESULT AddLangBarButton();
   void RemoveLangBarButton();
   void LoadSettings();
+  void LoadApplicationSettings();
+  void QueuePublishedState(const ddskk::EngineState* state);
+  void FlushPublishedState();
+  void RemovePublishedState();
+  struct PublishedState {
+    std::wstring mode;
+    DWORD open = 0, composing = 0, sequence = 0;
+  };
+  std::wstring application_open_mode_ = L"restore";
+  bool publish_state_ = false;
+  bool publication_active_ = false;
+  bool publication_registered_ = false;
+  bool publication_queued_ = false;
+  DWORD published_composing_ = 0;
+  std::deque<PublishedState> publications_;
+  PublishedState last_publication_;
   void FollowSettings();
   RegistryWatcher settings_watcher_;
   std::atomic<ULONGLONG> last_host_spawn_{0};
@@ -125,6 +141,9 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
                         ITfRange* range);
   void MaybeShowModeIndicator(ITfContext* context,
                               const ddskk::EngineState* state);
+  void FlushModeIndicator();
+  bool indicator_update_queued_ = false;
+  POINT mode_indicator_anchor_{};
   // Closes the candidate-selection UI element (if open) and clears the
   // per-candidate state tracked alongside it (candidate_context_/
   // candidate_count_/candidate_index_). Safe to call whether or not a
