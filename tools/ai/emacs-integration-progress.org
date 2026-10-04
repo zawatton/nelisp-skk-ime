@@ -31,7 +31,8 @@ evidence: build/validation/emacs-integration/transition-ert.log sha256=b3af5f506
 evidence: build/validation/emacs-integration/transition-bytecompile.log sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 evidence: build/validation/emacs-integration/transition-harness.log sha256=e0c4d0d01cd2a81655bf55a87e5993715488298ed9f8a3859020f7e0a834ca3f
 ** S2.2 capture/init.org and ~/.emacs.d/init.el load and configure it on Windows (NeLisp IME is the default input method in Emacs)
-pending
+#+NOTE: 2026-10-05: block added after the disabled my-w32-sync block in capture/init.org and ~/.emacs.d/init.el (veto in org src blocks), loaded live; registry Apps\emacs.exe OpenMode=latin, PublishState=1 set. OpenMode/PublishState need the new DLL deployed.
+cmd: grep -q 'nelisp-ime-emacs-mode 1' ../../capture/init.org && grep -q 'nelisp-ime-emacs-mode 1' "$HOME/.emacs.d/init.el"
 notes: Not attempted by H4: these live files are outside the authorized worker scope. README.org supplies load/configuration and one-time OpenMode=latin / PublishState=1 registry instructions for the coordinator.
 ** S2.3 Live: in the user's Emacs, evil insert opens the IME (in the configured mode), normal state closes it, and the cursor colour follows the IME mode
 pending
