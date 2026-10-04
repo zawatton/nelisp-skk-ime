@@ -1,0 +1,21 @@
+#+TITLE: Faster DDSKK conversions in the NeLisp IME engine
+
+* S1 Measurement and profile
+** S1.1 A repeatable conversion benchmark on a private host (copy of SKK-JISYO.L, temporary user jisyo, live runtime build): warm conversions without and with okuri, plus the first conversion of each kind after a cold start, with and without a private skkserv relay; reports wall p50/p90/max and engine CPU per request
+pending
+** S1.2 Phase breakdown of one conversion request (protocol, DDSKK command, user-jisyo search, host dictionary relay and skkserv, candidate formatting, GC) with the top hot functions, recorded as evidence
+pending
+
+* S2 Faster conversions without behaviour change
+** S2.1 Warm conversion engine CPU p50 at most half of the S1.1 baseline, checked by a script over the benchmark logs
+pending
+** S2.2 First okuri conversion after a cold start under 500 ms wall on a quiet machine
+pending
+** S2.3 No behaviour change: candidate lists for a fixed reading corpus identical before and after; DDSKK suite, ctest with NELISP_EXECUTABLE, ERT and the live-input tests pass
+pending
+
+* S3 End to end
+** S3.1 TSF harness Space-to-candidate p50 at most 100 ms and p90 at most 150 ms (quiet machine, private host)
+pending
+** S3.2 Live: deployed, paired measurement against the previous live build, and the user confirms conversions feel fast
+pending
