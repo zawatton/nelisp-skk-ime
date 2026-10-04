@@ -1,0 +1,27 @@
+#+TITLE: Key remapping configured from nelisp-ime settings (no admin rights, no restart)
+
+* S1 Remap decision core
+** S1.1 Key and shortcut remaps (CapsLock=LCtrl, LAlt+Space=ime-toggle, Ctrl+Space=LWin+Space): unit tests cover press, auto-repeat and release ordering, no stuck modifiers, Alt-tap menu suppression and no re-processing of the remapper's own injected events
+pending
+** S1.2 Layout conversion: a desired US or JIS layout against the OS drivers kbd101 and kbd106 for every printable key, with and without Shift, keeping Ctrl/Alt/Win combinations; table tests pass
+pending
+** S1.3 Configuration: registry rules parsed and validated (a bad line is rejected with a reason and the rest still apply), per-application exclusions, live reload swaps the rule snapshot atomically
+pending
+** S1.4 End to end through the real binary: nelisp-ime-keymap.exe --self-test with a private registry key runs the real hook procedure over scripted events and produces the expected output events (no system hook, no SendInput)
+pending
+
+* S2 Resident remapper
+** S2.1 The hook runs on a dedicated thread and its callback does no I/O, registry access, waiting or allocation; decision p99 under 50 microseconds over one million synthetic events
+pending
+** S2.2 Lifecycle safety: disable, reload, exit, session lock and restart after a crash leave no key pressed; status and rule errors are published to the registry
+pending
+** S2.3 End to end with a private instance (private registry key and instance suffix, hook disabled): start, second-instance refusal, live reload, status, graceful stop and recovery after a forced kill
+pending
+
+* S3 Settings, deployment and live use
+** S3.1 The settings window edits the key remap settings (enable, layout, rules, exclusions) and shows the remapper status; changes apply without restarting anything
+pending
+** S3.2 Install script: dry run, private test mode, HKCU Run autostart, rollback manifest; the dry run and a private install/uninstall pass
+pending
+** S3.3 Live: the user confirms the remaps in real applications
+pending
