@@ -222,6 +222,7 @@ struct TextService::ProviderResult {
   TextService* owner = nullptr;
   uint64_t sequence = 0;
   std::optional<ddskk::EngineState> state;
+  bool apply_state = true;
 };
 
 TextService::TextService() {
@@ -289,6 +290,8 @@ bool TextService::CreateProviderWindow() {
 
 bool TextService::BeginProviderConversion(const std::u32string& keys) {
   if (keys.empty() || provider_window_ == nullptr) return false;
+  provider_cleanup_pending_ = false;
+  provider_conversion_active_ = true;
   const uint64_t sequence =
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   provider_pending_.store(true, std::memory_order_release);
@@ -333,22 +336,39 @@ bool TextService::BeginProviderConversion(const std::u32string& keys) {
   return true;
 }
 
-bool TextService::BeginProviderControl(ddskk::EngineControl control) {
+bool TextService::BeginProviderControl(ddskk::EngineControl control,
+                                       bool apply_state) {
   if (provider_window_ == nullptr) return false;
+  provider_cleanup_pending_ = !apply_state;
+  provider_conversion_active_ = false;
   const uint64_t sequence =
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   provider_pending_.store(true, std::memory_order_release);
   const HWND destination = provider_window_;
   AddRef();
   try {
-    std::thread([this, control, sequence, destination] {
+    std::thread([this, control, sequence, destination, apply_state] {
       std::optional<ddskk::EngineState> state;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
-        state = engine_.SendControl(control, kConversionTimeoutMs);
+        // A new conversion resets the engine session itself. If it acquired
+        // the mutex first, an old cleanup must not cancel that new episode.
+        if (apply_state ||
+            sequence == provider_sequence_.load(std::memory_order_acquire))
+          state = engine_.SendControl(control, kConversionTimeoutMs);
+        if (!apply_state) {
+          wchar_t diagnostics[2]{};
+          if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS",
+                                      diagnostics, 2) > 0) {
+            std::printf("ENGINE_RELEASE ok=%d candidates=%zu raw=%s\n",
+                        state ? 1 : 0, state ? state->candidates.size() : 0,
+                        engine_.last_response().c_str());
+            std::fflush(stdout);
+          }
+        }
       }
       auto* result = new (std::nothrow) ProviderResult{this, sequence,
-                                                       std::move(state)};
+                                                       std::move(state), apply_state};
       if (result == nullptr ||
           !PostMessageW(destination, kProviderResultMessage, 0,
                         reinterpret_cast<LPARAM>(result))) {
@@ -366,6 +386,8 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control) {
 
 bool TextService::BeginProviderKey(char32_t key) {
   if (provider_window_ == nullptr) return false;
+  provider_cleanup_pending_ = false;
+  provider_conversion_active_ = false;
   const uint64_t sequence =
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   provider_pending_.store(true, std::memory_order_release);
@@ -397,6 +419,8 @@ bool TextService::BeginProviderKey(char32_t key) {
 
 bool TextService::BeginProviderKeys(const std::u32string& keys) {
   if (keys.empty() || provider_window_ == nullptr) return false;
+  provider_cleanup_pending_ = false;
+  provider_conversion_active_ = false;
   const uint64_t sequence =
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   provider_pending_.store(true, std::memory_order_release);
@@ -427,12 +451,14 @@ bool TextService::BeginProviderKeys(const std::u32string& keys) {
 }
 
 void TextService::CancelPendingProvider() {
+  provider_cleanup_pending_ = false;
   const uint64_t sequence =
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   DebugLog(L"Provider cancel seq=%llu",
            static_cast<unsigned long long>(sequence));
   provider_pending_.store(false, std::memory_order_release);
   deferred_provider_keys_.clear();
+  provider_conversion_active_ = false;
   engine_.CancelPendingIo();
 }
 
@@ -442,22 +468,11 @@ void TextService::CancelPendingProvider() {
 // to Sumi and answers its STATUS polls from it, so Sumi's candidate window
 // stayed open after the user had cancelled.  The frontend owns the reading
 // and the next Space reconverts from raw keys, so the engine side is simply
-// cancelled; its reply is not applied to the document.  A just-cancelled
-// provider thread may still hold the client: CancelPendingProvider() has
-// already aborted its I/O, so taking the same mutex waits only for that
-// thread to unwind instead of racing it on the pipe.
+// cancelled; its reply is not applied to the document. Keep cleanup on the
+// provider worker: even an uncontended engine round trip exceeds the local
+// cancellation budget. Local input continues while cleanup finishes.
 void TextService::ReleaseEngineConversion() {
-  std::lock_guard<std::mutex> lock(provider_engine_mutex_);
-  const auto state = engine_.SendControl(ddskk::EngineControl::kCancel,
-                                         kInteractiveTimeoutMs);
-  wchar_t harness_diagnostics[2]{};
-  if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS",
-                              harness_diagnostics, 2) > 0) {
-    std::printf("ENGINE_RELEASE ok=%d candidates=%zu raw=%s\n", state ? 1 : 0,
-                state ? state->candidates.size() : 0,
-                engine_.last_response().c_str());
-    std::fflush(stdout);
-  }
+  BeginProviderControl(ddskk::EngineControl::kCancel, false);
 }
 
 void TextService::ApplyProviderResult(ProviderResult* result) {
@@ -470,11 +485,18 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
       result->sequence != provider_sequence_.load(std::memory_order_acquire))
     return;
   provider_pending_.store(false, std::memory_order_release);
+  if (!result->apply_state) {
+    provider_cleanup_pending_ = false;
+    engine_roundtrip_failed_ = !result->state;
+    ReplayDeferredProviderKeys();
+    return;
+  }
   if (!result->state) {
     engine_roundtrip_failed_ = true;
     CloseCandidateUi();
     return;
   }
+  provider_conversion_active_ = false;
 
   // Resolve queued keys against the provider state in strict arrival order.
   // Candidate controls belong to that candidate; a printable key first
@@ -1590,7 +1612,14 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     return S_OK;
   }
   bool cancelled_provider = false;
-  if (provider_pending_.load(std::memory_order_acquire)) {
+  const bool cancelled_conversion =
+      (ctrl_g || wparam == VK_ESCAPE) && provider_conversion_active_;
+  if (ctrl_g || wparam == VK_ESCAPE) deferred_provider_keys_.clear();
+  // Cleanup has no document state to apply. Local typing and its commit
+  // must continue while it finishes; otherwise Enter can pass through
+  // ahead of the letters held in the provider queue.
+  if (provider_pending_.load(std::memory_order_acquire) &&
+      !provider_cleanup_pending_) {
     if (ctrl_g || wparam == VK_ESCAPE) {
       // Cancellation is local and immediate. The detached lookup may still
       // finish, but its stale sequence can no longer edit the document.
@@ -1965,7 +1994,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     // like any other transaction failure -- the existing `if (!state)'
     // swallow-on-failure path below already handles that with no special
     // casing needed.
-    if (provider_composition_active_ &&
+    if ((provider_composition_active_ || cancelled_conversion) &&
         realtime_frontend_.preedit()) {
       ReleaseEngineConversion();
       state = realtime_frontend_.RestorePreedit();
@@ -1984,7 +2013,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       debug_exit(*eaten);
       return S_OK;
     }
-    if (provider_composition_active_ &&
+    if ((provider_composition_active_ || cancelled_conversion) &&
         realtime_frontend_.preedit()) {
       branch = L"ctrlg-local-restore";
       ReleaseEngineConversion();

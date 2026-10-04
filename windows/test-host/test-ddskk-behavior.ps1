@@ -35,8 +35,9 @@ $script = @(
   'LEFT RIGHT CTRLC CTRLZ CTRLW CTRLS CTRLA'
   # Missing candidate -> registration; confirm exactly once.
   'P a p a p a SPACE WAIT1700 t e s u t o ENTER WAIT500'
-  # A second registration is cancelled locally and cannot leak into the next episode.
-  'P a p a p i SPACE WAIT1700 t e CTRLG WAIT500 k a ENTER WAIT500'
+  # Cancel registration back to its reading, then dismiss the reading before
+  # starting the next episode (DDSKK's ordinary two-step Ctrl+G semantics).
+  'P a p a p i SPACE WAIT1700 t e CTRLG CTRLG WAIT500 k a ENTER WAIT500'
   # Direct katakana, wide Latin, F7/F6 and direct Latin modes.
   'q k a q L a S1 SPACE CTRLJ K a n a F7 F6 CTRLG l a CTRLJ'
 ) -join ' '
