@@ -1,27 +1,32 @@
 #+TITLE: Key remapping configured from nelisp-ime settings (no admin rights, no restart)
+#+NOTE: 2026-10-05: criteria changed before implementation (10 -> 12). At the user's request the settings live in one text file that can be changed both by hand and from a GUI editor, and a key inspector plus direct remapping of a captured key were added.
 
 * S1 Remap decision core
 ** S1.1 Key and shortcut remaps (CapsLock=LCtrl, LAlt+Space=ime-toggle, Ctrl+Space=LWin+Space): unit tests cover press, auto-repeat and release ordering, no stuck modifiers, Alt-tap menu suppression and no re-processing of the remapper's own injected events
 pending
 ** S1.2 Layout conversion: a desired US or JIS layout against the OS drivers kbd101 and kbd106 for every printable key, with and without Shift, keeping Ctrl/Alt/Win combinations; table tests pass
 pending
-** S1.3 Configuration: registry rules parsed and validated (a bad line is rejected with a reason and the rest still apply), per-application exclusions, live reload swaps the rule snapshot atomically
+** S1.3 Configuration: the text file keymap.conf (sections, comments, readable and raw key forms) is parsed and validated (a bad line is rejected with its line number and reason, the rest still apply), per-application exclusions; a file change reloads the rule snapshot atomically (debounced, atomic writes, sharing violations retried)
 pending
-** S1.4 End to end through the real binary: nelisp-ime-keymap.exe --self-test with a private registry key runs the real hook procedure over scripted events and produces the expected output events (no system hook, no SendInput)
+** S1.4 End to end through the real binary: nelisp-ime-keymap.exe --self-test with a private config file runs the real hook procedure over scripted events and produces the expected output events (no system hook, no SendInput)
 pending
 
 * S2 Resident remapper
 ** S2.1 The hook runs on a dedicated thread and its callback does no I/O, registry access, waiting or allocation; decision p99 under 50 microseconds over one million synthetic events
 pending
-** S2.2 Lifecycle safety: disable, reload, exit, session lock and restart after a crash leave no key pressed; status and rule errors are published to the registry
+** S2.2 Lifecycle safety: disable, reload, exit, session lock and restart after a crash leave no key pressed; status and rule errors (with file line numbers) are published to the registry
 pending
-** S2.3 End to end with a private instance (private registry key and instance suffix, hook disabled): start, second-instance refusal, live reload, status, graceful stop and recovery after a forced kill
+** S2.3 End to end with a private instance (private config file, registry key and instance suffix, hook disabled): start, second-instance refusal, live reload after a file edit, status, graceful stop and recovery after a forced kill
 pending
 
-* S3 Settings, deployment and live use
-** S3.1 The settings window edits the key remap settings (enable, layout, rules, exclusions) and shows the remapper status; changes apply without restarting anything
+* S3 Editor, inspector, deployment and live use
+** S3.1 Editor window: rule list with add/edit/delete, enable, layout and exclusions; edits are written to the same text file preserving comments, order and unknown lines; an external edit while the editor is open is detected and reloaded; the settings window opens the editor
 pending
-** S3.2 Install script: dry run, private test mode, HKCU Run autostart, rollback manifest; the dry run and a private install/uninstall pass
+** S3.2 Key inspector: pressing a key in the editor shows its name, scan code, virtual key, the characters it produces and its current registration (rule and file line, or none; Windows Scancode Map entries noted); capture swallows keys only while capturing in the foreground editor; pure-function and in-process hook tests pass
 pending
-** S3.3 Live: the user confirms the remaps in real applications
+** S3.3 Direct remap from the inspector: capture a source key or chord, then press the target key or choose an action; the rule is written to the text file and applied live; tests cover add, replace and remove through the file
+pending
+** S3.4 Install script: dry run, private test mode, HKCU Run autostart, rollback manifest; the dry run and a private install/uninstall pass
+pending
+** S3.5 Live: the user confirms the remaps, the inspector and editing through both the GUI and the text file in real applications
 pending
