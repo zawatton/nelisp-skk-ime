@@ -160,7 +160,7 @@ std::optional<std::string> EngineClient::RawTransact(const std::string& request,
   }
 
   ResetEvent(overlapped.hEvent);
-  std::array<char, 8192> response{};
+  std::array<char, 65536> response{};
   DWORD read = 0;
   if (!ReadFile(pipe, response.data(), static_cast<DWORD>(response.size() - 1),
                &read, &overlapped) &&
@@ -270,6 +270,21 @@ std::optional<std::vector<std::string>> EngineClient::ListEngines(
   std::vector<std::string> engines;
   for (std::string id; input >> id;) engines.push_back(std::move(id));
   return engines;
+}
+
+std::optional<std::vector<RomajiRule>> EngineClient::RomajiRules(DWORD timeout_ms) {
+  if (!Connect(timeout_ms)) return std::nullopt;
+  const auto response = RawTransact("ROMAJI RULES 1\n", timeout_ms);
+  return response ? ParseRomajiRules(*response) : std::nullopt;
+}
+
+std::optional<EngineState> EngineClient::SyncKeys(const std::u32string& keys,
+                                                DWORD timeout_ms) {
+  auto request = EncodeFeedKeysRequest(keys);
+  if (request.empty()) return std::nullopt;
+  request.replace(0, 18, "CONTROL SYNC-KEYS ");
+  const auto response = Transact(request, timeout_ms);
+  return response ? ParseStateResponse(*response) : std::nullopt;
 }
 
 std::optional<std::string> EngineClient::CurrentEngine(DWORD timeout_ms) {

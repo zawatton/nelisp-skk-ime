@@ -76,6 +76,19 @@ bool IsConsonant(char value) {
 
 }  // namespace
 
+void RealtimeFrontend::SetRules(const std::vector<RomajiRule>& rules) {
+  if (rules == installed_rules_) return;
+  installed_rules_ = rules;
+  rules_.clear();
+  prefixes_.clear();
+  for (const auto& rule : rules) {
+    rules_[rule.key] = rule;
+    for (size_t length = 1; length <= rule.key.size(); ++length)
+      prefixes_.emplace(rule.key.substr(0, length));
+  }
+  if (preedit_) RebuildPreedit();
+}
+
 std::wstring RealtimeFrontend::Katakana(const std::wstring& text) {
   std::wstring result = text;
   for (wchar_t& value : result) {
@@ -136,15 +149,49 @@ std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record) {
   }
   if (continuous_preedit_ && !preedit_) {
     preedit_ = true;
-  } else if (upper && !preedit_) {
+  } else if (upper && !preedit_ &&
+             !prefixes_.contains(pending_ + key)) {
     preedit_ = true;
   } else if (!continuous_preedit_ && upper && preedit_ &&
+             !prefixes_.contains(pending_ + key) &&
              !okuri_started_ && !text_.empty()) {
     text_ += L'*';
     okuri_started_ = true;
   }
 
-  if (lower < 'a' || lower > 'z') {
+  if (!rules_.empty()) {
+    std::string next = pending_ + key;
+    if (!prefixes_.contains(next)) next = pending_ + lower;
+    auto exact = rules_.find(next);
+    bool has_children = false;
+    for (const auto& [rule_key, unused] : rules_) {
+      (void)unused;
+      if (rule_key.size() > next.size() && rule_key.starts_with(next)) {
+        has_children = true;
+        break;
+      }
+    }
+    if (exact != rules_.end() && !has_children) {
+      if (!exact->second.command.empty()) return std::nullopt;
+      text_ += katakana_ ? exact->second.katakana : exact->second.hiragana;
+      pending_ = exact->second.carry;
+    } else if (prefixes_.contains(next)) {
+      pending_ = std::move(next);
+    } else if (next.size() > 1) {
+      const auto complete = rules_.find(pending_);
+      if (complete != rules_.end() && complete->second.command.empty()) {
+        text_ += katakana_ ? complete->second.katakana : complete->second.hiragana;
+        pending_ = complete->second.carry;
+      } else {
+        text_.append(pending_.begin(), pending_.end());
+        pending_.clear();
+      }
+      return FeedAscii(key, false);
+    } else {
+      text_.push_back(static_cast<wchar_t>(static_cast<unsigned char>(key)));
+      pending_.clear();
+    }
+  } else if (lower < 'a' || lower > 'z') {
     if (!pending_.empty()) {
       text_.append(pending_.begin(), pending_.end());
       pending_.clear();

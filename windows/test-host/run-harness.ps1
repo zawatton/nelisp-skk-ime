@@ -62,6 +62,8 @@ param(
   [string]$EngineHostPath = "",
   [string]$EngineExecutablePath = "",
   [string]$RepositoryPath = "",
+  [string]$RomajiProbePath = "",
+  [switch]$RomajiRulesOnly,
 
   [string]$Configuration = "Release",
   [ValidateSet('restore','latin','hiragana','katakana')]
@@ -268,6 +270,48 @@ if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repositor
     ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
   foreach ($child in $startedChildren) { Write-Host "HARNESS_CHILD pid=$($child.Id) parent=$($hostProcess.Id)" }
 
+  if ($RomajiProbePath) {
+    $probePipe = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeShortName,
+        [IO.Pipes.PipeDirection]::InOut)
+    try {
+      $probePipe.Connect(5000)
+      $probePipe.ReadMode = [IO.Pipes.PipeTransmissionMode]::Message
+      function Invoke-RomajiProbe([string]$request) {
+        $bytes = [Text.Encoding]::ASCII.GetBytes($request + "`n")
+        $probePipe.Write($bytes, 0, $bytes.Length)
+        $buffer = New-Object byte[] 65536
+        $count = $probePipe.Read($buffer, 0, $buffer.Length)
+        return [Text.Encoding]::ASCII.GetString($buffer, 0, $count)
+      }
+      $rules = Invoke-RomajiProbe 'ROMAJI RULES 1'
+      if (-not $rules.StartsWith('RULES 1 ')) { throw "Rule export failed: $rules" }
+      $probeLines = [Collections.Generic.List[string]]::new()
+      $probeLines.Add($rules)
+      foreach ($record in $rules.Substring(8).Split(' ')) {
+        if ($RomajiRulesOnly) { break }
+        $fields = $record.Split(':')
+        if ($fields[4] -ne '-') { continue } # Commands use TSF routing tests.
+        $keys = for ($i = 0; $i -lt $fields[0].Length; $i += 6) {
+          [Convert]::ToInt32($fields[0].Substring($i, 6), 16)
+        }
+        foreach ($katakana in @($false, $true)) {
+          $probeKeys = if ($katakana) { @(113) + @($keys) } else { @($keys) }
+          $reply = Invoke-RomajiProbe ('SESSION romaji-oracle CONTROL SYNC-KEYS ' + ($probeKeys -join ','))
+          $probeLines.Add($(if ($katakana) { '000071' } else { '' }) + $fields[0] + ' ' + $reply)
+        }
+      }
+      foreach ($sample in @('tya', 'tyu', 'tyo', 'tta', 'nn', "n'", 'nka', 'z.', 'z/')) {
+        if ($RomajiRulesOnly) { break }
+        $keys = @($sample.ToCharArray() | ForEach-Object { [int]$_ })
+        $reply = Invoke-RomajiProbe ('SESSION romaji-oracle CONTROL SYNC-KEYS ' + ($keys -join ','))
+        $hexKey = ($keys | ForEach-Object { $_.ToString('x6') }) -join ''
+        $probeLines.Add($hexKey + ' ' + $reply)
+      }
+      [IO.File]::WriteAllLines([IO.Path]::GetFullPath($RomajiProbePath), $probeLines, $utf8)
+      Write-Host "ROMAJI probes=$($probeLines.Count - 1) file=$RomajiProbePath"
+    } finally { $probePipe.Dispose() }
+  }
+
   Write-Host "run-harness: launching tsf-host.exe..."
   $tsfArgs = @()
   if (-not [string]::IsNullOrEmpty($Script)) { $tsfArgs = @($Script) }
@@ -335,15 +379,17 @@ if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repositor
   } else {
     $env:NELISP_IME_DISABLE_HOST_SPAWN = $savedDisableHostSpawn
   }
+  # Preserve child diagnostics even if preflight/probing throws before TSF
+  # starts. The cleanup above must always precede surfacing those logs.
+  foreach ($outputFile in @($tsfOutput, $tsfError, $hostOutput, $hostError)) {
+    if ($outputFile -and (Test-Path -LiteralPath $outputFile)) {
+      Get-Content -LiteralPath $outputFile -Encoding UTF8
+    }
+  }
 }
 
 # In particular, a host respawned by the DLL must not inherit a caller's
 # captured stderr stream: a normal host diagnostic becomes NativeCommandError
 # under PowerShell 5.1's ErrorActionPreference=Stop and can strand that caller.
-foreach ($outputFile in @($tsfOutput, $tsfError, $hostOutput, $hostError)) {
-  if ($outputFile -and (Test-Path -LiteralPath $outputFile)) {
-    Get-Content -LiteralPath $outputFile -Encoding UTF8
-  }
-}
 
 exit $exitCode

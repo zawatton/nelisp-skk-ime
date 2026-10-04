@@ -1126,6 +1126,10 @@ void ShutdownDictionaryServer() {
 }
 // ---------------------------------------------------------------------------
 
+// Independent of provider transactions so a cache read never queues behind
+// conversion. A replacement child publishes its own effective rule table.
+std::string g_romaji_rules;
+std::mutex g_romaji_mutex;
 bool Dispatch(Child& child, const std::string& request, std::string* response) {
   const ULONGLONG started = GetTickCount64();
   const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
@@ -1149,9 +1153,19 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
   // able to wedge this loop (and thus the whole host) forever.
   constexpr int kMaxServerExchangesPerRequest = 64;
   int server_exchanges = 0;
+  ULONGLONG phase_started = started;
+  std::string phase = "dispatch";
   for (;;) {
     std::string line;
     if (!ReadLine(child.output, &line)) return false;
+    if (line.starts_with("PHASE ")) {
+      const ULONGLONG now = GetTickCount64();
+      if (debug) std::fprintf(stderr, "engine-phase name=%s ms=%llu next=%s\n",
+          phase.c_str(), now - phase_started, line.c_str() + 6);
+      phase = line.substr(6);
+      phase_started = now;
+      continue;
+    }
     if (line.rfind("SERVER ", 0) == 0) {
       // Out-of-band dictionary lookup: answer it and keep reading for the
       // real response. The engine blocks on its stdin until this arrives.
@@ -1448,6 +1462,10 @@ void ReplacementLoop() {
     bool ready = StartChild(g_executable, g_repository, &next, wide_id, true) &&
         WriteAll(next.input, "ENGINE CURRENT\n") && ReadLine(next.output, &reply);
     LogEvent("replacement-current engine=" + id + " ready=" + (ready ? "true" : "false"));
+    std::string next_rules;
+    if (ready && id == "ddskk")
+      ready = WriteAll(next.input, "ROMAJI RULES 1\n") &&
+          ReadLine(next.output, &next_rules) && next_rules.starts_with("RULES 1 ");
     // DDSKK's runner defaults to ddskk; select passthrough before publication.
     if (ready && reply != "ENGINE " + id) {
       ready = WriteAll(next.input, "ENGINE SET " + id + "\n") &&
@@ -1498,6 +1516,8 @@ void ReplacementLoop() {
         if (g_composing_sessions.empty() || GetTickCount64() >= deadline) {
           old = g_child;
           g_child = next;
+          { std::lock_guard<std::mutex> rules_lock(g_romaji_mutex);
+            g_romaji_rules = std::move(next_rules); }
           SetPriorityClass(g_child.process, NORMAL_PRIORITY_CLASS);
           next = {};
           g_current_engine = id;
@@ -1723,6 +1743,10 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     const bool is_preview = request.rfind("PREVIEW ", 0) == 0;
     if (is_shutdown) {
       response = "OK";
+    } else if (engine_request == "ROMAJI RULES 1") {
+      std::lock_guard<std::mutex> lock(g_romaji_mutex);
+      response = g_romaji_rules.empty()
+          ? "ERR RULES NOT-READY" : g_romaji_rules;
     } else if (engine_request == "ENGINE CURRENT") {
       // This is host publication state. Relaying an unscoped poll to the
       // runner switches DDSKK to its legacy session, forcing a full
@@ -1959,6 +1983,17 @@ int wmain(int argc, wchar_t** argv) {
     return 3;
   }
   InitializeStateMirror(g_pipe_name);
+  // Populate outside the keyboard path, including cold engine startup.
+  std::thread([] {
+    std::lock_guard<std::mutex> lock(g_engine_mutex);
+    std::string exported;
+    if (g_current_engine == "ddskk" &&
+        Dispatch(g_child, "ROMAJI RULES 1", &exported) &&
+        exported.starts_with("RULES 1 ")) {
+      std::lock_guard<std::mutex> rules_lock(g_romaji_mutex);
+      g_romaji_rules = std::move(exported);
+    }
+  }).detach();
 
   if (!g_dictionary_server.config_loaded) {
     LoadDictionaryServerConfig(&g_dictionary_server.config);

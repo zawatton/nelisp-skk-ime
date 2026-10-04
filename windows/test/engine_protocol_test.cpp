@@ -24,6 +24,13 @@
 #endif
 
 int main() {
+  auto rules = ddskk::ParseRomajiRules(
+      "RULES 1 000074000079000061:-:003061003083:0030c10030e3:-");
+  assert(rules && rules->size() == 1 && (*rules)[0].key == "tya" &&
+         (*rules)[0].hiragana == L"ちゃ");
+  assert(!ddskk::ParseRomajiRules("RULES 2 000061:-:003042:0030a2:-"));
+  assert(!ddskk::ParseRomajiRules("RULES 1 000061:-:00d800:0030a2:-"));
+  assert(!ddskk::ParseRomajiRules("RULES 1 000061:-:003042"));
   assert(ddskk::EncodeKeyRequest(U'あ') == "KEY 12354\n");
   assert(ddskk::EncodeKeyRequest(0x110000).empty());
   assert(ddskk::EncodeConvertKeysRequest(U"Kana") ==
