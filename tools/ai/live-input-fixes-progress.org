@@ -1,0 +1,19 @@
+#+TITLE: Live input fixes: romaji parity with DDSKK, SKK mode keys in ▽, conversion latency
+
+* S1 Input behaviour equals DDSKK
+** S1.1 The DLL's local romaji conversion produces exactly what the DDSKK engine produces for every rule of the engine's rom-kana table (incl. tya/tyu/tyo, small tsu doubling, n handling, punctuation); tya gives ちゃ
+pending
+** S1.2 SKK keys during ▽ preedit behave as in DDSKK: q commits the katakana form in hiragana mode and the hiragana form in katakana mode; Q, l, L and / behave as in DDSKK
+pending
+
+* S2 Conversion latency
+** S2.1 Space-to-candidate latency through the TSF harness is measured (>= 20 conversions, distribution and per-phase breakdown) on the live runtime build
+pending
+** S2.2 Median Space-to-candidate latency <= 300 ms and p90 <= 600 ms on the live runtime build (same machine, recorded load)
+pending
+
+* S3 End to end
+** S3.1 The DDSKK TSF behaviour suite passes with the new romaji and key handling
+pending
+** S3.2 Live: the user confirms tya, q and conversion speed in Emacs and another application
+pending
