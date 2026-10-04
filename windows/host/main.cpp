@@ -23,6 +23,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <psapi.h>
 #include "../src/registry_settings.h"
 
 #include <algorithm>
@@ -44,6 +45,50 @@
 namespace {
 std::atomic<bool> g_stopping{false};
 HANDLE g_child_job = nullptr;
+std::wstring g_log_path;
+std::atomic<const char*> g_stop_reason{"accept-loop-ended"};
+
+void LogEvent(const std::string& event) {
+  // Intentionally process-lifetime: detached pipe workers can still log
+  // during CRT shutdown. Never hold this lock while waiting for a child.
+  static auto* mutex = new std::mutex;
+  std::lock_guard<std::mutex> lock(*mutex);
+  if (g_log_path.empty()) return;
+  WIN32_FILE_ATTRIBUTE_DATA info{};
+  if (GetFileAttributesExW(g_log_path.c_str(), GetFileExInfoStandard, &info) &&
+      (info.nFileSizeHigh || info.nFileSizeLow >= 1024 * 1024)) {
+    if (!MoveFileExW(g_log_path.c_str(), (g_log_path + L".1").c_str(),
+                    MOVEFILE_REPLACE_EXISTING)) return;
+  }
+  HANDLE file = CreateFileW(g_log_path.c_str(), FILE_APPEND_DATA,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return;
+  SYSTEMTIME now{};
+  GetSystemTime(&now);
+  char prefix[128]{};
+  sprintf_s(prefix, "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ host=%lu ",
+      now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute,
+      now.wSecond, now.wMilliseconds, GetCurrentProcessId());
+  std::string message = event.substr(0, 2048);
+  std::replace(message.begin(), message.end(), '\r', ' ');
+  std::replace(message.begin(), message.end(), '\n', ' ');
+  const std::string line = prefix + message + "\r\n";
+  DWORD written = 0;
+  WriteFile(file, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+  CloseHandle(file);
+}
+
+void InitializeLog() {
+  wchar_t path[32768]{};
+  DWORD size = GetEnvironmentVariableW(L"DDSKK_HOST_LOG", path, _countof(path));
+  if (size && size < _countof(path)) { g_log_path = path; return; }
+  size = GetEnvironmentVariableW(L"LOCALAPPDATA", path, _countof(path));
+  if (!size || size >= _countof(path)) return;
+  const std::wstring directory = std::wstring(path) + L"\\DDSKK";
+  CreateDirectoryW(directory.c_str(), nullptr);
+  g_log_path = directory + L"\\host.log";
+}
 constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\ddskk-ime-v1";
 constexpr wchar_t kStateMapName[] = L"Local\\ddskk-ime-state-v1";
 
@@ -204,7 +249,21 @@ struct Child {
   HANDLE process = nullptr;
   HANDLE input = nullptr;
   HANDLE output = nullptr;
+  std::string engine;
+  ULONGLONG started = 0;
+  bool exit_logged = false;
 };
+
+void LogChildExit(Child& child, bool expected) {
+  if (!child.process || child.exit_logged) return;
+  DWORD code = STILL_ACTIVE;
+  if (!GetExitCodeProcess(child.process, &code) || code == STILL_ACTIVE) return;
+  LogEvent("child-exit pid=" + std::to_string(GetProcessId(child.process)) +
+      " engine=" + child.engine + " code=" + std::to_string(code) +
+      " uptime_ms=" + std::to_string(GetTickCount64() - child.started) +
+      " expected=" + (expected ? "true" : "false"));
+  child.exit_logged = true;
+}
 
 void Close(HANDLE& handle) {
   if (handle != nullptr && handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
@@ -212,11 +271,15 @@ void Close(HANDLE& handle) {
 }
 
 void StopChild(Child& child) {
+  LogChildExit(child, false);
   Close(child.input);
   Close(child.output);
   if (child.process != nullptr) {
-    if (WaitForSingleObject(child.process, 500) == WAIT_TIMEOUT)
+    if (WaitForSingleObject(child.process, 500) == WAIT_TIMEOUT) {
       TerminateProcess(child.process, 1);
+      WaitForSingleObject(child.process, 5000);
+    }
+    LogChildExit(child, true);
     Close(child.process);
   }
 }
@@ -413,6 +476,12 @@ bool StartChild(const std::wstring& engine, const std::wstring& repository,
   child->process = process.hProcess;
   child->input = stdin_write;
   child->output = stdout_read;
+  child->engine = NarrowEngineId(id);
+  child->started = GetTickCount64();
+  LogEvent("child-start pid=" + std::to_string(process.dwProcessId) +
+      " engine=" + child->engine + " runner=" +
+      NarrowEngineId(EngineRunnerScript(repository, id)) +
+      " priority=" + (warming ? "below-normal" : "normal"));
   return true;
 }
 
@@ -1060,7 +1129,20 @@ void ShutdownDictionaryServer() {
 bool Dispatch(Child& child, const std::string& request, std::string* response) {
   const ULONGLONG started = GetTickCount64();
   const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
-  if (debug) std::fprintf(stderr, "dispatch pid=%lu request=%s\n", GetProcessId(child.process), request.c_str());
+  PROCESS_MEMORY_COUNTERS memory{};
+  const auto cpu_time = [&child]() {
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetProcessTimes(child.process, &created, &exited, &kernel, &user)) return ULONGLONG{0};
+    return (static_cast<ULONGLONG>(kernel.dwHighDateTime) << 32) + kernel.dwLowDateTime +
+        (static_cast<ULONGLONG>(user.dwHighDateTime) << 32) + user.dwLowDateTime;
+  };
+  const ULONGLONG cpu_started = debug ? cpu_time() : 0;
+  if (debug) {
+    K32GetProcessMemoryInfo(child.process, &memory, sizeof(memory));
+    std::fprintf(stderr, "dispatch tick=%llu pid=%lu ws_mb=%llu faults=%lu request=%s\n",
+        started, GetProcessId(child.process), memory.WorkingSetSize/1048576,
+        memory.PageFaultCount, request.c_str());
+  }
   if (!WriteAll(child.input, request + "\n")) return false;
   // Bounded guard: a buggy/adversarial engine that keeps emitting
   // "SERVER " lines instead of ever producing a real response must not be
@@ -1074,12 +1156,21 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
       // Out-of-band dictionary lookup: answer it and keep reading for the
       // real response. The engine blocks on its stdin until this arrives.
       if (++server_exchanges > kMaxServerExchangesPerRequest) return false;
+      const ULONGLONG relay_started = GetTickCount64();
       const std::string reply = LookupDictionary(line.substr(7));
+      if (debug) std::fprintf(stderr, "dictionary-relay ms=%llu\n", GetTickCount64()-relay_started);
       if (!WriteAll(child.input, reply + "\n")) return false;
       continue;
     }
     *response = line;
-    if (debug) std::fprintf(stderr, "dispatch done pid=%lu ms=%llu\n", GetProcessId(child.process), GetTickCount64()-started);
+    if (debug) {
+      PROCESS_MEMORY_COUNTERS after{};
+      K32GetProcessMemoryInfo(child.process, &after, sizeof(after));
+      std::fprintf(stderr, "dispatch done pid=%lu ms=%llu cpu_ms=%llu ws_mb=%llu faults_delta=%lu relay_count=%d\n",
+          GetProcessId(child.process), GetTickCount64()-started,
+          (cpu_time()-cpu_started)/10000, after.WorkingSetSize/1048576,
+          after.PageFaultCount-memory.PageFaultCount, server_exchanges);
+    }
     return true;
   }
 }
@@ -1290,6 +1381,8 @@ void QueueReplacement(const std::string& id, bool force = false) {
       g_requested_engine == id) return;
   g_requested_engine = id;
   ++g_switch_generation;
+  LogEvent(std::string(force ? "reload" : "switch") + " engine=" + id +
+      " generation=" + std::to_string(g_switch_generation));
 }
 
 // One worker owns all replacement children. Startup/readiness never holds
@@ -1309,7 +1402,9 @@ void ReplacementLoop() {
     if (id.empty()) {
       std::lock_guard<std::mutex> lock(g_engine_mutex);
       if (g_child.process && WaitForSingleObject(g_child.process, 0) == WAIT_TIMEOUT) continue;
+      LogChildExit(g_child, false);
       id = g_current_engine;
+      LogEvent("respawn engine=" + id);
     }
     if (GetTickCount64() < retry_at) continue;
     Child next;
@@ -1317,14 +1412,25 @@ void ReplacementLoop() {
     const std::wstring wide_id(id.begin(), id.end());
     bool ready = StartChild(g_executable, g_repository, &next, wide_id, true) &&
         WriteAll(next.input, "ENGINE CURRENT\n") && ReadLine(next.output, &reply);
+    LogEvent("replacement-current engine=" + id + " ready=" + (ready ? "true" : "false"));
     // DDSKK's runner defaults to ddskk; select passthrough before publication.
     if (ready && reply != "ENGINE " + id) {
       ready = WriteAll(next.input, "ENGINE SET " + id + "\n") &&
           ReadLine(next.output, &reply) && reply == "OK ENGINE " + id;
     }
     std::string replacement_state;
-    if (ready) ready = WriteAll(next.input, "RESET\n") &&
+    const std::string warmup = "SESSION host-warmup-" +
+        std::to_string(GetCurrentProcessId()) + "-" +
+        std::to_string(GetProcessId(next.process));
+    if (ready) ready = WriteAll(next.input, warmup + " RESET\n") &&
         ReadLine(next.output, &replacement_state) && replacement_state.starts_with("STATE ");
+    if (ready) ready = WriteAll(next.input, warmup + " CLOSE\n") &&
+        ReadLine(next.output, &reply) && reply == "OK CLOSED";
+    // DDSKK wraps even management commands in its legacy checkpoint.
+    // Readiness must not leave an unowned session in the published child.
+    if (ready) ready = WriteAll(next.input, "SESSION legacy CLOSE\n") &&
+        ReadLine(next.output, &reply) && reply == "OK CLOSED";
+    LogEvent("replacement-reset engine=" + id + " ready=" + (ready ? "true" : "false"));
     std::vector<std::string> prepared_sessions;
     if (ready) {
       {
@@ -1340,6 +1446,7 @@ void ReplacementLoop() {
       }
     }
     if (!ready || g_stopping.load()) {
+      LogEvent("replacement-abandoned engine=" + id);
       StopChild(next);
       retry_at = GetTickCount64() + backoff;
       backoff = (std::min)(backoff * 2, DWORD{30000});
@@ -1370,6 +1477,8 @@ void ReplacementLoop() {
           g_active_input_client = 0;
           PublishStateMirror(replacement_state);
           swapped = true;
+          LogEvent("replacement-published engine=" + id + " pid=" +
+              std::to_string(GetProcessId(g_child.process)));
         }
       }
       if (swapped) break;
@@ -1478,6 +1587,7 @@ void IdleGcLoop() {
       if (!g_gc_pending.exchange(false, std::memory_order_acq_rel)) continue;
 
       std::string response;
+      LogEvent("collection reason=idle");
       if (!Dispatch(g_child, "GC", &response)) {
         // Recovery belongs to ReplacementLoop, including death at idle.
         continue;
@@ -1565,6 +1675,7 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     // acquire that same mutex itself; see the ordering argument in the
     // block comment above IdleGcLoop().
     NoteActivity();
+    const ULONGLONG received = GetTickCount64();
     std::string request(request_buffer.data(), read);
     while (!request.empty() && (request.back() == '\n' || request.back() == '\r'))
       request.pop_back();
@@ -1577,6 +1688,13 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     const bool is_preview = request.rfind("PREVIEW ", 0) == 0;
     if (is_shutdown) {
       response = "OK";
+    } else if (engine_request == "ENGINE CURRENT") {
+      // This is host publication state. Relaying an unscoped poll to the
+      // runner switches DDSKK to its legacy session, forcing a full
+      // checkpoint save/restore on the next application's key. Frequent
+      // polls then increase allocation and latency on that key.
+      std::lock_guard<std::mutex> lock(g_switch_mutex);
+      response = "ENGINE " + g_published_engine;
     } else if (engine_request == "ENGINE RELOAD") {
       std::string id;
       { std::lock_guard<std::mutex> lock(g_switch_mutex); id = g_published_engine; }
@@ -1606,6 +1724,9 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
       // dictionary exchanges inside Dispatch() -- see the block comment
       // above.
       std::lock_guard<std::mutex> lock(g_engine_mutex);
+      if (GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0))
+        std::fprintf(stderr, "request-lock tick=%llu wait_ms=%llu request=%s\n",
+            received, GetTickCount64()-received, request.c_str());
       const std::string session_id = SessionIdFromRequest(request);
       const bool scoped_session = !session_id.empty();
       if (scoped_session) {
@@ -1691,17 +1812,20 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     DWORD written = 0;
     connected = WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()),
                           &written, nullptr) && written == response.size();
+    if (GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0))
+      std::fprintf(stderr, "request-done tick=%llu total_ms=%llu request=%s\n",
+          received, GetTickCount64()-received, request.c_str());
     if (is_shutdown) {
       connected = false;
+      g_stop_reason.store("SHUTDOWN");
       RequestStop();
     }
   }
   FlushFileBuffers(pipe);
   DisconnectNamedPipe(pipe);
   CloseHandle(pipe);
-  // Mirrors the pre-multithreading behaviour: once the underlying NeLisp
-  // child has exited, the whole host stops (it has nothing left to relay
-  // to). Any client's worker thread may be the one to notice this first.
+  // Release this connection's sessions. Process death belongs to the
+  // replacement worker; disconnecting a client never stops the host.
   // Locked so this never races StopChild()'s handle teardown in wmain.
   std::lock_guard<std::mutex> lock(g_engine_mutex);
   if (g_active_input_client == client_id) g_active_input_client = 0;
@@ -1724,7 +1848,12 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+  InitializeLog();
+  struct StopLog {
+    ~StopLog() { LogEvent(std::string("host-stop reason=") + g_stop_reason.load()); }
+  } stop_log;
   if (argc != 2 && argc != 3) {
+    g_stop_reason.store("invalid-arguments");
     std::fwprintf(stderr,
                   L"usage: ddskk-engine-host ENGINE_EXE [REPOSITORY]\n");
     return 2;
@@ -1758,6 +1887,7 @@ int wmain(int argc, wchar_t** argv) {
                   L"without the singleton guard\n",
                   static_cast<unsigned long>(GetLastError()));
   } else if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    g_stop_reason.store("singleton-already-owned");
     // Lost the race: another host already owns this pipe name's session.
     // Exit 0 on purpose: EnsureEngineHost()'s CreateProcessW callers (see
     // src/text_service.cpp) treat "a host is already running" as success,
@@ -1778,7 +1908,10 @@ int wmain(int argc, wchar_t** argv) {
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
   limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
   if (!g_child_job || !SetInformationJobObject(g_child_job,
-      JobObjectExtendedLimitInformation, &limits, sizeof(limits))) return 3;
+      JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+    g_stop_reason.store("child-job-setup-failed");
+    return 3;
+  }
   g_executable = argv[1];
   g_repository = repository;
   const std::wstring configured = ConfiguredEngineId();
@@ -1786,6 +1919,7 @@ int wmain(int argc, wchar_t** argv) {
   g_current_engine = NarrowEngineId(configured);
   g_published_engine = g_current_engine;
   if (!StartChild(argv[1], repository, &g_child, configured)) {
+    g_stop_reason.store("initial-child-start-failed");
     StopChild(g_child);
     return 3;
   }
@@ -1841,6 +1975,7 @@ int wmain(int argc, wchar_t** argv) {
   HANDLE pipe = CreatePipeInstance(true);
   if (pipe == INVALID_HANDLE_VALUE) {
     if (GetLastError() == ERROR_ACCESS_DENIED) {
+      g_stop_reason.store("pipe-already-owned");
       // Belt-and-braces for the same field incident as the mutex above:
       // this means a second process somehow raced past the mutex check
       // (the mutex already makes that effectively impossible, but the
@@ -1854,6 +1989,7 @@ int wmain(int argc, wchar_t** argv) {
       return 0;
     }
     StopChild(g_child);
+    g_stop_reason.store("initial-pipe-create-failed");
     return 4;
   }
   // Started once, detached, never joined -- same discipline as the
@@ -1880,6 +2016,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!ConnectNamedPipe(pipe, nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) {
       CloseHandle(pipe);
       pipe = INVALID_HANDLE_VALUE;
+      g_stop_reason.store("pipe-accept-failed");
       break;
     }
     if (g_stopping.load(std::memory_order_relaxed)) {
@@ -1901,6 +2038,7 @@ int wmain(int argc, wchar_t** argv) {
         g_next_client_id.fetch_add(1, std::memory_order_relaxed);
     std::thread(ServeClient, connected_pipe, client_id).detach();
     if (pipe == INVALID_HANDLE_VALUE) {
+      g_stop_reason.store("spare-pipe-create-failed");
       // Out of resources for further instances: the client just accepted
       // above is still served (thread already started); just stop taking
       // new ones.

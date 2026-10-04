@@ -137,5 +137,19 @@ Success prints `ddskk-nelisp-session-smoke-ok`.
 `ddskk-engine-host.exe NELISP_EXE REPOSITORY` is the Windows named-pipe relay.
 The host starts a persistent NeLisp REPL through inherited anonymous pipes,
 loads the DDSKK dispatcher, and serves `\\.\pipe\ddskk-ime-v1`. A manual E2E
-executable verifies a real `KEY` round trip. It is not registered in CTest yet
-because Windows process-tree cleanup still needs a deterministic control path.
+executable verifies a real `KEY` round trip, independent application sessions,
+conversion, child respawn and same-client recovery. Set the CMake cache variable
+`NELISP_EXECUTABLE` to the runtime path to register `ddskk-engine-e2e-test` in
+CTest. Cold readiness has a separate 90-second budget; warm transactions retain
+their ten-second budget. The test owns a kill-on-close job object, so assertion
+failures and CTest termination clean up its host and runtime children.
+
+The host appends lifecycle events to `%LOCALAPPDATA%\DDSKK\host.log`.
+`DDSKK_HOST_LOG` overrides the file path (its parent directory must exist).
+At 1 MiB, the host replaces `host.log.1` with the previous log and starts a
+new file. Events include child pid, engine, runner, exit code, uptime and
+expected-exit status, replacement requests/publication and host stop reason.
+Use a private `LOCALAPPDATA` or `DDSKK_HOST_LOG` for tests. Forced host termination
+cannot emit a final stop event; its last recorded lifecycle event remains useful.
+`DDSKK_HOST_DEBUG=1` adds per-request dispatch, mutex wait, CPU time, working set,
+page faults and dictionary relay timing to stderr.
