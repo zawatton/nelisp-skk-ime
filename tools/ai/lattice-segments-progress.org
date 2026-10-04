@@ -1,0 +1,22 @@
+#+TITLE: Segment-wise lattice conversion and cancel in the Windows TSF stack
+
+* S1 Engine segments over the STATE line
+** S1.1 Existing framework stateline tests still pass
+cmd: emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+** S1.2 ぼくたち converts as two segments whose candidates and focus move independently, and SEGMENT-SHRINK/EXTEND keep both readings intact
+cmd: emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q 'Ran 19 tests, 19 results as expected'
+** S1.3 STATE carries segment boundaries and the active segment as a backward-compatible extra field
+cmd: grep -q 'start:length' framework/src/nelisp-ime-stateline.el && emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -f ert-run-tests-batch-and-exit
+
+* S2 Windows DLL behaviour through the TSF harness
+** S2.1 Pre-change DLL corrupts the commit after moving to the next segment (ぼくた血)
+evidence: build/validation/lattice-segments/pre-segment-harness.txt sha256=abdeb6a23fd56855ed77decdb28e9aa04d4497fc0402ba40fddefd5a0f94df78
+** S2.2 Protocol unit test parses the segment field and still accepts the old STATE form
+evidence: build/validation/lattice-segments/ctest.log sha256=566432849b8acef37606c635abe3179c8aa7e1ed50e0cdabeaa56ba71b107aaf
+** S2.3 Harness: ぼくたち, cycle to 僕, Right, commit gives 僕達 with no corruption; はできない keeps は and commits は出来ない
+#+NOTE: The pre-change DLL also reached the same final text in a later run (base-segments.log): the 「ぼくた血」 corruption is timing dependent and was not reproduced deterministically, so this is not a red-green contrast.
+evidence: build/validation/lattice-segments/worker-segments.log sha256=5630c2656b1d04ad37c423b36587ee8b1d53e460c99a8be4a17a6c5b22144e12
+** S2.4 Harness: Escape/Ctrl+G after provider candidates releases the engine (no candidate state left for Sumi)
+evidence: build/validation/lattice-segments/ctrlg-release.log sha256=24076df40b1e1abc4037db97b6e5e781cc20ab40ad86ff06334eb1d1d0729a93
+** S2.5 Live: in a real application the active segment is visibly distinct and the Sumi candidate window closes on Ctrl+G
+pending

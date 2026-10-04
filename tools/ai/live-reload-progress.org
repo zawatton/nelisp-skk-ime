@@ -1,0 +1,26 @@
+#+TITLE: Switch engines and apply engine fixes without restarting applications
+
+* S1 Engine host hot swap
+** S1.1 ENGINE SWITCH between ddskk and lattice on a private host changes ENGINE CURRENT without any client reconnecting
+evidence: build/validation/live-reload/hot-swap.log sha256=208355af212e559197b990c364fe5c73e9f185eac9ae624a37221e4b43429eb2
+** S1.2 During a switch or ENGINE RELOAD the old engine keeps answering; no request in the window takes longer than 1 s
+#+NOTE: Known red: test-hot-swap.ps1 -StressKeys times out one KEY at ~1.0 s during the switch (worker run 1005 ms, Claude rerun 1017 ms).
+cmd: grep -q '^PASS' build/validation/live-reload/hot-swap-stress.log
+** S1.3 A killed engine child is restarted by the host and the next request is answered
+evidence: build/validation/live-reload/hot-swap.log sha256=208355af212e559197b990c364fe5c73e9f185eac9ae624a37221e4b43429eb2
+** S1.4 Writing the Engine value under the (test-scoped) registry key triggers the same switch
+evidence: build/validation/live-reload/hot-swap.log sha256=208355af212e559197b990c364fe5c73e9f185eac9ae624a37221e4b43429eb2
+
+* S2 DLL and UI follow the live engine
+** S2.1 A running TSF client picks up an engine change at the next key without re-activation (harness: ddskk typing, switch, lattice conversion in the same session)
+evidence: build/validation/live-reload/live-settings-2.log sha256=c50df5e35bb0f187a86a5e4f68a8a1de18121cb3aa0a2303d62f59df4c4684b0
+** S2.2 A client whose host was stopped respawns it and converts again without re-activation
+#+NOTE: One earlier run failed because the host had already died before the scripted kill (intermittent host death, also seen once live); a standalone rerun passed.
+evidence: build/validation/live-reload/live-settings-2.log sha256=c50df5e35bb0f187a86a5e4f68a8a1de18121cb3aa0a2303d62f59df4c4684b0
+** S2.3 Taskbar menu offers DDSKK, lattice, passthrough and engine reload; Sumi labels engines by id (lattice, dictionary), not nelisp-ime
+#+NOTE: Source check only; Sumi was not rebuilt.
+cmd: grep -q 'lattice' windows/src/langbar_button.cpp && grep -q '(lattice)' sumi-ui/indicator/main.c && ! grep -q '(nelisp-ime)' sumi-ui/indicator/main.c
+** S2.4 Existing DDSKK and lattice behaviour suites do not regress
+pending
+** S2.5 Live: switching engines and reloading after an engine fix take effect in an already open application
+pending

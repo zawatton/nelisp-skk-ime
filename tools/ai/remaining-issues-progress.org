@@ -1,0 +1,37 @@
+#+TITLE: Close the open issues left after the 2026-10-04 live deployment
+
+* S1 Engine host (worker A)
+#+NOTE: 2026-10-04: S1.4 added (denominator 10 -> 11).
+** S1.1 test-hot-swap.ps1 -StressKeys passes: no raw KEY during a switch or reload takes 1 s or longer
+#+NOTE: Root cause is not the switch: a no-switch stress shows a 1.6-1.8 s in-band NeLisp collection every ~100 requests (1.4 s every ~58 on the 2026-09-20 runtime). Root fix delegated to worker D in the NeLisp repo.
+pending
+** S1.2 The host logs every child exit (exit code, engine id, uptime) and its own stop reason to a file under the per-user data directory, verified by killing a child in a private test
+#+NOTE: Private test: worker A hot-swap run verified child_exit_count=5 and stop=SHUTDOWN (Claude rerun). Live host after deploy writes the same events (this file).
+evidence: build/validation/remaining/live-host-lifecycle.log sha256=cbe82687def17a430af5e514130871747f43c6852ab8dd6dc58fee3747826617
+** S1.4 Idle collection interval chosen from measured natural typing (3000 ms: >1 s stalls 6 -> 1 of 400 requests; 800 ms and 1500 ms are worse)
+evidence: build/validation/remaining/idle-gc-measurements.log sha256=f695925552b105380f35323835b009505ee28a16d738313d7785eb3331813c8f
+** S1.3 ddskk-engine-e2e-test passes under ctest with a real NeLisp runtime (pre-existing: timeout after merge, 0xc0000409 crash at 3ab59b2)
+evidence: build/validation/remaining/merged-ctest.log sha256=bbb9c04d9131260ed1e074a60e257988518f8b8e73c5464ec5b991ad58bc6c14
+
+* S2 DDSKK registration (worker B)
+** S2.1 test-ddskk-behavior.ps1 passes its 'registration confirm' assertion and every later assertion
+evidence: build/validation/remaining/B-ddskk-suite.log sha256=4c8d9fa9126b747c697203ad227babbca279c7886854a6c759962f6a609230cd
+** S2.2 The fix is shown red on the pre-change DLL/engine and green after
+#+NOTE: Red: 2026-10-03 run of the pre-change scripts/engine failing 'registration confirm'; green: B-ddskk-suite.log (45/45). Ctrl+G/Esc engine release with B's async cleanup: B-cancel.log.
+evidence: build/validation/remaining/B-pre-change-ddskk.log sha256=a097aab6d775b51b3dae7bac0550f60b45e625a8cb66db1d548f49c8e04a8559
+
+* S3 Lattice ichidan verbs (worker C)
+** S3.1 The できない-only special case is replaced by general ichidan handling (e.g. 出来ない, 見ない, 食べない, 起きない) with ERT coverage
+#+NOTE: Spot check of the bundled data before/after: C-ichidan-spot-before.txt vs C-ichidan-spot.txt (forbidden 帰ない/入ない/知ない absent, 変えない/見ない/出来ない present).
+evidence: build/validation/remaining/C-ichidan-spot.txt sha256=667406ba7b99acdd216247f8756c52896e7fdf172db94dfe1c4c66a068bad050
+** S3.2 Existing framework and lattice ERT suites still pass with counts not reduced
+cmd: emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -l engines/lattice/test/nelisp-ime-lattice-test.el -L engines/lattice/test -l engines/lattice/test/nelisp-ime-lattice-ichidan-test.el -f ert-run-tests-batch-and-exit
+
+* S4 Integration and live
+** S4.1 Sumi rebuilt with engine-id labels and its settings self-test passes on a disposable key
+evidence: build/validation/remaining/sumi-build-selftest.log sha256=f4200aaaec04a726c75c9876aeeeadf656edcff2471652eef8b42343e2822073
+** S4.2 Merged build passes ctest and the lattice/DDSKK behaviour suites
+#+NOTE: Known red: ctest 9/9 and ERT 49/49 pass, but the DDSKK suite fails intermittently (GC-pause timeouts) and the lattice suite keeps its pre-existing 150 ms failure; see merged-suites.log.
+cmd: grep -q 'RESULT: ALL PASS' build/validation/remaining/merged-suites.log
+** S4.3 Deployed live (DLL, host, engine snapshot, Sumi) with a rollback manifest; live host answers STATUS
+evidence: build/validation/remaining/deploy-20261004-143218.log sha256=cc800f2ab376193dff1f4a16a5fa5c3d288daeb82cff92d42b4d8b8b0d083a8b
