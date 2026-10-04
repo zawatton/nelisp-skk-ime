@@ -1,0 +1,21 @@
+#+TITLE: IME DLL updates without restarting applications (stable shim + hot-swappable core)
+
+* S1 Shim / core split
+** S1.1 ddskk-ime.dll becomes a small stable shim that loads a versioned core DLL; with the split, ctest (with NELISP_EXECUTABLE), the DDSKK suite and the Emacs integration suite pass as before
+pending
+** S1.2 The core ABI is versioned (size/version checks); a core that fails to load or initialise is rejected and the previous core keeps running, with a logged reason
+pending
+
+* S2 In-process hot swap
+** S2.1 In one running client process, switching the registered core version makes the next keys use the new core without restarting the process
+pending
+** S2.2 A swap requested during a composition, candidate selection or pending engine request waits until that finishes; no key is lost or reordered
+pending
+** S2.3 Ordinary-key latency stays within the existing checks after the split (no measurable regression)
+pending
+
+* S3 End to end
+** S3.1 deploy-live gains a core-only deployment that switches cores in already running applications (private test client) without restarting them; rollback restores the previous core the same way
+pending
+** S3.2 Live: after one restart to install the shim, a later core update takes effect in the user's running Emacs and another application without restarting them
+pending
