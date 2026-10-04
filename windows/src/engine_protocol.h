@@ -42,6 +42,16 @@ struct EngineState {
   std::wstring registration_reading;
 };
 
+struct RomajiRule {
+  std::string key;
+  std::string carry;
+  std::wstring hiragana;
+  std::wstring katakana;
+  std::wstring command;
+  bool operator==(const RomajiRule&) const = default;
+};
+std::optional<std::vector<RomajiRule>> ParseRomajiRules(const std::string& line);
+
 std::string EncodeKeyRequest(char32_t codepoint);
 // Atomic conversion barrier used by the native real-time frontend: reset the
 // provider session, replay the exact SKK key sequence, and convert in one

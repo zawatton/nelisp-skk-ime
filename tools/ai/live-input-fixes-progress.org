@@ -17,3 +17,105 @@ pending
 pending
 ** S3.2 Live: the user confirms tya, q and conversion speed in Emacs and another application
 pending
+
+* Worker R1 evidence notes (2026-10-05; criteria unchanged)
+- Handoff with file:line map, commands, verbatim gate tails, counts and limits:
+  build/validation/live-input/report.md.
+- S1.1: unchanged-tree reproduction produced tや and ▽かなq.
+  Full text-rule parity: 251 exported text leaves, both kana modes, 511 engine
+  probes including nine edge sequences; fallback negative control exits 1.
+  Exported command metadata is not exhaustively covered by the converter unit.
+  romaji-parity-final.log SHA256:
+  22897D7884719B5E00BA699487DB4253746748B4D280DFD4A41B2E398C696184
+  romaji-oracle-final.txt SHA256:
+  A22F3E263E0157950E98931385E1DE18CAC67FBC4B68FED6575DF15B2A2283BB
+- S1.2: stock DDSKK oracle + 2 ERT tests confirm both q directions, Q starts
+  a new preedit after confirming the reading, l/L mode changes, and / rejection
+  with unchanged reading. Warmed TSF traces confirm these paths. Fresh first-use
+  replay timeout led to a separate asynchronous mode-replay I/O budget; final
+  preflight twice timed out connecting to the private pipe, so reliability
+  remains unverified. No test threshold was changed.
+  ert-live-input.log SHA256:
+  5027FB3233D24424EE63C858FCA33395DD2EADA71E8EC6B8BC26604FEB549A2D
+- S2.1/S2.2: comparable eager-checkpoint baseline completed 22 warm TSF
+  conversions, median 382.5 ms / p90 484 ms. Final completed 21, median 391 ms /
+  p90 578 ms; two failed/timed-out requests including warm-up. Median target
+  remains failed. Host/engine median 375 ms, runtime CPU 359 ms, replay 141 ms,
+  checkpoint 0 ms, explicit convert 156 ms, DLL Space return 2.762 ms, host
+  dictionary relay rounds to 0 ms. Engine user-dictionary cost is included
+  in convert; okuri auto-convert is included in replay. Other worker load and
+  censored failures prevent claiming an improvement. Runtime checkout untouched.
+  latency-before-summary.log SHA256:
+  DE1FCB4D1C61AD89FCDE38BA898577B33C79DB4468BCA91942EB4C40ADD59A94
+  latency-final-summary.log SHA256:
+  2C618E241B6D766191BEB8601D3393A3720E4A099D3DBD1F6AEEB61DBEF15473
+- S3.1: CTest 8/8; framework/lattice/stateline ERT 134/134; DDSKK ERT 2/2.
+  DDSKK suite is RED: earlier serial run failed assertion 3 (Shift+Q expects
+  committed katakana, conflicting with stock DDSKK); latest concurrent run
+  failed its first conversion. Lattice suite is RED at the known 150 ms first
+  assertion. Remaining assertions were not counted as passed. Tests unchanged.
+- S3.2: pending; no live IME or other checkout touched, no deployment,
+  registration, staging, commit, push, stash or reset. Private hosts/children
+  cleaned up. See process-cleanup.log. User clarification of Q contract remains
+  unanswered; implementation follows DDSKK, suite assertion remains unchanged.
+
+* Worker R1 coordinator-review evidence (criteria unchanged)
+- Corrected the missing gate: build/w now sets NELISP_EXECUTABLE to the
+  supplied read-only runtime. Reproduced test 9's WaitForSessionCount(4)
+  failure unchanged, then passed test 9 with only the metadata dispatch fix.
+  ROMAJI RULES 1 had created a persistent legacy editing session at startup;
+  unscoped metadata now bypasses client-session creation and activation.
+  Cached metadata reads and session isolation have an additional E2E assertion.
+  See e2e-review-before.log, e2e-metadata-fix.log, ctest-review-final.log.
+- S1.1/S1.2: three consecutive fresh private hosts (fresh-review-2/3/4.log)
+  each produced ちゃ, q committed カナ from hiragana and かな from katakana,
+  then converted か to 蚊. Five output assertions per run passed; run 4 also
+  fetched cached rules over the private pipe without timeout. The pre-fix
+  failed run is retained as a negative control, not counted as passing.
+  Current exported table equals the prior 511-probe oracle; full converter
+  parity rerun passed 251 text leaves in both modes plus nine samples.
+- S2.1/S2.2: reverted lazy checkpoints and deferred intermediate snapshots
+  to eager behaviour. Quiet serial run: 23 measured completions, median
+  203 ms, p90 282 ms, max 1469 ms. One of 24 measured-document conversions
+  timed out (the first okuri request); the warm-up succeeded and is excluded
+  from the distribution. Host median 187 ms, runtime CPU 171 ms, replay 78 ms,
+  checkpoint 16 ms, convert 63 ms, DLL 1.24 ms, host dictionary relay 0 ms.
+  This is not a paired improvement claim. Remaining dominant runtime CPU
+  work was not pursued. See latency-eager-review-summary.log.
+- S3.1: unchanged DDSKK suite still fails Shift+Q. Stock KanaQ confirms
+  hiragana かな and starts a fresh ▽ preedit; the suite expects committed
+  katakana カナ with COMP=-. Audit of its exact assertions: 38/42 pass,
+  four fail (Q plus three following checks assuming its katakana prefix
+  and terminal state). Thus not every other assertion passes. The suite
+  declares 45 but executes 42 checks. Ctrl+G max 0.671 ms. Lattice remains
+  red at its unchanged 150 ms first-candidate assertion. Source gates were
+  not modified. ERT framework/lattice/stateline 134/134 and DDSKK 2/2.
+- Full review handoff, commands, verbatim tails and change locations:
+  build/validation/live-input/review-report.md. All work remains unstaged.
+
+* Worker R1 stock-contract assertion evidence (criteria unchanged)
+- Coordinator authorized updating the Shift+Q oracle and only dependent
+  assertions, while retaining lowercase q coverage. Suite lines 85-89 now
+  assert stock Q's hiragana confirmation plus fresh ▽, an independent q
+  katakana commit, and the resulting prefixes for candidate five, learning
+  and cancellation. The Q episode waits for its async result and confirms
+  the empty fresh preedit with Enter before testing lowercase q. Its new q
+  case uses the existing 5 s replay budget; all pre-existing conversion
+  waits and the 20 ms Ctrl+G threshold remain unchanged.
+- Stock Emacs DDSKK oracle: 3/3 ERT, including exact accumulated text after
+  Q, Enter, q, candidate five, learned candidate and cancellation using an
+  isolated UTF-8 copy of the fixture. See ert-stock-contract.log.
+- S3.1: three serial FRESH private DDSKK suites PASS, 43/43 actual assertions
+  per run (the unchanged result object still declares 45). Ctrl+G maxima:
+  1.451 / 1.962 / 1.795 ms. Logs: ddskk-stock-contract-1/2/3.log.
+  An earlier 3 s wait in the newly added q case failed with 3344 ms engine
+  wall / 3250 ms runtime CPU; failed exploratory logs remain recorded.
+  No existing assertion was weakened to accept those failures.
+- Framework/lattice/stateline ERT rerun: 134/134. Final gate tails, every
+  changed suite line old -> new, stock evidence, commands and cleanup:
+  build/validation/live-input/stock-contract-report.md.
+- S3.2 remains pending live user confirmation. No live IME or other
+  checkout touched; all changes remain unstaged.
+- CTest with NELISP_EXECUTABLE configured: 9/9, 26.05 s total. Final owned
+  host/TSF and recorded private engine leftovers: zero. See
+  ctest-stock-contract.log and process-cleanup-stock-contract.log.

@@ -55,6 +55,31 @@ std::string EncodeKeyRequest(char32_t codepoint) {
   return "KEY " + std::to_string(static_cast<uint32_t>(codepoint)) + "\n";
 }
 
+std::optional<std::vector<RomajiRule>> ParseRomajiRules(const std::string& line) {
+  if (!line.starts_with("RULES 1 ")) return std::nullopt;
+  std::istringstream input(line.substr(8));
+  std::vector<RomajiRule> rules;
+  for (std::string record; input >> record;) {
+    std::vector<std::wstring> fields;
+    size_t start = 0;
+    for (;;) {
+      const auto end = record.find(':', start);
+      auto field = DecodeScalarHex(record.substr(start, end - start));
+      if (!field) return std::nullopt;
+      fields.push_back(std::move(*field));
+      if (end == std::string::npos) break;
+      start = end + 1;
+    }
+    if (fields.size() != 5 || fields[0].empty()) return std::nullopt;
+    for (size_t i = 0; i < 2; ++i)
+      for (const auto ch : fields[i]) if (ch > 127) return std::nullopt;
+    rules.push_back({std::string(fields[0].begin(), fields[0].end()),
+                     std::string(fields[1].begin(), fields[1].end()),
+                     fields[2], fields[3], fields[4]});
+  }
+  return rules.empty() ? std::nullopt : std::optional{std::move(rules)};
+}
+
 static std::string EncodeKeysRequest(const char* prefix,
                                      const std::u32string& keys) {
   if (keys.empty()) return {};

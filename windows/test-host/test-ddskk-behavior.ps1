@@ -25,8 +25,9 @@ $script = @(
   # One-character conversion and okuri-ari conversion.
   'K a SPACE WAIT1700 ENTER WAIT500'
   'K i e R u SPACE WAIT1700 ENTER WAIT500'
-  # DDSKK q conversion commits katakana without changing the base mode.
-  'K a n a Q'
+  # Stock Q confirms hiragana and starts another preedit; confirm that empty
+  # preedit, then independently assert lowercase q's katakana commit.
+  'K a n a Q WAIT3000 ENTER WAIT500 K a n a q WAIT5000'
   # Candidate 5, learning, then local two-step Ctrl+G.
   'K a n a SPACE WAIT1700 SPACE SPACE SPACE SPACE ENTER WAIT500'
   'K a n a SPACE WAIT1700 CTRLG CTRLG'
@@ -81,10 +82,11 @@ function Require([string]$pattern, [string]$label) {
 # UTF-8 .ps1 as the active ANSI codepage. .NET regex expands \uXXXX itself.
 Require 'AFTER WAIT500 BUF=\[\u868a\].*COMP=-' 'one-character conversion'
 Require 'AFTER WAIT500 BUF=\[\u868a\u6d88\u3048\u308b\].*COMP=-' 'okuri-ari conversion'
-Require 'AFTER Q BUF=\[\u868a\u6d88\u3048\u308b\u30ab\u30ca\].*COMP=-' 'Shift+Q katakana commit'
-Require 'AFTER WAIT500 BUF=\[\u868a\u6d88\u3048\u308b\u30ab\u30ca\u4f73\u5948\].*COMP=-' 'candidate traversal beyond four'
-Require 'AFTER WAIT1700 BUF=\[\u868a\u6d88\u3048\u308b\u30ab\u30ca\u4f73\u5948\u25bc\u4f73\u5948\]' 'committed candidate learning'
-Require 'AFTER CTRLG BUF=\[\u868a\u6d88\u3048\u308b\u30ab\u30ca\u4f73\u5948\u25bd\u304b\u306a\]' 'candidate cancellation restores reading'
+Require '(?s)AFTER Q BUF=\[\u868a\u6d88\u3048\u308b\u25bd\u304b\u306a\].*?AFTER WAIT3000 BUF=\[\u868a\u6d88\u3048\u308b\u304b\u306a\u25bd\] SEL=7,7 COMP=4,7' 'Shift+Q hiragana commit and fresh preedit'
+Require 'AFTER WAIT5000 BUF=\[\u868a\u6d88\u3048\u308b\u304b\u306a\u30ab\u30ca\].*COMP=-' 'lowercase q katakana commit'
+Require 'AFTER WAIT500 BUF=\[\u868a\u6d88\u3048\u308b\u304b\u306a\u30ab\u30ca\u4f73\u5948\].*COMP=-' 'candidate traversal beyond four'
+Require 'AFTER WAIT1700 BUF=\[\u868a\u6d88\u3048\u308b\u304b\u306a\u30ab\u30ca\u4f73\u5948\u25bc\u4f73\u5948\]' 'committed candidate learning'
+Require 'AFTER CTRLG BUF=\[\u868a\u6d88\u3048\u308b\u304b\u306a\u30ab\u30ca\u4f73\u5948\u25bd\u304b\u306a\]' 'candidate cancellation restores reading'
 
 foreach ($token in @('0','1','2','3','4','5','6','7','8','9',
                       'S1','S2','S3','S4','S5','S6','S7','S8','S9')) {

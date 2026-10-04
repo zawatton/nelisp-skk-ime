@@ -213,10 +213,11 @@ instead of kana."
     ;; dispatched.
     (unless preserve-point (goto-char (point-max)))
     (let ((previous (skk-ime-session-last-command session)))
-      (if (or (and (>= key ?0) (<= key ?9))
+      (if (and (equal skk-prefix "")
+               (or (and (>= key ?0) (<= key ?9))
               ;; Symbols produced by Shift+digits on Japanese and US
               ;; layouts. Treat them as literal text, not DDSKK commands.
-              (memq key '(33 34 35 36 37 38 39 40 41 42 64 94)))
+              (memq key '(33 34 35 36 37 38 39 40 41 42 64 94))))
           (progn
             ;; DDSKK's kana keymap consumes ASCII digits/Shift+digit symbols
             ;; without inserting them.  Finish a pending syllable/candidate,

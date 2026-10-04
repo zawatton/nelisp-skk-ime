@@ -7,6 +7,8 @@
 
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace ddskk {
 
@@ -19,6 +21,13 @@ class RealtimeFrontend {
   // DDSKK leaves this disabled and starts a conversion reading with an
   // uppercase roman key instead.
   void SetContinuousPreedit(bool enabled) { continuous_preedit_ = enabled; }
+  void SetRules(const std::vector<RomajiRule>& rules);
+  void AdoptMode(const EngineState& state) {
+    if (state.composition_start >= 0) return;
+    katakana_ = state.mode == L"katakana";
+    latin_ = state.mode == L"latin";
+    wide_latin_ = state.mode == L"wide-latin";
+  }
   std::optional<EngineState> Feed(char32_t key);
   std::optional<EngineState> Backspace();
   std::optional<EngineState> Commit();
@@ -58,6 +67,9 @@ class RealtimeFrontend {
   std::wstring text_;
   std::string pending_;
   std::u32string raw_keys_;
+  std::unordered_map<std::string, RomajiRule> rules_;
+  std::unordered_set<std::string> prefixes_;
+  std::vector<RomajiRule> installed_rules_;
 };
 
 }  // namespace ddskk

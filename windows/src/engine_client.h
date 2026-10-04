@@ -65,6 +65,9 @@ class EngineClient {
   // thread to pay the engine's cold-load cost off the UI thread instead of
   // on the user's first keystroke.
   bool Ping(DWORD timeout_ms);
+  std::optional<std::vector<RomajiRule>> RomajiRules(DWORD timeout_ms = 8);
+  std::optional<EngineState> SyncKeys(const std::u32string& keys,
+                                     DWORD timeout_ms = 1500);
   const std::string& last_response() const { return last_response_; }
 
  private:

@@ -103,6 +103,13 @@ Answers nil without loading anything unless the reading actually asks for
   "Set MARKER to POSITION as a plain position (NeLisp override)."
   (list 'setq marker position))
 
+;; This runtime's point markers do not adjust and its comparison operators
+;; reject markers. DDSKK's q command compares the saved point using >=.
+;; Use the same numeric-position policy as the henkan markers above.
+(defmacro skk-save-point (&rest body)
+  `(let ((skk-save-point (point)))
+     (unwind-protect (progn ,@body) (goto-char skk-save-point))))
+
 ;; `marker-position' is then handed an integer by anything that still asks
 ;; a henkan point for its position (`skk-emacs.el' does).  Answer it rather
 ;; than signal: the value IS the position.
@@ -585,17 +592,58 @@ identity.  `:candidates' is read once instead of twice."
     (skk-ime-session-reset ddskk-engine--session))
   (ddskk-engine--registration-state-line))
 
+(defun ddskk-engine--phase (name)
+  "Emit a phase boundary for host wall-clock timing, never runtime clocks."
+  (when (getenv "DDSKK_PHASE_TRACE")
+    (nelisp--write-stdout-bytes (concat "PHASE " name "\n"))))
+
+(defun ddskk-engine--romaji-walk (node)
+  "Flatten a compiled NODE into wire records without local functions."
+  (let* ((key (nth 1 node)) (carry (nth 2 node)) (output (nth 3 node))
+         (action (and (symbolp output) output)) records)
+    (when output
+      (when (eq output 'skk-auto-kutouten)
+        (setq last-command-event (aref key (1- (length key))))
+        (setq output (skk-auto-kutouten nil) action nil))
+      (push (mapconcat #'ddskk-engine--hex
+                       (list key (or carry "")
+                             (cond ((stringp output) output)
+                                   ((consp output) (cdr output)) (t ""))
+                             (cond ((stringp output) output)
+                                   ((consp output) (car output)) (t ""))
+                             (if action (symbol-name action) "")) ":") records))
+    (dolist (child (nth 4 node))
+      (setq records (append records (ddskk-engine--romaji-walk child))))
+    records))
+
+(defun ddskk-engine--romaji-rules ()
+  "Export the effective compiled tree, including command leaves, as RULES 1.
+Fields are scalar hex: key, carry, hiragana, katakana, command.  Command
+leaves remain engine-owned; punctuation is resolved in the current buffer."
+  (let ((last-command-event (if (boundp 'last-command-event)
+                                last-command-event nil)))
+    (skk-ime-session--with-buffer ddskk-engine--session
+      (concat "RULES 1 " (mapconcat #'identity
+                                    (ddskk-engine--romaji-walk
+                                     (ddskk-engine--rule-tree)) " ")))))
+
 (defun ddskk-engine--convert-or-register ()
   "Convert once, preserving a zero-result reading for native registration."
   (let* ((before (skk-ime-session-snapshot ddskk-engine--session))
-         (checkpoint (skk-ime-session-checkpoint ddskk-engine--session))
+         (checkpoint (progn
+                       (ddskk-engine--phase "checkpoint-begin")
+                       (prog1 (skk-ime-session-checkpoint ddskk-engine--session)
+                         (ddskk-engine--phase "checkpoint-end"))))
          (start (plist-get before :composition-start))
          (text (plist-get before :text))
          (reading (if (and (numberp start) (>= start 0)
                            (stringp text) (<= start (length text)))
                       (substring text start)
                     ""))
-         (state (skk-ime-session-control ddskk-engine--session 'convert)))
+         (state (progn
+                  (ddskk-engine--phase "convert-begin")
+                  (prog1 (skk-ime-session-control ddskk-engine--session 'convert)
+                    (ddskk-engine--phase "convert-end")))))
     ;; Current DDSKK cleans a missing first conversion back to an empty
     ;; hiragana state after the noninteractive minibuffer stub returns nil.
     ;; Older builds left a candidate state with an empty list, which
@@ -861,6 +909,19 @@ The data carries the missing symbol name for `void-variable' /
          (ddskk-engine--registration-request-p line))
     (ddskk-engine--dispatch-registration line))
     ((equal line "HELLO 1") "OK 1")
+   ((equal line "ROMAJI RULES 1") (ddskk-engine--romaji-rules))
+   ((and (> (length line) 18)
+         (equal (substring line 0 18) "CONTROL SYNC-KEYS "))
+    (let ((keys (ddskk-engine--decode-codepoints (substring line 18))))
+      (if (not keys) "ERR SYNC-KEYS"
+        (condition-case err
+            (progn
+              (skk-ime-session-reset ddskk-engine--session)
+              (ddskk-engine--state-line
+               (skk-ime-session-feed-string ddskk-engine--session keys)))
+          ;; DDSKK rejects / while already in ▽. Preserve its unchanged
+          ;; reading rather than treating a normal command error as EOF.
+          (error (ddskk-engine--safe-state-line))))))
    ((equal line "ENGINE LIST") "ENGINES ddskk passthrough")
    ((equal line "ENGINE CURRENT")
     (concat "ENGINE " native-ime-engine-id))
@@ -915,9 +976,11 @@ The data carries the missing symbol name for `void-variable' /
       (if (not keys) "ERR CONVERT-KEYS"
         (condition-case err
             (progn
+              (ddskk-engine--phase "replay-begin")
               (skk-ime-session-reset ddskk-engine--session)
               (let ((state (skk-ime-session-feed-string
                             ddskk-engine--session keys)))
+                (ddskk-engine--phase "replay-end")
                 ;; Okuri-ari conversion starts automatically when its final
                 ;; kana resolves.  A second CONVERT here advances past that
                 ;; fresh candidate (and a one-candidate entry immediately
@@ -1114,11 +1177,15 @@ The data carries the missing symbol name for `void-variable' /
 
 (defun ddskk-engine-dispatch-line (line)
   "Dispatch legacy LINE or a client-scoped `SESSION ID LINE' request."
-  (if (equal line "DIAG SESSION-COUNT")
+  ;; Metadata must not create or activate a legacy editing session. The
+  ;; host fetches this once at startup and after replacement publication.
+  (cond
+   ((equal line "ROMAJI RULES 1") (ddskk-engine--romaji-rules))
+   ((equal line "DIAG SESSION-COUNT")
       (concat "SESSIONS " (number-to-string
-                           (hash-table-count ddskk-engine--sessions)))
-    (if (and (> (length line) 8)
-           (equal (substring line 0 8) "SESSION "))
+                           (hash-table-count ddskk-engine--sessions))))
+   ((and (> (length line) 8)
+         (equal (substring line 0 8) "SESSION "))
       (let ((separator (string-match " " line 8)))
         (if (not separator)
             "ERR SESSION"
@@ -1127,8 +1194,8 @@ The data carries the missing symbol name for `void-variable' /
             (if (or (not (ddskk-engine--session-id-valid-p session-id))
                     (= (length request) 0))
                 "ERR SESSION"
-              (ddskk-engine--dispatch-session-line session-id request)))))
-      (ddskk-engine--dispatch-session-line "legacy" line))))
+              (ddskk-engine--dispatch-session-line session-id request))))))
+   (t (ddskk-engine--dispatch-session-line "legacy" line))))
 
 (defun ddskk-engine-write-response (response)
   (nelisp--write-stdout-bytes (concat response "\n")))

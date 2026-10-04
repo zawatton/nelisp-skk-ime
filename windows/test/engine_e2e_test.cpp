@@ -163,6 +163,11 @@ int Run(int argc, wchar_t** argv) {
   assert(state->mode == L"hiragana");
   assert(state->text.empty());
   assert(state->pending_romaji == L"k");
+  // Startup metadata export and cached reads must not create a legacy
+  // editing session or disturb this client's pending romaji.
+  assert(WaitForSessionCount(1));
+  assert(client.RomajiRules(10000));
+  assert(WaitForSessionCount(1));
   const auto preview = client.PreviewCandidates(L"かな", 1000);
   assert(preview && !preview->empty() && (*preview)[0] == L"仮名");
   // Model the four production targets (Notepad = client, plus Edge,
