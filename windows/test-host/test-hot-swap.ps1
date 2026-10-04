@@ -16,7 +16,7 @@ $hostProcess = $null
 $client = $null
 $saved = @{}
 foreach ($name in @('NATIVEIME_REGISTRY_KEY','DDSKK_PIPE_NAME','NELISP_IME_ENGINE',
-    'DDSKK_USER_JISYO','LOCALAPPDATA','DDSKK_SKKSERV_ENABLE','DDSKK_DICTIONARY_FILES')) {
+    'DDSKK_USER_JISYO','LOCALAPPDATA','DDSKK_SKKSERV_ENABLE','DDSKK_DICTIONARY_FILES','DDSKK_HOST_LOG')) {
   $saved[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 function Request([string]$request, [int]$timeout=1000) {
@@ -70,6 +70,10 @@ try {
   $env:DDSKK_PIPE_NAME = "\\.\pipe\$pipe"
   $env:DDSKK_USER_JISYO = Join-Path $BuildDirectory "swap-$id.jisyo"
   $env:LOCALAPPDATA = $BuildDirectory
+  $logPath = Join-Path $BuildDirectory "host-$id.log"
+  $env:DDSKK_HOST_LOG = $logPath
+  # Exercise rotation without opening the production per-user directory.
+  [IO.File]::WriteAllText($logPath, ('x' * (1024 * 1024)))
   Remove-Item Env:NELISP_IME_ENGINE -ErrorAction SilentlyContinue
   Remove-Item Env:DDSKK_DICTIONARY_FILES -ErrorAction SilentlyContinue
   $env:DDSKK_SKKSERV_ENABLE = '0'
@@ -112,6 +116,15 @@ try {
   Require ((Request 'ENGINE SWITCH invalid') -eq 'ERR ENGINE') 'Invalid id accepted'
   Require ((Request 'SHUTDOWN') -eq 'OK') 'Shutdown failed'
   Require ($hostProcess.WaitForExit(5000)) 'Shutdown did not terminate host'
+  $events = Get-Content -LiteralPath $logPath
+  Require (Test-Path -LiteralPath "$logPath.1") 'Log rotation did not retain the previous file'
+  Require (($events | Where-Object { $_ -match 'child-exit .*expected=false' }).Count -eq 1) 'Killed child must have exactly one unexpected exit event'
+  Require (($events | Where-Object { $_ -match 'host-stop reason=SHUTDOWN' }).Count -eq 1) 'Missing clean host stop reason'
+  foreach ($event in @('child-start','switch','reload','respawn','replacement-published')) {
+    Require ([bool]($events | Where-Object { $_ -match " $event " })) "Missing $event event"
+  }
+  Require (($events | Where-Object { $_ -match 'child-start ' }).Count -eq ($events | Where-Object { $_ -match 'child-exit ' }).Count) 'Each child start must have one exit event'
+  Write-Output "LOG verified=$logPath rotation=True child_exit_count=$(($events | Where-Object { $_ -match 'child-exit ' }).Count) stop=SHUTDOWN"
   Write-Output 'PASS hot-swap, reload, death recovery, registry notification, shutdown'
 } finally {
   if ($client) { $client.Dispose() }

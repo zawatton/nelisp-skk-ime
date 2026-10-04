@@ -126,6 +126,22 @@ children, with exponential retry back-off from one to thirty seconds. Its
 job object owns all children so killing the host also kills warming processes.
 Dictionary relay, idle GC and the state mirror always use the active child.
 
+`ENGINE CURRENT` reads the host's published engine identity under the switch
+mutex. It never dispatches a request to the child: DDSKK treats an unscoped
+request as a legacy session, so relaying repeated management polls forced full
+checkpoint switches around application keys. Replacement readiness resets a
+temporary session and closes it and the management-created legacy checkpoint
+before publication, leaving only sessions owned by connected clients.
+
+Lifecycle events append to `%LOCALAPPDATA%\DDSKK\host.log`, or the file selected
+by `DDSKK_HOST_LOG`. The active file rotates at 1 MiB to one `.1` backup.
+Child starts identify the pid, engine and runner; exits identify the exit code,
+uptime and whether shutdown/retirement was expected. Switch, reload, respawn,
+publication and host stop reasons are recorded separately. Private tests use
+their own data/log directory. Optional `DDSKK_HOST_DEBUG` traces distinguish
+engine mutex waiting from child dispatch, dictionary relay and total request
+time, and include child CPU/working-set/page-fault measurements.
+
 Each DLL watches the settings key on a background waiter and applies changes
 at the next idle key or focus event. Engine identity remains fixed during a
 composition. Failed connections trigger throttled host startup, at most once
@@ -145,6 +161,7 @@ window once offered an engine the running stack could not serve, and selecting
 it left the user with no conversion at all. An engine that cannot be launched
 degrades to the one that always can.
 
-Measured cold start, real host on a private pipe: DDSKK 4.9 s to first
-response, the framework runner on `lattice` 3.4 s. Both answer subsequent keys
-in well under 100 ms.
+Cold runtime loading can take tens of seconds and has a separate readiness
+budget in the engine E2E. Timing a management response alone does not establish
+keyboard readiness: the stress harness sends real scoped keys to the active
+child throughout replacement preparation and retains its one-second bound.
