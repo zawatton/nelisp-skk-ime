@@ -5,11 +5,14 @@
 #+NOTE: Known red at 2026-10-04: nelisp--arena-dump-image-stream writes 0 bytes then exits 139 (segfault); --cold-load-from also exits 139 (77b4dee-era IME runtime).
 cmd: grep -q 'ROUNDTRIP-OK' build/validation/heap-image/roundtrip.log
 ** S1.2 Missing, empty, truncated and stale images fail with a non-zero exit and a message, never a crash
-pending
+#+NOTE: NeLisp integrate/gc-heap-image 7c24891a (heap image 0ecf7088 + GC 98d672e7); exit 2 with one stderr line for missing/empty/truncated/corrupt/foreign-build images.
+evidence: build/validation/heap-image/merged-heap-native.log sha256=619c3a6490a50364b7f144369806cce82c6c9930f5f0e19184beea1a36282250
 ** S1.3 Linux cold-image behaviour is unchanged (scripts/cold-image-org-e2e.sh passes)
 pending
-** S1.4 End to end: both engines (ddskk, lattice) loaded in one process, dumped, cold-booted, and a conversion answers identically to a source boot
-pending
+** S1.4 End to end: each engine (ddskk, lattice) loaded, dumped, cold-booted, and a conversion answers identically to a source boot
+#+NOTE: Each engine 5 source + 5 cold boots with identical raw answers (merged-report.md), and 2,000 requests in a cold-booted engine with 51 collections incl. explicit ones, pass True for ddskk and lattice.
+evidence: build/validation/heap-image/merged-combined.log sha256=247fed77474177e1415f09123a7e4cb84349414add0af8e32a6f3f3fcae39ac4
+evidence: build/validation/heap-image/merged-report.md sha256=32810dff89c7a0413faeb98dc7f3f80da0de940442bb2788d2a7ace233bae8b1
 
 * S2 IME engines boot from the image
 ** S2.1 A reproducible build step produces the engine image (load, warm up with representative conversions, reset session state, dump), keyed by a fingerprint of runtime binary, engine sources and data
