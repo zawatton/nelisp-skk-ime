@@ -1,0 +1,15 @@
+#+TITLE: Bundled lattice dictionary: real words first, no generated non-words
+
+#+NOTE: Ledger created after the work started (rounds 1-4 ran on 2026-10-04 before it existed).
+
+* S1 Bundled dictionary data
+** S1.1 No generated non-words (利そう 儂つ 読のう 酔とう 分こう 聞い); required first candidates (理想 和室 予納 与党 和光 予防 盗む 取った 書かない 熱く 高く 固く ...)
+cmd: emacs -Q --batch -L framework/src -L engines/lattice/src -L engines/lattice/test -l engines/lattice/test/nelisp-ime-lattice-attested-test.el -f ert-run-tests-batch-and-exit
+** S1.2 Existing lattice and ichidan ERT keep their tests and pass
+cmd: emacs -Q --batch -L framework/src -L engines/lattice/src -L engines/lattice/test -l engines/lattice/test/nelisp-ime-lattice-test.el -l engines/lattice/test/nelisp-ime-lattice-ichidan-test.el -f ert-run-tests-batch-and-exit
+** S1.3 Stateline and conformance ERT pass with the shipped data
+cmd: emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+** S1.4 Adjectives SKK lists only under okuri i (赤い 大きい 小さい 新しい) also get their adverbial forms (赤く 大きく 小さく 新しく)
+pending
+** S1.5 End to end: a private-host TSF lattice session converts りそう わしつ よとう あつく to 理想 和室 与党 熱く
+pending
