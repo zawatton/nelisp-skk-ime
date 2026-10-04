@@ -10,6 +10,7 @@ cmd: emacs -Q --batch -L framework/src -L engines/lattice/src -L engines/lattice
 ** S1.3 Stateline and conformance ERT pass with the shipped data
 cmd: emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
 ** S1.4 Adjectives SKK lists only under okuri i (赤い 大きい 小さい 新しい) also get their adverbial forms (赤く 大きく 小さく 新しく)
-pending
+cmd: emacs -Q --batch -L framework/src -L engines/lattice/src -L engines/lattice/test -l engines/lattice/test/nelisp-ime-lattice-attested-test.el --eval '(ert-run-tests-batch-and-exit "adjective-paradigm")'
 ** S1.5 End to end: a private-host TSF lattice session converts りそう わしつ よとう あつく to 理想 和室 与党 熱く
-pending
+#+NOTE: Also おおきく -> 大きく. Script: build/validation/lattice-dictionary/lattice-e2e-words.ps1 (run-harness.ps1 on a private host/key/pipe); the log ends with LATTICE-WORDS-OK and BUF=[理想和室与党熱く大きく]; a changed expectation (利そう...) does not match the same log.
+evidence: build/validation/lattice-dictionary/e2e-words.log sha256=19a309be7a988526d7e67d0199e099e97c81f91c7c74245741aff90d464770d4
