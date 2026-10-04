@@ -29,9 +29,14 @@ The portable reference supplies ordering only. A reference candidate can
 survive only if the raw SKK sources and IPAdic attestation admit it. Verb
 spelling, reading, and class must match; ambiguous classes generate nothing.
 Non-verb row expansions require IPAdic spelling/reading attestation. An
-adjective's candidate + い must be a basic form of 形容詞・アウオ段,
-形容詞・イ段 or 形容詞・イイ. Only HEAD's adjective suffixes are retained:
-`i`: い, くない, かった, くて, ければ, そう; `k`: く; `s`: そう.
+adjective must match the spelling and reading of a basic form of 形容詞・アウオ段,
+形容詞・イ段 or 形容詞・イイ. Every attested adjective entry generates the complete paradigm:
+い, く, くない, かった, くて, ければ, さ, そう, regardless of its okuri code.
+Identical trailing kana may be omitted from the SKK spelling and reading:
+おおk /大/ matches 大きい/おおきい and retains き in every generated form.
+Pairs are deduplicated, and forms retain SKK candidate order. Adjective
+そう is not a verb volitional. Attested adjective paradigms from the large
+source also add their readings outside the old medium row footprint.
 Other row suffixes are not adjective forms. Attested na-adjective stems
 also admit そう; noun/adverb row forms require an exact full surface/reading
 match. This retains 賄い without admitting bare verb onbin stems such as
