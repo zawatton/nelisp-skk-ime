@@ -129,7 +129,8 @@
       (should (equal (nelisp-ime-stateline-test--field line 4)
                      (nelisp-ime-stateline--hex "母く達"))))
     (nelisp-ime-stateline-dispatch "CONTROL SEGMENT-EXTEND")
-    (dotimes (_ 3) (nelisp-ime-stateline-dispatch "CONTROL CONVERT"))
+    ;; 僕 is now the first ぼく candidate; no cycling past bogus forms.
+    (should (equal (car (gethash "ぼく" nelisp-ime-dictionary-index)) "僕"))
     (let ((line (nelisp-ime-stateline-dispatch "CONTROL SEGMENT-NEXT")))
       (should (equal (nelisp-ime-stateline-test--field line 8) "0:1,1:1;1")))
     (let ((line (nelisp-ime-stateline-dispatch "CONTROL COMMIT")))
