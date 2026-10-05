@@ -112,11 +112,13 @@ class StateEditSession final : public ITfEditSession {
     return count;
   }
   HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie edit_cookie) override {
-    return service_->ApplyEngineState(edit_cookie, context_, state_);
+    return service_->ApplyEngineState(edit_cookie, context_, state_, &pair_caret_);
   }
 
  private:
   ~StateEditSession() {
+    // Synchronous callers retain this reference through text-store unlock.
+    pair_caret_.Complete();
     context_->Release();
     service_->Release();
   }
@@ -124,6 +126,7 @@ class StateEditSession final : public ITfEditSession {
   TextService* service_;
   ITfContext* context_;
   ddskk::EngineState state_;
+  ddskk::AutoPairCaretUpdate pair_caret_;
 };
 
 // Ends one exact composition even after TextService has moved on to another
@@ -1724,6 +1727,7 @@ void TextService::LoadApplicationSettings() {
   name = name.substr(name.find_last_of(L"\\/") + 1);
   CharLowerBuffW(name.data(), static_cast<DWORD>(name.size()));
   const std::wstring path = NativeImeRegistryKey() + L"\\Apps\\" + name;
+  auto_pair_caret_ = ddskk::ReadAutoPairCaret(name, nullptr);
   application_open_mode_ = L"restore";
   application_mode_indicator_ = -1;
   application_local_conversion_ = -1;
@@ -1732,6 +1736,7 @@ void TextService::LoadApplicationSettings() {
   HKEY key = nullptr;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_QUERY_VALUE,
                     &key) == ERROR_SUCCESS) {
+    auto_pair_caret_ = ddskk::ReadAutoPairCaret(name, key);
     wchar_t mode[32]{};
     DWORD bytes = sizeof(mode), type = 0, value = 0;
     if (RegQueryValueExW(key, L"OpenMode", nullptr, &type,
@@ -3437,7 +3442,8 @@ void TextService::HandleInlineEvent() {
 
 HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
                                       ITfContext* context,
-                                      const ddskk::EngineState& state) {
+                                      const ddskk::EngineState& state,
+                                      ddskk::AutoPairCaretUpdate* pair_caret) {
   // A TSF edit session may retain this core after its shim deactivated.
   if (thread_manager_ == nullptr) return S_FALSE;
   const bool has_preedit = state.composition_start >= 0 || !state.pending_romaji.empty();
@@ -3557,7 +3563,9 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
     if (!committed.empty()) {
       const auto closer = auto_pair_.Closer(state);
       if (!closer.empty()) {
-        const HRESULT pair = auto_pair_.Insert(edit_cookie, context, range, committed, closer);
+        const HRESULT pair = auto_pair_.Insert(edit_cookie, context, range, committed, closer,
+                                              auto_pair_caret_, pair_caret);
+        if (SUCCEEDED(pair) && pair_caret) pair_caret->Arm();
         CaptureCaretRect(edit_cookie, context, range);
         range->Release();
         return pair;
@@ -3659,6 +3667,8 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       caret->Release();
     }
   }
+  if (SUCCEEDED(set_text) && !composition_closer.empty() && pair_caret)
+    pair_caret->Prepare(composition_closer, auto_pair_caret_);
   range->Release();
   if (FAILED(set_text)) return set_text;
   // A pending-only state (composition_start < 0 but pending_romaji still
@@ -3675,6 +3685,7 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
     DebugLog(L"ApplyEngineState end_composition hr=%X",
              static_cast<unsigned>(end));
     if (FAILED(end)) UntrackEndingComposition(composition_);
+    else if (!composition_closer.empty() && pair_caret) pair_caret->Arm();
     composition_->Release();
     composition_ = nullptr;
     if (registration_commit_pending_) {
