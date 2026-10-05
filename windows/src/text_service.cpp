@@ -1831,6 +1831,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   if (!provider_pending_.load(std::memory_order_acquire)) {
     const auto rules = engine_.RomajiRules();
     realtime_frontend_.SetRules(rules ? *rules : std::vector<ddskk::RomajiRule>{});
+    auto_pair_.SetRules(rules ? *rules : std::vector<ddskk::RomajiRule>{});
   }
   const auto skk_mode_key = (!control_down && engine_id_ == "ddskk" &&
       realtime_frontend_.preedit() && !provider_composition_active_)
@@ -2938,8 +2939,10 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
   // STATE fields; render both together so a pending-only romaji prefix
   // (e.g. text empty, pending_romaji "k" before it resolves to a kana)
   // is actually visible instead of silently dropped.
+  const auto composition_closer = !direct_commit && !registration_target
+      ? auto_pair_.Closer(state) : std::wstring{};
   const std::wstring display =
-      direct_commit ? std::wstring() : state.text + state.pending_romaji;
+      direct_commit ? std::wstring() : state.text + state.pending_romaji + composition_closer;
   DebugLog(L"ApplyEngineState entry comp=%d dlen=%zu",
            composition_ != nullptr ? 1 : 0, display.size());
   ITfRange* range = nullptr;
@@ -2967,6 +2970,13 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
                                                         : E_FAIL;
     range = selection.range;
     if (!committed.empty()) {
+      const auto closer = auto_pair_.Closer(state);
+      if (!closer.empty()) {
+        const HRESULT pair = auto_pair_.Insert(edit_cookie, context, range, committed, closer);
+        CaptureCaretRect(edit_cookie, context, range);
+        range->Release();
+        return pair;
+      }
       const HRESULT commit = range->SetText(
           edit_cookie, 0, committed.data(), static_cast<LONG>(committed.size()));
       if (FAILED(commit)) {
@@ -3048,7 +3058,7 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       // DDSKK states retain the end-of-display caret: their cursor can
       // instead denote an okurigana boundary inside committed text.
       const LONG relative_cursor = state.segments.empty()
-          ? static_cast<LONG>(display.size())
+          ? static_cast<LONG>(display.size() - composition_closer.size())
           : state.segments[state.active_segment].start +
             state.segments[state.active_segment].length;
       LONG moved = 0;

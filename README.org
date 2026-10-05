@@ -120,3 +120,56 @@ the previous pointer without restarting a process. Validated modules retain
 reference-counted process-lifetime leases because TSF may retain callbacks;
 repeated version updates therefore consume additional DLL address space.
 Changes to the shim itself still require one application restart.
+
+* Kana input rules
+=nelisp-ime-keymap.exe --rules= opens the Japanese 入力規則 page; the keymap
+editor also has an 入力規則 button. Choose 半角/全角 and automatic bracket
+closing, then select a symbol/pair row to edit it, or add a row. Saving
+preserves comments and writes atomically. External edits reload the page;
+unsaved edits require an explicit reload before overwriting a changed file.
+The file is UTF-8: =$NELISP_IME_INPUT_RULES= when set, otherwise inherited
+=%APPDATA%\NativeIME\input-rules.conf=. The registry =InputRulesFile=
+override is not supported for now. Missing files use the user's DDSKK
+defaults (half-width punctuation, comma/period followed by a space, and
+automatic bracket closing). See =windows/keymap/input-rules.conf= for the
+complete commented template. For example:
+
+#+begin_src conf
+width = hankaku # hankaku | zenkaku
+auto-pair = yes # yes | no
+[symbols-hankaku]
+. = ". "
+"z " = " "
+[pairs-hankaku]
+[ = "「" "」"
+#+end_src
+
+Quoted strings preserve spaces; escape quotes/backslashes with a backslash.
+Sections are =symbols-hankaku=, =symbols-zenkaku=, =pairs-hankaku=,
+=pairs-zenkaku=, and =pairs= (openers emitted by other normal rules).
+An invalid line is reported by number and skipped; remaining valid lines
+override defaults. Width tables apply only in hiragana/katakana. Pair
+metadata, effective width, auto-pair and errors share the existing rule
+export. The resident keymap process watches this file outside its keyboard
+hook, debounces edits for 200 ms and sends =ENGINE RELOAD=, retrying a busy
+pipe. The editor can also request reload after saving. Engine replacement
+and rule publication preserve running application processes.
+
+The core inserts both bracket strings in its TSF commit edit session and
+sets the caret before the closer. Backspace is then application-owned;
+deleting an opener retains the closer, as in DDSKK. Special midashi are
+excluded. Active-region wrapping is deliberately omitted. IMM32 depends
+on CUAS exposing a TSF context; the isolated legacy EDIT probe on this
+machine currently cannot obtain one (=E_NOINTERFACE=), so IMM32 caret
+placement remains unverified. No injected-key fallback is implemented.
+The TSF core changes require no shim or ABI change. For an operator-created
+Start Menu entry, run =windows/keymap/New-RulesShortcut.ps1 -Executable
+<nelisp-ime-keymap.exe>=; it points to =--rules=. The script is not run by
+the input-rules tests.
+
+The focused ERT suite is =engine/test-input-rules.el=. Build the separate
+extended TSF/IMM32 fixtures with =cmake -S windows/test-host/input-rules
+-B build/input-rules -G "Visual Studio 17 2022" -A x64= and invoke
+=test-input-rules.ps1= in that directory with explicit build directories,
+keymap executable and engine executable. Tests use private settings,
+pipes and local AppData, and never send synthetic keyboard input.

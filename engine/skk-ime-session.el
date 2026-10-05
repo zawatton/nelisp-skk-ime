@@ -214,6 +214,8 @@ instead of kana."
     (unless preserve-point (goto-char (point-max)))
     (let ((previous (skk-ime-session-last-command session)))
       (if (and (equal skk-prefix "")
+               (not (and (fboundp 'skk-input-rules-prefix-p)
+                         (skk-input-rules-prefix-p key)))
                (or (and (>= key ?0) (<= key ?9))
               ;; Symbols produced by Shift+digits on Japanese and US
               ;; layouts. Treat them as literal text, not DDSKK commands.

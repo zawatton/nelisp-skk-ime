@@ -11,6 +11,7 @@
 
 #include "core.h"
 #include "editor.h"
+#include "rules.h"
 #include "win_io.h"
 namespace {
 using namespace keymap;
@@ -195,6 +196,7 @@ void startupRelease(const Snapshot& s) {
   output(r);
 }
 struct Runner {
+  InputRulesWatch inputRules;
   std::wstring path;
   std::unique_ptr<Snapshot> snapshot;
   HANDLE changes = INVALID_HANDLE_VALUE;
@@ -276,6 +278,7 @@ struct Runner {
     due = 0;
   }
   void tick() {
+    inputRules.Tick();
     ++ticks;
     if (changes != INVALID_HANDLE_VALUE &&
         WaitForSingleObject(changes, 0) == WAIT_OBJECT_0) {
@@ -516,7 +519,7 @@ int selfTest() {
 }
 }  // namespace
 int wmain(int argc, wchar_t** argv) {
-  bool self = false, edit = false, ui = false, stop = false;
+  bool self = false, edit = false, ui = false, stop = false, rules = false;
   for (int i = 1; i < argc; ++i) {
     std::wstring a = argv[i];
     if ((a == L"--settings-key" || a == L"--config-file" ||
@@ -533,6 +536,8 @@ int wmain(int argc, wchar_t** argv) {
       self = true;
     else if (a == L"--editor")
       edit = true;
+    else if (a == L"--rules")
+      rules = true;
     else if (a == L"--self-test-ui")
       ui = true;
     else if (a == L"--stop")
@@ -543,6 +548,10 @@ int wmain(int argc, wchar_t** argv) {
   // Preinitialize immutable layout tables outside all hook callbacks.
   table(Layout::US);
   table(Layout::JIS);
+  if (rules) {
+    if (!ui && !self) FreeConsole();
+    return keymap::rulesEditor(ui || self);
+  }
   if (edit) {
     if (!ui && !self) FreeConsole();
     return keymap::editor(ui || self);

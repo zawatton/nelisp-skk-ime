@@ -119,6 +119,8 @@ Answers nil without loading anything unless the reading actually asks for
     (if (numberp m) m (nelisp-skk--native-marker-position m))))
 
 (load "vendor/ddskk/skk.el")
+(load "engine/skk-input-rules.el")
+(skk-input-rules-load)
 
 ;; `skk-okurigana-prefix' in DDSKK derives the romaji prefix of an
 ;; okurigana through Mule's JIS-octet API.  Both GNU Emacs in a UTF-8-only
@@ -306,6 +308,7 @@ premise that the inputs are constant is a claim about a particular
 configuration, not about the program.  A cache whose inputs moved costs the time it was meant
 to save and nothing else; it never yields a tree that does not match the
 rules in force."
+  (or skk-input-rules--tree
   (let ((cache-file (expand-file-name "engine/skk-rule-tree-cache.el")))
     (when (and (null ddskk-engine--rule-tree-cache)
                (file-exists-p cache-file))
@@ -317,7 +320,7 @@ rules in force."
                     (sxhash-equal skk-rom-kana-rule-list))
              (plist-get ddskk-engine--rule-tree-cache :tree))
         (skk-compile-rule-list skk-rom-kana-base-rule-list
-                               skk-rom-kana-rule-list))))
+                               skk-rom-kana-rule-list)))))
 
 (defvar ddskk-engine--session nil)
 (defvar ddskk-engine--registration-checkpoint nil)
@@ -623,9 +626,7 @@ leaves remain engine-owned; punctuation is resolved in the current buffer."
   (let ((last-command-event (if (boundp 'last-command-event)
                                 last-command-event nil)))
     (skk-ime-session--with-buffer ddskk-engine--session
-      (concat "RULES 1 " (mapconcat #'identity
-                                    (ddskk-engine--romaji-walk
-                                     (ddskk-engine--rule-tree)) " ")))))
+      (skk-input-rules-export (ddskk-engine--rule-tree)))))
 
 (defun ddskk-engine--convert-or-register ()
   "Convert once, preserving a zero-result reading for native registration."

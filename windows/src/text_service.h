@@ -18,6 +18,7 @@
 #include "core_abi.h"
 #include "engine_client.h"
 #include "realtime_frontend.h"
+#include "auto_pair.h"
 #include "candidate_ui.h"
 #include "display_attribute.h"
 #include "guids.h"
@@ -203,6 +204,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   TfClientId client_id_ = TF_CLIENTID_NULL;
   ddskk::EngineClient engine_;
   ddskk::RealtimeFrontend realtime_frontend_;
+  ddskk::AutoPair auto_pair_;
   HWND provider_window_ = nullptr;
   std::mutex provider_engine_mutex_;
   std::atomic<uint64_t> provider_sequence_{0};
