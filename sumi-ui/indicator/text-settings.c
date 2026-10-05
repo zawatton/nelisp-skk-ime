@@ -27,6 +27,14 @@ char *read_text(const wchar_t *path) {
   char *name = g_utf16_to_utf8((const gunichar2 *)path, -1, NULL, NULL, NULL), *data = NULL;
   g_file_get_contents(name, &data, NULL, NULL); g_free(name); return data;
 }
+/* Private rules pages must never resolve a missing override into live AppData. */
+gboolean rules_config_path(wchar_t *path) {
+  wchar_t key[512]; settings_registry_path(key, 512);
+  if (wcscmp(key, L"Software\\NativeIME") != 0 &&
+      (!getenv("NELISP_IME_INPUT_RULES") || !*getenv("NELISP_IME_INPUT_RULES")))
+    return FALSE;
+  return config_path(TRUE, path);
+}
 /* Locate the value token without normalizing any other bytes, including BOM,
  * CRLF, trailing whitespace and inline comments. Sections terminate options. */
 gboolean option_span(const char *data, const char *key, size_t *start, size_t *end, size_t *insert);

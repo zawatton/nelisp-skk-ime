@@ -193,6 +193,9 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
          (window-obj (expand-file-name "settings-window.o" sumi-ui-target-dir))
          (logic-obj (expand-file-name "settings-logic.o" sumi-ui-target-dir))
          (text-logic-obj (expand-file-name "text-logic.o" sumi-ui-target-dir))
+         (rules-logic-obj (expand-file-name "rules-logic.o" sumi-ui-target-dir))
+         (rules-window-obj (expand-file-name "rules-window.o" sumi-ui-target-dir))
+         (rules-test-obj (expand-file-name "rules-selftest.o" sumi-ui-target-dir))
          (pipe-client-obj (expand-file-name "pipe-client.o" sumi-ui-target-dir))
          (settings-obj (expand-file-name "settings.o" sumi-ui-target-dir))
          (main-obj (expand-file-name "main.o" sumi-ui-target-dir))
@@ -210,6 +213,9 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
     (sumi-ui-compile-nelisp "settings-window" window-obj)
     (sumi-ui-compile-nelisp "settings-logic" logic-obj)
     (sumi-ui-compile-nelisp "text-logic" text-logic-obj)
+    (sumi-ui-compile-nelisp "rules-logic" rules-logic-obj)
+    (sumi-ui-compile-nelisp "rules-window" rules-window-obj)
+    (sumi-ui-compile-c "rules-selftest" rules-test-obj all-cflags)
     ;; pipe-client.c/settings.c only need glib.h (for `gboolean') plus
     ;; plain <windows.h> -- gtk4's own cflags already cover glib's
     ;; include path, so reuse ALL-CFLAGS rather than pkg-config'ing glib
@@ -234,7 +240,7 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
     (sumi-ui-compile-c "main" main-obj all-cflags)
     (let ((linked (sumi-ui-link
                    (list main-obj mode-logic-obj registry-obj widgets-obj
-                         colors-obj window-obj logic-obj text-logic-obj pipe-client-obj settings-obj text-obj)
+                         colors-obj window-obj logic-obj text-logic-obj rules-logic-obj rules-window-obj rules-test-obj pipe-client-obj settings-obj text-obj)
                    exe
                    ;; advapi32 for settings.c's RegGetValueW/RegSetKeyValueW/
                    ;; RegDeleteTreeW (Phase 3) -- not pulled in transitively

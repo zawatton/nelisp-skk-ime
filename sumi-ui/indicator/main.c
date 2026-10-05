@@ -41,6 +41,7 @@
 #include "pipe-client.h"
 #include "settings.h"
 #include "text-settings.h"
+#include "rules-settings.h"
 
 /* ------------------------------------------------------------------ */
 /* Decision logic, compiled from indicator/mode-logic.el by build.el's
@@ -813,6 +814,11 @@ static const EngineChoice kEngineChoices[] = {
      "変換せずアプリへ渡します。", FALSE},
 };
 
+/* A hidden native oracle must not map a window when exercising its buttons. */
+void skkui_present_rules(GtkWidget *window) {
+  SettingsWindow *sw = g_object_get_data(G_OBJECT(window), "sw");
+  if (!sw || !sw->app->settings_smoke) gtk_window_present(GTK_WINDOW(window));
+}
 /* Addresses/data exposed to the AOT settings module; no policy here. */
 const EngineChoice *skkui_engine_choices(void) { return kEngineChoices; }
 FILE *skkui_stdout(void) { return stdout; }
@@ -932,6 +938,16 @@ void skkui_window_selftest(App *app, SettingsWindow *sw, GtkWidget *notebook) {
     gboolean initial_ok = settings_equal(&read, &app->settings);
     printf("%s hidden-settings-initial-widget-values\n", initial_ok ? "PASS" : "FAIL");
     app->settings_smoke_failed |= !initial_ok;
+    GtkWidget *rules_button = gtk_button_new(); g_object_ref_sink(rules_button);
+    g_object_set_data(G_OBJECT(rules_button), "text-action", GINT_TO_POINTER(3));
+    on_text_open(GTK_BUTTON(rules_button), sw); g_object_unref(rules_button);
+    RulesEditor *rules = g_object_get_data(G_OBJECT(sw->window), "rules-editor");
+    gboolean rules_ok = rules && gtk_widget_get_visible(rules->page) &&
+        gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook)) == 4 &&
+        !gtk_widget_get_visible(sw->window);
+    printf("%s hidden-settings-rules-page-button\n", rules_ok ? "PASS" : "FAIL");
+    app->settings_smoke_failed |= !rules_ok;
+
 
     gtk_drop_down_set_selected(GTK_DROP_DOWN(sw->engine_dropdown),
         engine_visible_position(sw, engine_choice_index(L"lattice")));
@@ -1019,19 +1035,29 @@ static void on_right_click_released(GtkGestureClick *gesture, int n_press, doubl
 
 /* Win32 transport primitive. Queue GTK work on its main context rather
  * than reentering widget construction inside a synchronous SendMessage. */
+int rules_selftest(void);
+int rules_apply_selftest(void);
+int rules_parse_selftest(void);
+static gboolean initial_rules;
+static gboolean queued_rules;
+static UINT rules_request;
 static HWND settings_endpoint;
 static UINT settings_request;
 static gboolean resident_open_queued;
 static gboolean resident_open_idle(gpointer data) {
   resident_open_queued = FALSE;
   open_settings_window(data);
+  if (queued_rules) rules_show(((App *)data)->settings_window);
+  queued_rules = FALSE;
   return G_SOURCE_REMOVE;
 }
 static LRESULT CALLBACK settings_endpoint_proc(HWND hwnd, UINT message,
                                                WPARAM wp, LPARAM lp) {
-  if (message == settings_request && settings_request != 0) {
+  if ((message == settings_request && settings_request != 0) ||
+      (message == rules_request && rules_request != 0)) {
     App *app = (App *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
     if (!app) return 0;
+    if (message == rules_request) queued_rules = TRUE;
     if (!resident_open_queued) {
       resident_open_queued = TRUE;
       g_idle_add(resident_open_idle, app);
@@ -1050,7 +1076,8 @@ static void resident_settings_start(App *app) {
   wchar_t identity[512];
   settings_registry_path(identity, 512);
   settings_request = RegisterWindowMessageW(L"NativeIME.Sumi.ShowSettings.v1");
-  if (!settings_request) return;
+  rules_request = RegisterWindowMessageW(L"NativeIME.Sumi.ShowRules.v1");
+  if (!settings_request || !rules_request) return;
   settings_endpoint = CreateWindowExW(0, cls, identity, 0, 0, 0, 0, 0,
                                       HWND_MESSAGE, NULL, wc.hInstance, NULL);
   if (settings_endpoint)
@@ -1217,6 +1244,7 @@ static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
      * settings window, and the process exits when it is closed (see
      * close_settings_window()). */
     open_settings_window(app);
+    if (initial_rules) rules_show(app->settings_window);
     return;
   }
 
@@ -1232,6 +1260,9 @@ int main(int argc, char **argv) {
    * settings_selftest() docstring for the DDSKK_SETTINGS_KEY safety
    * guard this requires the caller to set. */
   for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--rules-selftest") == 0) return rules_selftest();
+    if (strcmp(argv[i], "--rules-apply-selftest") == 0) return rules_apply_selftest();
+    if (strcmp(argv[i], "--rules-parse-selftest") == 0) return rules_parse_selftest();
     if (strcmp(argv[i], "--text-settings-selftest") == 0) return text_settings_selftest();
     if (strcmp(argv[i], "--settings-selftest") == 0) return settings_selftest();
   }
@@ -1239,10 +1270,19 @@ int main(int argc, char **argv) {
   gboolean settings_only = FALSE;
   gboolean settings_smoke = FALSE;
   for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--rules") == 0) initial_rules = settings_only = TRUE;
     if (strcmp(argv[i], "--settings") == 0) settings_only = TRUE;
     if (strcmp(argv[i], "--settings-window-selftest") == 0) settings_only = settings_smoke = TRUE;
   }
 
+  if (initial_rules) {
+    wchar_t identity[512]; settings_registry_path(identity,512);
+    HWND endpoint = FindWindowExW(HWND_MESSAGE,NULL,L"NeLispSumiSettingsV1",identity);
+    DWORD_PTR ack=0;
+    UINT request=RegisterWindowMessageW(L"NativeIME.Sumi.ShowRules.v1");
+    if (endpoint && request && SendMessageTimeoutW(endpoint,request,0,0,
+        SMTO_ABORTIFHUNG,500,&ack) && ack==1) return 0;
+  }
   App app;
   memset(&app, 0, sizeof(app));
   pipe_client_init(&app.pipe);

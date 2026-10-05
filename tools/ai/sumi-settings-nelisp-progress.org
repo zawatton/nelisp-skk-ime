@@ -17,7 +17,7 @@ evidence: build/validation/sumi-settings/claude-hotswap.log sha256=5dea166dc9002
 
 * S2 Settings window logic in NeLisp
 ** S2.1 The existing tabs (動作/表示/辞書/調整) and the 入力規則/キー置き換え tabs are driven by NeLisp AOT modules; C keeps only GTK/Win32 primitives; registry and file selftests unchanged in result
-evidence: sumi-ui/indicator/settings-window.el sha256=88cd7a11230e25cbbeea8f7c96edee9a5d1afcbd810500c1105486470ba2f48f
+evidence: sumi-ui/indicator/settings-window.el sha256=033b823ee2df92579d2df7649adc66655e1e07eaa575d37cb089d0544f9d6a03
 evidence: sumi-ui/indicator/settings-logic.el sha256=f5289abde72c0ce0f5a96b244e80b044b0e0967ad8a126cb4afe13505e826f6f
 evidence: sumi-ui/indicator/text-logic.el sha256=5c688f04f97d748a8b2a79d28f7f79c0ee42692f1df4f513e3c147295b8ac9bb
 evidence: build/validation/sumi-settings/final-registry.log sha256=efacb15ed05dfb4c452e3f1e0e99d1628b7fa8a32979d1af0860417f6429bc58
@@ -29,9 +29,13 @@ evidence: build/validation/sumi-settings/final-build.log sha256=eadf42c52da8fc06
 
 * S3 Input-rules editor in Sumi
 ** S3.1 Symbol rows, pairs, width, auto-pair on/off, comment-preserving atomic writes and external-edit reload, matching the old rules_editor self-test checks
-pending
+evidence: build/validation/sumi-settings/sn3-verify-rules.log sha256=d62c51aadda0b8b1b4f02276ac618c95954e193c628e99e091d95dce5d891bb7
+evidence: build/validation/sumi-settings/sn3-verify-rules-parity.log sha256=c417e29c338d855c5bb36aa41469277fcd6e6c149aaa56c60d9f779880cb8f0f
 ** S3.2 End to end: Start Menu entry and the settings-tab button open the Sumi editor; an edit is applied live through the keymap watcher in a private setup
-pending
+#+NOTE: The new --rules entry point is the tested shortcut target. Installed shortcuts/live deployment remain S5/coordinator work.
+evidence: build/validation/sumi-settings/sn3-verify-resident-rules.log sha256=f412f7aea383820bb13559bd6a65736ade78b6970758e588d284a841b5489c23
+evidence: build/validation/sumi-settings/sn3-verify-settings-hidden.log sha256=63f81c14366c9eb39d00698e991e2027c8bbf00e47301df82e89c0eca8746fda
+evidence: build/validation/sumi-settings/sn3-e2e-gate.log sha256=038b4a40e7a9f5a2038f2cb814cb28977a701d89f3d14917526a4302323e5e89
 
 * S4 Key remapping editor and key inspector in Sumi
 ** S4.1 Rule list add/edit/delete, enable, layout, exclusions; key inspector shows name, scan code, virtual key and current mapping; direct remap from the inspector; parity with the old editor self-test checks
@@ -293,3 +297,19 @@ PASS rejected-key-absent
 #+end_example
   Two safety assertions passed; rejected identity remained absent. Output:
   sumi-ui/target/guard.err (stderr); guard.out empty, as expected.
+
+*** SN1 Stage B verification (2026-10-06)
+
+Stage A above is historical; the coordinator merged it and initialized vendor/ddskk.
+S3 now has 41 rules checks, 20 engine-parser parity cases, 8 hidden-window checks,
+registry 9, text 35, title 1, resident settings 3, resident rules 4, core/resident
+settings 14, and 5 real watcher/engine end-to-end assertions, all passing.
+The rules command measured 1139 ms standalone / 214 ms resident visible frame.
+The editor has 555 new NeLisp module lines; C editor sources remain untouched.
+Deleting overrides restores built-in defaults; custom duplicate rows are removed
+without discarding comments. No live shortcut or settings instance was modified.
+No owned process remains; recorded host/runtime/TSF PIDs were checked exited.
+The full file:line map, gate commands, verbatim tails, corrected bring-up failures
+and scope limitations are recorded below.
+evidence: build/validation/sumi-settings/sn3-report.txt sha256=1e665c4a97aa493d436eebf19b3d5d5cae33939453bc645d042ef37d4cbfcd0a
+evidence: build/validation/sumi-settings/sn3-cleanup.log sha256=3a511588860ff0c26cabf3455358a6839c4f77e651e962e61a901cb583c81acb

@@ -5,6 +5,8 @@
 ;; _done/_result express early returns while freeing each scratch allocation.
 ;; C/NeLisp layout contracts are checked by settings-abi.inc on every build.
 (seq
+ (data-blob sn_rules_editor "rules-editor\0" rodata)
+ (data-blob sn_settings_notebook "settings-notebook\0" rodata)
  (data-blob sn_host_empty "\x00\x00\x00\x00\x00\x00\x00\x00" rodata) ; UTF-8 
  (data-blob sn_host_exe "\x45\x00\x6e\x00\x67\x00\x69\x00\x6e\x00\x65\x00\x48\x00\x6f\x00\x73\x00\x74\x00\x00\x00\x00\x00" rodata) ; UTF-16 EngineHost
  (data-blob sn_host_runner "\x45\x00\x6e\x00\x67\x00\x69\x00\x6e\x00\x65\x00\x45\x00\x78\x00\x65\x00\x63\x00\x75\x00\x74\x00\x61\x00\x62\x00\x6c\x00\x65\x00\x00\x00\x00\x00\x00\x00\x00\x00" rodata) ; UTF-16 EngineExecutable
@@ -364,7 +366,7 @@
      (progn
        (if (= _done 0) (setq sw user_data) 0)
        (if (= _done 0) (setq action (extern-call g_object_get_data button (data-addr sn_str_39))) 0)
-       (if (= _done 0) (if (= (extern-call text_settings_open (/= (logand action 1) 0) (/= (logand action 2) 0)) 0) (extern-call gtk_label_set_text (ptr-read-u64 sw 328) (data-addr sn_str_40)) 0) 0))
+       (if (= _done 0) (if (= action 3) (extern-call rules_show (ptr-read-u64 sw 8)) (if (= (extern-call text_settings_open (/= (logand action 1) 0) (/= (logand action 2) 0)) 0) (extern-call gtk_label_set_text (ptr-read-u64 sw 328) (data-addr sn_str_40)) 0)) 0))
 
      _result))
  (defun on_text_status (button user_data)
@@ -420,6 +422,7 @@
        (if (= _done 0) (setq note (extern-call gtk_label_new (data-addr sn_str_55))) 0)
        (if (= _done 0) (extern-call gtk_label_set_wrap note 1) 0)
        (if (= _done 0) (extern-call gtk_grid_attach grid note 0 (let ((_old row)) (setq row (+ row 1)) _old) 2 1) 0)
+       (if (= _done 0) (if rules (extern-call gtk_grid_attach grid (extern-call rules_build (ptr-read-u64 sw 8)) 0 8 2 1) 0) 0)
        (if (= _done 0) (if (= rules 0) (progn
 					 (if (= _done 0) (ptr-write-u64 sw 320 (extern-call gtk_label_new (data-addr sn_str_56))) 0)
 					 (if (= _done 0) (extern-call gtk_label_set_xalign (ptr-read-u64 sw 320) (:f32 0.0)) 0)
@@ -576,6 +579,7 @@
        (if (= _done 0) (setq root_box (extern-call gtk_box_new 1 0)) 0)
        (if (= _done 0) (extern-call gtk_window_set_child window root_box) 0)
        (if (= _done 0) (setq notebook (extern-call gtk_notebook_new )) 0)
+       (extern-call g_object_set_data window (data-addr sn_settings_notebook) notebook)
        (if (= _done 0) (extern-call gtk_widget_set_vexpand notebook 1) 0)
        (if (= _done 0) (extern-call gtk_notebook_append_page notebook (extern-call build_tab_behavior sw) (extern-call gtk_label_new (data-addr sn_str_72))) 0)
        (if (= _done 0) (extern-call gtk_notebook_append_page notebook (extern-call build_tab_display sw) (extern-call gtk_label_new (data-addr sn_str_73))) 0)
