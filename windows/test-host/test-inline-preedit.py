@@ -237,6 +237,7 @@ def main():
         assert '▼蚊' in rendered and emacs.returncode == 0, rendered
         assert 'COMPOSITION START' not in host_text, 'Inline created a TSF composition'
         print('PASS inline accept-and-queue final=あい蚊ぬ selection_unavailable=' + str(args.selection_unavailable))
+        return
     if args.q_regression:
         assert 'branch=q-katakana-local state=1' in host_text
         assert 'AFTER q BUF=[カナ] SEL=2,2 COMP=-' in host_text
