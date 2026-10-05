@@ -98,3 +98,39 @@ settings HWND followed by `DwmFlush`, on the same machine. This measures
 visible-window/compositor readiness rather than an instrumented GTK
 `after-paint` timestamp. Exact timings and gate tails are in
 `tools/ai/sumi-settings-nelisp-progress.org`.
+
+The 入力規則 tab's editor button opens an embedded rules page. `sumi-skk-ui.exe
+--rules` selects the same page: it first requests the resident endpoint
+(`NativeIME.Sumi.ShowRules.v1`, scoped by the registry identity), then opens
+a standalone settings window if the resident does not acknowledge it.
+The old `nelisp-ime-keymap.exe --rules` entry point remains available.
+
+`rules-logic.el` implements the engine-compatible tokenizer, validation,
+default/override rows, comment-preserving row changes and conflict checks.
+`rules-window.el` owns the GTK controls and actions. Saving reuses SU1's
+atomic file primitive; the existing keymap watcher requests engine reload.
+Clean external edits reload automatically; dirty edits require an explicit
+reload before saving. Deleting a file override restores the engine's built-in
+row where one exists. The reload button explicitly discards pending edits.
+Private registry identities also require an explicit rules file override.
+
+Additional private gates:
+
+```powershell
+./sumi-ui/verify/verify-rules.ps1
+./sumi-ui/verify/verify-rules-parity.ps1
+./sumi-ui/verify/verify-resident-rules.ps1
+cmake -S windows/test-host/sumi-rules -B build/sn3-rules -G "Visual Studio 17 2022" -A x64
+cmake --build build/sn3-rules --config Release --target input-rules-host
+# Supply the runtime and binaries built in this checkout:
+./windows/test-host/sumi-rules/test-sumi-rules.ps1 -BuildDirectory build/w/Release `
+  -RulesBuildDirectory build/sn3-rules -KeymapExe $KeymapExe `
+  -IndicatorExe sumi-ui/target/sumi-skk-ui.exe -EngineExecutablePath $Runtime `
+  -ColdLoadSleepSec 45
+```
+
+The parity gate compares AOT options, rows and diagnostics against the actual
+engine parser in stock Emacs. The end-to-end fixture runs the real remapper
+with `--no-hook`, invokes Sumi's GTK edit/save callbacks, and verifies the
+next TSF symbol after the watcher reloads the real engine. It sends no
+explicit reload request and leaves its private fixtures under build for review.
