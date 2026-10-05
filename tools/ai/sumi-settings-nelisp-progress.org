@@ -1,0 +1,29 @@
+#+TITLE: Settings, input-rules and key-remap UIs in Sumi, logic in NeLisp; resident Sumi opens settings
+
+* S1 Resident Sumi opens the settings window
+** S1.1 The core asks the running resident Sumi to show the settings window (no new process); measured open time before/after on the same machine, with a spawn fallback when no resident Sumi runs
+pending
+** S1.2 End to end: from the IME toolbar 設定 in a private test host, the window appears through the resident instance and existing settings selftests pass
+pending
+
+* S2 Settings window logic in NeLisp
+** S2.1 The existing tabs (動作/表示/辞書/調整) and the 入力規則/キー置き換え tabs are driven by NeLisp AOT modules; C keeps only GTK/Win32 primitives; registry and file selftests unchanged in result
+pending
+** S2.2 Hidden-window smoke and the registry/text selftests pass on the rebuilt Sumi; a line count shows the logic moved (C lines removed, NeLisp lines added)
+pending
+
+* S3 Input-rules editor in Sumi
+** S3.1 Symbol rows, pairs, width, auto-pair on/off, comment-preserving atomic writes and external-edit reload, matching the old rules_editor self-test checks
+pending
+** S3.2 End to end: Start Menu entry and the settings-tab button open the Sumi editor; an edit is applied live through the keymap watcher in a private setup
+pending
+
+* S4 Key remapping editor and key inspector in Sumi
+** S4.1 Rule list add/edit/delete, enable, layout, exclusions; key inspector shows name, scan code, virtual key and current mapping; direct remap from the inspector; parity with the old editor self-test checks
+pending
+** S4.2 End to end: the Sumi editor's changes are applied by the resident remapper in a private setup
+pending
+
+* S5 Live
+** S5.1 Deployed (Sumi only plus core for S1); the old Win32 editors are retired from the shortcuts; the user confirms
+pending
