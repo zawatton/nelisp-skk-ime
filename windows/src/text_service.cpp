@@ -233,9 +233,16 @@ SharedImeCaret* g_caret_view = nullptr;
 // through the engine pipe or contend with the keystroke mutex.
 void PublishCaretRect(const RECT& rect) {
   if (g_caret_view == nullptr) {
+    // Private harnesses must never overwrite Sumi's live caret mapping.
+    std::wstring map_name = kCaretMapName;
+    wchar_t test_map[256]{};
+    if (NativeImeRegistryKey().starts_with(L"Software\\NativeIME-test-") &&
+        GetEnvironmentVariableW(L"NATIVEIME_TEST_CARET_MAP", test_map, _countof(test_map)) > 0 &&
+        std::wstring(test_map).starts_with(L"Local\\ddskk-test-caret-"))
+      map_name = test_map;
     g_caret_map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr,
                                      PAGE_READWRITE, 0,
-                                     sizeof(SharedImeCaret), kCaretMapName);
+                                     sizeof(SharedImeCaret), map_name.c_str());
     if (g_caret_map == nullptr) return;
     g_caret_view = static_cast<SharedImeCaret*>(MapViewOfFile(
         g_caret_map, FILE_MAP_WRITE, 0, 0, sizeof(SharedImeCaret)));
@@ -2684,7 +2691,6 @@ bool TextService::AcknowledgeEndingComposition(ITfComposition* composition) {
 }
 
 void TextService::CloseCandidateUi() {
-  if (candidate_ui_) candidate_ui_->SetInlineCaret(nullptr);
   wchar_t harness_diagnostics[2]{};
   if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS",
                               harness_diagnostics, 2) > 0) {
@@ -2969,7 +2975,6 @@ std::optional<char32_t> TextService::TranslateKey(WPARAM wparam,
 void TextService::ClearInlineEpisode() {
   inline_channel_.Clear(inline_epoch_);
   inline_epoch_ = 0; preedit_episode_ = false; inline_state_ = {};
-  if (candidate_ui_) candidate_ui_->SetInlineCaret(nullptr);
 }
 
 void TextService::HandleInlineEvent() {
@@ -2977,7 +2982,7 @@ void TextService::HandleInlineEvent() {
   RECT caret{};
   if (inline_channel_.Caret(inline_epoch_, &caret)) {
     last_caret_rect_ = caret; last_caret_valid_ = true;
-    if (candidate_ui_) candidate_ui_->SetInlineCaret(&caret);
+    PublishCaretRect(caret);
   }
   if (inline_channel_.Epoch() == inline_epoch_ || !active_context_) return;
   // Transport loss materializes the latest full preedit immediately, even
@@ -3010,7 +3015,16 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       RECT caret{};
       if (inline_channel_.Caret(inline_epoch_, &caret)) {
         last_caret_rect_ = caret; last_caret_valid_ = true;
-        if (candidate_ui_) candidate_ui_->SetInlineCaret(&caret);
+        // The existing Sumi candidate window consumes this rectangle. Do
+        // not create a second core popup or alter its styling/selection.
+        PublishCaretRect(caret);
+        wchar_t diagnostics[2]{};
+        if (candidate_count_ && GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", diagnostics, 2)) {
+          std::printf("INLINE_CANDIDATE_ANCHOR x=%ld y=%ld height=%ld below_y=%ld candidates=%zu\n",
+              caret.left, caret.top, caret.bottom - caret.top, caret.bottom,
+              candidate_count_);
+          std::fflush(stdout);
+        }
       }
       return S_OK; // No document edit and, crucially, no StartComposition.
     }
@@ -3019,7 +3033,6 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       // No engine replay: replaying the last key would duplicate text.
       inline_channel_.Clear(inline_epoch_);
       inline_epoch_ = 0;
-      if (candidate_ui_) candidate_ui_->SetInlineCaret(nullptr);
     } else {
       inline_channel_.Clear(inline_epoch_);
       inline_epoch_ = 0;

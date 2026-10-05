@@ -75,6 +75,7 @@ param(
   [switch]$InlinePreedit,
   [string]$InlineDirectory = '',
   [string]$InlinePidFile = '',
+  [string]$CaretMapName = '',
 
   # Engine cold load has been measured anywhere from 3.4s (quiet machine)
   # to ~12s (loaded machine); a 6s default let the first scripted keys race
@@ -211,7 +212,7 @@ $tempJisyo = Join-Path $env:TEMP "ddskk-test-jisyo-$runId.jisyo"
 # its own E2E test already rely on (see host/main.cpp PipeName()).
 $savedEnvironment = @{}
 foreach ($name in @('DDSKK_PIPE_NAME','DDSKK_USER_JISYO','NATIVEIME_REGISTRY_KEY',
-    'LOCALAPPDATA','NELISP_IME_INLINE_DIR','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH','NATIVEIME_TEST_CORE_DIRECTORY','NATIVEIME_TEST_CORE_ACTION_SCRIPT')) {
+    'LOCALAPPDATA','NELISP_IME_INLINE_DIR','NATIVEIME_TEST_CARET_MAP','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH','NATIVEIME_TEST_CORE_DIRECTORY','NATIVEIME_TEST_CORE_ACTION_SCRIPT')) {
   $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 $hostProcess = $null
@@ -225,6 +226,7 @@ if ($CoreTestDirectory) { $env:NATIVEIME_TEST_CORE_DIRECTORY = [IO.Path]::GetFul
 $env:DDSKK_PIPE_NAME = $pipeFullName
 $env:DDSKK_USER_JISYO = $tempJisyo
 $env:NATIVEIME_REGISTRY_KEY = $registryKey
+$env:NATIVEIME_TEST_CARET_MAP = if ($CaretMapName) { $CaretMapName } else { "Local\ddskk-test-caret-$runId" }
 # Seed the private settings, including the host's dictionary bridge, even
 # when every executable path is supplied explicitly.
 New-Item -Path $regPath -Force | Out-Null
