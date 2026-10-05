@@ -405,6 +405,23 @@ bool TextService::BeginProviderConversion(const std::u32string& keys) {
 bool TextService::BeginProviderControl(ddskk::EngineControl control,
                                        bool apply_state) {
   if (provider_window_ == nullptr) return false;
+  DWORD test_failure_delay = 0;
+  // Copy the authoritative candidate and reading before the worker starts.
+  // A failed read may already have changed (or committed) the engine session.
+  const auto candidate = apply_state && engine_id_ == "ddskk"
+      ? provider_candidate_state_ : std::optional<ddskk::EngineState>{};
+  auto reading = realtime_frontend_.raw_keys();
+  if (realtime_frontend_.katakana()) reading.insert(reading.begin(), U'q');
+  wchar_t test_delay[16]{}, test_registry[128]{};
+  if (apply_state && control == ddskk::EngineControl::kCommit &&
+      candidate_index_ >= 0 && !candidate_control_test_failure_used_ &&
+      GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0) &&
+      GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", test_registry, 128) &&
+      std::wstring(test_registry).starts_with(L"Software\\NativeIME-test-") &&
+      GetEnvironmentVariableW(L"NATIVEIME_TEST_CANDIDATE_CONTROL_FAIL_MS", test_delay, 16)) {
+    test_failure_delay = std::min<DWORD>(30000, wcstoul(test_delay, nullptr, 10));
+    candidate_control_test_failure_used_ = true;
+  }
   provider_cleanup_pending_ = !apply_state;
   provider_conversion_active_ = false;
   const uint64_t sequence =
@@ -413,7 +430,9 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
   const HWND destination = provider_window_;
   AddRef();
   try {
-    std::thread([this, control, sequence, destination, apply_state] {
+    std::thread([this, control, sequence, destination, apply_state, test_failure_delay,
+                 candidate, reading] {
+      const ULONGLONG started = GetTickCount64();
       DelayTestProvider();
       std::optional<ddskk::EngineState> state;
       {
@@ -423,6 +442,65 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
         if (apply_state ||
             sequence == provider_sequence_.load(std::memory_order_acquire))
           state = engine_.SendControl(control, kConversionTimeoutMs);
+        if (test_failure_delay) {
+          // Simulate a timed-out read after the engine accepted the control.
+          // Recovery must not assume the old session stayed unchanged.
+          Sleep(test_failure_delay);
+          state.reset();
+          engine_.MarkNeedsResync();
+          std::printf("CANDIDATE_TEST lost-reply seq=%llu delay_ms=%lu\n",
+                      static_cast<unsigned long long>(sequence), test_failure_delay);
+          std::fflush(stdout);
+        }
+        if (candidate && !reading.empty() && candidate->candidate_index >= 0 &&
+            static_cast<size_t>(candidate->candidate_index) < candidate->candidates.size() &&
+            (control == ddskk::EngineControl::kConvert ||
+             control == ddskk::EngineControl::kPrevious ||
+             control == ddskk::EngineControl::kCommit)) {
+          int target = candidate->candidate_index;
+          if (control == ddskk::EngineControl::kConvert) ++target;
+          if (control == ddskk::EngineControl::kPrevious) --target;
+          const bool select_only = target >= 0 &&
+              static_cast<size_t>(target) < candidate->candidates.size() &&
+              control != ddskk::EngineControl::kCommit;
+          const auto& wanted = candidate->candidates[
+              select_only ? target : candidate->candidate_index];
+          while (!state && sequence == provider_sequence_.load(std::memory_order_acquire)) {
+            if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
+              std::printf("PROVIDER retry seq=%llu control=%d raw=%.160s\n",
+                          static_cast<unsigned long long>(sequence), static_cast<int>(control),
+                          engine_.last_response().c_str());
+              std::fflush(stdout);
+            }
+            Sleep(100);
+            // CONVERT-KEYS resets and replays the reading. Never resend the
+            // failed control against a session whose outcome is unknown.
+            auto restored = engine_.ConvertKeys(reading, kConversionTimeoutMs);
+            if (!restored || restored->mode != L"candidate") continue;
+            const auto found = std::find(restored->candidates.begin(),
+                                         restored->candidates.end(), wanted);
+            if (found == restored->candidates.end()) continue;
+            const int index = static_cast<int>(found - restored->candidates.begin());
+            // Learning from a late commit can reorder candidates. Recover
+            // by candidate identity, rather than the old numeric index.
+            for (size_t attempts = 0; restored && restored->candidate_index != index &&
+                 attempts < candidate->candidates.size(); ++attempts) {
+              if (sequence != provider_sequence_.load(std::memory_order_acquire)) break;
+              restored = engine_.SendControl(restored->candidate_index < index
+                  ? ddskk::EngineControl::kConvert : ddskk::EngineControl::kPrevious,
+                  kConversionTimeoutMs);
+            }
+            if (sequence != provider_sequence_.load(std::memory_order_acquire)) break;
+            if (!restored || restored->candidate_index != index) continue;
+            state = select_only ? std::move(restored)
+                                : engine_.SendControl(control, kConversionTimeoutMs);
+            if (state && GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
+              std::printf("PROVIDER recovered seq=%llu control=%d candidate=%d\n",
+                          static_cast<unsigned long long>(sequence), static_cast<int>(control), index);
+              std::fflush(stdout);
+            }
+          }
+        }
         if (!apply_state) {
           wchar_t diagnostics[2]{};
           if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS",
@@ -432,6 +510,13 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
                         engine_.last_response().c_str());
             std::fflush(stdout);
           }
+        }
+        if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
+          std::printf("PROVIDER control seq=%llu control=%d state=%d ms=%llu raw=%.160s\n",
+                      static_cast<unsigned long long>(sequence), static_cast<int>(control),
+                      state ? 1 : 0, GetTickCount64() - started,
+                      engine_.last_response().c_str());
+          std::fflush(stdout);
         }
       }
       auto* result = new (std::nothrow) ProviderResult{this, sequence,
@@ -645,6 +730,11 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
     return;
   }
   provider_conversion_active_ = false;
+
+  // Also retain intermediate queued cycling replies: the next control must
+  // recover from the latest engine selection even before it is rendered.
+  provider_candidate_state_ = result->state->mode == L"candidate"
+      ? result->state : std::optional<ddskk::EngineState>{};
 
   // Resolve queued keys against the provider state in strict arrival order.
   // Candidate controls belong to that candidate; a printable key first

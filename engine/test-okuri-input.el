@@ -1,13 +1,28 @@
 ;;; test-okuri-input.el --- Stock DDSKK okuri oracle -*- lexical-binding: t; -*-
 
+(setq native-comp-enable-subr-trampolines nil)
 (require 'ert)
+;; Set these before loading DDSKK, whose initialization otherwise discovers
+;; ~/.skk-jisyo and Emacs's installed ja-dic. The runner supplies private HOME.
+(defvar okuri-oracle--home (make-temp-file "okuri-oracle-home-" t))
+(setenv "HOME" okuri-oracle--home)
+(setq user-emacs-directory (expand-file-name ".emacs.d/" okuri-oracle--home))
+(make-directory user-emacs-directory t)
+(add-hook 'kill-emacs-hook (lambda () (delete-directory okuri-oracle--home t)))
+(setq skk-jisyo (expand-file-name ".skk-jisyo" okuri-oracle--home))
+(setq skk-large-jisyo (getenv "OKURI_DICTIONARY"))
 (require 'skk-ime-session)
+(defun okuri-oracle--registration (&rest _)
+  (error "Stock DDSKK oracle entered registration: fixture lookup failed (large=%S code=%S search=%S)"
+         skk-large-jisyo skk-jisyo-code skk-search-state))
+(advice-add 'skk-henkan-in-minibuff :override #'okuri-oracle--registration)
 (remove-hook 'kill-emacs-hook #'skk-save-jisyo)
 (remove-hook 'kill-emacs-hook #'skk-record-jisyo-data)
 
 (ert-deftest okuri-backspace-history-matches-control ()
   "A recovered handoff replays Backspace exactly like the native control."
-  (let* ((skk-jisyo (make-temp-file "okuri-history-"))
+  (let* ((dictionary (make-temp-file "okuri-history-"))
+         (skk-jisyo dictionary)
          (skk-jisyo-code 'utf-8) (skk-backup-jisyo nil)
          (skk-server-host nil)
          (skk-search-prog-list '((skk-search-jisyo-file skk-jisyo 0 t)))
@@ -20,6 +35,7 @@
                 replay (skk-ime-session-create))
           (dolist (session (list control replay))
             (skk-ime-session--with-buffer session
+              (setq-local skk-jisyo dictionary)
               (setq-local skk-search-prog-list
                           '((skk-search-jisyo-file skk-jisyo 0 t)))
               (setq-local skk-current-search-prog-list nil)))
@@ -41,17 +57,25 @@
   (let* ((source (getenv "OKURI_DICTIONARY"))
          (output (getenv "OKURI_ARTIFACT_DIRECTORY"))
          (skk-jisyo (make-temp-file "okuri-stock-"))
+         (private-jisyo skk-jisyo)
+         (skk-large-jisyo source)
          (skk-jisyo-code (if (string-suffix-p ".utf8" source) 'utf-8 'euc-jp))
          (skk-backup-jisyo nil) (skk-server-host nil)
-         (skk-search-prog-list '((skk-search-jisyo-file skk-jisyo 0 t)))
+         (skk-search-prog-list '((skk-search-jisyo-file skk-jisyo 0 t)
+                                (skk-search-jisyo-file
+                                 (cons skk-large-jisyo skk-jisyo-code) 0 t)))
          session records tokens)
-    (copy-file source skk-jisyo t)
     (unwind-protect
         (progn
           (setq session (skk-ime-session-create))
           (skk-ime-session--with-buffer session
+            (setq-local skk-jisyo private-jisyo)
+            (setq-local skk-large-jisyo source)
+            (setq-local skk-jisyo-code (if (string-suffix-p ".utf8" source) 'utf-8 'euc-jp))
             (setq-local skk-search-prog-list
-                        '((skk-search-jisyo-file skk-jisyo 0 t)))
+                        '((skk-search-jisyo-file skk-jisyo 0 t)
+                          (skk-search-jisyo-file
+                           (cons skk-large-jisyo skk-jisyo-code) 0 t)))
             (setq-local skk-current-search-prog-list nil))
           (dolist (step '((write "KaKu") (next " ") (commit commit)
                          (disappear "KieRu") (disappear-commit commit)
