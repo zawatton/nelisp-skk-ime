@@ -26,6 +26,11 @@
 
 (load "engine/ddskk-engine.el")
 
+;; Explicitly opt in only for private profiling runs. PHASE lines are
+;; consumed by the host and never become protocol responses.
+(when (equal (getenv "DDSKK_CONVERSION_PROFILE") "1")
+  (load "engine/conversion-profile.el"))
+
 ;; The host gives each blue-green child its own selection. DDSKK used to
 ;; require an ENGINE SET from the first client even for passthrough startup.
 (when (equal (getenv "NELISP_IME_ENGINE") "passthrough")

@@ -393,7 +393,22 @@ harness can see what actually failed.")
 (defconst ddskk-engine--hex-digits "0123456789abcdef"
   "Lowercase nibble table for `ddskk-engine--hex'.")
 
+(defvar ddskk-engine--hex-cache (make-hash-table :test 'equal)
+  "Bounded content cache for immutable scalar-hex wire encodings.")
+
 (defun ddskk-engine--hex (string)
+  "Encode STRING, reusing an encoding only for identical current content.
+Copy keys because callers may later edit their input strings. The cache
+contains no dictionary results and cannot hide a host dictionary update."
+  (if (= (length string) 0) "-"
+    (or (gethash string ddskk-engine--hex-cache)
+        (let ((encoded (ddskk-engine--hex-uncached string)))
+          (when (>= (hash-table-count ddskk-engine--hex-cache) 512)
+            (clrhash ddskk-engine--hex-cache))
+          (puthash (copy-sequence string) encoded ddskk-engine--hex-cache)
+          encoded))))
+
+(defun ddskk-engine--hex-uncached (string)
   "Return STRING as fixed-width 6-digit lowercase scalar hex, or \"-\".
 The wire format is unchanged; only the encoding cost is.  The previous
 implementation grew a result string with `concat' (quadratic) and called

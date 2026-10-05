@@ -193,7 +193,7 @@ calls it with 1, which is both arity-correct and semantically harmless."
         (funcall command 1)
       (wrong-number-of-arguments (funcall command))))))
 
-(defun skk-ime-session-feed-key (session key &optional preserve-point)
+(defun skk-ime-session-feed-key (session key &optional preserve-point omit-snapshot)
   "Feed character KEY to DDSKK in SESSION and return a state snapshot.
 
 KEY is a character integer.  The key is dispatched through the DDSKK
@@ -239,15 +239,17 @@ instead of kana."
                 this-command command)
           (skk-ime-session--call-command command)))
       (setf (skk-ime-session-last-command session) this-command))
-    (skk-ime-session-snapshot session)))
+    (unless omit-snapshot (skk-ime-session-snapshot session))))
 
 (defun skk-ime-session-feed-string (session string)
   "Feed every character in STRING to SESSION and return the final snapshot."
   (unless (stringp string)
     (signal 'wrong-type-argument (list 'stringp string)))
-  (let ((snapshot (skk-ime-session-snapshot session)))
-    (dolist (key (string-to-list string) snapshot)
-      (setq snapshot (skk-ime-session-feed-key session key)))))
+  ;; Intermediate snapshots are discarded by this API. Dispatch every key
+  ;; normally (including automatic okuri conversion), then observe once.
+  (dolist (key (string-to-list string))
+    (skk-ime-session-feed-key session key nil t))
+  (skk-ime-session-snapshot session))
 
 (defun skk-ime-session-control (session control &optional argument)
   "Apply native CONTROL to SESSION and return its state snapshot.

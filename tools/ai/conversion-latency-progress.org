@@ -2,20 +2,31 @@
 
 * S1 Measurement and profile
 ** S1.1 A repeatable conversion benchmark on a private host (copy of SKK-JISYO.L, temporary user jisyo, live runtime build): warm conversions without and with okuri, plus the first conversion of each kind after a cold start, with and without a private skkserv relay; reports wall p50/p90/max and engine CPU per request
-pending
+#+NOTE: L1 (2026-10-05): windows/test-host/bench-conversion.ps1 + conversion-corpus.json. Baseline warm CPU p50 plain 250 ms (N=80), okuri 797 ms (N=40); first okuri 1531 ms CPU / 1629 ms wall. Private skkserv relay runs on port 31181 verified a real L hit.
+evidence: build/w/baseline.json sha256=d878e11a79a3701180a8b56fd69052336638c3ed6380de33bcec8c973296317e
+evidence: build/w/baseline-relay.json sha256=5b4ca356dfbda029418b3e7bfd2b3655d197fd7284d3aacc91084e79c43e2439
 ** S1.2 Phase breakdown of one conversion request (protocol, DDSKK command, user-jisyo search, host dictionary relay and skkserv, candidate formatting, GC) with the top hot functions, recorded as evidence
+#+NOTE: L1: five traced plain requests: ddskk-engine--hex self 437 ms / 136 calls, dispatch inclusive 1234 ms, skk-henkan 280 ms, server relay 79 ms. TSF path per conversion: checkpoint 31, replay 141, convert 156, dispatch 62 ms (median). Automatic GC cannot be separated (no runtime counter), so the criterion stays open.
 pending
 
 * S2 Faster conversions without behaviour change
 ** S2.1 Warm conversion engine CPU p50 at most half of the S1.1 baseline, checked by a script over the benchmark logs
-pending
+#+NOTE: L1 candidate: plain ratio 1.063, okuri 0.412 (known red).
+cmd: powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/check-conversion-cpu.ps1 -Baseline build/w/baseline.json -Candidate build/w/candidate.json
 ** S2.2 First okuri conversion after a cold start under 500 ms wall on a quiet machine
-pending
+#+NOTE: L1 quiet run: 862 ms wall / 828 ms CPU (known red). Checked from the stored measurement build/w/quiet-cold.json.
+cmd: python -c 'import json,sys; j=json.load(open("build/w/quiet-cold.json",encoding="utf-8-sig")); c=[x for x in j["samples"] if x.get("cold")]; sys.exit(0 if c and c[0]["wallMs"] < 500 else 1)'
 ** S2.3 No behaviour change: candidate lists for a fixed reading corpus identical before and after; DDSKK suite, ctest with NELISP_EXECUTABLE, ERT and the live-input tests pass
-pending
+#+NOTE: L1: candidate equality 122/122 (also with the relay), learning 8/8 states and 6/6 readings, DDSKK suite 45 assertions, ctest 9/9, ERT 45/45, live-input 3/3, cache checks 528.
+cmd: powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/compare-conversion-candidates.ps1 -Baseline build/w/learning-baseline.json -Candidate build/w/learning-candidate.json
+evidence: build/w/behavior-candidate.log sha256=7aba22f5b0ab0edef4cc13bd5c661f2ada502cc5a1f3e8f38eb3ae1ff367a1a1
+evidence: build/w/ctest-candidate.log sha256=a8db0bf93d385c2d918cf7a659fc0f9bd0e067f6f93210558d56854c081bf9f3
+evidence: build/w/ert-candidate.log sha256=8a81f7c43110983f429ff9d886d9c99933b1a61b1c67714ff064a36559c93e58
+evidence: build/w/live-input-candidate.log sha256=4d1bad8508dddb14a0af3ad0c1afbb2d19c789a98fb134f19439f67a5886d18e
 
 * S3 End to end
 ** S3.1 TSF harness Space-to-candidate p50 at most 100 ms and p90 at most 150 ms (quiet machine, private host)
-pending
+#+NOTE: L1 quiet run with SKK-JISYO.L: N=20, p50 407 ms, p90 563 ms (known red). Checked from the stored gate log written by windows/test-host/bench-conversion-tsf.ps1.
+cmd: python -c 'import re,sys; t=open("build/w/tsf-gate.log",encoding="utf-8",errors="replace").read(); m=re.findall(r"TSF n=(\d+) p50=(\d+) p90=(\d+)",t); sys.exit(0 if m and int(m[-1][0])>=20 and int(m[-1][1])<=100 and int(m[-1][2])<=150 else 1)'
 ** S3.2 Live: deployed, paired measurement against the previous live build, and the user confirms conversions feel fast
 pending
