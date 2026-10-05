@@ -3,30 +3,44 @@
 
 * S1 Remap decision core
 ** S1.1 Key and shortcut remaps (CapsLock=LCtrl, LAlt+Space=ime-toggle, Ctrl+Space=LWin+Space): unit tests cover press, auto-repeat and release ordering, no stuck modifiers, Alt-tap menu suppression and no re-processing of the remapper's own injected events
-pending
+#+NOTE: Press/repeat/release, ownership aliases, Alt dummy ordering, injected bypass and exclusion transitions; core.cpp / tests.cpp.
+evidence: build/validation/keymap/S1.1.txt sha256=a52bd57242496e89b83ec50b372b859996a8ba6516475a3cf3d3caff4f0a3e6e
 ** S1.2 Layout conversion: a desired US or JIS layout against the OS drivers kbd101 and kbd106 for every printable key, with and without Shift, keeping Ctrl/Alt/Win combinations; table tests pass
-pending
+#+NOTE: 3136 layout scenarios; 145 glyph/VK comparisons against installed kbd101/kbd106/kbdus DLL descriptors. No layout activation.
+evidence: build/validation/keymap/S1.2.txt sha256=2e4f708789f28232cda777c6cdee2bbf294764a7ba9e508657f1da088528646e
 ** S1.3 Configuration: the text file keymap.conf (sections, comments, readable and raw key forms) is parsed and validated (a bad line is rejected with its line number and reason, the rest still apply), per-application exclusions; a file change reloads the rule snapshot atomically (debounced, atomic writes, sharing violations retried)
-pending
+#+NOTE: Line-numbered rejection, BOM/line endings/comments preserved; hidden GUI file roundtrip and actual directory watcher retry after sharing violation.
+evidence: build/validation/keymap/S1.3.txt sha256=d63160b5a4567f25134b0a21e89f53f3469621006e65e3bb4ed149ea64a2ad3f
 ** S1.4 End to end through the real binary: nelisp-ime-keymap.exe --self-test with a private config file runs the real hook procedure over scripted events and produces the expected output events (no system hook, no SendInput)
-pending
+#+NOTE: Real executable hook procedure called directly with synthetic structs and recording sink; no system hook or SendInput.
+evidence: build/validation/keymap/S1.4.txt sha256=2da00cfe615dad5a2d16dff090efca348882d425923e4270a48fee504ed4116a
 
 * S2 Resident remapper
 ** S2.1 The hook runs on a dedicated thread and its callback does no I/O, registry access, waiting or allocation; decision p99 under 50 microseconds over one million synthetic events
-pending
+#+NOTE: One million synthetic events, 255 key and 255 shortcut rules. Allocation detector negative control and decision checks. Callback manually reviewed: current snapshot load + decision + stack-only sink + PostMessage + forwarding duplicate suppression; foreground/registry/file work is outside callback.
+evidence: build/validation/keymap/S2.1.txt sha256=6c0f654ffc39ba5c94a54e246b80228315d63fb6e4f1099aee56cf300bceb000
 ** S2.2 Lifecycle safety: disable, reload, exit, session lock and restart after a crash leave no key pressed; status and rule errors (with file line numbers) are published to the registry
-pending
+#+NOTE: Five synthetic lifecycle paths: session lock, reload, disable, exit, startup recovery; recovery includes a previous-generation target absent from the current file. Registry status and private forced-kill recovery verified.
+evidence: build/validation/keymap/S2.2.txt sha256=7d55baed1c96c0fcbb7ab6ec56711af40b875560f5652607f1cd8e81dd4afcbb
 ** S2.3 End to end with a private instance (private config file, registry key and instance suffix, hook disabled): start, second-instance refusal, live reload after a file edit, status, graceful stop and recovery after a forced kill
-pending
+#+NOTE: Private key/file/instance, --no-hook; single-instance refusal, file reload, sharing violation retention/retry, errors/status, graceful stop and restart after forced kill.
+evidence: build/validation/keymap/S2.3.txt sha256=2bb816508552cfbb6235976b353de71ac104de6b45b94e122b2426e0f187828d
 
 * S3 Editor, inspector, deployment and live use
 ** S3.1 Editor window: rule list with add/edit/delete, enable, layout and exclusions; edits are written to the same text file preserving comments, order and unknown lines; an external edit while the editor is open is detected and reloaded; the settings window opens the editor
-pending
+#+NOTE: Hidden native editor model/window checks, real file load/save/external reload; settings launcher/status compiled. Visible appearance and real-app behavior remain for S3.5.
+evidence: build/validation/keymap/S3.1.txt sha256=2c9e24f3e7e9d1cff6cbdd2703fec312f06a0a0986e27a0fa9fe83b874e88278
 ** S3.2 Key inspector: pressing a key in the editor shows its name, scan code, virtual key, the characters it produces and its current registration (rule and file line, or none; Windows Scancode Map entries noted); capture swallows keys only while capturing in the foreground editor; pure-function and in-process hook tests pass
-pending
+#+NOTE: Pure inspector lookup + actual capture hook called directly; focus/timeout/Esc/chord/pre-held release tests; hidden UI reads Scancode Map without writes.
+evidence: build/validation/keymap/S3.2.txt sha256=29d4c61834b8fed76cc46421620da5aa069cefadd9cbef457873c7cc339e8f42
 ** S3.3 Direct remap from the inspector: capture a source key or chord, then press the target key or choose an action; the rule is written to the text file and applied live; tests cover add, replace and remove through the file
-pending
+#+NOTE: Hidden source/target capture, add/replace/remove with disk reload; generic Ctrl chord replacement/deletion; private resident separately verifies live file reload.
+evidence: build/validation/keymap/S3.3.txt sha256=ac0c4fb325ad7659b72a7009446cb4c57cde2718681aed1f54ed9259e17cb98e
 ** S3.4 Install script: dry run, private test mode, HKCU Run autostart, rollback manifest; the dry run and a private install/uninstall pass
-pending
+#+NOTE: Default dry run plus private install/update/rollback/uninstall. No real Run writes; private autostart embeds --no-hook and all overrides.
+evidence: build/validation/keymap/S3.4.txt sha256=d910f3db9809fcd6eeaf150c88317278bb7202b958c9d9a5dce6bfb1a10cf16e
 ** S3.5 Live: the user confirms the remaps, the inspector and editing through both the GUI and the text file in real applications
 pending
+
+#+NOTE: KM1 baseline: unchanged-tree cmake configure failed because windows/keymap did not exist (build/validation/keymap/baseline.txt). The original 10 criteria were all pending; after the user fixed the revised 12 criteria, the pre-evidence meter recorded 0.0% (baseline-meter.txt). Headings and acceptance statements are unchanged.
+#+NOTE: KM1 validation: keymap CTest 7/7; Windows CTest 9/9; settings build passed. No live installation, system hooks or SendInput in automated runs. S3.5 remains pending for the user. Process cleanup: no task-owned processes remain; live host/runtime and other-checkout processes left untouched. See build/validation/keymap/report.org and source-manifest.json.

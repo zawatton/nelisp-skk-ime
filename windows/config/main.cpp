@@ -34,17 +34,20 @@
 // strand its settings among the shared ones.
 
 #include <windows.h>
+#include "../keymap/settings_link.h"
 
 #include <string>
 #include <vector>
 
 namespace {
 
-constexpr wchar_t kSettingsKey[] = L"Software\\NativeIME";
-constexpr wchar_t kEnginesKey[] = L"Software\\NativeIME\\Engines";
+const std::wstring kSettingsKey = keymap_settings::base();
+const std::wstring kEnginesKey = kSettingsKey + L"\\Engines";
 
 constexpr int kEngineCombo = 101;
 constexpr int kSave = 102;
+constexpr int kKeymapEditor = 103;
+constexpr int kKeymapStatus = 104;
 constexpr int kFirstFieldId = 200;
 
 // One editable setting on an engine's page.
@@ -209,7 +212,7 @@ std::wstring ReadSelectedEngine() {
   HKEY key = nullptr;
   wchar_t buffer[64] = L"ddskk";
   DWORD bytes = sizeof(buffer), type = 0;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, KEY_READ, &key) ==
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, kSettingsKey.c_str(), 0, KEY_READ, &key) ==
       ERROR_SUCCESS) {
     if (RegQueryValueExW(key, L"Engine", nullptr, &type,
                          reinterpret_cast<BYTE*>(buffer), &bytes) !=
@@ -226,7 +229,7 @@ std::wstring ReadSelectedEngine() {
 
 bool WriteSelectedEngine(const std::wstring& id) {
   HKEY key = nullptr;
-  if (RegCreateKeyExW(HKEY_CURRENT_USER, kSettingsKey, 0, nullptr, 0,
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, kSettingsKey.c_str(), 0, nullptr, 0,
                       KEY_WRITE, nullptr, &key, nullptr) != ERROR_SUCCESS) {
     return false;
   }
@@ -367,7 +370,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
                    reinterpret_cast<LPARAM>(engine.label));
     }
     MakeControl(window, L"BUTTON", L"保存", WS_VISIBLE | BS_DEFPUSHBUTTON,
-                330, 235, 85, 30, kSave);
+                330, 285, 85, 30, kSave);
+
+    MakeControl(window, L"BUTTON", L"キー置き換え / キー確認…",
+                WS_VISIBLE | BS_PUSHBUTTON, 20, 205, 280, 28, kKeymapEditor);
+    MakeControl(window, L"STATIC", L"", WS_VISIBLE, 20, 245, 395, 28, kKeymapStatus);
+    SetTimer(window, 1, 1000, nullptr);
 
     BuildPages(window);
 
@@ -382,6 +390,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
     return 0;
   }
   if (message == WM_COMMAND) {
+    if (LOWORD(wparam) == kKeymapEditor) { keymap_settings::open(window); return 0; }
     if (LOWORD(wparam) == kSave) { Save(window); return 0; }
     if (LOWORD(wparam) == kEngineCombo && HIWORD(wparam) == CBN_SELCHANGE) {
       const LRESULT selected = SendDlgItemMessageW(window, kEngineCombo,
@@ -389,6 +398,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
       if (selected != CB_ERR) ShowPage(static_cast<int>(selected));
       return 0;
     }
+  }
+  if (message == WM_TIMER) {
+    const auto status = keymap_settings::value(L"Status");
+    SetDlgItemTextW(window, kKeymapStatus,
+                    (L"キー置き換えの状態: " + (status.empty() ? L"未起動" : status)).c_str());
+    return 0;
   }
   if (message == WM_DPICHANGED) {
     // Moving to a monitor with a different scale: adopt the new DPI, rebuild
@@ -456,7 +471,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   HWND window = CreateWindowW(
       name, L"Native IME 設定", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
       CW_USEDEFAULT, CW_USEDEFAULT, MulDiv(455, dpi, 96),
-      MulDiv(320, dpi, 96), nullptr, nullptr, instance, nullptr);
+      MulDiv(370, dpi, 96), nullptr, nullptr, instance, nullptr);
   if (!window) return 2;
   ShowWindow(window, show);
   UpdateWindow(window);

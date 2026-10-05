@@ -1,0 +1,197 @@
+#+TITLE: Per-user key remapping, editor and key inspector
+
+* Build and run
+Build independently of the IME DLL and engine host:
+#+begin_src powershell
+cmake -S windows/keymap -B build/keymap -G "Visual Studio 17 2022" -A x64
+cmake --build build/keymap --config Release
+ctest --test-dir build/keymap -C Release -V
+#+end_src
+The executable is =build/keymap/Release/nelisp-ime-keymap.exe=.
+The normal invocation starts a resident with a dedicated keyboard hook thread.
+=--editor= opens the editor; =--stop= requests graceful shutdown of the matching
+instance. Updating this process does not require restarting applications.
+
+The settings window's 「キー置き換え / キー確認…」 button finds the editor
+through =Keymap\Executable=. Install the executable first to enable that link.
+The editor and text editing configure the *same* file. Saving takes effect after
+roughly 200 ms of quiet file activity (plus the 100 ms timer resolution).
+
+* One configuration file
+The default is the roaming AppData known folder, resolved with
+=SHGetKnownFolderPath(FOLDERID_RoamingAppData)=, plus =NativeIME\keymap.conf=.
+=Keymap\File= under the settings key overrides it; =NELISP_IME_KEYMAP_FILE=
+overrides both. The settings key defaults to =HKCU\Software\NativeIME= and
+respects =NATIVEIME_REGISTRY_KEY= (HKCU-relative).
+
+A missing file disables remapping. The editor creates a commented, disabled
+template. Files are UTF-8, optionally with a BOM. Example (enable only when
+ready to migrate the existing Windows/PowerToys configuration):
+#+begin_src conf
+# nelisp-ime key remapping. Edit here or in the editor window.
+enabled = yes
+layout = US            # os | US | JIS
+pass-injected = no
+
+[keys]
+CapsLock = LCtrl
+# sc:e0:0x1D = none
+
+[shortcuts]
+LAlt+Space = ime-toggle
+Ctrl+Space = LWin+Space
+
+[exclude]
+mstsc.exe
+#+end_src
+Defaults: =enabled=no=, =layout=os=, =pass-injected=yes=.
+Options precede the sections. =#= starts a comment. Each nonempty section line
+is one rule or executable basename. Exclusions are case-insensitive exact names;
+paths and wildcards are rejected. There are at most 256 accepted rules per rule
+section and eight keys per chord. Duplicate sources are rejected. Invalid lines
+produce a file line number and reason, while valid lines still apply. Unknown
+options/sections are preserved and reported, so typos are visible.
+
+Names include letters/digits, F1-F24, CapsLock, LCtrl/RCtrl/Ctrl,
+LAlt/RAlt/Alt, LShift/RShift/Shift, LWin/RWin/Win, Space, Enter, Tab, Escape,
+Backspace, navigation keys, Kanji, Kana, Convert/NonConvert, Numpad0-Numpad9,
+Multiply/Add/Subtract/Decimal/Divide, Oem1-Oem8, Oem102, OemPlus/OemMinus,
+OemComma/OemPeriod, NumLock, ScrollLock, PrintScreen, Pause and Apps.
+Raw names are =sc:0x3A=, =sc:e0:0x1D= (extended Set-1 scan), and =vk:0x19=.
+The inspector uses these same names. =+= joins chord keys; source chord prefixes
+must be modifiers. A target may be a key, a chord, =ime-toggle=, =ime-on=,
+=ime-off=, or =none=. Generic target modifiers resolve to their left-hand key.
+A single-key target is held until the source is released, with auto-repeat.
+Chords/actions are emitted once per source key-down/repeat; source key-up is
+swallowed. Explicit key/shortcut rules take precedence over layout conversion.
+
+The GUI edits enable, layout, injected-event policy, rules and exclusions.
+Select a rule to populate its source/target fields, then use add/edit or delete
+and save. The action dropdown also accepts a typed key/chord. The editor writes
+a temporary file, flushes it, and atomically replaces the original. Unchanged
+lines retain comments, spacing, order, BOM and line endings; removed rules keep
+inline comments. External changes reload the view. Unsaved edits prompt before
+discarding; save also checks for an external change before overwriting.
+Directory change notifications debounce reloads and retry sharing violations.
+The immutable snapshot is exchanged atomically on the owning hook thread.
+
+The registry contains no user rule values. It holds the File override, the
+installer's Executable, and runtime Status (ok/error), Errors (REG_MULTI_SZ),
+RuleCount, Version, Pid, ConfigPath and RecoveryKeys. RecoveryKeys is the finite
+set of possible output keys for the last snapshot, written before activating it;
+it is configuration-derived recovery metadata, not a record of typed keys.
+Pid becomes zero on graceful exit. A crash can leave a stale PID until restart.
+
+* Inspector and direct remapping
+「キーを確認」 captures the next key/chord until all captured keys are released.
+The temporary hook is installed after the resident hook, so it sees input first.
+It swallows capture events only while the editor is the foreground window.
+Escape, loss of focus and a ten-second timeout cancel and remove the hook.
+Injected events are ignored by capture. Keys already held at the start pass through until released. Release held keys
+before pressing the inspected chord. The editor first requests the resident to
+release its ownership with bounded IPC, so capture cannot steal its paired
+release. During capture the
+resident passes the foreground editor through even if its hook is reinstalled. Ctrl+Alt+Del cannot be captured; Escape
+can be configured by typing its name instead of capturing it.
+
+The display includes readable name, scan/extended flag, virtual key/code and
+Windows key name, characters without/with Shift under the active HKL, matching
+rule and file line (or 「置き換えなし」), layout conversion, and read-only Windows
+Scancode Map entries. Windows applies the Scancode Map *before* the hook. On
+this PC physical CapsLock is already mapped to LCtrl; the inspector will show
+LCtrl. It cannot recover the original physical key and does not guess.
+
+After a source capture, 「このキーを置き換える」 captures the target. Alternatively
+choose an action or =none=, then 「選択した置き換えを適用」. These operations add or
+replace the matching source rule and save immediately. Capturing LCtrl+Space
+also finds/replaces an existing generic Ctrl+Space rule instead of adding an
+unreachable duplicate. Lookup follows decision-core modifier semantics, including
+modifier keys produced by key remaps. Captured source modifiers are normalized
+to their mapped logical names when a new shortcut is added. The resident picks up the saved file without a restart.
+
+* Layout and hook behavior
+=os= leaves layout conversion off. =US= and =JIS= describe the character wanted
+for a Set-1 position and Shift. Japanese HKLs are distinguished at runtime with
+=MapVirtualKeyEx= on scan 0x1A (kbd101: VK_OEM_4; kbd106: VK_OEM_3), using the
+foreground thread's HKL, not a registry driver setting. Built-in glyph tables
+cover kbd101, kbd106 and standard en-US 00000409. Identical desired/active layouts
+pass through. Unsupported layouts, extended keypad keys, nonprintable positions
+and unrepresentable characters pass through layout conversion; explicit rules
+still work. Shift is temporarily adjusted to produce the desired glyph, keeping
+Ctrl/Alt/Win. Layout conversion does not install a Windows driver or create
+physical keys missing from the keyboard.
+
+Shortcuts release held modifiers around the emitted chord and restore them.
+Alt/Win use dummy VK 0xFF events to suppress menu activation around swallowed keys.
+The own extra-info tag is always passed through. Other injected events pass
+through by default; setting pass-injected=no permits remapping them.
+Exclusions suppress new bindings; already bound presses keep paired repeats and
+releases even if focus changes to an excluded application.
+
+The callback performs no file/registry I/O, waits or heap allocation. Foreground
+tracking, active-layout detection and file reads happen outside it. Actions are
+posted to the hook thread and run after the callback. A five-second maintenance check installs a replacement hook before removing
+the old one. Unhook failure identifies a silently removed hook and releases
+ownership. Two callback thunks suppress duplicate processing during overlap.
+This does not inject idle probe keys. No key contents are logged.
+
+Disable, reload, exit and session lock release owned keys. Disabled/missing
+configuration removes the keyboard hook and stops maintenance; enabling reinstalls
+it during reload. Startup conservatively
+releases candidate outputs from the last generation and current file, including
+when the file changed after a crash. A physically held candidate key may need to
+be released and pressed again during crash recovery. The IME toggle emits
+VK_KANJI. On/off use the foreground window's default IME window with
+WM_IME_CONTROL/IMC_SETOPENSTATUS, with a bounded timeout and a foreground check.
+TSF-only IMEs, applications without a default IME window, secure desktop,
+elevated applications (SendInput/UIPI), Raw Input software, and other keyboard
+hooks may not honor these operations. The later live check must confirm the
+applications the user actually uses.
+
+* Deployment and rollback
+#+begin_src powershell
+# Preview only; does not copy, write registry values, or start/stop a process.
+windows/keymap/install-keymap.ps1 -Executable build/keymap/Release/nelisp-ime-keymap.exe -DryRun
+# Opt-in real deployment, separate from automated validation:
+windows/keymap/install-keymap.ps1 -Executable build/keymap/Release/nelisp-ime-keymap.exe
+windows/keymap/install-keymap.ps1 -Rollback
+windows/keymap/install-keymap.ps1 -Uninstall
+#+end_src
+The installer copies into a unique versioned directory under
+=%LOCALAPPDATA%\DDSKK\keymap=, writes HKCU Run =NelispImeKeymap= and
+=Keymap\Executable=, records previous values in =rollback.json=, gracefully
+stops the previous instance and starts the replacement. It never registers an
+IME DLL or changes HKLM. Uninstall stops the process and removes autostart and
+Executable, retaining the configuration and versioned files. Rollback restores
+the previous Run/Executable/File values and starts the previous executable.
+
+For private tests pass *all* of SettingsKey, RunKeyPath, LocalAppData,
+InstanceSuffix, ConfigFile and NoHook. Registry paths must be under
+=Software\NativeIME-Tests\=, the AppData root must be private, and the config
+must be under that private root. The test Run command embeds these overrides
+and =--no-hook=, so even executing it cannot target live input/settings.
+The mutex name is =Local\nelisp-ime-keymap=, optionally suffixed by
+=NELISP_IME_KEYMAP_INSTANCE=. CLI --settings-key/--config-file/--instance support
+persistent private overrides in test Run entries.
+
+* Automated safety and evidence
+CTest never installs a system hook or calls SendInput. The =--self-test= fixture
+uses the real resident hook procedure, synthetic KBDLLHOOKSTRUCT events, and a
+recording sink. =--editor --self-test-ui= requires a private file/settings key,
+creates the editor hidden, drives load/add/replace/remove/external reload, calls
+the real capture hook directly, dumps fixture rows and exits. Lifecycle and
+installation tests run only private instances with =--no-hook=. Tests use fresh
+private registry keys/files, restore environment overrides, stop the processes
+they started, and clean their private locations.
+
+The native-table test reads KbdLayerDescriptor from the installed kbd101.dll,
+kbd106.dll and kbdus.dll; it does not activate a layout. Core tests cover all
+printable table positions with/without Shift and all Ctrl/Alt/Win combinations.
+The benchmark processes one million synthetic events against 255 key and 255
+shortcut rules and fails if p99 is >= 50 microseconds.
+
+Validation logs live under =build/validation/keymap/=. The fixed 12 acceptance
+criteria and their evidence hashes live in =tools/ai/keymap-progress.org=.
+S3.5 is deliberately pending until the user performs the live check. No live
+installation, Scancode Map/LayerDriver change, PowerToys change, HKLM write or
+migration was performed by this worker.
