@@ -2,12 +2,17 @@
 
 * S1 File settings in the settings window
 ** S1.1 Headless selftest: input-rules.conf and keymap.conf round trips keep comments, unknown lines and order; missing keys are inserted, a missing file is created from the template, writes are atomic and nothing changes when nothing changed
-pending
+#+NOTE: SU1 (merged 18f620e). Claude reran verify-text-settings.ps1 on the deployed binary (sha256 10b568bb...): TEXT-SELFTEST-PASS, 35 checks, 0 failures.
+evidence: build/validation/settings-window/text-settings-selftest.log sha256=7f70ff2969656d9a264de9255630d0e76999d93d267faa265dca198b1a14bd5b
 ** S1.2 The built window shows the 入力規則 and キー置き換え tabs, and Apply writes only the changed lines through the test overrides (hidden-window smoke or recorded screenshot)
+#+NOTE: The hidden-window smoke (settings-hidden-smoke.log, sha256 6712e017...) shows six tabs, the four file controls and the MULTI_SZ error display. The window's Apply path is not exercised and nothing was rendered visibly, so this stays pending until a visible check.
 pending
 
 * S2 Regression and live use
 ** S2.1 The existing --settings-selftest still passes (9 PASS before SU1) and the registry-backed tabs are unchanged
-pending
+#+NOTE: Registry selftest SELFTEST-PASS on a disposable key (confirmed absent afterwards) and the window-title check pass. The only change to existing code renames the registry-path helper and adds the NATIVEIME_REGISTRY_KEY override.
+evidence: build/validation/settings-window/registry-selftest.log sha256=a4d035cef4aa2a7f44d92dd138722c9614c21d8108a1acee25ea0732c31be903
+evidence: build/validation/settings-window/window-title.log sha256=fe6a3d3c3d4304b2fed8164933f2ccd579d51ee2374ace95a6c7be92b32dd221
 ** S2.2 Live: Sumi deployed with only Sumi restarted, and the user confirms both tabs, including that saved changes take effect
+#+NOTE: Deployed 2026-10-05 17:57 with deploy-live -Indicator (only Sumi restarted; manifest DDSKK/20261005-175740/rollback.json). The live files' values parse as width=hankaku, auto-pair=yes, enabled=yes, layout=US. Waiting for the user's check.
 pending
