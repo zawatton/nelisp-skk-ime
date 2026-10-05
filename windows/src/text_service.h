@@ -191,7 +191,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   bool CreateProviderWindow();
   bool BeginProviderConversion(const std::u32string& keys);
   bool BeginProviderControl(ddskk::EngineControl control, bool apply_state = true);
-  bool BeginProviderKey(char32_t key);
+  bool BeginProviderKey(char32_t key, bool may_convert = false);
   bool BeginProviderKeys(const std::u32string& keys, bool sync = false);
   void CancelPendingProvider();
   void ReleaseEngineConversion();

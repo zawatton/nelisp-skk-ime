@@ -119,6 +119,30 @@ Answers nil without loading anything unless the reading actually asks for
     (if (numberp m) m (nelisp-skk--native-marker-position m))))
 
 (load "vendor/ddskk/skk.el")
+
+;; When DDSKK restores candidate zero, deleting the candidate moves its
+;; end marker to the start before the reading is inserted. Our numeric
+;; henkan positions above do not move. Emulate that one marker adjustment
+;; while running the original DDSKK command, or okuri precedes the reading
+;; ("▽くか" instead of "▽かく"). Keep stock conversion/quit logic intact.
+(defvar ddskk-engine--restoring-candidate nil)
+(unless (fboundp 'ddskk-engine--delete-region)
+  (defalias 'ddskk-engine--delete-region (symbol-function 'delete-region)))
+(defun delete-region (start end)
+  (let ((adjust (and ddskk-engine--restoring-candidate
+                     (numberp skk-henkan-end-point)
+                     (= start skk-henkan-start-point)
+                     (= end skk-henkan-end-point))))
+    (ddskk-engine--delete-region start end)
+    (when adjust (setq skk-henkan-end-point start))))
+(unless (fboundp 'ddskk-engine--previous-candidate)
+  (defalias 'ddskk-engine--previous-candidate
+    (symbol-function 'skk-previous-candidate)))
+(defun skk-previous-candidate (&optional arg)
+  (let ((ddskk-engine--restoring-candidate
+         (and (eq skk-henkan-mode 'active) (= skk-henkan-count 0))))
+    (ddskk-engine--previous-candidate arg)))
+
 (load "engine/skk-input-rules.el")
 (skk-input-rules-load)
 
