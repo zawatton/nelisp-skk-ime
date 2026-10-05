@@ -48,6 +48,7 @@ class RealtimeFrontend {
   }
   bool composing() const { return preedit_ || !pending_.empty(); }
   bool preedit() const { return preedit_; }
+  bool okuri_started() const { return okuri_started_; }
   bool katakana() const { return katakana_; }
   bool latin() const { return latin_; }
   bool wide_latin() const { return wide_latin_; }

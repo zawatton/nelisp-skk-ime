@@ -29,7 +29,10 @@ if ([string]::IsNullOrWhiteSpace($DllPath)) {
 $script = @(
   # One-character conversion and okuri-ari conversion.
   'K a SPACE SETTLE30000:WAIT1700 ENTER SETTLE30000:WAIT500'
-  'K i e R u SPACE SETTLE30000:WAIT1700 ENTER SETTLE30000:WAIT500'
+  # Old: K i e R u SPACE -> conversion; new: K i e R u -> conversion.
+  # Stock oracle: test-okuri-input.el disappear = candidate, text suffix
+  # 25bc6d883048308b ("▼消える"). SPACE would now select the next candidate.
+  'K i e R u SETTLE30000:WAIT1700 ENTER SETTLE30000:WAIT500'
   # Stock Q confirms hiragana and starts another preedit; confirm that empty
   # preedit, then independently assert lowercase q's katakana commit.
   'K a n a Q SETTLE30000:WAIT3000 ENTER SETTLE30000:WAIT500 K a n a q SETTLE30000:WAIT5000'

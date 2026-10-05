@@ -448,7 +448,7 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
   return true;
 }
 
-bool TextService::BeginProviderKey(char32_t key) {
+bool TextService::BeginProviderKey(char32_t key, bool may_convert) {
   if (provider_window_ == nullptr) return false;
   provider_cleanup_pending_ = false;
   provider_conversion_active_ = false;
@@ -458,12 +458,13 @@ bool TextService::BeginProviderKey(char32_t key) {
   const HWND destination = provider_window_;
   AddRef();
   try {
-    std::thread([this, key, sequence, destination] {
+    std::thread([this, key, may_convert, sequence, destination] {
       DelayTestProvider();
       std::optional<ddskk::EngineState> state;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
-        state = engine_.SendKey(key, kInteractiveTimeoutMs);
+        state = engine_.SendKey(key, may_convert ? kConversionTimeoutMs
+                                               : kInteractiveTimeoutMs);
       }
       auto* result = new (std::nothrow) ProviderResult{
           this, sequence, std::move(state)};
@@ -697,7 +698,12 @@ void TextService::ReplayDeferredProviderKeys() {
     deferred_provider_keys_.pop_front();
     std::optional<ddskk::EngineState> state;
     if (provider_composition_active_) {
-      if (key.has_codepoint && BeginProviderKey(key.codepoint)) return;
+      if (key.has_codepoint) {
+        // Resolving an okuri prefix can perform a dictionary lookup.
+        const bool started = BeginProviderKey(key.codepoint,
+            engine_id_ == "ddskk" && last_engine_mode_ == L"preedit");
+        if (started) return;
+      }
       std::optional<ddskk::EngineControl> control;
       if (key.virtual_key == VK_RETURN) control = ddskk::EngineControl::kCommit;
       else if (key.virtual_key == VK_SPACE) control = ddskk::EngineControl::kConvert;
@@ -745,6 +751,11 @@ void TextService::ReplayDeferredProviderKeys() {
         if (BeginProviderKeys(keys, true)) return;
       }
       state = realtime_frontend_.Feed(key.codepoint);
+      if (engine_id_ == "ddskk" && realtime_frontend_.okuri_started()) {
+        auto keys = realtime_frontend_.raw_keys();
+        if (realtime_frontend_.katakana()) keys.insert(keys.begin(), U'q');
+        if (BeginProviderKeys(keys, true)) return;
+      }
     }
     if (!state) continue;
 
@@ -1937,6 +1948,17 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       return S_OK;
     }
   }
+  // After the okuri handoff, DDSKK owns both the pending syllable and the
+  // reading restored by quit (which merges the okuri into the reading).
+  if (provider_composition_active_ && realtime_frontend_.okuri_started() &&
+      (ctrl_g || wparam == VK_ESCAPE)) {
+    if (BeginProviderControl(ddskk::EngineControl::kQuit)) {
+      branch = L"okuri-quit";
+      *eaten = TRUE;
+      debug_exit(*eaten);
+      return S_OK;
+    }
+  }
   if (provider_composition_active_ && !ctrl_g && wparam != VK_ESCAPE &&
       !katakana_q) {
     std::optional<ddskk::EngineControl> control;
@@ -1975,6 +1997,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     }
     const auto codepoint = TranslateKey(wparam, lparam);
     if (codepoint) {
+      if (engine_id_ == "ddskk" && last_engine_mode_ == L"preedit" &&
+          BeginProviderKey(*codepoint, true)) {
+        branch = L"provider-preedit-key";
+        *eaten = TRUE;
+        debug_exit(*eaten);
+        return S_OK;
+      }
       deferred_provider_keys_.push_back(DeferredProviderKey{
           wparam, *codepoint, true, ShiftDown(), ctrl_j});
       if (BeginProviderControl(ddskk::EngineControl::kCommit)) {
@@ -2356,6 +2385,19 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
         last_engine_mode_ != L"candidate" && !registration_mode_;
     if (realtime_path) {
       state = realtime_frontend_.Feed(*codepoint);
+      // Hand off at the marker, including uppercase vowels that complete
+      // okuri immediately. Subsequent keys stay ordered on the provider
+      // worker; DDSKK decides when n/sokuon rules start conversion.
+      if (engine_id_ == "ddskk" && realtime_frontend_.okuri_started()) {
+        auto keys = realtime_frontend_.raw_keys();
+        if (realtime_frontend_.katakana()) keys.insert(keys.begin(), U'q');
+        if (BeginProviderKeys(keys, true)) {
+          branch = L"okuri-sync";
+          *eaten = TRUE;
+          debug_exit(*eaten);
+          return S_OK;
+        }
+      }
       if (!state && !realtime_frontend_.latin()) {
         auto keys = realtime_frontend_.raw_keys();
         if (realtime_frontend_.katakana()) keys.insert(keys.begin(), U'q');
