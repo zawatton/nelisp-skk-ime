@@ -771,4 +771,34 @@
       (should (equal (buffer-string) (if (<= age 2.0) "()" "(")))
       (should (= (point) 2)))))
 
+(ert-deftest nelisp-ime-emacs-inline-pair-nested-at-point ()
+  (dolist (pair '(("(" . ")") ("「" . "」") ("<<" . ">>")))
+    (dolist (before '(t nil))
+      (nelisp-ime-emacs-inline-test--pair-buffer
+        (insert "prefixsuffix")
+        (goto-char 7)
+        (dotimes (i 2)
+          (undo-boundary)
+          (when before
+            (process-send-string client (format "PAIR %d %s %s\n"
+                                                (1+ i) (car pair) (cdr pair)))
+            (nelisp-ime-emacs-inline-test--sequence (1+ i)))
+          (insert-before-markers (car pair))
+          (unless before
+            ;; The process filter can run while another buffer is current.
+            (with-temp-buffer
+              (process-send-string client (format "PAIR %d %s %s\n"
+                                                  (1+ i) (car pair) (cdr pair)))
+              (nelisp-ime-emacs-inline-test--sequence (1+ i))))
+          (run-hooks 'post-command-hook)
+          (should (= (point) (+ 7 (* (1+ i) (length (car pair))))))
+          (should (= (window-point) (point))))
+        (should (equal (buffer-string)
+                       (concat "prefix" (car pair) (car pair)
+                               (cdr pair) (cdr pair) "suffix")))
+        (undo-boundary)
+        (let ((inhibit-message t)) (undo 1))
+        (should (equal (buffer-string)
+                       (concat "prefix" (car pair) (cdr pair) "suffix")))))))
+
 ;;; nelisp-ime-emacs-inline-test.el ends here

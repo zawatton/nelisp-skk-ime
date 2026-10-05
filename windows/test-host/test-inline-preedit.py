@@ -19,7 +19,11 @@ def main():
     p = argparse.ArgumentParser()
     for name in ('dll', 'core', 'tsf-host', 'engine-host', 'runtime', 'artifacts'):
         p.add_argument('--' + name, required=True)
-    p.add_argument('--case', choices=('inline', 'missing', 'wrong', 'drop', 'emacs', 'pair', 'pair-legacy', 'pair-down', 'emacs-pair'), default='inline')
+    p.add_argument('--case', choices=('inline', 'missing', 'wrong', 'drop', 'emacs', 'pair', 'pair-legacy', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair'), default='inline')
+    p.add_argument('--context-alias', action='store_true',
+                   help='Deliver the vowel through a context tear-off with the same COM identity')
+    p.add_argument('--selection-unavailable', action='store_true',
+                   help='Model an IMM32 host that rejects explicit caret selection')
     p.add_argument('--cold-load', type=int, default=45)
     p.add_argument('--repository', default=None)
     p.add_argument('--cycle-regression', action='store_true',
@@ -68,7 +72,7 @@ def main():
                 return
             while not done.is_set() and not pidfile.exists():
                 time.sleep(.02)
-            if done.is_set() or args.case in ('missing', 'emacs', 'pair-down', 'emacs-pair'):
+            if done.is_set() or args.case in ('missing', 'emacs', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair'):
                 return
             pid = int(pidfile.read_text())
             published_token = 'f' * 32 if args.case == 'wrong' else token
@@ -118,7 +122,12 @@ def main():
               'K WAIT100 a WAIT100 n WAIT100 a WAIT100 q WAIT3000 '
               'K WAIT100 a WAIT100 n WAIT100 a WAIT100 SPACE WAIT3000 '
               'SPACE WAIT1000 SPACE WAIT1000 SPACE WAIT1000 SPACE WAIT1000 ENTER WAIT1000 WAIT500')
-    pairing = args.case in ('pair', 'pair-legacy', 'pair-down', 'emacs-pair')
+    pairing = args.case in ('pair', 'pair-legacy', 'pair-down', 'emacs-pair', 'emacs-nested-pair')
+    if args.case == 'emacs-accept-queue':
+        script = ('WAIT2500 a i SPACE SETTLE30000 ENTER SETTLE30000 '
+                  'K a SPACE SETTLE8000 n '
+                  + ('SETTLE8000 CONTEXTALIAS ' if args.context_alias else '')
+                  + 'u SETTLE8000 WAIT500')
     if args.cycle_regression:
         assert args.case == 'emacs', 'Cycle regression requires the real Emacs listener'
         script = ('WAIT2500 K a n a SPACE SETTLE30000:first '
@@ -127,6 +136,8 @@ def main():
                   'ENTER SETTLE30000:commit WAIT500')
     if pairing:
         script = 'WAIT2500 a i SPACE WAIT3000 ENTER WAIT500 APPCLEAR BRACKET WAIT100 WAIT500'
+        if args.case == 'emacs-nested-pair':
+            script += ' BRACKET WAIT100 WAIT500'
     # The fake server's CARET is deterministic. The real Emacs runner reports
     # its rendered overlays and uses batch-safe pixel stubs for CARET only.
     command = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
@@ -139,18 +150,22 @@ def main():
                '-ArtifactDirectory', str(artifacts), '-TsfHostTimeoutSec', '90']
     env = os.environ.copy()
     env['DDSKK_HARNESS_DIAGNOSTICS'] = '1'
+    if args.selection_unavailable:
+        env['NATIVEIME_TEST_SELECTION_UNAVAILABLE'] = '1'
     if args.cycle_regression:
         env['NATIVEIME_TEST_CANDIDATE_CONTROL_FAIL_MS'] = '1600'
     env['INLINE_TEST_PIDFILE'] = str(pidfile)
     env['NELISP_IME_INLINE_DIR'] = str(directory)
-    env['INLINE_TEST_PAIR'] = '1' if args.case == 'emacs-pair' else ''
+    env['INLINE_TEST_PAIR'] = ('2' if args.case == 'emacs-nested-pair'
+                               else '1' if args.case == 'emacs-pair' else '')
     env['INLINE_TEST_ARTIFACTS'] = str(artifacts)
     env['INLINE_TEST_LOG'] = str(directory / 'emacs.log')
-    if args.case == 'emacs-pair':
+    if args.case in ('emacs-pair', 'emacs-nested-pair'):
         # Only the engine sees this configuration. The real Emacs library
         # must learn both strings from PAIR, with no local pair table.
         rules = directory / 'input-rules.conf'
-        rules.write_text('width = hankaku\nauto-pair = yes\n[pairs-hankaku]\n[ = "<<" ">>"\n',
+        pair = '"(" ")"' if args.case == 'emacs-nested-pair' else '"<<" ">>"'
+        rules.write_text('width = hankaku\nauto-pair = yes\n[pairs-hankaku]\n[ = ' + pair + '\n',
                          encoding='utf-8')
         env['NELISP_IME_INPUT_RULES'] = str(rules)
     try:
@@ -160,7 +175,7 @@ def main():
             observer = subprocess.Popen([os.sys.executable,
                 str(root / 'windows/test-host/candidate-window-observer.py'),
                 str(directory), str(artifacts), caret_map])
-        if args.case in ('emacs', 'emacs-pair'):
+        if args.case in ('emacs', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair'):
             # Same prefix required for every PowerShell launch of Emacs.
             emacs_command = "$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L emacs -l windows/test-host/inline-emacs-subscriber.el"
             emacs = subprocess.Popen(['powershell', '-NoProfile', '-Command', emacs_command], cwd=root, env=env)
@@ -205,6 +220,18 @@ def main():
     assert not errors, errors
     assert 'UnknownToken' not in host_text, 'Invalid test script'
     assert 'exited=True' in output, 'Harness did not confirm owned process cleanup'
+    if args.case == 'emacs-accept-queue':
+        assert 'branch=provider-accept-and-queue' in host_text, host_text[-4000:]
+        if not args.context_alias:
+            assert 'branch=provider-queue' in host_text, host_text[-4000:]
+        else:
+            assert 'CONTEXT_ALIAS distinct=1 same_identity=1' in host_text, host_text[-4000:]
+        assert 'AFTER WAIT500 BUF=[あい蚊ぬ] SEL=4,4 COMP=-' in host_text, host_text[-4000:]
+        rendered = (directory / 'emacs.log').read_text(encoding='utf-8')
+        assert '▼蚊' in rendered and emacs.returncode == 0, rendered
+        assert 'COMPOSITION START' not in host_text, 'Inline created a TSF composition'
+        print('PASS inline accept-and-queue final=あい蚊ぬ selection_unavailable=' + str(args.selection_unavailable))
+        return
     if args.cycle_regression:
         assert 'CANDIDATE_TEST lost-reply' in host_text, 'Fault injection did not run'
         assert 'AFTER commit BUF=[佳奈] SEL=2,2 COMP=-' in host_text, host_text[-2000:]
@@ -212,6 +239,15 @@ def main():
         assert '▼佳奈' in rendered and emacs.returncode == 0, rendered
         assert 'COMPOSITION START' not in host_text, 'Inline created a TSF composition'
         print('PASS candidate-cycle fifth=佳奈 lost_commit_reply=recovered settle=idle cleanup=confirmed')
+        return
+    if args.case == 'emacs-nested-pair':
+        assert 'AFTER WAIT500 BUF=[((] SEL=2,2 COMP=-' in host_text, host_text[-2000:]
+        rendered = (directory / 'emacs.log').read_text(encoding='utf-8')
+        assert len(re.findall(r'^PAIR [0-9]+ \( \)$', rendered, re.MULTILINE)) == 2, rendered
+        assert 'PAIR_BUFFER=(()) POINT=3' in rendered, rendered
+        assert emacs.returncode == 0, emacs.returncode
+        assert 'COMPOSITION START' not in host_text, 'Inline created a TSF composition'
+        print('PASS inline nested pair buffer=(()) point=3 pair_lines=2 cleanup=confirmed')
         return
     if pairing:
         pairs = [line for line in lines if line.startswith('PAIR ')]

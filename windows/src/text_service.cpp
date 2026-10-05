@@ -2016,7 +2016,22 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   if (eaten == nullptr) return E_POINTER;
   *eaten = FALSE;
   if (context == nullptr) return E_INVALIDARG;
-  if (active_context_ != context) {
+  bool context_changed = active_context_ != context;
+  if (context_changed && active_context_ && inline_epoch_) {
+    // A CUAS context can arrive through another interface tear-off. Only
+    // IUnknown identifies the COM object; settling that same inline episode
+    // would commit an unresolved prefix (n) before the next vowel (u).
+    IUnknown* previous_identity = nullptr;
+    IUnknown* current_identity = nullptr;
+    if (SUCCEEDED(active_context_->QueryInterface(IID_IUnknown,
+            reinterpret_cast<void**>(&previous_identity))) &&
+        SUCCEEDED(context->QueryInterface(IID_IUnknown,
+            reinterpret_cast<void**>(&current_identity))))
+      context_changed = previous_identity != current_identity;
+    if (previous_identity) previous_identity->Release();
+    if (current_identity) current_identity->Release();
+  }
+  if (context_changed) {
     const bool abandoned = active_context_ != nullptr &&
         (engine_pending_ || registration_mode_ || composition_ != nullptr);
     DebugLog(L"Context switch old=%p new=%p abandoned=%d pending=%d reg=%d comp=%d",
@@ -3327,9 +3342,12 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
         static_cast<LONG>(state.text.size()), &inserted);
     insertion->Release();
     if (SUCCEEDED(result) && inserted) {
+      // InsertTextAtSelection already advances the host's selection. CUAS
+      // may reject an explicit SetSelection after delivering IMM input; that
+      // must not turn a successful commit into a failed provider edit and
+      // strand the keys queued behind it. Emacs also owns the final point
+      // after inserting an advisory PAIR closer.
       inserted->Collapse(edit_cookie, TF_ANCHOR_END);
-      TF_SELECTION selection{inserted, {TF_AE_NONE, FALSE}};
-      result = context->SetSelection(edit_cookie, 1, &selection);
       CaptureCaretRect(edit_cookie, context, inserted);
     }
     if (inserted) inserted->Release();
