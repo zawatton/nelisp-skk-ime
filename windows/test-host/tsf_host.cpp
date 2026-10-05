@@ -52,6 +52,7 @@
 //   SETTLE30000   pump until provider idle and document quiet for 100 ms;
 //                 fail after 30000 ms. SETTLE30000:label retains an AFTER
 //                 observation label (e.g. WAIT500) for existing log consumers.
+//   KEYSTATE:SHIFT/KEYSTATE:CLEAR  seed ambient modifiers in this private thread
 //
 // After every token the program prints one UTF-8 line to stdout:
 //   AFTER <token> BUF=[<buffer>] SEL=<start>,<end> COMP=<span-or-dash>
@@ -876,11 +877,18 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
                      const std::wstring& token) {
   BYTE state_before[256]{};
   GetKeyboardState(state_before);
-  BYTE state[256];
-  memcpy(state, state_before, sizeof(state));
+  // Script tokens describe the complete key event. Inheriting a physical
+  // Shift/Ctrl/Caps Lock from the harness thread changes lowercase readings
+  // into okuri or shortcuts. Restore that state only after dispatch finishes.
+  BYTE state[256]{};
   if (key.shift) state[VK_SHIFT] |= 0x80;
   if (key.ctrl) state[VK_CONTROL] |= 0x80;
   SetKeyboardState(state);
+  if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
+    std::printf("SCRIPTKEY token=%s inherited_shift=%d shift=%d control=%d\n",
+                Utf8FromWide(token).c_str(), (state_before[VK_SHIFT] & 0x80) != 0,
+                key.shift, key.ctrl);
+  }
 
   const UINT scan = MapVirtualKeyW(key.vk, MAPVK_VK_TO_VSC);
   const LPARAM lparam_down = (static_cast<LPARAM>(scan) << 16) | 1;
@@ -1130,7 +1138,12 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   size_t active = 0;
   bool alias_next = false;
   while (stream >> token) {
-    if (token == L"CONTEXTALIAS") {
+    if (token == L"KEYSTATE:SHIFT" || token == L"KEYSTATE:CLEAR") {
+      BYTE ambient[256]{};
+      ambient[VK_SHIFT] = token == L"KEYSTATE:SHIFT" ? 0x80 : 0;
+      SetKeyboardState(ambient);
+      std::printf("INHERITED_MODIFIERS shift=%d\n", ambient[VK_SHIFT] != 0);
+    } else if (token == L"CONTEXTALIAS") {
       alias_next = true;
     } else if (token == L"EXITNOW") {
       wchar_t root[1024]{};
