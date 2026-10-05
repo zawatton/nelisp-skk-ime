@@ -252,6 +252,8 @@ struct Child {
   std::string engine;
   ULONGLONG started = 0;
   bool exit_logged = false;
+  bool wire_checked = false;
+  bool utf8_wire = false;
 };
 
 void LogChildExit(Child& child, bool expected) {
@@ -1130,7 +1132,172 @@ void ShutdownDictionaryServer() {
 // conversion. A replacement child publishes its own effective rule table.
 std::string g_romaji_rules;
 std::mutex g_romaji_mutex;
+std::string QuoteEngineString(std::string_view value) {
+  std::string result = "\"";
+  for (unsigned char ch : value) {
+    if (ch == '"' || ch == '\\') { result += '\\'; result += static_cast<char>(ch); }
+    else if (ch < 32 || ch == 127) {
+      result += '\\';
+      result += static_cast<char>('0' + ((ch >> 6) & 7));
+      result += static_cast<char>('0' + ((ch >> 3) & 7));
+      result += static_cast<char>('0' + (ch & 7));
+    } else result += static_cast<char>(ch);
+  }
+  return result + '"';
+}
+
+std::string EngineDictionaryReply(const std::string& reply) {
+  // Match the legacy Lisp slash scanner exactly: skip empty fields and
+  // ignore any unterminated trailing field. The reader receives data only.
+  if (reply.empty() || reply[0] != '1') return "LIST nil";
+  std::string result = "LIST (";
+  size_t start = 1;
+  for (;;) {
+    const size_t slash = reply.find('/', start);
+    if (slash == std::string::npos) break;
+    if (slash > start) result += QuoteEngineString(std::string_view(reply).substr(start, slash - start)) + ' ';
+    start = slash + 1;
+  }
+  return result + ')';
+}
+
+// STATE2 is private to the host/engine link. Each body field is a decimal
+// scalar count, ':', then UTF-8. Delimiters (including newlines) are data.
+// Translate here so every DLL and state-mirror consumer retains STATE v1.
+template <class ReadByte>
+bool DecodeState2(const std::string& header, ReadByte read_byte,
+                  std::string* response) {
+  std::istringstream input(header);
+  std::string tag, mode, extra;
+  int cursor = 0, start = 0, index = 0, count = 0, registration = 0;
+  if (!(input >> tag >> mode >> cursor >> start >> index >> count >> registration) ||
+      (input >> extra) || tag != "STATE2" || cursor < 0 || start < -1 || index < -1 ||
+      count < 0 || count > 4096 || (registration != 0 && registration != 1)) return false;
+  size_t bytes = 0;
+  const auto next = [&](unsigned char* ch) {
+    return ++bytes <= 1048576 && read_byte(ch);
+  };
+  const auto field = [&](std::string* encoded) {
+    unsigned char ch = 0;
+    size_t scalars = 0, digits = 0;
+    do {
+      if (!next(&ch)) return false;
+      if (ch == ':') break;
+      if (ch < '0' || ch > '9' || ++digits > 6) return false;
+      scalars = scalars * 10 + (ch - '0');
+    } while (true);
+    if (!digits || scalars > 65536) return false;
+    encoded->clear();
+    for (size_t i = 0; i < scalars; ++i) {
+      if (!next(&ch)) return false;
+      unsigned int code = ch, minimum = 0;
+      int continuation = 0;
+      if (ch < 0x80) {}
+      else if (ch >= 0xc2 && ch <= 0xdf) { code = ch & 31; continuation = 1; minimum = 0x80; }
+      else if (ch >= 0xe0 && ch <= 0xef) { code = ch & 15; continuation = 2; minimum = 0x800; }
+      else if (ch >= 0xf0 && ch <= 0xf4) { code = ch & 7; continuation = 3; minimum = 0x10000; }
+      else return false;
+      for (int j = 0; j < continuation; ++j) {
+        if (!next(&ch) || (ch & 0xc0) != 0x80) return false;
+        code = (code << 6) | (ch & 63);
+      }
+      if (code < minimum || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return false;
+      constexpr char hex[] = "0123456789abcdef";
+      for (int shift = 20; shift >= 0; shift -= 4) encoded->push_back(hex[(code >> shift) & 15]);
+    }
+    if (encoded->empty()) *encoded = "-";
+    return true;
+  };
+  std::string text, pending, candidates, reading;
+  if (!field(&text) || !field(&pending)) return false;
+  for (int i = 0; i < count; ++i) {
+    std::string candidate;
+    if (!field(&candidate)) return false;
+    if (i) candidates += ',';
+    candidates += candidate;
+  }
+  if (registration && !field(&reading)) return false;
+  unsigned char end = 0;
+  if (!next(&end) || end != '\n') return false;
+  *response = "STATE " + mode + " " + std::to_string(cursor) + " " +
+      std::to_string(start) + " " + text + " " + pending + " " +
+      std::to_string(index) + " " + (count ? candidates : "-") +
+      (registration ? " " + reading : "");
+  return true;
+}
+
+bool ReadEngineResponse(HANDLE pipe, std::string* response) {
+  std::string header;
+  if (!ReadLine(pipe, &header)) return false;
+  if (!header.starts_with("STATE2 ")) { *response = std::move(header); return true; }
+  const ULONGLONG deadline = GetTickCount64() + 90000;
+  return DecodeState2(header, [&](unsigned char* ch) {
+    for (;;) {
+      DWORD available = 0, read = 0;
+      if (g_stopping.load() || GetTickCount64() >= deadline ||
+          !PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr)) return false;
+      if (!available) { Sleep(2); continue; }
+      return ReadFile(pipe, ch, 1, &read, nullptr) && read == 1;
+    }
+  }, response);
+}
+
+std::string Utf8KeyRequest(const std::string& request) {
+  size_t command = 0;
+  if (request.starts_with("SESSION ")) {
+    command = request.find(' ', 8);
+    if (command == std::string::npos) return request;
+    ++command;
+  }
+  for (const auto& name : {"CONVERT", "SYNC", "FEED"}) {
+    const std::string prefix = std::string("CONTROL ") + name + "-KEYS ";
+    if (request.compare(command, prefix.size(), prefix)) continue;
+    size_t pos = command + prefix.size();
+    if (pos == request.size()) return request;
+    std::string text;
+    while (pos < request.size()) {
+      unsigned int code = 0;
+      size_t digits = 0;
+      while (pos < request.size() && request[pos] != ',') {
+        const char ch = request[pos++];
+        if (ch < '0' || ch > '9' || ++digits > 7) return request;
+        code = code * 10 + static_cast<unsigned int>(ch - '0');
+        if (code > 0x10ffff) return request;
+      }
+      if (!digits || (code >= 0xd800 && code <= 0xdfff) || code == 10 || code == 13)
+        return request; // These keys retain the original line-safe decimal path.
+      if (code < 0x80) text.push_back(static_cast<char>(code));
+      else {
+        if (code < 0x800) text.push_back(static_cast<char>(0xc0 | (code >> 6)));
+        else {
+          if (code < 0x10000) text.push_back(static_cast<char>(0xe0 | (code >> 12)));
+          else {
+            text.push_back(static_cast<char>(0xf0 | (code >> 18)));
+            text.push_back(static_cast<char>(0x80 | ((code >> 12) & 63)));
+          }
+          text.push_back(static_cast<char>(0x80 | ((code >> 6) & 63)));
+        }
+        text.push_back(static_cast<char>(0x80 | (code & 63)));
+      }
+      if (pos < request.size() && ++pos == request.size()) return request;
+    }
+    return request.substr(0, command) + "CONTROL " + name + "-UTF8 " + text;
+  }
+  return request;
+}
+
 bool Dispatch(Child& child, const std::string& request, std::string* response) {
+  if (!child.wire_checked) {
+    child.wire_checked = true;
+    if (child.engine == "ddskk") {
+      std::string reply;
+      if (!WriteAll(child.input, "WIRE UTF8 1\n")) return false;
+      do {
+        if (!ReadLine(child.output, &reply)) return false;
+      } while (reply.starts_with("PHASE "));
+      child.utf8_wire = reply == "OK WIRE UTF8 1";
+    }
+  }
   const ULONGLONG started = GetTickCount64();
   const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
   PROCESS_MEMORY_COUNTERS memory{};
@@ -1147,21 +1314,28 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
         started, GetProcessId(child.process), memory.WorkingSetSize/1048576,
         memory.PageFaultCount, request.c_str());
   }
-  if (!WriteAll(child.input, request + "\n")) return false;
+  if (!WriteAll(child.input, (child.utf8_wire ? Utf8KeyRequest(request) : request) + "\n")) return false;
   // Bounded guard: a buggy/adversarial engine that keeps emitting
   // "SERVER " lines instead of ever producing a real response must not be
   // able to wedge this loop (and thus the whole host) forever.
   constexpr int kMaxServerExchangesPerRequest = 64;
   int server_exchanges = 0;
   ULONGLONG phase_started = started;
+  ULONGLONG phase_cpu_started = cpu_started;
   std::string phase = "dispatch";
   for (;;) {
     std::string line;
-    if (!ReadLine(child.output, &line)) return false;
+    if (!ReadEngineResponse(child.output, &line)) return false;
     if (line.starts_with("PHASE ")) {
       const ULONGLONG now = GetTickCount64();
       if (debug) std::fprintf(stderr, "engine-phase name=%s ms=%llu next=%s\n",
           phase.c_str(), now - phase_started, line.c_str() + 6);
+      if (debug) {
+        const ULONGLONG now_cpu = cpu_time();
+        std::fprintf(stderr, "engine-phase-cpu name=%s ms=%llu next=%s\n",
+            phase.c_str(), (now_cpu - phase_cpu_started) / 10000, line.c_str() + 6);
+        phase_cpu_started = now_cpu;
+      }
       phase = line.substr(6);
       phase_started = now;
       continue;
@@ -1171,7 +1345,8 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
       // real response. The engine blocks on its stdin until this arrives.
       if (++server_exchanges > kMaxServerExchangesPerRequest) return false;
       const ULONGLONG relay_started = GetTickCount64();
-      const std::string reply = LookupDictionary(line.substr(7));
+      const std::string found = LookupDictionary(line.substr(7));
+      const std::string reply = child.utf8_wire ? EngineDictionaryReply(found) : found;
       if (debug) std::fprintf(stderr, "dictionary-relay ms=%llu\n", GetTickCount64()-relay_started);
       if (!WriteAll(child.input, reply + "\n")) return false;
       continue;

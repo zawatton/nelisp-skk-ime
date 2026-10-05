@@ -153,6 +153,13 @@ target_compile_definitions(ddskk-engine-host PRIVATE UNICODE _UNICODE WIN32_LEAN
 target_compile_options(ddskk-engine-host PRIVATE /W4 /permissive- /utf-8)
 target_link_libraries(ddskk-engine-host PRIVATE ws2_32 advapi32)
 
+add_executable(ddskk-host-utf8-protocol-test test-host/host_utf8_protocol_test.cpp)
+target_compile_features(ddskk-host-utf8-protocol-test PRIVATE cxx_std_20)
+target_compile_definitions(ddskk-host-utf8-protocol-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(ddskk-host-utf8-protocol-test PRIVATE /W4 /permissive- /utf-8)
+target_link_libraries(ddskk-host-utf8-protocol-test PRIVATE ws2_32 advapi32)
+nativeime_test(ddskk-host-utf8-protocol-test)
+
 add_executable(ddskk-engine-e2e-test
   test/engine_e2e_test.cpp src/engine_client.cpp src/engine_protocol.cpp)
 target_include_directories(ddskk-engine-e2e-test PRIVATE src)
