@@ -1,0 +1,21 @@
+#+TITLE: Input rules: half-width symbols in kana modes and auto-pairing brackets
+
+* S1 Rules in the engine
+** S1.1 input-rules.conf (defaults equal the user's Emacs DDSKK config: hankaku and zenkaku symbol tables, bracket pairs) is parsed by the engine with per-line errors; the effective rom-kana rules contain the active symbol table and the rule tree exported to the DLL matches the engine for every configured symbol key in hiragana and katakana
+pending
+** S1.2 Switching width (hankaku/zenkaku) and editing the file take effect without restarting applications (engine reload); a harness run shows the output change after a file edit
+pending
+
+* S2 Auto-pair
+** S2.1 In kana modes a configured opener commits open + close with the caret between them (TSF harness BUF and SEL checks); latin mode, ▽/▼ preedit and Backspace follow DDSKK semantics
+pending
+** S2.2 Caret placement also works in IMM32 applications such as Emacs (IMM32 harness window, or a documented live check)
+pending
+
+* S3 Editing and live use
+** S3.1 GUI: an input-rules page in the settings editor (symbol rows, pairs, width, auto-pair on/off) with comment-preserving atomic writes and external-edit reload, plus a Start Menu entry
+pending
+** S3.2 DDSKK suite, ctest with NELISP_EXECUTABLE and the Emacs integration suite still pass; ordinary-key latency unchanged
+pending
+** S3.3 Live: deployed without application restarts and the user confirms in Emacs and another application
+pending
