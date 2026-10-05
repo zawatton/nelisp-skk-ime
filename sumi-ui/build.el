@@ -224,6 +224,7 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
          (pipe-client-obj (expand-file-name "pipe-client.o" sumi-ui-target-dir))
          (settings-obj (expand-file-name "settings.o" sumi-ui-target-dir))
          (main-obj (expand-file-name "main.o" sumi-ui-target-dir))
+         (text-obj (expand-file-name "text-settings.o" sumi-ui-target-dir))
          (exe (expand-file-name "sumi-skk-ui.exe" sumi-ui-target-dir))
          (gtk-cflags (sumi-ui-pkg-config-flags "--cflags" "gtk4"))
          (pango-cflags (sumi-ui-pkg-config-flags "--cflags" "pangocairo"))
@@ -240,16 +241,31 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
     ;; separately.
     (sumi-ui-compile-c "pipe-client" pipe-client-obj all-cflags)
     (sumi-ui-compile-c "settings" settings-obj all-cflags)
+    (with-temp-file (expand-file-name "text-templates.inc" sumi-ui-target-dir)
+      (dolist (pair '(("rules_template" . "input-rules.conf") ("keymap_template" . "keymap.conf")))
+        (let ((text (with-temp-buffer
+                      (insert-file-contents (expand-file-name (concat "templates/" (cdr pair)) sumi-ui-root))
+                      (buffer-string))))
+          (insert "static const char " (car pair) "[] =\n")
+          (let ((bytes (encode-coding-string text 'utf-8-unix)))
+            (dotimes (i (length bytes))
+              (when (= (% i 40) 0) (insert "\""))
+              (insert (format "\\x%02x" (aref bytes i)))
+              (when (or (= (% i 40) 39) (= i (1- (length bytes))))
+                (insert "\"\n"))))
+          (insert ";\n"))))
+    (sumi-ui-compile-c "text-settings" text-obj
+                       (append all-cflags (list (concat "-I" sumi-ui-target-dir))))
     (sumi-ui-compile-c "main" main-obj all-cflags)
     (let ((linked (sumi-ui-link
                    (list main-obj mode-logic-obj registry-obj widgets-obj
-                         colors-obj pipe-client-obj settings-obj)
+                         colors-obj pipe-client-obj settings-obj text-obj)
                    exe
                    ;; advapi32 for settings.c's RegGetValueW/RegSetKeyValueW/
                    ;; RegDeleteTreeW (Phase 3) -- not pulled in transitively
                    ;; by gtk4/pangocairo's own pkg-config libs.
                    (append (cl-remove-duplicates (append gtk-libs pango-libs) :test #'string=)
-                           (list "-ladvapi32")))))
+                           (list "-ladvapi32" "-lshell32" "-lole32" "-luuid")))))
       (princ (format "SUMI-UI-BUILD-OK %s\n" linked)))))
 
 (when noninteractive

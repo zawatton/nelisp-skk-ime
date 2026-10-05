@@ -43,8 +43,9 @@
  * save, delete_all) calls this and only this to find its key -- the
  * single choke point that makes DDSKK_SETTINGS_KEY reliably confine all
  * I/O away from the production key during testing. */
-static void settings_key_path(wchar_t *buf, size_t cap) {
-  DWORD n = GetEnvironmentVariableW(L"DDSKK_SETTINGS_KEY", buf, (DWORD)cap);
+void settings_registry_path(wchar_t *buf, size_t cap) {
+  DWORD n = GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", buf, (DWORD)cap);
+  if (!n) n = GetEnvironmentVariableW(L"DDSKK_SETTINGS_KEY", buf, (DWORD)cap);
   if (n == 0 || n >= cap) {
     wcsncpy(buf, SETTINGS_DEFAULT_KEY, cap - 1);
     buf[cap - 1] = L'\0';
@@ -81,7 +82,7 @@ gboolean reg_set_sz(const wchar_t *key_path, const wchar_t *value, const wchar_t
  * confining these writes too. */
 static void engine_key_path(wchar_t *buf, size_t cap, const wchar_t *engine_id) {
   wchar_t base[512];
-  settings_key_path(base, 512);
+  settings_registry_path(base, 512);
   _snwprintf(buf, cap, L"%ls\\Engines\\%ls", base,
              (engine_id && *engine_id) ? engine_id : L"ddskk");
   buf[cap - 1] = L'\0';
@@ -140,7 +141,7 @@ void settings_defaults(Settings *s) {
 
 gboolean settings_load(Settings *s) {
   wchar_t key[512];
-  settings_key_path(key, 512);
+  settings_registry_path(key, 512);
   Settings d;
   settings_defaults(&d);
 
@@ -182,7 +183,7 @@ gboolean settings_load(Settings *s) {
  * stays a explicit, manual act that does not survive by accident. */
 gboolean settings_experimental_engines(void) {
   wchar_t key[512];
-  settings_key_path(key, 512);
+  settings_registry_path(key, 512);
   int32_t enabled = 0;
   reg_get_dword(key, L"ExperimentalEngines", 0, &enabled);
   return enabled != 0;
@@ -201,7 +202,7 @@ void settings_load_engine_scope(Settings *s, const wchar_t *engine_id) {
 
 gboolean settings_save(const Settings *s) {
   wchar_t key[512];
-  settings_key_path(key, 512);
+  settings_registry_path(key, 512);
   gboolean ok = TRUE;
 
   /* `engine' is written now: the engine process hosts more than DDSKK,
@@ -253,7 +254,7 @@ gboolean settings_save(const Settings *s) {
 
 gboolean settings_delete_all(void) {
   wchar_t key[512];
-  settings_key_path(key, 512);
+  settings_registry_path(key, 512);
   LSTATUS st = RegDeleteTreeW(HKEY_CURRENT_USER, key);
   /* ERROR_FILE_NOT_FOUND (key already absent) counts as success -- the
    * caller wants "this key is gone", not "this key existed". */
@@ -304,8 +305,10 @@ static void selftest_check(gboolean cond, const char *name) {
 
 int settings_selftest(void) {
   wchar_t guard[512];
-  DWORD guard_n = GetEnvironmentVariableW(L"DDSKK_SETTINGS_KEY", guard, 512);
-  if (guard_n == 0) {
+  DWORD guard_n = GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", guard, 512);
+  if (!guard_n) guard_n = GetEnvironmentVariableW(L"DDSKK_SETTINGS_KEY", guard, 512);
+  if (guard_n == 0 || guard_n >= 512 ||
+      _wcsicmp(guard, SETTINGS_DEFAULT_KEY) == 0) {
     fprintf(stderr,
             "settings_selftest: refusing to run -- DDSKK_SETTINGS_KEY is not "
             "set. This self-test writes, mutates and deletes a registry key; "

@@ -8,8 +8,7 @@ click menu, talking to the shared engine session over the same
 `\\.\pipe\ddskk-ime-v1` named pipe the TSF DLL uses; plus a settings
 window (right-click the pill, or launch with `--settings`) that reads
 and writes the same `HKCU\Software\NativeIME` registry key the DLL's
-`LoadSettings()` reads, across the design doc's four tabs (動作/表示/
-辞書/調整).
+`LoadSettings()` reads, across six tabs (動作/表示/辞書/調整/入力規則/キー置き換え).
 
 ## Structure and why
 
@@ -495,3 +494,46 @@ and `DDSKK_SETTINGS_KEY` both unset, `sumi-skk-ui.exe` talks to
 `\\.\pipe\ddskk-ime-v1` and `HKCU\Software\NativeIME` — the same
 defaults the TSF DLL, `windows/src/engine_client.cpp`, and the
 installer/config tool use.
+
+## Input rules and key remapping tabs
+
+入力規則 edits `width` (半角/全角) and `auto-pair` (括弧を自動で閉じる).
+キー置き換え edits `enabled` and `layout` (OSのまま/US/JIS), and displays
+read-only `Keymap\Status` and `Keymap\Errors` (including MULTI_SZ entries).
+状態を更新 refreshes this display; Apply also refreshes it.
+
+These settings live in UTF-8 text files, not registry values. Runtime paths
+use the roaming AppData known folder plus `NativeIME/input-rules.conf` or
+`NativeIME/keymap.conf`. `NELISP_IME_INPUT_RULES` and
+`NELISP_IME_KEYMAP_FILE` take precedence; keymap also honors `Keymap\File`.
+Every registry access uses `NATIVEIME_REGISTRY_KEY`, then the legacy
+`DDSKK_SETTINGS_KEY`, then `Software\NativeIME`.
+
+Apply rereads the files and replaces only the top-block value tokens for
+controls changed since opening or the last successful Apply. Other bytes,
+including comments, whitespace, BOM, line endings and section tables, remain
+unchanged. Missing options are inserted before the first section. Missing
+files are created from `templates/`, embedded into the executable by
+`build.el`; these copies match `windows/keymap/input-rules.conf` and the
+keymap editor's `templateText()` and should be updated together with them.
+Writes use a flushed sibling temporary file and `ReplaceFileW` (or
+`MoveFileExW` for first creation). Existing unchanged files are never replaced.
+A failed file save leaves its baseline unchanged so Apply can retry.
+
+The existing window has 適用 and 閉じる, rather than OK/Cancel buttons.
+Closing discards unapplied file-control changes. Opening a text file creates
+its shipped template if missing; opening either editor uses
+`Keymap\Executable` with `--rules` or `--editor` via ShellExecute.
+
+Verification (prepend the MSYS2 mingw64 DLL directory to PATH):
+
+```powershell
+pwsh -NoProfile -File sumi-ui/verify/verify-text-settings.ps1
+pwsh -NoProfile -File sumi-ui/verify/verify-settings-hidden.ps1
+```
+
+The first invokes `--text-settings-selftest`, allocating its own private
+files and overriding both paths before I/O. The second builds all six tabs
+without presenting a window, using private file paths and a disposable
+`Software\NativeIME-Tests\...` key. Both wait for their child process and
+terminate it on timeout. See [SU1 verification report](SU1-report.md).

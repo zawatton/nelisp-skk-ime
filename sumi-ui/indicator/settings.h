@@ -149,3 +149,6 @@ gboolean settings_equal(const Settings *a, const Settings *b);
  * "SELFTEST-FAIL (N failures)" line to stdout; returns 0 iff every
  * check passed. */
 int settings_selftest(void);
+
+/* NATIVEIME_REGISTRY_KEY takes precedence over DDSKK_SETTINGS_KEY. */
+void settings_registry_path(wchar_t *buf, size_t cap);
