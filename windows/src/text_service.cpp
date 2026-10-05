@@ -2156,7 +2156,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       return S_OK;
     }
   }
-  if (skk_mode_key && (*skk_mode_key == U'q' || *skk_mode_key == U'Q' ||
+  const bool local_katakana_q = skk_mode_key == U'q' &&
+      realtime_frontend_.CanCommitKatakanaReading();
+  if (!local_katakana_q && skk_mode_key && (*skk_mode_key == U'q' || *skk_mode_key == U'Q' ||
                       *skk_mode_key == U'l' || *skk_mode_key == U'L' ||
                       *skk_mode_key == U'/')) {
     auto keys = realtime_frontend_.raw_keys();
@@ -2495,8 +2497,8 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       state = engine_.SendControl(controls[wparam - VK_F6],
                                   kInteractiveTimeoutMs);
     }
-  } else if (katakana_q) {
-    branch = L"q-katakana";
+  } else if (katakana_q || local_katakana_q) {
+    branch = local_katakana_q ? L"q-katakana-local" : L"q-katakana";
     // DDSKK's Shift+Q during ▽/▼ conversion is a kana-class
     // conversion, not a literal uppercase Q.  Dispatch the same lossless
     // operation as F7 so an active candidate is first restored to its

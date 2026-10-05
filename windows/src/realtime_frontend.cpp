@@ -306,6 +306,23 @@ std::optional<EngineState> RealtimeFrontend::CommitKatakana() {
   return state;
 }
 
+bool RealtimeFrontend::CanCommitKatakanaReading() const {
+  if (!preedit_ || continuous_preedit_ || okuri_started_ ||
+      !pending_.empty() || text_.empty() ||
+      !InputRuleAllowsModeCommand(rules_, 'q')) return false;
+  const auto command = rules_.find("q");
+  if (command != rules_.end() && command->second.command != L"skk-toggle-kana" &&
+      command->second.command != L"skk-toggle-characters") return false;
+  bool hiragana = false;
+  for (wchar_t value : text_) {
+    if (value >= L'ぁ' && value <= L'ん') hiragana = true;
+    else if (value != L'ー') return false;
+  }
+  // DDSKK chooses the conversion from the reading's character class, not
+  // the input mode. Custom/mixed text and vu contraction stay with DDSKK.
+  return hiragana;
+}
+
 EngineState RealtimeFrontend::ToHiragana() {
   if (preedit_) text_ = Katakana(text_);  // normalized below when needed
   for (wchar_t& value : text_) {
