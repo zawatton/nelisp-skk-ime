@@ -77,8 +77,10 @@ the settings key (=NATIVEIME_REGISTRY_KEY= is honored).  It pins this choice
 at preedit start; a dropped channel materializes the latest preedit through
 ordinary composition without replaying keys.  Discovery retries once per
 second on a worker thread, which also authenticates, sends coalesced updates,
-and receives CARET.  In inline mode the core candidate popup appears below
-that caret.  Commits use =ITfInsertAtSelection= with
+and receives CARET.  In inline mode the core publishes that caret through
+the existing Sumi caret bridge, so the regular candidate panel appears below
+it with its usual styling and controls.  No extra core popup is created.
+Commits use =ITfInsertAtSelection= with
 =TF_IAS_NO_DEFAULT_COMPOSITION= in an edit session: no temporary TSF
 composition is created, and committed text never crosses the TCP channel.
 The private TSF harness checks insertion; IMM32 =GCS_RESULTSTR=/character
@@ -90,7 +92,9 @@ Private core integration tests (supply build/runtime paths as parameters):
 --tsf-host TSFHOST --engine-host ENGINEHOST --runtime NELISP --artifacts DIR
 --case inline=.  Cases =missing=, =wrong=, =drop= and =emacs= cover fallback
 and the real batch Emacs listener.  Batch CARET coordinates are stubbed;
-overlay rendering and TCP transport use the real library.
+overlay rendering and TCP transport use the real library.  The candidate
+check uses a private Win32 observer of the caret bridge and counts it plus
+any extra core popup; actual Sumi rendering and placement require a live check.
 
 Protocol v1 uses UTF-8, LF-terminated lines.  The core sends
 =HELLO 1 <token> <pid>=; Emacs replies =OK 1=, or closes a bad connection.

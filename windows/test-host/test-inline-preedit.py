@@ -12,6 +12,7 @@ import socket
 import subprocess
 import threading
 import time
+import uuid
 
 
 def main():
@@ -32,6 +33,8 @@ def main():
     lines = []
     errors = []
     emacs = None
+    observer = None
+    caret_map = 'Local\\ddskk-test-caret-' + uuid.uuid4().hex
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0))
     listener.listen()
@@ -116,7 +119,8 @@ def main():
                '-TsfHostExe', str(Path(args.tsf_host).resolve()), '-EngineHostPath', str(Path(args.engine_host).resolve()),
                '-EngineExecutablePath', str(Path(args.runtime).resolve()), '-RepositoryPath', str(root),
                '-ColdLoadSleepSec', str(args.cold_load), '-InlinePreedit', '-InlineDirectory', str(directory),
-               '-InlinePidFile', str(pidfile), '-ArtifactDirectory', str(artifacts), '-TsfHostTimeoutSec', '90']
+               '-InlinePidFile', str(pidfile), '-CaretMapName', caret_map,
+               '-ArtifactDirectory', str(artifacts), '-TsfHostTimeoutSec', '90']
     env = os.environ.copy()
     env['DDSKK_HARNESS_DIAGNOSTICS'] = '1'
     env['INLINE_TEST_PIDFILE'] = str(pidfile)
@@ -124,6 +128,11 @@ def main():
     env['INLINE_TEST_LOG'] = str(directory / 'emacs.log')
     try:
         (directory / 'stop').unlink(missing_ok=True)
+        if args.case in ('inline', 'emacs'):
+            (directory / 'windows.log').unlink(missing_ok=True)
+            observer = subprocess.Popen([os.sys.executable,
+                str(root / 'windows/test-host/candidate-window-observer.py'),
+                str(directory), str(artifacts), caret_map])
         if args.case == 'emacs':
             # Same prefix required for every PowerShell launch of Emacs.
             emacs_command = "$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L emacs -l windows/test-host/inline-emacs-subscriber.el"
@@ -151,6 +160,12 @@ def main():
             except subprocess.TimeoutExpired:
                 subprocess.run(['taskkill', '/PID', str(emacs.pid), '/T', '/F'], capture_output=True)
                 emacs.wait()
+        if observer:
+            try:
+                observer.wait(10)
+            except subprocess.TimeoutExpired:
+                observer.kill()
+                observer.wait()
     output = result.stdout + result.stderr
     # Read the host's UTF-8 bytes directly; Windows PowerShell's outer stdout
     # encoding depends on its launcher, and is not a protocol observation.
@@ -192,7 +207,12 @@ def main():
                 assert text in rendered, rendered
             assert 'cursor=1' in rendered and 'BUFFER_UNCHANGED=t' in rendered, rendered
             assert emacs.returncode == 0, emacs.returncode
-        assert 'INLINE_CANDIDATE x=321 y=456 height=23 actual_x=321 actual_y=479' in host_text
+        assert 'INLINE_CANDIDATE_ANCHOR x=321 y=456 height=23 below_y=479' in host_text
+        windows = (directory / 'windows.log').read_text(encoding='utf-8').splitlines()
+        assert windows and observer.returncode == 0, (windows, observer.returncode)
+        assert all(line == 'CANDIDATE_WINDOWS visible=1 core_extra=0 x=321 y=483 anchor_x=321 anchor_y=456 height=23'
+                   for line in windows), windows
+        print(f'PASS candidate windows observations={len(windows)} visible=1 core_extra=0 x=321 y=483')
     else:
         assert 'COMPOSITION START' in host_text, 'Fallback failed to compose'
         if args.case == 'drop':
