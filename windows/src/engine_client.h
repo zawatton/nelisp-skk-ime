@@ -70,6 +70,10 @@ class EngineClient {
   // on the user's first keystroke.
   bool Ping(DWORD timeout_ms);
   std::optional<std::vector<RomajiRule>> RomajiRules(DWORD timeout_ms = 8);
+  // Metadata/learning uses a separate client, never an editing session.
+  std::optional<uint64_t> LearnLocal(const std::string& id, const std::string& key,
+                  const std::string& candidate, DWORD timeout_ms = 1500);
+  std::optional<EngineState> RegisterLocal(const std::u32string& keys, DWORD timeout_ms = 5000);
   std::optional<EngineState> SyncKeys(const std::u32string& keys,
                                      DWORD timeout_ms = 1500);
   const std::string& last_response() const { return last_response_; }

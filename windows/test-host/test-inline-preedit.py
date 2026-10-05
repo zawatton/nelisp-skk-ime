@@ -25,6 +25,7 @@ def main():
     p.add_argument('--selection-unavailable', action='store_true',
                    help='Model an IMM32 host that rejects explicit caret selection')
     p.add_argument('--cold-load', type=int, default=45)
+    p.add_argument('--local-conversion', action='store_true')
     p.add_argument('--repository', default=None)
     p.add_argument('--cycle-regression', action='store_true',
                    help='Cycle to candidate five, lose its commit reply, then settle')
@@ -154,6 +155,8 @@ def main():
                '-ColdLoadSleepSec', str(args.cold_load), '-InlinePreedit', '-InlineDirectory', str(directory),
                '-InlinePidFile', str(pidfile), '-CaretMapName', caret_map,
                '-ArtifactDirectory', str(artifacts), '-TsfHostTimeoutSec', '90']
+    if args.local_conversion:
+        command += ['-LocalConversion', '1']
     env = os.environ.copy()
     env['DDSKK_HARNESS_DIAGNOSTICS'] = '1'
     if args.selection_unavailable:
@@ -227,10 +230,15 @@ def main():
     assert 'UnknownToken' not in host_text, 'Invalid test script'
     assert 'exited=True' in output, 'Harness did not confirm owned process cleanup'
     if args.case == 'emacs-accept-queue':
-        assert 'branch=provider-accept-and-queue' in host_text, host_text[-4000:]
-        if not args.context_alias:
-            assert 'branch=provider-queue' in host_text, host_text[-4000:]
+        if args.local_conversion:
+            assert 'branch=local-convert' in host_text, host_text[-4000:]
+            assert 'branch=provider-accept-and-queue' not in host_text
+            assert 'branch=provider-queue' not in host_text
         else:
+            assert 'branch=provider-accept-and-queue' in host_text, host_text[-4000:]
+            if not args.context_alias:
+                assert 'branch=provider-queue' in host_text, host_text[-4000:]
+        if args.context_alias:
             assert 'CONTEXT_ALIAS distinct=1 same_identity=1' in host_text, host_text[-4000:]
         assert 'AFTER WAIT500 BUF=[あい蚊ぬ] SEL=4,4 COMP=-' in host_text, host_text[-4000:]
         rendered = (directory / 'emacs.log').read_text(encoding='utf-8')

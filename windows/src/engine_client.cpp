@@ -299,6 +299,22 @@ std::optional<std::vector<RomajiRule>> EngineClient::RomajiRules(DWORD timeout_m
   return response ? ParseRomajiRules(*response) : std::nullopt;
 }
 
+std::optional<uint64_t> EngineClient::LearnLocal(const std::string& id, const std::string& key,
+                              const std::string& candidate, DWORD timeout_ms) {
+  if (!Connect(timeout_ms)) return std::nullopt;
+  const auto response = RawTransact("LOCAL LEARN " + id + " " + key + " " + candidate + "\n", timeout_ms);
+  last_response_ = response ? *response : "";
+  if (!response || !response->starts_with("ACK " + id + " ")) return std::nullopt;
+  try { return std::stoull(response->substr(id.size() + 5)); } catch (...) { return std::nullopt; }
+}
+
+std::optional<EngineState> EngineClient::RegisterLocal(const std::u32string& keys, DWORD timeout_ms) {
+  auto request = EncodeConvertKeysRequest(keys);
+  request.replace(0, 21, "CONTROL REGISTER-KEYS ");
+  const auto response = Transact(request, timeout_ms);
+  return response ? ParseStateResponse(*response) : std::nullopt;
+}
+
 std::optional<EngineState> EngineClient::SyncKeys(const std::u32string& keys,
                                                 DWORD timeout_ms) {
   auto request = EncodeFeedKeysRequest(keys);

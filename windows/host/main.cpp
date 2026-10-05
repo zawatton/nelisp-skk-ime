@@ -25,6 +25,7 @@
 #include <windows.h>
 #include <psapi.h>
 #include "../src/registry_settings.h"
+#include "../src/local_index.h"
 
 #include <algorithm>
 #include <array>
@@ -1253,7 +1254,7 @@ std::string Utf8KeyRequest(const std::string& request) {
     if (command == std::string::npos) return request;
     ++command;
   }
-  for (const auto& name : {"CONVERT", "SYNC", "FEED"}) {
+  for (const auto& name : {"CONVERT", "SYNC", "FEED", "REGISTER"}) {
     const std::string prefix = std::string("CONTROL ") + name + "-KEYS ";
     if (request.compare(command, prefix.size(), prefix)) continue;
     size_t pos = command + prefix.size();
@@ -1342,6 +1343,30 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
       }
       phase = line.substr(6);
       phase_started = now;
+      continue;
+    }
+    if (line == "LOCAL-PUBLISH") {
+      // Learning and later engine compaction publish the same checkpoint.
+      // Neither its target nor its temporary name comes from wire input.
+      if (++server_exchanges > kMaxServerExchangesPerRequest)
+        return false;
+      wchar_t value[32768]{};
+      DWORD length = GetEnvironmentVariableW(L"DDSKK_USER_JISYO", value, _countof(value));
+      std::wstring target;
+      if (length && length < _countof(value)) target.assign(value, length);
+      else if (!length) {
+        length = GetEnvironmentVariableW(L"LOCALAPPDATA", value, _countof(value));
+        if (length && length < _countof(value)) target = std::wstring(value, length) + L"/DDSKK/user-jisyo.utf8";
+      }
+      const std::wstring temporary = target + L".local-checkpoint";
+      HANDLE checkpoint = target.empty() ? INVALID_HANDLE_VALUE :
+          CreateFileW(temporary.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+      bool published = checkpoint != INVALID_HANDLE_VALUE && FlushFileBuffers(checkpoint);
+      if (checkpoint != INVALID_HANDLE_VALUE) CloseHandle(checkpoint);
+      if (published) published = MoveFileExW(temporary.c_str(), target.c_str(),
+                                            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+      if (!WriteAll(child.input, published ? "LOCAL-PUBLISHED\n" : "ERR LOCAL STORAGE\n")) return false;
       continue;
     }
     if (line.rfind("SERVER ", 0) == 0) {
@@ -1895,6 +1920,80 @@ void RequestStop() {
 // alone. Everything else it touches (g_child, g_engine_mutex, g_stopping,
 // g_pipe_name) is shared with other worker threads and the main thread,
 // and is only ever touched through the synchronization documented above.
+bool LocalConversionRequested() {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ, &key) != ERROR_SUCCESS)
+    return false;
+  DWORD value = 0, bytes = sizeof(value), type = 0;
+  bool enabled = RegQueryValueExW(key, L"LocalConversion", nullptr, &type,
+      reinterpret_cast<BYTE*>(&value), &bytes) == ERROR_SUCCESS && type == REG_DWORD && value == 1;
+  HKEY apps = nullptr;
+  if (!enabled && RegOpenKeyExW(key, L"Apps", 0, KEY_READ, &apps) == ERROR_SUCCESS) {
+    for (DWORD n = 0; !enabled; ++n) {
+      wchar_t name[256]{}; DWORD size = _countof(name);
+      if (RegEnumKeyExW(apps, n, name, &size, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
+      HKEY app = nullptr;
+      if (RegOpenKeyExW(apps, name, 0, KEY_READ, &app) == ERROR_SUCCESS) {
+        bytes = sizeof(value); value = 0;
+        enabled = RegQueryValueExW(app, L"LocalConversion", nullptr, &type,
+            reinterpret_cast<BYTE*>(&value), &bytes) == ERROR_SUCCESS && type == REG_DWORD && value == 1;
+        RegCloseKey(app);
+      }
+    }
+    RegCloseKey(apps);
+  }
+  RegCloseKey(key);
+  return enabled;
+}
+
+void LocalPublicationLoop() {
+  std::string previous;
+  while (!g_stopping.load()) {
+    try {
+      if (LocalConversionRequested()) {
+        DictionaryServerConfig config;
+        std::string status, snapshot, rules;
+        {
+          std::lock_guard<std::mutex> lock(g_engine_mutex);
+          // Match the provider's active source plan. Registry source changes
+          // take effect when the host reloads, just as its built-in maps do.
+          config = g_dictionary_server.config;
+          if (g_current_engine == "ddskk") {
+            Dispatch(g_child, "LOCAL STATUS", &status);
+            { std::lock_guard<std::mutex> rules_lock(g_romaji_mutex); rules = g_romaji_rules; }
+            const auto identity = status + rules + ddskk::local::Utf8(config.dictionary_files) + std::to_string(config.enabled);
+            if (!rules.empty() && status.starts_with("LOCAL ") && identity != previous &&
+                Dispatch(g_child, "LOCAL SNAPSHOT", &snapshot) && snapshot.starts_with("OVERLAY ")) {
+              // The snapshot is complete before releasing engine ownership.
+              // Parsing, hashing, flushing and full mapping validation below
+              // never hold the engine transaction mutex.
+            } else snapshot.clear();
+          }
+        }
+        if (!snapshot.empty()) {
+          std::vector<std::filesystem::path> files;
+          size_t start = 0;
+          while (start < config.dictionary_files.size()) {
+            auto end = config.dictionary_files.find(L';', start);
+            if (end == config.dictionary_files.npos) end = config.dictionary_files.size();
+            if (end > start) files.emplace_back(config.dictionary_files.substr(start, end - start));
+            start = end + 1;
+          }
+          const auto overlay = ddskk::local::Utf8(ddskk::local::Unhex(snapshot.substr(8)));
+          const uint64_t capabilities = status.starts_with("LOCAL 1 ") && config.enabled == 0 ? 1 : 0;
+          const auto revision = std::stoull(status.substr(8));
+          ddskk::local::Publish(ddskk::local::Directory(), files, overlay, rules, capabilities, revision);
+          previous = status + rules + ddskk::local::Utf8(config.dictionary_files) + std::to_string(config.enabled);
+          std::fprintf(stderr, "LOCAL publication status=%s capabilities=%llu\n", status.c_str(), capabilities);
+        }
+      }
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "LOCAL publication unavailable: %s\n", error.what());
+    }
+    for (int n = 0; n < 10 && !g_stopping.load(); ++n) Sleep(100);
+  }
+}
+
 void ServeClient(HANDLE pipe, uint64_t client_id) {
   bool connected = true;
   std::unordered_set<std::string> client_sessions;
@@ -2248,6 +2347,7 @@ int wmain(int argc, wchar_t** argv) {
   std::thread(IdleGcLoop).detach();
   std::thread replacement_worker(ReplacementLoop);
   std::thread registry_worker(WatchEngineRegistry, initial_registry_engine);
+  std::thread local_worker(LocalPublicationLoop);
   // Accept loop: each iteration blocks in ConnectNamedPipe() on `pipe` (the
   // one spare, not-yet-connected instance), then immediately opens the next
   // spare instance before handing the newly connected one to its own
@@ -2298,6 +2398,7 @@ int wmain(int argc, wchar_t** argv) {
   g_stopping.store(true);
   replacement_worker.join();
   registry_worker.join();
+  local_worker.join();
   // Holding g_engine_mutex here waits for any worker thread currently
   // mid-transaction to finish first, so the child's pipes are never closed
   // out from under an in-flight read/write. A worker that acquires the
