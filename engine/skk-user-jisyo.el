@@ -365,6 +365,38 @@ everything else (including the empty string) is okuri-nasi."
 
 ;; --- Parsing (SKK-JISYO -> in-memory table) ------------------------------
 
+(defvar ddskk-user-jisyo--load-dirty nil
+  "Non-nil when loading discarded corrupt candidates or CR line endings.")
+
+(defun ddskk-user-jisyo--clean-candidate (candidate)
+  "Return CANDIDATE without CR/LF, or nil if it has no visible content.
+Keep ordinary candidate text and annotations unchanged.  Control-only
+and whitespace-only fields cannot be inserted or learned as words."
+  (when (stringp candidate)
+    (let ((index 0) (visible nil) (eol nil) chars)
+      (while (< index (length candidate))
+        (let ((ch (aref candidate index)))
+          (if (memq ch '(10 13))
+              (setq eol t)
+            (push ch chars))
+          (unless (or (<= ch 32) (and (>= ch 127) (<= ch 159))
+                      (memq ch '(160 5760 8192 8193 8194 8195 8196 8197
+                                 8198 8199 8200 8201 8202 8232 8233 8239
+                                 8287 12288 65279)))
+            (setq visible t)))
+        (setq index (1+ index)))
+      (when visible
+        (if eol (apply #'string (nreverse chars)) candidate)))))
+
+(defun ddskk-user-jisyo--clean-candidates (candidates)
+  "Filter CANDIDATES, preserving their order and substantive text."
+  (let (out)
+    (dolist (candidate candidates)
+      (let ((clean (ddskk-user-jisyo--clean-candidate candidate)))
+        (unless (equal clean candidate) (setq ddskk-user-jisyo--load-dirty t))
+        (when clean (push clean out))))
+    (nreverse out)))
+
 (defun ddskk-user-jisyo--split-fields (string)
   "Split STRING on `/' into a list of fields, dropping empty fields.
 SKK-JISYO candidate fields never contain `/' themselves, so a manual
@@ -392,7 +424,7 @@ ahead of the first `[' survives."
        (skipping (when (equal field "]") (setq skipping nil)))
        ((and (> (length field) 0) (= (aref field 0) ?\[)) (setq skipping t))
        (t (push field out))))
-    (nreverse out)))
+    (ddskk-user-jisyo--clean-candidates (nreverse out))))
 
 (defun ddskk-user-jisyo--parse-line (line)
   "Parse one SKK-JISYO entry LINE into (MIDASI . CANDIDATES), or nil.
@@ -407,21 +439,29 @@ malformed file."
         (let ((midasi (substring line 0 space))
               (rest (substring line (1+ space))))
           (when (and (> (length rest) 0) (= (aref rest 0) ?/))
+            (when (string-match "//" rest) (setq ddskk-user-jisyo--load-dirty t))
             (let ((candidates (ddskk-user-jisyo--plain-candidates
                                 (ddskk-user-jisyo--split-fields rest))))
-              (and candidates (cons midasi candidates)))))))))
+              (cons midasi candidates))))))))
 
 (defun ddskk-user-jisyo--parse-into-table (text table)
   "Parse TEXT (whole SKK-JISYO file contents) and populate TABLE.
 TABLE maps MIDASI -> CANDIDATES, in file order (so a freshly loaded
 file already reflects whatever priority order it was last saved in)."
   (let ((len (length text)) (pos 0))
+    (when (string-match "\r" text) (setq ddskk-user-jisyo--load-dirty t))
     (while (< pos len)
       (let ((nl pos))
         (while (and (< nl len) (/= (aref text nl) ?\n))
           (setq nl (1+ nl)))
-        (let ((parsed (ddskk-user-jisyo--parse-line (substring text pos nl))))
-          (when parsed (puthash (car parsed) (cdr parsed) table)))
+        (let ((end nl))
+          (while (and (> end pos) (= (aref text (1- end)) ?\r))
+            (setq end (1- end)))
+          (let ((parsed (ddskk-user-jisyo--parse-line (substring text pos end))))
+            (when parsed
+              (if (cdr parsed)
+                  (puthash (car parsed) (cdr parsed) table)
+                (remhash (car parsed) table)))))
         (setq pos (1+ nl))))))
 
 ;; --- Load / Save ------------------------------------------------------
@@ -462,6 +502,7 @@ journal') over the base file afterwards, so any confirmation recorded
 since the last compaction is not lost across a restart -- see the
 \"v2 (current)\" architecture note at the top of this file."
   (clrhash ddskk-user-jisyo--table)
+  (setq ddskk-user-jisyo--load-dirty nil)
   (let ((path (ddskk-user-jisyo-path)))
     (when (stringp path)
       (let ((text (ignore-errors (nelisp--syscall-read-file path))))
@@ -469,6 +510,8 @@ since the last compaction is not lost across a restart -- see the
           (ignore-errors
             (ddskk-user-jisyo--parse-into-table text ddskk-user-jisyo--table))))))
   (ddskk-user-jisyo--replay-journal)
+  ;; Replay first: only a verified base save may discard the journal.
+  (when ddskk-user-jisyo--load-dirty (ddskk-user-jisyo-flush))
   t)
 
 (defun ddskk-user-jisyo--serialize-entries (entries)
@@ -548,7 +591,8 @@ signalled error on failure; never signals itself."
         ;; Swallow whatever `write-region' itself reports (see docstring
         ;; above for why it cannot be trusted here) and verify the real
         ;; outcome by reading the path back.
-        (condition-case nil (write-region content nil path) (error nil))
+        (let ((coding-system-for-write 'utf-8-unix))
+          (condition-case nil (write-region content nil path) (error nil)))
         (unless (equal (nelisp--syscall-read-file path) content)
           (signal 'error (list "write-region verification read-back mismatch" path)))
         t)
@@ -575,12 +619,13 @@ will be captured by the next successful append or by the next
 compaction/flush regardless."
   (let ((path (ddskk-user-jisyo--journal-path)))
     (when (stringp path)
-      (condition-case nil
-          (write-region
-           (ddskk-user-jisyo--serialize-entries
-            (list (cons midasi (gethash midasi ddskk-user-jisyo--table))))
-           nil path t)
-        (error nil)))))
+      (let ((coding-system-for-write 'utf-8-unix))
+        (condition-case nil
+            (write-region
+             (ddskk-user-jisyo--serialize-entries
+              (list (cons midasi (gethash midasi ddskk-user-jisyo--table))))
+             nil path t)
+          (error nil))))))
 
 (defun ddskk-user-jisyo--truncate-journal ()
   "Empty the journal file, if one is configured.
@@ -662,10 +707,12 @@ the midasi for the duration of the search (same contract
 (defun ddskk-user-jisyo-record (midasi candidate)
   "Move CANDIDATE to the front of MIDASI's learned candidate list.
 Creates the list if MIDASI has never been learned before."
-  (puthash midasi
-           (ddskk-user-jisyo--move-to-front
-            candidate (gethash midasi ddskk-user-jisyo--table))
-           ddskk-user-jisyo--table))
+  (let ((clean (ddskk-user-jisyo--clean-candidate candidate)))
+    (when clean
+      (puthash midasi
+               (ddskk-user-jisyo--move-to-front
+                clean (gethash midasi ddskk-user-jisyo--table))
+               ddskk-user-jisyo--table))))
 
 (defun ddskk-user-jisyo-purge (midasi candidate)
   "Remove CANDIDATE from MIDASI's learned list.
@@ -712,7 +759,8 @@ PURGE also routes through here) no purge either.  Lookups
 usable; this function is the sole write path into the learned
 dictionary, so gating it here is sufficient on its own."
   (unless ddskk-user-jisyo-learning-disabled
-    (when (and (boundp 'skk-henkan-key) (stringp skk-henkan-key) (stringp word))
+    (setq word (ddskk-user-jisyo--clean-candidate word))
+    (when (and (boundp 'skk-henkan-key) (stringp skk-henkan-key) word)
       (if purge
           (progn
             (ddskk-user-jisyo-purge skk-henkan-key word)

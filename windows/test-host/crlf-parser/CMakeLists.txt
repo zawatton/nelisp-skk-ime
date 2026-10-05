@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.24)
+project(crlf_parser_test LANGUAGES CXX)
+add_executable(host-crlf-parser-test host_crlf_parser_test.cpp)
+target_compile_features(host-crlf-parser-test PRIVATE cxx_std_20)
+target_compile_definitions(host-crlf-parser-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(host-crlf-parser-test PRIVATE /W4 /permissive- /utf-8)
+target_link_libraries(host-crlf-parser-test PRIVATE ws2_32 advapi32)

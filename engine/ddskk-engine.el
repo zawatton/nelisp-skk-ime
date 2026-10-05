@@ -1333,7 +1333,7 @@ receive."
             (let ((candidates (read (substring reply 5))))
               (and (listp candidates)
                    (cl-every #'stringp candidates)
-                   candidates))
+                   (ddskk-user-jisyo--clean-candidates candidates)))
           (error nil))
       (when (and (> count 0) (= (aref reply 0) ?1))
       (let ((candidates nil)
@@ -1345,7 +1345,7 @@ receive."
               (push (substring reply start index) candidates))
             (setq start (1+ index)))
           (setq index (1+ index)))
-        (nreverse candidates))))))
+        (ddskk-user-jisyo--clean-candidates (nreverse candidates)))))))
 
 (defun ddskk-engine-server-search ()
   "Search the host-relayed dictionary for the current midasi.

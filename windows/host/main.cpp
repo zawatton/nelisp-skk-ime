@@ -653,14 +653,19 @@ BuiltinDictionaryState g_builtin_dictionary;
 // lines (no space, or no '/' after it) are silently skipped, not fatal --
 // one bad line must not lose the rest of a multi-hundred-thousand-line
 // file.
+void StripDictionaryLineBreaks(std::string* text) {
+  text->erase(std::remove_if(text->begin(), text->end(),
+      [](char ch) { return ch == '\r' || ch == '\n'; }), text->end());
+}
+
 void ParseSkkJisyo(std::string_view contents,
                    std::unordered_map<std::string, std::string>* map) {
   size_t line_start = 0;
   while (line_start <= contents.size()) {
     size_t line_end = contents.find('\n', line_start);
     if (line_end == std::string_view::npos) line_end = contents.size();
-    std::string_view line = contents.substr(line_start, line_end - line_start);
-    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    std::string line(contents.substr(line_start, line_end - line_start));
+    StripDictionaryLineBreaks(&line);
     line_start = line_end + 1;
 
     if (line.empty() || line.substr(0, 2) == ";;") continue;
@@ -1041,8 +1046,7 @@ bool SendAndReceive(SOCKET socket_handle, const std::string& request,
     }
     if (raw_response->size() > 65536) return false;
   }
-  while (!raw_response->empty() && raw_response->back() == '\r')
-    raw_response->pop_back();
+  StripDictionaryLineBreaks(raw_response);
   return true;
 }
 
