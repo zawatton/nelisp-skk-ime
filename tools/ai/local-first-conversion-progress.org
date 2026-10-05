@@ -1,0 +1,19 @@
+#+TITLE: Local-first conversion: dictionary lookup and candidates inside the TSF core, engine only for learning and complex DDSKK commands
+
+* S1 Design
+** S1.1 Design document docs/design/local-first-conversion.org: per-phase cost of today's path measured (keystroke -> engine -> TSF/inline), the split of DDSKK features between the core (local) and the engine (asynchronous), the shared dictionary index format and its update/learning flow, consistency rules with the engine's state, okuri/registration/abbrev/katakana/input rules handling, failure and fallback modes, rollout and parity testing against stock DDSKK
+pending
+** S1.2 Prototype measurement: a memory-mapped dictionary index built from SKK-JISYO.L plus the user jisyo answers candidate lookups in the core process (p50/p99 per lookup, build time, memory), compared with today's Space-to-candidate time on the same machine
+pending
+
+* S2 Local conversion in the core
+** S2.1 Plain and okuri conversions, candidate traversal and commit are answered locally with results identical to stock DDSKK on a fixed reading corpus (oracle comparison)
+pending
+** S2.2 Learning reaches the user jisyo through the engine asynchronously without blocking input; the local index reflects it; registration still uses the engine
+pending
+** S2.3 End to end: TSF harness and real-Emacs inline cases pass; Space-to-candidate p50 <= 30 ms and typing ahead never replays keys one by one
+pending
+
+* S3 Live
+** S3.1 Deployed; the user confirms conversion in Emacs (inline) and other applications feels like Emacs DDSKK
+pending
