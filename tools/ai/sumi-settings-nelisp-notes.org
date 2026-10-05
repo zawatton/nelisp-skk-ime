@@ -1,0 +1,268 @@
+#+TITLE: Worker SN verification notes for sumi-settings-nelisp-progress.org
+
+*** SN1 verification notes (2026-10-06)
+
+Scope: S1/S2 implementation complete; required core regression verification
+remains failed. Stages B/C and live deployment remain pending. Added S1.3
+so the pre-existing missing DDSKK dependency stays visible as a failing
+command rather than being hidden by the settings-only checks.
+
+*** Baseline and timing
+- Unchanged build: NELISP_ROOT resolved to ../nelisp-f32; GNU Emacs AOT and
+  all four native objects linked successfully.
+- Unchanged checks: registry 9 PASS / 0 FAIL; text 35 PASS / 0 FAIL;
+  hidden window 2 PASS / 0 FAIL; window title 1 PASS / 0 FAIL.
+- The added resident gate was run against the unchanged binary before
+  editing core/UI code. Its output was:
+#+begin_example
+MEASURE spawn-to-visible-frame-ms=1356
+FAIL resident settings endpoint absent
+#+end_example
+- Final same-machine comparison (process launch/request -> owned visible
+  settings HWND -> DwmFlush; this is a compositor-readiness proxy):
+#+begin_example
+MEASURE spawn-to-visible-frame-ms=856
+MEASURE resident-request-to-visible-frame-ms=192
+PASS private-resident-request-same-process
+PASS repeat-resident-request
+PASS private-identity-isolation
+verify-resident-settings: 3 PASS, 0 FAIL
+#+end_example
+- Earlier post-S1 paired run: spawn 1732 ms, resident 147 ms. Timing varies
+  with GTK/DLL/OS cache state; no performance threshold was changed.
+
+*** Commands, verbatim tails and counts
+All commands ran from the worker checkout. Build runtime paths were passed
+as parameters/environment, never installed or written to source. PATH had
+MINGW_BIN/DLL dependencies. Emacs commands used the required HOME prefix.
+
+- Build command: $env:HOME=[Environment]::GetFolderPath('UserProfile');
+  $env:NELISP_ROOT=(Resolve-Path ../nelisp-f32).Path;
+  emacs -Q --batch -l sumi-ui/build.el
+  Full output: sumi-ui/target/final-build.log. Seven AOT modules and four
+  C translation units; zero warnings/errors; exit 0. Tail marker:
+#+begin_example
+LINK-OK
+#+end_example
+- Registry command: ./sumi-ui/verify/verify-settings.ps1 -SettingsKey
+  ('Software\NativeIME-Tests\SN1-'+[guid]::NewGuid().ToString('N'))
+#+begin_example
+  SELFTEST-PASS (0 failures)
+verify-settings: 9 PASS lines, 0 FAIL lines
+verify-settings: PASS -- settings_selftest reported SELFTEST-PASS with no FAIL lines.
+#+end_example
+  Exit 0; disposable key confirmed absent. Full output: final-registry.log.
+- Text command: ./sumi-ui/verify/verify-text-settings.ps1
+#+begin_example
+PASS cleanup-no-temporary-files
+TEXT-SELFTEST-PASS (35 checks, 0 failures)
+verify-text-settings: 35 PASS lines, 0 FAIL lines; exit 0
+#+end_example
+- Hidden command: ./sumi-ui/verify/verify-settings-hidden.ps1
+#+begin_example
+PASS hidden-settings-initial-widget-values
+PASS hidden-settings-engine-page-switch
+PASS hidden-settings-apply-all-tabs-and-range-validation
+PASS hidden-settings-apply-failure-status
+PASS hidden-settings-close-during-restart
+PASS read-only-status-and-multisz-errors
+verify-settings-hidden: 7 PASS, 0 FAIL; exit 0
+#+end_example
+  Original six-tab/file-control/status checks retained; five checks added.
+- Title command: ./sumi-ui/verify/verify-settings-window-title.ps1
+#+begin_example
+DLL : [NeLisp IME 設定]
+UI  : [NeLisp IME 設定]
+class: [gdkSurfaceToplevel]
+PASS: titles agree
+#+end_example
+  1 PASS / 0 FAIL; exit 0.
+- Resident command: ./sumi-ui/verify/verify-resident-settings.ps1
+  Tail and measurements above; 3 PASS / 0 FAIL; exit 0.
+- Core/toolbar command: ./windows/test-host/test-resident-settings.ps1
+  Extracts and compiles actual ShowSettings; tests resident reuse,
+  close/reopen, absent/rejecting/hung endpoints and actual spawn fallback.
+  Then invokes the real toolbar item in the isolated DLL/TSF host.
+#+begin_example
+HR ToolbarSettings=00000000
+AFTER SETTINGS BUF=[] SEL=0,0 COMP=-
+AFTER WAIT500 BUF=[] SEL=0,0 COMP=-
+FINAL BUF_LEN=0 BUF_FNV=cbf29ce484222325
+PASS real-toolbar-settings-callback
+PASS real-toolbar-resident-same-process
+verify-core-resident-settings: 14 PASS, 0 FAIL
+#+end_example
+  Exit 0. No engine transaction is needed; host spawning is disabled only
+  for the toolbar settings gate. All children are stopped in finally.
+- Core configure: cmake -S windows -B build/w -G "Visual Studio 17 2022"
+  -A x64 -DNELISP_EXECUTABLE=$env:NELISP_EXECUTABLE
+  (the provided runtime was supplied for this cache value). Exit 0.
+#+begin_example
+-- Configuring done (2.1s)
+-- Generating done (0.2s)
+#+end_example
+- Core build: cmake --build build/w --config Release
+  Exit 0. Full output: build/w-build.log; final target tsf-host.exe built.
+- Core gate: ctest --test-dir build/w -C Release --output-on-failure
+  Supplied runtime configured. Full output: build/w-ctest.log.
+#+begin_example
+90% tests passed, 1 tests failed out of 10
+
+Total Test time (real) =   9.54 sec
+
+The following tests FAILED:
+	 10 - ddskk-engine-e2e-test (Failed)
+Errors while running CTest
+#+end_example
+  9 PASS / 1 FAIL; CTest failed. Engine reports:
+#+begin_example
+file-missing: "vendor/ddskk/skk-vars.el"
+E2E FAIL: client.SendKey(U'k', 90000)
+#+end_example
+- Hot-swap command: ./windows/test-host/test-core-hot-swap.ps1
+  -BuildDirectory (Join-Path $PWD 'build/w/Release')
+  -EngineExecutablePath $env:NELISP_EXECUTABLE -RepositoryPath $PWD
+  -ColdLoadSleepSec 45
+  Failed (exit 1) before assertions, while warming up the private engine:
+#+begin_example
+Engine warm-up failed:
+Harness failed
+#+end_example
+  Full diagnostics: build/validation/hot-swap-core/core-hot-swap.log;
+  host pid 50840 exited; engine emitted the same missing vendor file.
+  No dependency restoration outside the authorized scope was attempted.
+- Review gate: git diff --check (with per-command safe.directory).
+  Exit 0; no whitespace errors. git diff --cached --stat was empty.
+
+*** Movement and implementation references
+- Production C translation units: main.c removed 616 / added 185;
+  settings.c removed 178 / added 9; text-settings.c removed 95 / added 16.
+  Total: 889 C lines removed, 210 added, net 679 fewer .c lines.
+- Removed obsolete text-tabs.inc: 68 C lines. Added settings-abi.inc:
+  114 checked ABI assertion lines (layout contracts, no settings policy).
+- Added NeLisp: settings-window.el 630 + settings-logic.el 188 +
+  text-logic.el 183 = 1001 lines. Includes literals/comments and cleanup.
+- windows/src/text_service.cpp:1656: resident request/acknowledgment,
+  bounded timeout and private-safe legacy title fallback (ShowSettings only).
+- sumi-ui/indicator/main.c:819: native address/title/process primitives;
+  :909: checked ABI include; :920: independent expanded hidden oracle;
+  :1030: resident HWND procedure; :1043: endpoint identity;
+  :1212: register endpoint at activation; :1295: private GTK identity.
+- sumi-ui/indicator/settings-window.el:96: engine selection; :147: pages;
+  :178/:214/:274/:316/:342/:388: existing six tabs;
+  :440: widget reads; :476: restart lifetime; :507: Apply;
+  :534: close; :560: open; :614: configured-host launch policy.
+- sumi-ui/indicator/settings-logic.el:60/:92/:130/:140/:151:
+  defaults/load/experimental preference/engine scope/save.
+- sumi-ui/indicator/text-logic.el:33/:62/:82/:91/:104/:126/:140/:155:
+  parser/patch/read/load/file merge/save/open/status.
+- sumi-ui/indicator/settings-abi.inc:1: compile-time sizes/offsets.
+- sumi-ui/indicator/settings.c:46: key-resolution/registry primitives and
+  existing independent selftest; text-settings.c:1: native file primitives
+  and unchanged 35-check independent oracle.
+- sumi-ui/build.el:193: AOT object/link integration; README.md:1:
+  architecture, transport, build, private verification and timing limits.
+- sumi-ui/verify/verify-resident-settings.ps1:1: private request/timing gate;
+  verify-settings-hidden.ps1:32: extended hidden checks and private cleanup.
+- windows/test-host/settings-request-probe.cpp:1: actual-core-body probe;
+  test-resident-settings.ps1:1: native fallback and real-toolbar gates;
+  tsf_host.cpp:1135: SETTINGS token invokes OnMenuSelect(3).
+
+*** Cleanup and limits
+- No commit, push or staging; all source changes are unstaged.
+- No live registry/files/processes were changed. No process started by this
+  worker remains: owned Sumi/probe/TSF hosts were cleaned by finally; engine
+  gates exited and cleaned their hosts. Other pre-existing live Sumi/host
+  and runtime processes were observed read-only and left untouched.
+- Exact GTK after-paint timestamps and visual screenshot comparison were
+  not captured. Native GTK widget construction and the existing labels,
+  layout, defaults/actions were preserved and exercised by hidden checks.
+- Required DDSKK CTest/hot-swap remain failed until the coordinator supplies
+  this worktree's missing vendor dependency. No claim of a full green stage.
+
+*** Progress meter validation caveat
+The meter was run from MSYS2 Bash. Its native CTest command reported PASS
+but LastTest.log contained empty test output, so this is not accepted as
+regression evidence. A direct isolated E2E invocation through pwsh was
+added as a second mandatory S1.3 check (runtime comes from NELISP_EXECUTABLE).
+This strengthens the criterion; it does not change test inputs/thresholds.
+The accepted native PowerShell CTest run is still 9/10, with the missing
+vendor file failure. The direct check must also produce a real success
+before this stage can be declared green.
+
+*** Final direct regression control
+The initial relative-path direct E2E attempt failed at CreateProcessW; it
+was corrected to pass absolute paths resolved from the checkout (without
+hard-coded machine paths). The corrected native invocation was:
+- $testExe=(Join-Path $PWD 'build/w/Release/ddskk-engine-e2e-test.exe');
+  $hostExe=(Join-Path $PWD 'build/w/Release/ddskk-engine-host.exe');
+  ./windows/test/run-isolated-test.ps1 -Executable $testExe $hostExe
+  $env:NELISP_EXECUTABLE $PWD
+Its verbatim tail, exit 1 (0 E2E assertions passed):
+#+begin_example
+  3: load
+  2: load
+  1: load
+  0: load
+E2E FAIL: client.SendKey(U'k', 90000)
+#+end_example
+Full output: build/direct-e2e.log. The preceding runtime error is the same
+missing vendor/ddskk/skk-vars.el; owned host pid 13396 was cleaned up.
+The second S1.3 command now resolves paths the same way.
+
+*** Final meter and review
+Meter command: PROGRESS_OUT_DIR=build/progress bash ../../bin/progress-meter.sh
+--ledger tools/ai/sumi-settings-nelisp-progress.org --root . --only S1.3 --json
+(with NELISP_EXECUTABLE set externally to the supplied runtime).
+Verbatim meter tail:
+#+begin_example
+S1     2     1     0     0     0        66.7%   Resident Sumi opens the settings window
+S2     2     0     0     0     0        100.0%  Settings window logic in NeLisp
+S3     0     0     0     2     0        0.0%    Input-rules editor in Sumi
+S4     0     0     0     2     0        0.0%    Key remapping editor and key inspector in Sumi
+S5     0     0     0     1     0        0.0%    Live
+
+measured: 40.0% of defined criteria; criteria defined: 10
+#+end_example
+One core-regression criterion was added (original denominator 9 -> 10).
+S1.3 is FAIL because its direct E2E check exits 1; MSYS CTest's empty-output
+PASS is rejected by that second mandatory check. Settings-specific criteria
+are hash-checked evidence of the actual passing runs, not cached commands.
+No staging; final git diff --check passed. No owned worker executable was
+present in the final process inventory.
+
+*** Final private-key hardening
+- sumi-ui/verify/verify-settings.ps1:62: validate disposable key prefix,
+  override and restore both NATIVEIME_REGISTRY_KEY and DDSKK_SETTINGS_KEY.
+  This prevents an inherited native override from redirecting the selftest.
+- sumi-ui/indicator/settings.c:147: the headless selftest independently
+  rejects a resolved key outside Software\NativeIME-* before registry I/O.
+- Rebuilt Sumi (seven AOT/four C objects, LINK-OK, exit 0). Registry 9/9
+  and expanded hidden test 7/7 passed again; evidence hashes above updated.
+- Negative safety control: set DDSKK_SETTINGS_KEY to a private NativeIME
+  key and NATIVEIME_REGISTRY_KEY to an unrelated unique guard-only key;
+  Start-Process sumi-skk-ui.exe --settings-selftest with hidden window and
+  redirected logs, wait for exit. No production identity was used.
+#+begin_example
+settings_selftest: resolved key is not a disposable NativeIME-* identity
+PASS effective-key-selftest-guard; expected exit 1
+PASS rejected-key-absent
+#+end_example
+  Two safety assertions passed; rejected identity remained absent. Output:
+  sumi-ui/target/guard.err (stderr); guard.out empty, as expected.
+
+*** SN1 Stage B verification (2026-10-06)
+
+Stage A above is historical; the coordinator merged it and initialized vendor/ddskk.
+S3 now has 41 rules checks, 20 engine-parser parity cases, 8 hidden-window checks,
+registry 9, text 35, title 1, resident settings 3, resident rules 4, core/resident
+settings 14, and 5 real watcher/engine end-to-end assertions, all passing.
+The rules command measured 1139 ms standalone / 214 ms resident visible frame.
+The editor has 555 new NeLisp module lines; C editor sources remain untouched.
+Deleting overrides restores built-in defaults; custom duplicate rows are removed
+without discarding comments. No live shortcut or settings instance was modified.
+No owned process remains; recorded host/runtime/TSF PIDs were checked exited.
+The full file:line map, gate commands, verbatim tails, corrected bring-up failures
+and scope limitations are recorded below.
+evidence: build/validation/sumi-settings/sn3-report.txt sha256=1e665c4a97aa493d436eebf19b3d5d5cae33939453bc645d042ef37d4cbfcd0a
+evidence: build/validation/sumi-settings/sn3-cleanup.log sha256=3a511588860ff0c26cabf3455358a6839c4f77e651e962e61a901cb583c81acb
