@@ -545,6 +545,7 @@ tools) regardless of which kind of word was learned first."
                  (push (cons midasi candidates) nasi)))
              ddskk-user-jisyo--table)
     (concat ";;; -*- coding: utf-8 -*-\n"
+            (if (fboundp 'ddskk-local-metadata) (ddskk-local-metadata) "")
             ";; okuri-ari entries.\n"
             (ddskk-user-jisyo--serialize-entries ari)
             ";; okuri-nasi entries.\n"
@@ -658,7 +659,14 @@ pending') is left untouched, because it is still the only durable
 record of whatever confirmations have not made it into the base file --
 discarding it on a failed save would silently lose them.  Returns
 `ddskk-user-jisyo-save's own result."
-  (let ((ok (ddskk-user-jisyo-save)))
+  ;; Once local ACK identities exist, compaction must preserve them with
+  ;; the same flushed atomic checkpoint used by the learning transaction.
+  ;; The default path with no local learning retains its original writer.
+  (let ((ok (if (and (boundp 'ddskk-local-operations)
+                     (> (hash-table-count ddskk-local-operations) 0)
+                     (fboundp 'ddskk-local-save))
+                (ddskk-local-save)
+              (ddskk-user-jisyo-save))))
     (when ok
       (setq ddskk-user-jisyo--journal-pending 0)
       (ddskk-user-jisyo--truncate-journal))
@@ -704,11 +712,15 @@ the midasi for the duration of the search (same contract
 `ddskk-engine-server-search' already relies on)."
   (gethash skk-henkan-key ddskk-user-jisyo--table))
 
+(defvar ddskk-user-jisyo-local-revision 0
+  "Revision for host overlay publication; never an input-session epoch.")
+
 (defun ddskk-user-jisyo-record (midasi candidate)
   "Move CANDIDATE to the front of MIDASI's learned candidate list.
 Creates the list if MIDASI has never been learned before."
   (let ((clean (ddskk-user-jisyo--clean-candidate candidate)))
     (when clean
+      (setq ddskk-user-jisyo-local-revision (1+ ddskk-user-jisyo-local-revision))
       (puthash midasi
                (ddskk-user-jisyo--move-to-front
                 clean (gethash midasi ddskk-user-jisyo--table))
@@ -719,6 +731,7 @@ Creates the list if MIDASI has never been learned before."
 Drops the MIDASI key entirely once its candidate list becomes empty,
 so an emptied entry does not linger as a spurious (but harmless, since
 empty-list and absent-key both `gethash' to nil) table entry."
+  (setq ddskk-user-jisyo-local-revision (1+ ddskk-user-jisyo-local-revision))
   (let ((remaining (ddskk-user-jisyo--remove-equal
                      candidate (gethash midasi ddskk-user-jisyo--table))))
     (if remaining

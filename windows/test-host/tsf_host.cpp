@@ -589,6 +589,13 @@ class DocumentStore final : public ITextStoreACP,
 
   // --- Test-harness accessors -------------------------------------------
   std::wstring BufferSnapshot() const { return buffer_; }
+  void ApplicationClear() {
+    const LONG previous = static_cast<LONG>(buffer_.size());
+    buffer_.clear();
+    sel_start_ = sel_end_ = 0;
+    NotifyTextChange(0, previous, 0);
+    NotifySelectionChange();
+  }
   void SelectionSnapshot(LONG* start, LONG* end) const {
     *start = sel_start_;
     *end = sel_end_;
@@ -742,6 +749,7 @@ struct KeyEvent {
 };
 
 bool TokenToKey(const std::wstring& token, KeyEvent* out) {
+  if (token == L"BRACKET") { *out = KeyEvent{VK_OEM_4, false, false}; return true; }
   if (token == L"SPACE") { *out = KeyEvent{VK_SPACE, false, false}; return true; }
   if (token == L"ENTER") { *out = KeyEvent{VK_RETURN, false, false}; return true; }
   if (token == L"BS") { *out = KeyEvent{VK_BACK, false, false}; return true; }
@@ -1278,6 +1286,8 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
         std::printf("TEST_KILL token=%s parent=%lu target=0 success=0\n", Utf8FromWide(token).c_str(), parent_pid);
         std::exit(1);
       }
+    } else if (token == L"APPCLEAR") {
+      stores[active]->ApplicationClear();
     } else if (token == L"CTX1" || token == L"CTX2") {
       active = token == L"CTX1" ? 0 : 1;
       const HRESULT hr = thread_mgr->SetFocus(documents[active]);

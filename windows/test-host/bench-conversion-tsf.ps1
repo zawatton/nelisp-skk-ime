@@ -2,7 +2,7 @@
 param([Parameter(Mandatory)][string]$Runtime,
       [Parameter(Mandatory)][string]$Dictionary,
       [string]$BuildDir='build/w', [int]$Iterations=20,
-      [int]$ColdLoadSleepSec=45)
+      [int]$ColdLoadSleepSec=45, [ValidateRange(0,1)][int]$LocalConversion=0)
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $build=[IO.Path]::GetFullPath((Join-Path $root $BuildDir))
@@ -46,12 +46,15 @@ try {
     -Script $script -EngineHostPath (Join-Path $build 'Release/ddskk-engine-host.exe') `
     -EngineExecutablePath $Runtime -RepositoryPath $root -DllPath (Join-Path $build 'Release/ddskk-ime.dll') `
     -TsfHostExe (Join-Path $build 'Release/tsf-host.exe') -ColdLoadSleepSec $ColdLoadSleepSec `
-    -TsfHostTimeoutSec 180 *> $log
+    -TsfHostTimeoutSec 180 -LocalConversion $LocalConversion *> $log
   if ($LASTEXITCODE -ne 0) {Get-Content $log -Tail 20; throw "Harness exit $LASTEXITCODE"}
   $after=Machine-Load
   $after | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $run 'load-after.json')
   $values=@(Get-Content $log | ForEach-Object {
-    if ($_ -match '^SPACE-CANDIDATE ms=(\d+) seq=(\d+)' -and [int]$Matches[2] -gt 2) {[int]$Matches[1]}
+    if ($_ -match '^SPACE-CANDIDATE ms=(\d+) seq=(\d+)') {
+      if (($LocalConversion -eq 0 -and [int]$Matches[2] -gt 2) -or
+          ($LocalConversion -eq 1 -and $_.Contains('path=local') -and [int]$Matches[2] -gt 1)) {[int]$Matches[1]}
+    }
   } | Sort-Object)
   if ($values.Count -lt $Iterations) {throw "Completed TSF conversions $($values.Count)/$Iterations; log=$log"}
   $p50=$values[[int][Math]::Ceiling($values.Count*.5)-1]
@@ -61,6 +64,7 @@ try {
     throw 'Machine became busy; wall-clock gate remains unverified'
   }
   if ($p50 -gt 100 -or $p90 -gt 150) {throw 'FAIL S3.1: p50 >100 ms or p90 >150 ms'}
+  if ($LocalConversion -eq 1 -and ($p50 -gt 30 -or $p90 -gt 30)) {throw 'FAIL S2.3: local p50/p90 >30 ms'}
   Write-Output 'PASS S3.1'
 } finally {
   foreach ($name in $names) {[Environment]::SetEnvironmentVariable($name,$saved[$name])}

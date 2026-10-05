@@ -1011,6 +1011,14 @@ The data carries the missing symbol name for `void-variable' /
           (error (ddskk-engine--error-token "ERR CONVERT-KEYS" err))))))
     ((equal line "HELLO 1") "OK 1")
    ((equal line "ROMAJI RULES 1") (ddskk-engine--romaji-rules))
+   ((and (> (length line) 22)
+         (or (equal (substring line 0 22) "CONTROL REGISTER-KEYS ")
+             (equal (substring line 0 22) "CONTROL REGISTER-UTF8 ")))
+    (let ((keys (ddskk-engine--request-keys line 22)))
+      (if (not keys) "ERR REGISTER-KEYS"
+        (skk-ime-session-reset ddskk-engine--session t)
+        (ddskk-engine--begin-registration
+         (skk-ime-session-feed-string ddskk-engine--session keys)))))
    ((and (> (length line) 18)
          (or (equal (substring line 0 18) "CONTROL SYNC-KEYS ")
              (and ddskk-engine--utf8-wire
@@ -1263,6 +1271,8 @@ The data carries the missing symbol name for `void-variable' /
    ((equal line "DIAG SESSION-COUNT")
       (concat "SESSIONS " (number-to-string
                            (hash-table-count ddskk-engine--sessions))))
+   ((and (> (length line) 6) (equal (substring line 0 6) "LOCAL "))
+    (ddskk-local-dispatch line))
    ((and (> (length line) 8)
          (equal (substring line 0 8) "SESSION "))
       (let ((separator (string-match " " line 8)))
@@ -1453,5 +1463,6 @@ midasi before evaluating each element of that list."
 ;; silently no-op here.
 (setq skk-update-jisyo-function #'ddskk-user-jisyo--update)
 (ddskk-user-jisyo-load)
+(load "engine/skk-local-conversion.el")
 
 (ddskk-engine-start)

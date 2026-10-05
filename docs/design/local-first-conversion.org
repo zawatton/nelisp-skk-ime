@@ -399,3 +399,256 @@ Private TSF host 30256, engine host 45884 and runtime 16744 exited. Profile
 runtimes 42936 and 57960 also verified absent after their hosts shut down.
 All engine processes were owned by the invoked harness/private host job.
 No process started by LF1 remains running. Nothing committed or staged.
+
+* LF2 ordinary production slice (2026-10-06)
+This implements the ordinary portion of S2.1 and starts S2.3. Okuri-ari,
+numeric/expressions, additional search sources/hooks and registration stay
+with the provider. No shim or exported core ABI changes; no live deployment.
+LocalConversion DWORD defaults to 0. Apps/<executable>/LocalConversion may
+override it with 0/1. The engine host starts publication when any application
+opts in. Its source plan matches the provider's active DictionaryFiles;
+source configuration changes require the normal host reload.
+
+The production schema is separate from LF1's experimental format: 144-byte
+header, 48-byte sorted records, SHA256 configuration/content digest and whole
+generation checksum, bounded UTF-8 sections and a validated rule export.
+The host parses sources plus an engine overlay snapshot, flushes and validates
+a uniquely named generation, then atomically replaces a small manifest. It
+retains three generations. Protected user/SYSTEM ACLs and owner checks apply.
+The core worker validates new mappings; key callbacks never build or fully
+validate a generation. A composition pins its candidate list and rules.
+
+Supported ownership is selected before SPACE conversion: completed hiragana,
+plain candidates, certified personal-then-built-in source plan, external
+server disabled. User candidates retain their lazy source frontier. Shared
+file merging retains first word/annotation priority; personal/shared union
+uses stock DDSKK's directional annotation equality. Missing generations,
+uncertified plans, misses and oversized entries use the provider. The core
+handles SPACE/x, cancel, explicit and implicit commit synchronously, including
+inline rendering; subsequent typing stays in the same native key callback.
+Candidate exhaustion crosses one explicit registration barrier.
+
+Learning uses a separate engine client and bounded 256-operation queue. A
+full queue chooses provider ownership before the next conversion rather than
+discarding a confirmation. Pending deltas affect the next conversion
+immediately. The worker flushes an atomic per-client spool and reclaims only
+unowned/crashed-client spools. Client operation watermarks share a verified
+checkpoint with candidate order. The engine writes a temporary checkpoint;
+the host flushes it and atomically replaces the configured personal jisyo
+before ACK. Later compaction preserves the same atomic checkpoint. Global
+ACK sequence versus overlay sequence retires deltas even if publication
+preceded ACK receipt. Learning failure stays pending; diagnostics expose
+queued/pending/ACK/unsaved counts. Persistent user-facing unsaved indication
+and broader storage/recovery stress coverage remain follow-up work.
+
+** LF2 commands and evidence
+All engine commands receive $Runtime externally; $Dictionary is an external
+full SKK-JISYO.L.utf8. $root is this worktree and $release=build/w/Release.
+Emacs commands were prefixed with
+$env:HOME=[Environment]::GetFolderPath('UserProfile'). Harnesses use private
+registry keys/pipes and private LOCALAPPDATA below build directories.
+
+Unchanged-tree reproduction, before source edits:
+#+begin_example
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion-tsf.ps1 -Runtime $Runtime -Dictionary $Dictionary -BuildDir build/w -Iterations 20 -ColdLoadSleepSec 45
+TSF n=20 p50=109 p90=125 max=125
+FAIL S3.1: p50 >100 ms or p90 >150 ms
+#+end_example
+Build and configured engine CTest:
+#+begin_example
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64 -DNELISP_EXECUTABLE=$Runtime
+cmake --build build/w --config Release
+ctest --test-dir build/w -C Release
+100% tests passed, 0 tests failed out of 11
+Total Test time (real) = 22.96 sec
+#+end_example
+These tails are in build/w/lf2-ctest-atomic.log; final rebuild and focused
+post-review verification are recorded below when complete.
+
+Stock DDSKK oracle and learning:
+#+begin_example
+$env:LOCAL_ORACLE_DIR=Join-Path $root 'build/w/stock-oracle'
+emacs -Q --batch -L vendor/ddskk -l windows/test-host/local-stock-oracle.el
+PASS stock DDSKK oracle: 8 rows, 4 readings before/after learning
+build/w/Release/nativeime-local-conversion-test.exe build/w/local-final build/w/stock-oracle/stock.oracle
+Stock DDSKK oracle 8 readings/order/commits PASS
+PASS local conversion 60 checks (4 corrupt/source negative controls)
+$env:LOCAL_LEARNING_TEST_DIR=Join-Path $root 'build/w/learning-ert'
+emacs -Q --batch -L engine -l engine/test-local-conversion.el -f ert-run-tests-batch-and-exit
+Ran 7 tests, 7 results as expected, 0 unexpected (2026-10-06 01:57:36+0900, 0.041921 sec)
+#+end_example
+The stock oracle independently searches and learns with stock DDSKK. It
+compares full order across both source frontiers and annotation-free commits.
+It does not claim parity for okuri/numeric/advanced DDSKK storage semantics.
+
+TSF failure/ownership/typing-ahead suite:
+#+begin_example
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-conversion.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+PASS local TSF cases=9 checks=31
+#+end_example
+build/w/local-tsf-suite-atomic.log retains the verbatim artifact path and nine
+case results. Cases: ordinary SPACE/x/Ctrl+G/ENTER/implicit commit, offline
+engine with pending learning, missing/corrupt generation, default disabled,
+per-app disabled/enabled, unsupported katakana source and okuri provider.
+
+Existing gates with LocalConversion=0:
+#+begin_example
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-ddskk-behavior.ps1 -DllPath $release/ddskk-ime.dll -TsfHostExe $release/tsf-host.exe -EngineHostPath $release/ddskk-engine-host.exe -EngineExecutablePath $Runtime -ColdLoadSleepSec 45
+Result CtrlGMaxMs Assertions
+------ ---------- ----------
+PASS         1.05         45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-hot-swap.ps1 -EngineHostPath $release/ddskk-engine-host.exe -EngineExecutablePath $Runtime -BuildDirectory $release -RepositoryPath $root -StressKeys
+SWITCH current=passthrough requests=154 max_ms=1.428
+PASS hot-swap, reload, death recovery, registry notification, shutdown
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-core-hot-swap.ps1 -BuildDirectory $release -EngineExecutablePath $Runtime -RepositoryPath $root -ArtifactDirectory build/w/core-hot-swap -ColdLoadSleepSec 45
+PASS core hot swap assertions=19 processes=1 ordinary_max_us=2582
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-emacs-integration.ps1 -DllPath $release/ddskk-ime.dll -TsfHostExe $release/tsf-host.exe -EngineHostPath $release/ddskk-engine-host.exe -EngineExecutablePath $Runtime -RepositoryPath $root -ColdLoadSleepSec 45
+DEADPID PASS assertions=1
+PASS emacs integration assertions=33 cases=5
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-okuri-handoff.ps1 -BuildDirectory $release -EngineExecutablePath $Runtime -RepositoryPath $root -ArtifactDirectory build/w/okuri-handoff -ColdLoadSleepSec 45
+LATENCY late max_us=2816
+PASS okuri handoff assertions=19 cases=3 delay_ms=5500
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/input-rules/test-input-rules.ps1 -BuildDirectory $release -RulesBuildDirectory build/input-rules/Release -KeymapExe build/keymap/Release/nelisp-ime-keymap.exe -EngineExecutablePath $Runtime -ColdLoadSleepSec 45
+INPUT_PARITY checks=525 symbols=7 failures=0
+INPUT_PARITY checks=525 symbols=7 failures=0
+PASS input rules assertions=17 widths=2 hooks=0 SendInput=0
+#+end_example
+Corresponding logs: ddskk-suite.log, hot-swap.log, core-hot-swap.log,
+emacs-integration.log, okuri-handoff.log and input-rules-suite.log in build/w.
+
+#+begin_example
+emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+Ran 31 tests, 31 results as expected, 0 unexpected (2026-10-06 01:37:45+0900, 0.046488 sec)
+emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-06 01:37:45+0900, 0.043063 sec)
+emacs -Q --batch -L engine -L vendor/ddskk -l engine/test-input-rules.el -f ert-run-tests-batch-and-exit
+Ran 13 tests, 13 results as expected, 0 unexpected (2026-10-06 01:37:46+0900, 0.878041 sec)
+#+end_example
+
+** LF2 final review verification and paired latency
+#+begin_example
+cmake --build build/w --config Release
+build/w/Release/nativeime-local-conversion-test.exe build/w/local-reviewed build/w/stock-oracle/stock.oracle
+Stock DDSKK oracle 8 readings/order/commits PASS
+PASS local conversion 61 checks (4 corrupt/source negative controls)
+ctest --test-dir build/w -C Release
+11/11 Test #11: ddskk-engine-e2e-test ..............   Passed   21.76 sec
+100% tests passed, 0 tests failed out of 11
+Total Test time (real) = 24.68 sec
+emacs -Q --batch -L engine -L vendor/ddskk -l engine/test-input-rules.el -f ert-run-tests-batch-and-exit
+Ran 13 tests, 13 results as expected, 0 unexpected (2026-10-06 02:04:17+0900, 0.482281 sec)
+#+end_example
+Logs: lf2-build-reviewed.log, lf2-ctest-reviewed.log and
+input-rules-ert-reviewed.log in build/w. The added 61st assertion verifies
+that an oversized candidate selects the provider before conversion.
+
+Each of the nine default-off cases used this command with $case set to
+inline, missing, wrong, drop, emacs, pair, pair-legacy, pair-down, emacs-pair:
+#+begin_example
+python windows/test-host/test-inline-preedit.py --runtime $Runtime --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --artifacts build/w/inline-final-$case --case $case --cold-load 45
+PASS inline-preedit case=inline channel_lines=35 ordinary_max_us=2947 final_units=10
+PASS inline-preedit case=missing channel_lines=0 ordinary_max_us=3604 final_units=10
+PASS inline-preedit case=wrong channel_lines=29 ordinary_max_us=4860 final_units=10
+PASS inline-preedit case=drop channel_lines=2 ordinary_max_us=3214 final_units=10
+PASS inline-preedit case=emacs channel_lines=0 ordinary_max_us=4253 final_units=10
+PASS inline-preedit case=pair pair_lines=1 opener_only=True cleanup=confirmed
+PASS inline-preedit case=pair-legacy pair_lines=0 opener_only=True cleanup=confirmed
+PASS inline-preedit case=pair-down pair_lines=0 opener_only=False cleanup=confirmed
+PASS inline-preedit case=emacs-pair pair_lines=1 opener_only=True cleanup=confirmed
+#+end_example
+Each verbatim final PASS line is retained in build/w/inline-final-$case.log.
+The first pair run failed with UnknownToken:APPCLEAR and UnknownToken:BRACKET;
+the existing helper omitted tokens required by its existing pair tests.
+Added application clear and OEM bracket input to tsf_host.cpp, then reran
+all nine cases. No emacs/** changes were needed.
+
+Local real-Emacs main and typing-ahead cases used the same Python command,
+with --local-conversion and cases emacs / emacs-accept-queue, respectively.
+Main case log build/w/inline-local-emacs.log:
+#+begin_example
+PASS candidate windows observations=6 visible=1 core_extra=0 x=321 y=483
+PASS inline-preedit case=emacs channel_lines=0 ordinary_max_us=1865 final_units=10
+#+end_example
+The typing-ahead case asserts final text あい蚊ぬ, local candidate ownership
+and absence of accept-and-queue provider replay. It passed both before and
+after final review; logs inline-local-ahead.log / inline-reviewed-ahead.log.
+The latter command used --artifacts build/w/inline-reviewed-ahead --case
+emacs-accept-queue --cold-load 45 --local-conversion.
+
+Paired fresh-host runs, same machine, full dictionary, identical scripts,
+warm conversion excluded, n=20 each; logs build/w/paired-0.log / paired-1.log:
+#+begin_example
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion-tsf.ps1 -Runtime $Runtime -Dictionary $Dictionary -BuildDir build/w -Iterations 20 -ColdLoadSleepSec 45 -LocalConversion 0
+FAIL S3.1: p50 >100 ms or p90 >150 ms
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion-tsf.ps1 -Runtime $Runtime -Dictionary $Dictionary -BuildDir build/w -Iterations 20 -ColdLoadSleepSec 45 -LocalConversion 1
+PASS S3.1
+#+end_example
+| Path | n | Space-to-candidate p50 ms | p90 ms | max ms | Exit |
+|------+---+--------------------------+--------+--------+------|
+| Engine | 20 | 109 | 110 | 265 | 1: existing p50 gate |
+| Local | 20 | 0 | 0 | 0 | 0: <=30 ms local gate |
+GetTickCount64 is coarse (roughly one 15.6 ms timer bucket); local zero means
+completion within a bucket, not zero work. High-resolution harness KEYLAT
+for those same twenty local SPACE callbacks, including TestKeyDown and
+OnKeyDown: p50=693 us, p90=1039 us, max=1774 us. This bounds local callback
+completion, rather than measuring an asynchronous engine response. The
+local quiet-machine check retried once; both accepted runs retained CPU
+load evidence. Thresholds were not relaxed. Production full-dictionary
+generation: schema 2, 175774 entries, 14252556 bytes, zero malformed lines.
+No production build-time or memory benchmark is claimed for this slice.
+
+Post-review ordinary/offline rerun:
+#+begin_example
+& windows/test-host/test-local-conversion.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45 -Cases @('ordinary','offline')
+PASS local TSF cases=2 checks=11
+#+end_example
+The initial -File invocation supplied ordinary,offline as one string and
+failed with Unknown case ordinary,offline before starting any host. The
+correct array invocation above passed; log build/w/local-tsf-reviewed.log.
+
+** LF2 changed-file locations and cleanup
+- windows/src/local_index.h:14 and local_index.cpp:28,232,272,295,367:
+  production schema, ACL checks, validated mapping, bounded lookup,
+  configured-source/overlay publication and immutable manifest.
+- windows/src/local_conversion.h:17 and local_conversion.cpp:13,40,54,70,76:
+  native candidate controller, bounded asynchronous learning, spool ownership,
+  changed-manifest validation and global ACK/overlay retirement.
+- windows/src/text_service.h:195,205 and text_service.cpp:352,365,1098,
+  1713,1735,1844,1851,1898,2112,2144,2504,2866,2897,2961,3150,3177,3185,3195:
+  local opt-in/override, offline rules, local conversion/selection/commit,
+  registration barrier and context cleanup. ShowSettings was untouched.
+- windows/src/engine_client.h:73 and engine_client.cpp:302,311:
+  separate learning and explicit registration metadata transactions.
+- windows/host/main.cpp:28,1257,1348,1923,1949,2350,2401:
+  registration UTF-8 wire, flushed checkpoint replacement, opt-in builder
+  and joined publication worker. No shim or exported ABI changes.
+- engine/ddskk-engine.el:1014,1274,1466 and skk-user-jisyo.el:548,662,715,
+  723,734; engine/skk-local-conversion.el:9,25,34,44,63,100:
+  session-independent protocol, certified capability, overlay revision,
+  watermark checkpoint, atomic learning and subsequent compaction.
+- windows/CMakeLists.txt:4,14,27,32,47,171,178: production index library,
+  core/host linkage and focused tests.
+- windows/test/local_conversion_test.cpp:1; engine/test-local-conversion.el:1;
+  windows/test-host/local-stock-oracle.el:1 and test-local-conversion.ps1:1:
+  corruption/source controls, independent DDSKK oracle, learning persistence,
+  TSF ownership/candidate/typing-ahead/failure matrix.
+- windows/test-host/run-harness.ps1:84,256,328; bench-conversion-tsf.ps1:5,49,
+  54,67; test-inline-preedit.py:28,158,233,238; tsf_host.cpp:592,752,1273:
+  private opt-in/failure/offline harness, paired local latency, real Emacs
+  typing-ahead assertions and the omitted application-clear/bracket helpers.
+- docs/design/local-first-conversion.org:403 and
+  tools/ai/local-first-conversion-progress.org:34: notes only.
+
+git diff --check passed; staged set is empty. Changes stay within LF2 scope.
+No sumi-ui/**, emacs/**, shim_service.*, exported core ABI or live settings
+changes. All 160 distinct HOST/CHILD/TSF PIDs recorded by the private harness
+logs were queried after completion: alive=0. A broader Win32_Process CIM
+inventory was denied by the sandbox, so no result is claimed from that query.
+Emacs and runtime probes returned; host/core hot-swap and E2E gates completed
+their own owned-child/job cleanup. No leftover process was found among the
+recorded test PIDs. Nothing committed or staged.
+An additional PID-file/host-hot-swap audit queried 23 distinct inline helper,
+Emacs and hot-swap host/runtime PIDs: alive=0. Other Emacs/NeLisp processes
+on the machine were left alone. No process started by LF2 remains running.

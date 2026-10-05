@@ -81,6 +81,10 @@ param(
   [string]$InlineDirectory = '',
   [string]$InlinePidFile = '',
   [string]$CaretMapName = '',
+  [ValidateRange(0,1)][int]$LocalConversion = 0,
+  [ValidateRange(-1,1)][int]$ApplicationLocalConversion = -1,
+  [ValidateSet('none','missing','corrupt')][string]$LocalIndexFailure = 'none',
+  [switch]$StopEngineAfterWarmup,
 
   # Engine cold load has been measured anywhere from 3.4s (quiet machine)
   # to ~12s (loaded machine); a 6s default let the first scripted keys race
@@ -249,6 +253,13 @@ if ($CoreDllPath) {
 }
 New-ItemProperty -Path $regPath -Name SkkServEnable -Value 0 -PropertyType DWord -Force | Out-Null
 New-ItemProperty -Path $regPath -Name InitialKanaMode -Value 1 -PropertyType DWord -Force | Out-Null
+if ($env:DDSKK_HARNESS_LOCAL_CONVERSION -eq '1') { $LocalConversion = 1 }
+New-ItemProperty -Path $regPath -Name LocalConversion -Value $LocalConversion -PropertyType DWord -Force | Out-Null
+if ($ApplicationLocalConversion -ge 0) {
+  $appPath = Join-Path $regPath ('Apps\' + [IO.Path]::GetFileName($TsfHostExe).ToLowerInvariant())
+  New-Item -Path $appPath -Force | Out-Null
+  New-ItemProperty -Path $appPath -Name LocalConversion -Value $ApplicationLocalConversion -PropertyType DWord -Force | Out-Null
+}
 if ($InlineDirectory) { $env:NELISP_IME_INLINE_DIR = [IO.Path]::GetFullPath($InlineDirectory) }
 if ($PublishState -or $InlinePreedit -or $OpenMode -ne 'restore') {
   $appPath = Join-Path $regPath ('Apps\' + [IO.Path]::GetFileName($TsfHostExe).ToLowerInvariant())
@@ -314,6 +325,31 @@ if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repositor
   $startedChildren = @([NativeImeHarnessChildren]::Find($hostProcess.Id, [IO.Path]::GetFileName($engineExecutable)) |
     ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
   foreach ($child in $startedChildren) { Write-Host "HARNESS_CHILD pid=$($child.Id) parent=$($hostProcess.Id)" }
+  if ($LocalConversion -eq 1 -or $ApplicationLocalConversion -eq 1) {
+    $deadline = (Get-Date).AddSeconds(30)
+    do {
+      $manifests = @(Get-ChildItem -LiteralPath $env:LOCALAPPDATA -Filter current -Recurse -File)
+      if ($manifests.Count) { break }
+      Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+    if (-not $manifests.Count) { throw 'Local index publication timeout' }
+    if ($LocalIndexFailure -ne 'none') {
+      foreach ($manifest in $manifests) {
+        $generation = Join-Path $manifest.DirectoryName ([IO.File]::ReadAllText($manifest.FullName))
+        if ($LocalIndexFailure -eq 'missing') { Remove-Item -LiteralPath $generation -Force }
+        else {
+          $bytes = [IO.File]::ReadAllBytes($generation)
+          $bytes[$bytes.Length-1] = $bytes[$bytes.Length-1] -bxor 1
+          [IO.File]::WriteAllBytes($generation, $bytes)
+        }
+      }
+    }
+  }
+  if ($StopEngineAfterWarmup) {
+    Send-ShutdownRequest -PipeShortName $pipeShortName | Out-Null
+    if (-not $hostProcess.WaitForExit(10000)) { throw 'Owned offline-test host did not stop' }
+    Write-Host 'HARNESS_ENGINE_OFFLINE'
+  }
 
   if ($RomajiProbePath) {
     $probePipe = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeShortName,

@@ -349,7 +349,7 @@ bool TextService::CreateProviderWindow() {
   return provider_window_ != nullptr;
 }
 
-bool TextService::BeginProviderConversion(const std::u32string& keys) {
+bool TextService::BeginProviderConversion(const std::u32string& keys, bool registration) {
   if (keys.empty() || provider_window_ == nullptr) return false;
   if (okuri_handoff_active_) okuri_handoff_keys_ = realtime_frontend_.raw_keys();
   provider_cleanup_pending_ = false;
@@ -362,7 +362,7 @@ bool TextService::BeginProviderConversion(const std::u32string& keys) {
   const bool retry_okuri = okuri_handoff_active_ && okuri_handoff_retry_;
   AddRef();
   try {
-    std::thread([this, keys, sequence, destination, retry_okuri] {
+    std::thread([this, keys, sequence, destination, retry_okuri, registration] {
       if (retry_okuri) Sleep(100);
       DelayTestProvider();
       DebugLog(L"Provider convert begin seq=%llu keys=%zu",
@@ -370,7 +370,8 @@ bool TextService::BeginProviderConversion(const std::u32string& keys) {
       std::optional<ddskk::EngineState> state;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
-        state = engine_.ConvertKeys(keys, kConversionTimeoutMs);
+        state = registration ? engine_.RegisterLocal(keys, kModeReplayTimeoutMs)
+                             : engine_.ConvertKeys(keys, kConversionTimeoutMs);
       }
       DebugLog(L"Provider convert done seq=%llu state=%d raw=%hs",
                static_cast<unsigned long long>(sequence), state ? 1 : 0,
@@ -1094,6 +1095,8 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
 }
 
 HRESULT TextService::Deactivate() {
+  local_store_.Stop();
+  local_conversion_.Reset();
   ClearInlineEpisode();
   inline_channel_.Stop();
   RemovePublishedState();
@@ -1723,6 +1726,7 @@ void TextService::LoadApplicationSettings() {
   const std::wstring path = NativeImeRegistryKey() + L"\\Apps\\" + name;
   application_open_mode_ = L"restore";
   application_mode_indicator_ = -1;
+  application_local_conversion_ = -1;
   inline_enabled_ = false;
   bool enabled = false;
   HKEY key = nullptr;
@@ -1743,6 +1747,11 @@ void TextService::LoadApplicationSettings() {
         type == REG_DWORD && bytes == sizeof(value) && value <= 1) {
       application_mode_indicator_ = static_cast<int>(value);
     }
+    bytes = sizeof(value);
+    if (RegQueryValueExW(key, L"LocalConversion", nullptr, &type,
+        reinterpret_cast<BYTE*>(&value), &bytes) == ERROR_SUCCESS &&
+        type == REG_DWORD && bytes == sizeof(value) && value <= 1)
+      application_local_conversion_ = static_cast<int>(value);
     bytes = sizeof(value);
     enabled = RegQueryValueExW(key, L"PublishState", nullptr, &type,
         reinterpret_cast<BYTE*>(&value), &bytes) == ERROR_SUCCESS &&
@@ -1848,12 +1857,16 @@ void TextService::LoadSettings() {
   DWORD indicator_enabled = 1, indicator_enabled_bytes = sizeof(indicator_enabled);
   DWORD indicator_scale = 100, indicator_scale_bytes = sizeof(indicator_scale);
   DWORD debug_log = 0, debug_log_bytes = sizeof(debug_log);
+  DWORD local = 0, local_bytes = sizeof(local), local_type = 0;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,
                     KEY_READ, &key) == ERROR_SUCCESS) {
     RegQueryValueExW(key, L"Engine", nullptr, nullptr,
                      reinterpret_cast<BYTE*>(engine), &bytes);
     RegQueryValueExW(key, L"DllDebug", nullptr, nullptr,
                      reinterpret_cast<BYTE*>(&debug_log), &debug_log_bytes);
+    if (RegQueryValueExW(key, L"LocalConversion", nullptr, &local_type,
+        reinterpret_cast<BYTE*>(&local), &local_bytes) != ERROR_SUCCESS ||
+        local_type != REG_DWORD || local_bytes != sizeof(local)) local = 0;
     RegQueryValueExW(key, L"InitialKanaMode", nullptr, nullptr,
                      reinterpret_cast<BYTE*>(&kana), &kana_bytes);
     RegQueryValueExW(key, L"ModeIndicatorMs", nullptr, nullptr,
@@ -1898,6 +1911,11 @@ void TextService::LoadSettings() {
     wcscpy_s(engine, environment_engine);
   }
   engine_id_ = NarrowUtf8(engine);
+  local_enabled_ = engine_id_ == "ddskk" &&
+      (application_local_conversion_ >= 0 ? application_local_conversion_ == 1 : local == 1);
+  if (local_enabled_) {
+    try { local_store_.Start(); } catch (...) { local_enabled_ = false; }
+  }
   ddskk_engine_ = engine_id_ != "passthrough";
   realtime_frontend_.SetContinuousPreedit(engine_id_ != "ddskk");
   // Settings that belong to one engine live under its own key, so reread
@@ -2107,13 +2125,24 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   // Refresh even during local preedit: publication can replace an engine
   // before a locally composed reading has entered its session. SetRules
   // rebuilds that reading only when the effective table actually changed.
-  if (!provider_pending_.load(std::memory_order_acquire)) {
+  const auto local_index = local_enabled_ ? local_store_.Current() : nullptr;
+  if (local_index) {
+    // The worker parsed and validated this rule export. Pin the table
+    // through a reading/candidate episode, including offline input.
+    if (local_rule_generation_ != local_index->header().generation &&
+        !realtime_frontend_.composing() && !local_conversion_.active()) {
+      realtime_frontend_.SetRules(local_index->ParsedRules());
+      auto_pair_.SetRules(local_index->ParsedRules());
+      local_rule_generation_ = local_index->header().generation;
+      local_rule_snapshot_ = local_index;
+    }
+  } else if (!provider_pending_.load(std::memory_order_acquire)) {
     const auto rules = engine_.RomajiRules();
     realtime_frontend_.SetRules(rules ? *rules : std::vector<ddskk::RomajiRule>{});
     auto_pair_.SetRules(rules ? *rules : std::vector<ddskk::RomajiRule>{});
   }
   const auto skk_mode_key = (!control_down && engine_id_ == "ddskk" &&
-      realtime_frontend_.preedit() && !provider_composition_active_)
+      realtime_frontend_.preedit() && !provider_composition_active_ && !local_conversion_.active())
       ? TranslateKey(wparam, lparam) : std::optional<char32_t>{};
   const bool katakana_q = engine_id_ == "ddskk" && composing &&
                            last_engine_mode_ == L"candidate" &&
@@ -2128,6 +2157,53 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     return S_OK;
   }
   bool cancelled_provider = false;
+  if (local_conversion_.active()) {
+    *eaten = TRUE;
+    branch = L"local-candidate";
+    if (katakana_q || wparam == VK_F6 || wparam == VK_F7) {
+      state = katakana_q ? realtime_frontend_.CommitKatakana()
+          : wparam == VK_F6 ? std::optional<ddskk::EngineState>(realtime_frontend_.ToHiragana())
+                            : realtime_frontend_.ToKatakana();
+      if (state) { local_conversion_.Reset(); ApplyLocalState(context, *state); }
+      debug_exit(*eaten); return S_OK;
+    }
+    if (ctrl_g || wparam == VK_ESCAPE || wparam == VK_BACK) {
+      state = realtime_frontend_.RestorePreedit();
+      local_conversion_.Reset();
+      ApplyLocalState(context, *state);
+      debug_exit(*eaten); return S_OK;
+    }
+    const auto key = !control_down ? TranslateKey(wparam, lparam) : std::optional<char32_t>{};
+    if (wparam == VK_SPACE || wparam == VK_RIGHT) {
+      if (local_conversion_.Next()) {
+        state = local_conversion_.State();
+        ApplyLocalState(context, *state);
+      } else {
+        // Registration is an explicit provider barrier. Ordinary local
+        // keys never enter a provider queue or an engine shadow stream.
+        local_conversion_.Reset();
+        provider_composition_active_ = false;
+        BeginProviderConversion(realtime_frontend_.raw_keys(), true);
+      }
+      debug_exit(*eaten); return S_OK;
+    }
+    if (wparam == VK_LEFT || (key && *key == U'x')) {
+      if (local_conversion_.Previous()) state = local_conversion_.State();
+      else { state = realtime_frontend_.RestorePreedit(); local_conversion_.Reset(); }
+      ApplyLocalState(context, *state);
+      debug_exit(*eaten); return S_OK;
+    }
+    if (wparam == VK_RETURN || ctrl_j) {
+      const HRESULT hr = CommitLocal(context);
+      debug_exit(*eaten, hr, hr); return S_OK;
+    }
+    if (key) {
+      const HRESULT hr = CommitLocal(context);
+      if (FAILED(hr)) { debug_exit(*eaten, hr, hr); return S_OK; }
+      // Continue this callback through the native frontend. No provider
+      // response or one-key replay is involved in implicit confirmation.
+    } else { debug_exit(*eaten); return S_OK; }
+  }
   const bool cancelled_conversion =
       (ctrl_g || wparam == VK_ESCAPE) && provider_conversion_active_;
   if (ctrl_g || wparam == VK_ESCAPE) deferred_provider_keys_.clear();
@@ -2441,6 +2517,20 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       }
       if (realtime_frontend_.preedit() && !provider_composition_active_ &&
           last_engine_mode_ != L"candidate") {
+        const auto started = GetTickCount64();
+        const auto local_reading = realtime_frontend_.preview_reading();
+        if (local_enabled_ && local_store_.Available() && local_index && local_rule_snapshot_ &&
+            local_index->Rules() == local_rule_snapshot_->Rules() &&
+            local_conversion_.Begin(local_index, local_reading, local_store_.Pending(local_reading))) {
+          branch = L"local-convert";
+          state = local_conversion_.State();
+          const HRESULT hr = ApplyLocalState(context, *state);
+          *eaten = TRUE;
+          if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
+            std::printf("SPACE-CANDIDATE ms=%llu seq=%llu path=local\n",
+                GetTickCount64() - started, ++local_conversion_sequence_);
+          debug_exit(*eaten, hr, hr); return S_OK;
+        }
         branch = L"provider-convert";
         std::optional<std::vector<std::wstring>> preview;
         const std::wstring reading = realtime_frontend_.preview_reading();
@@ -2789,6 +2879,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
 // OnKeyDown failure path that abandons a composition, from
 // OnCompositionTerminated(), and from Deactivate().
 void TextService::ResetAbandonedComposition() {
+  local_conversion_.Reset();
   ClearInlineEpisode();
   // Do not send RESET here.  This callback can arrive late from an old
   // Edge/Electron/Terminal context after another application has already
@@ -2819,6 +2910,7 @@ void TextService::ResetAbandonedComposition() {
 }
 
 void TextService::ForceCancelComposition(ITfContext* context) {
+  local_conversion_.Reset();
   ClearInlineEpisode();
   // Close this client's pipe even when the failure happened before an I/O
   // operation was queued (Connect failure).  RESET is intentionally lazy:
@@ -2882,6 +2974,7 @@ void TextService::ForceCancelComposition(ITfContext* context) {
 }
 
 void TextService::SettleContextComposition(ITfContext* context) {
+  if (local_conversion_.active()) CommitLocal(context);
   if (inline_epoch_ && context) {
     // Match the ordinary focus-settle path: confirm the visible reading,
     // excluding only the SKK marker, in its original document.
@@ -3070,6 +3163,10 @@ void TextService::UpdateCandidateUI(ITfContext* context,
 }
 
 HRESULT TextService::SelectCandidate(UINT index) {
+  if (local_conversion_.active()) {
+    if (!local_conversion_.Select(index)) return E_INVALIDARG;
+    return ApplyLocalState(candidate_context_, local_conversion_.State());
+  }
   if (provider_pending_.load(std::memory_order_acquire)) return E_PENDING;
   if (candidate_context_ == nullptr || candidate_index_ < 0 ||
       index >= candidate_count_) return E_INVALIDARG;
@@ -3093,6 +3190,7 @@ HRESULT TextService::SelectCandidate(UINT index) {
 }
 
 HRESULT TextService::FinalizeCandidate() {
+  if (local_conversion_.active()) return CommitLocal(candidate_context_);
   if (provider_pending_.load(std::memory_order_acquire)) return E_PENDING;
   if (candidate_context_ == nullptr) return E_UNEXPECTED;
   const auto state = engine_.SendControl(ddskk::EngineControl::kCommit, 1000);
@@ -3100,10 +3198,46 @@ HRESULT TextService::FinalizeCandidate() {
 }
 
 HRESULT TextService::AbortCandidate() {
+  if (local_conversion_.active()) {
+    local_conversion_.Reset();
+    return ApplyLocalState(candidate_context_, realtime_frontend_.RestorePreedit());
+  }
   if (provider_pending_.load(std::memory_order_acquire)) return E_PENDING;
   if (candidate_context_ == nullptr) return E_UNEXPECTED;
   const auto state = engine_.SendControl(ddskk::EngineControl::kCancel, 1000);
   return state ? RequestStateEdit(*state) : E_FAIL;
+}
+
+HRESULT TextService::ApplyLocalState(ITfContext* context, const ddskk::EngineState& state) {
+  if (!context) return E_UNEXPECTED;
+  auto* edit = new (std::nothrow) StateEditSession(this, context, state);
+  if (!edit) return E_OUTOFMEMORY;
+  HRESULT result = E_FAIL;
+  const HRESULT request = context->RequestEditSession(client_id_, edit,
+      TF_ES_SYNC | TF_ES_READWRITE, &result);
+  edit->Release();
+  if (FAILED(request) || FAILED(result)) return FAILED(request) ? request : result;
+  engine_pending_ = state.composition_start >= 0 || !state.pending_romaji.empty();
+  provider_composition_active_ = false;
+  last_engine_mode_ = state.mode;
+  kana_mode_ = ddskk::DeriveKanaMode(state);
+  UpdateCandidateUI(context, state);
+  MaybeShowModeIndicator(context, &state);
+  return S_OK;
+}
+
+HRESULT TextService::CommitLocal(ITfContext* context) {
+  const auto saved = local_conversion_;
+  const auto key = local_conversion_.reading();
+  const auto word = local_conversion_.selected();
+  const auto state = local_conversion_.Commit();
+  const HRESULT result = ApplyLocalState(context, state);
+  if (FAILED(result)) { local_conversion_ = saved; return result; }
+  realtime_frontend_.Reset();
+  const bool queued = local_store_.Learn(key, word);
+  if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
+    std::printf("LOCAL_LEARNING queued=%d pending=%zu\n", queued ? 1 : 0, local_store_.Unsaved());
+  return S_OK;
 }
 
 HRESULT TextService::RequestStateEdit(const ddskk::EngineState& state) {

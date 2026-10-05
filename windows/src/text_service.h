@@ -26,6 +26,7 @@
 #include "mode_indicator.h"
 #include "registry_watcher.h"
 #include "inline_preedit.h"
+#include "local_conversion.h"
 
 #include <atomic>
 #include <deque>
@@ -191,7 +192,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   static LRESULT CALLBACK ProviderWindowProc(HWND window, UINT message,
                                               WPARAM wparam, LPARAM lparam);
   bool CreateProviderWindow();
-  bool BeginProviderConversion(const std::u32string& keys);
+  bool BeginProviderConversion(const std::u32string& keys, bool registration = false);
   bool BeginProviderControl(ddskk::EngineControl control, bool apply_state = true);
   bool BeginProviderKey(char32_t key, bool may_convert = false);
   bool BeginProviderKeys(const std::u32string& keys, bool sync = false);
@@ -201,6 +202,15 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   void ReplayDeferredProviderKeys();
   void ShowProviderBusy(ITfContext* context);
   void RenderLocalOkuri(ITfContext* context);
+  HRESULT ApplyLocalState(ITfContext* context, const ddskk::EngineState& state);
+  HRESULT CommitLocal(ITfContext* context);
+  ddskk::local::Store local_store_;
+  ddskk::local::Conversion local_conversion_;
+  bool local_enabled_ = false;
+  int application_local_conversion_ = -1;
+  uint64_t local_rule_generation_ = 0;
+  std::shared_ptr<const ddskk::local::Index> local_rule_snapshot_;
+  uint64_t local_conversion_sequence_ = 0;
 
   struct DeferredProviderKey {
     WPARAM virtual_key = 0;

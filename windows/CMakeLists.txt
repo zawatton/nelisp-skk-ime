@@ -1,11 +1,17 @@
 cmake_minimum_required(VERSION 3.24)
 project(ddskk_ime_windows LANGUAGES CXX RC)
 
+add_library(nativeime-local-index STATIC src/local_index.cpp src/engine_protocol.cpp)
+target_compile_features(nativeime-local-index PUBLIC cxx_std_20)
+target_compile_definitions(nativeime-local-index PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(nativeime-local-index PRIVATE /W4 /permissive- /utf-8)
+target_link_libraries(nativeime-local-index PUBLIC bcrypt advapi32)
+
 set(NATIVEIME_CORE_SOURCES
   src/core_entry.cpp src/text_service.cpp src/candidate_ui.cpp
   src/display_attribute.cpp src/langbar_button.cpp src/mode_indicator.cpp
   src/realtime_frontend.cpp src/engine_client.cpp src/engine_protocol.cpp
-  src/inline_preedit.cpp src/auto_pair.cpp)
+  src/inline_preedit.cpp src/auto_pair.cpp src/local_conversion.cpp)
 function(nativeime_dll target)
   target_compile_features(${target} PRIVATE cxx_std_20)
   target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -18,10 +24,12 @@ nativeime_dll(ddskk-ime)
 add_library(ddskk-ime-core SHARED ${NATIVEIME_CORE_SOURCES})
 nativeime_dll(ddskk-ime-core)
 target_compile_definitions(ddskk-ime-core PRIVATE NATIVEIME_CORE_BUILD)
+target_link_libraries(ddskk-ime-core PRIVATE nativeime-local-index)
 # Identical production sources; only diagnostics/failure injection differ.
 foreach(variant IN ITEMS B bad-abi bad-init)
   add_library(ddskk-ime-core-${variant} SHARED ${NATIVEIME_CORE_SOURCES})
   nativeime_dll(ddskk-ime-core-${variant})
+  target_link_libraries(ddskk-ime-core-${variant} PRIVATE nativeime-local-index)
   target_compile_definitions(ddskk-ime-core-${variant} PRIVATE NATIVEIME_CORE_BUILD
     NATIVEIME_CORE_LABEL="${variant}")
 endforeach()
@@ -36,6 +44,13 @@ function(nativeime_test target)
     -File "${CMAKE_CURRENT_SOURCE_DIR}/test/run-isolated-test.ps1"
     -Executable $<TARGET_FILE:${target}> ${ARGN})
 endfunction()
+add_executable(nativeime-local-conversion-test test/local_conversion_test.cpp
+  src/local_conversion.cpp src/engine_client.cpp)
+target_include_directories(nativeime-local-conversion-test PRIVATE src)
+target_compile_features(nativeime-local-conversion-test PRIVATE cxx_std_20)
+target_compile_options(nativeime-local-conversion-test PRIVATE /W4 /permissive- /utf-8)
+target_link_libraries(nativeime-local-conversion-test PRIVATE nativeime-local-index)
+nativeime_test(nativeime-local-conversion-test)
 add_executable(ddskk-engine-protocol-test
   test/engine_protocol_test.cpp
   src/engine_protocol.cpp)
@@ -153,12 +168,14 @@ target_compile_features(ddskk-engine-host PRIVATE cxx_std_20)
 target_compile_definitions(ddskk-engine-host PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(ddskk-engine-host PRIVATE /W4 /permissive- /utf-8)
 target_link_libraries(ddskk-engine-host PRIVATE ws2_32 advapi32)
+target_link_libraries(ddskk-engine-host PRIVATE nativeime-local-index)
 
 add_executable(ddskk-host-utf8-protocol-test test-host/host_utf8_protocol_test.cpp)
 target_compile_features(ddskk-host-utf8-protocol-test PRIVATE cxx_std_20)
 target_compile_definitions(ddskk-host-utf8-protocol-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(ddskk-host-utf8-protocol-test PRIVATE /W4 /permissive- /utf-8)
 target_link_libraries(ddskk-host-utf8-protocol-test PRIVATE ws2_32 advapi32)
+target_link_libraries(ddskk-host-utf8-protocol-test PRIVATE nativeime-local-index)
 nativeime_test(ddskk-host-utf8-protocol-test)
 
 add_executable(ddskk-engine-e2e-test
