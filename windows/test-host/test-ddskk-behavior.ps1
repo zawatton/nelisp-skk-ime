@@ -37,8 +37,8 @@ $script = @(
   'K a n a SPACE SETTLE30000:WAIT1700 SPACE SETTLE30000 SPACE SETTLE30000 SPACE SETTLE30000 SPACE SETTLE30000 ENTER SETTLE30000:WAIT500'
   'K a n a SPACE SETTLE30000:WAIT1700 CTRLG CTRLG SETTLE30000'
   # Digits/symbols plus application-owned navigation and Ctrl shortcuts.
-  '0 1 2 3 4 5 6 7 8 9 S1 S2 S3 S4 S5 S6 S7 S8 S9'
-  'LEFT RIGHT CTRLC CTRLZ CTRLW CTRLS CTRLA'
+  'CTX2 0 1 2 3 4 5 6 7 8 9 S1 S2 S3 S4 S5 S6 S7 S8 S9'
+  'LEFT RIGHT CTRLC CTRLZ CTRLW CTRLS CTRLA CTX1'
   # Missing candidate -> registration; confirm exactly once.
   'P a p a p a SPACE SETTLE30000:WAIT1700 t e s u t o ENTER SETTLE30000:WAIT500'
   # Cancel registration back to its reading, then dismiss the reading before

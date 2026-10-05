@@ -290,3 +290,104 @@ candidate or tested buffer. All existing assertions/waits/thresholds remain.
   query was denied; unrecorded protected runtime IDs were not assumed to
   belong to IR1 and were not killed. CTest's e2e fixture also uses its own
   kill-on-close job for its host/descendants.
+
+* IR1 round 3: registration investigation (6ef183b)
+- Rebuilt unchanged main with the external NELISP_EXECUTABLE in build/w.
+  Source tree was clean before reproduction; no live settings/processes or
+  deployment scripts were touched.
+- Reproduction command (same variable notation as above):
+  =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-ddskk-behavior.ps1 -RepositoryPath $Root -ColdLoadSleepSec 45 -DllPath $Core/ddskk-ime.dll -TsfHostExe $Core/tsf-host.exe -EngineHostPath $Core/ddskk-engine-host.exe -EngineExecutablePath $Runtime=.
+  NELISP_IME_INPUT_RULES points to a missing private build file, exercising
+  default auto-pair=yes; DDSKK_HARNESS_DIAGNOSTICS=1. Exit 1. Verbatim tail:
+  =DDSKK behavior failed: registration confirm=.
+  Full output: build/round3-behavior-red.log.
+- Exact relevant snapshots:
+  =AFTER S9 BUF=[蚊消えるかなカナ佳奈0123456789!@#$%^&*()] SEL=29,29 COMP=-=
+  =AFTER WAIT500 BUF=[蚊消えるかなカナ佳奈0123456789!@#$%^&*(てすと)] SEL=32,32 COMP=-=.
+  SETTLE at registration confirmation succeeds (359 ms, quiet 100 ms,
+  provider_idle=1). Registration commits one word, ends its composition and
+  leaves the pre-existing closer intact. The suite's registration regex
+  requires the registered word at the end of the entire document, so that
+  closer causes the failure. This is not evidence of duplicated registration.
+- The previous IR1 45/45 behavior evidence used auto-pair=no. It therefore
+  failed to expose the default-on suite incompatibility. That distinction
+  matters; the earlier green is not a default-on acceptance result.
+- Original scope allows only new test-host files. Asked the coordinator
+  whether to preserve requested default pairing and isolate the suite's
+  literal-key episode before registration (an existing-test edit), or change
+  the pairing requirement. No production semantics or existing assertions
+  have been changed while this scope/behavior decision is pending.
+- windows/test-host/input-rules/test-registration.ps1:1 adds independent
+  default-pair-on registration coverage in an empty context and inside an
+  existing pair. Both episodes must actually enter registration; it asserts
+  exact text, caret, ended composition and no duplicated registered word.
+- Independent registration command:
+  =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/input-rules/test-registration.ps1 -BuildDirectory $Core -RulesBuildDirectory $Rules -EngineExecutablePath $Runtime -ColdLoadSleepSec 45=;
+  exit 0, verbatim tail:
+  =PASS registration default-pair-on assertions=5 contexts=2 SendInput=0=.
+  Exact settled snapshots include
+  =AFTER SETTLE30000 BUF=[てすと] SEL=3,3 COMP=-=
+  and =AFTER SETTLE30000 BUF=[(てすと)] SEL=4,4 COMP=-=.
+  Each reading independently produced STATE registration; diagnostics and
+  snapshots are in build/round3-registration/registration.log. S9 and PAREN
+  both map to Shift+VK_9 on this layout; skipping only the suite token would
+  be an invalid production special case.
+- =ctest --test-dir build/w -C Release --output-on-failure= with the configured
+  external NELISP_EXECUTABLE and private missing input file: exit 0.
+  Verbatim tail:
+  =10/10 Test #10: ddskk-engine-e2e-test ..............   Passed   20.90 sec=
+  =100% tests passed, 0 tests failed out of 10=
+  =Total Test time (real) =  23.88 sec=.
+  Evidence: build/round3-ctest.log. Current main includes the tenth host UTF-8
+  protocol test; the older nine-test count above is historical.
+- Reconfigured/rebuilt standalone keymap and input-rules fixture projects;
+  both builds exit 0 (build/round3-keymap-build.log,
+  build/round3-input-build.log). Keymap command
+  =ctest --test-dir build/keymap -C Release --output-on-failure -E private-install=
+  exits 0, verbatim tail:
+  =100% tests passed, 0 tests failed out of 7=
+  =Total Test time (real) =   6.45 sec=.
+  Evidence: build/round3-keymap-ctest.log. The install gate is still excluded
+  under the original explicit prohibition.
+- Input-rules command remains
+  =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/input-rules/test-input-rules.ps1 -BuildDirectory $Core -RulesBuildDirectory $Rules -KeymapExe $Keymap -EngineExecutablePath $Runtime -ColdLoadSleepSec 45=.
+  Round 3 exit 0, verbatim tail:
+  =INPUT_PARITY checks=525 symbols=7 failures=0=
+  =INPUT_PARITY checks=525 symbols=7 failures=0=
+  =PASS input rules assertions=17 widths=2 hooks=0 SendInput=0=.
+  Evidence: build/round3-input-rules.log.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-core-hot-swap.ps1 -BuildDirectory $Core -EngineExecutablePath $Runtime -RepositoryPath $Root -ColdLoadSleepSec 45=,
+  private missing input file; exit 0. Verbatim tail:
+  =PASS core hot swap assertions=19 processes=1 ordinary_max_us=7067=.
+  Evidence: build/round3-hot-swap.log. Sequential batch finished
+  =GATES failures=0 gates=3= (build/round3-gates.log).
+- Prepared build/round3-suite-isolation.patch (two token-list edits, no
+  assertion/config/threshold changes). It wraps the literal/navigation
+  episode in CTX2 ... CTX1. =git apply --check= exits 0. This is a review
+  artifact only; the existing shared suite remains untouched pending scope.
+- Validated that proposal in a generated private copy, retaining the entire
+  original assertion block, default auto-pair=yes and SETTLE30000 limits.
+  The copy only changes CTX2/CTX1 episode boundaries plus harness/fixture
+  path resolution needed for its build-directory location. Command:
+  =powershell -NoProfile -ExecutionPolicy Bypass -File build/round3-propose-suite.ps1 -Runtime $Runtime=.
+  Exit 0, verbatim tail:
+  =Result CtrlGMaxMs Assertions=
+  =------ ---------- ----------=
+  =PASS        0.698         45=.
+  Evidence: build/round3-proposal-validation.log and
+  build/round3-proposed-suite.log. The two proposed source changes are at
+  windows/test-host/test-ddskk-behavior.ps1:40 and :41, but are not applied.
+  No production engine/DLL fix is warranted by these traces: removing the
+  closer or moving the caret past it would contradict the requested pairing
+  behavior. The remaining blocker is permission to change the existing
+  shared suite under the original new-test-files-only scope.
+- Integrity check compares the original and proposed assertion blocks from
+  =$script:behaviorText == onward as exact strings; exit 0, tail
+  =PASS proposal assertion block unchanged=
+  (build/round3-assertion-integrity.log). =git diff --check= exits 0 and the
+  index is empty. Tracked source changes in this round are this ledger only;
+  the new registration test is untracked/unstaged. No commit was created.
+- Round 3 process audit: exit 0, verbatim tail
+  =PASS tracked IR1 process cleanup ids=165 host_runtime_resident_alive=0=
+  (build/round3-cleanup.log). No recorded IR1 host/runtime/resident remains;
+  live/other-worker processes were not stopped.
