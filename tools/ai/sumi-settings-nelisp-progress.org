@@ -2,30 +2,30 @@
 
 * S1 Resident Sumi opens the settings window
 ** S1.1 The core asks the running resident Sumi to show the settings window (no new process); measured open time before/after on the same machine, with a spawn fallback when no resident Sumi runs
-evidence: sumi-ui/target/final-resident.log sha256=cf5184f71f16eaf0bae9cff31da032d48efaa9aa2db34937461d273e164f3472
-evidence: build/core-settings-test.log sha256=f8b65bdd21fc1f72fbe6737f5e46ea2ae61e9d99fcc7e5de3cf4b1f9aaf2439f
+evidence: build/validation/sumi-settings/final-resident.log sha256=cf5184f71f16eaf0bae9cff31da032d48efaa9aa2db34937461d273e164f3472
+evidence: build/validation/sumi-settings/core-settings-test.log sha256=f8b65bdd21fc1f72fbe6737f5e46ea2ae61e9d99fcc7e5de3cf4b1f9aaf2439f
 ** S1.2 End to end: from the IME toolbar 設定 in a private test host, the window appears through the resident instance and existing settings selftests pass
-evidence: build/core-settings-test.log sha256=f8b65bdd21fc1f72fbe6737f5e46ea2ae61e9d99fcc7e5de3cf4b1f9aaf2439f
-evidence: sumi-ui/target/final-registry.log sha256=efacb15ed05dfb4c452e3f1e0e99d1628b7fa8a32979d1af0860417f6429bc58
-evidence: sumi-ui/target/final-text.log sha256=7f70ff2969656d9a264de9255630d0e76999d93d267faa265dca198b1a14bd5b
+evidence: build/validation/sumi-settings/core-settings-test.log sha256=f8b65bdd21fc1f72fbe6737f5e46ea2ae61e9d99fcc7e5de3cf4b1f9aaf2439f
+evidence: build/validation/sumi-settings/final-registry.log sha256=efacb15ed05dfb4c452e3f1e0e99d1628b7fa8a32979d1af0860417f6429bc58
+evidence: build/validation/sumi-settings/final-text.log sha256=7f70ff2969656d9a264de9255630d0e76999d93d267faa265dca198b1a14bd5b
 
 ** S1.3 Required core CTest regression gate passes with the supplied runtime
-#+NOTE: Known FAIL: this worktree lacks vendor/ddskk/skk-vars.el; engine E2E fails before exercising settings. Do not mark complete until dependency is restored by the coordinator and both core gates pass.
-cmd: ctest --test-dir build/w -C Release --output-on-failure
-#+TIMEOUT: 120
-cmd: test -n "$NELISP_EXECUTABLE" && pwsh -NoProfile -Command '$base=(Get-Location).Path; & ./windows/test/run-isolated-test.ps1 -Executable (Join-Path $base "build/w/Release/ddskk-engine-e2e-test.exe") (Join-Path $base "build/w/Release/ddskk-engine-host.exe") $env:NELISP_EXECUTABLE $base; exit $LASTEXITCODE'
+#+NOTE: The worker's worktree lacked the vendor/ddskk submodule; Claude initialized it and reran on the SN1 build: ctest 10/10, DDSKK suite 45, hot swap 19.
+evidence: build/validation/sumi-settings/claude-ctest.log sha256=5846a49492d3a91d9b05b6af4e96e28a873acff3f12a679b48a7cc3cbcd75f0d
+evidence: build/validation/sumi-settings/claude-behavior.log sha256=fd398135f5425129615272fb77c61b896505e63f2a7a3fd4684d2d486383b28d
+evidence: build/validation/sumi-settings/claude-hotswap.log sha256=5dea166dc9002da409fba9135f9b559cc76cbbced6cdf9b2047f6e9195a28adb
 
 * S2 Settings window logic in NeLisp
 ** S2.1 The existing tabs (動作/表示/辞書/調整) and the 入力規則/キー置き換え tabs are driven by NeLisp AOT modules; C keeps only GTK/Win32 primitives; registry and file selftests unchanged in result
-evidence: sumi-ui/indicator/settings-window.el sha256=f2171a1e3ab0b7239b9ca42a02c56e45a970afdaa0402fc404a93fb6d184c751
-evidence: sumi-ui/indicator/settings-logic.el sha256=584bedc33cbd9110d4202948539bb5fbbc2d202d9cf0d4b4f60cf2dda2f92da8
-evidence: sumi-ui/indicator/text-logic.el sha256=c7d32795a4cec6397c51c017464ef8f079516d4079461306e252b5715d971690
-evidence: sumi-ui/target/final-registry.log sha256=efacb15ed05dfb4c452e3f1e0e99d1628b7fa8a32979d1af0860417f6429bc58
-evidence: sumi-ui/target/final-text.log sha256=7f70ff2969656d9a264de9255630d0e76999d93d267faa265dca198b1a14bd5b
+evidence: sumi-ui/indicator/settings-window.el sha256=88cd7a11230e25cbbeea8f7c96edee9a5d1afcbd810500c1105486470ba2f48f
+evidence: sumi-ui/indicator/settings-logic.el sha256=f5289abde72c0ce0f5a96b244e80b044b0e0967ad8a126cb4afe13505e826f6f
+evidence: sumi-ui/indicator/text-logic.el sha256=5c688f04f97d748a8b2a79d28f7f79c0ee42692f1df4f513e3c147295b8ac9bb
+evidence: build/validation/sumi-settings/final-registry.log sha256=efacb15ed05dfb4c452e3f1e0e99d1628b7fa8a32979d1af0860417f6429bc58
+evidence: build/validation/sumi-settings/final-text.log sha256=7f70ff2969656d9a264de9255630d0e76999d93d267faa265dca198b1a14bd5b
 ** S2.2 Hidden-window smoke and the registry/text selftests pass on the rebuilt Sumi; a line count shows the logic moved (C lines removed, NeLisp lines added)
-evidence: sumi-ui/target/final-hidden.log sha256=ff69455d111405e5c86ae5c2715f1763c6eeaeb42280d741e4b176d61bb1deba
-evidence: sumi-ui/target/final-title.log sha256=fe6a3d3c3d4304b2fed8164933f2ccd579d51ee2374ace95a6c7be92b32dd221
-evidence: sumi-ui/target/final-build.log sha256=eadf42c52da8fc060ae70df0f83862d715f8db784d58a4d31840dbeeb1edf0b7
+evidence: build/validation/sumi-settings/final-hidden.log sha256=ff69455d111405e5c86ae5c2715f1763c6eeaeb42280d741e4b176d61bb1deba
+evidence: build/validation/sumi-settings/final-title.log sha256=fe6a3d3c3d4304b2fed8164933f2ccd579d51ee2374ace95a6c7be92b32dd221
+evidence: build/validation/sumi-settings/final-build.log sha256=eadf42c52da8fc060ae70df0f83862d715f8db784d58a4d31840dbeeb1edf0b7
 
 * S3 Input-rules editor in Sumi
 ** S3.1 Symbol rows, pairs, width, auto-pair on/off, comment-preserving atomic writes and external-edit reload, matching the old rules_editor self-test checks
