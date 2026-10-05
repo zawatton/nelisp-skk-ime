@@ -6,7 +6,8 @@ $ErrorActionPreference = 'Stop'
 $id = [guid]::NewGuid().ToString('N')
 $key = "Software\NativeIME-test-$id"
 $path = "HKCU:\$key"
-$data = Join-Path ([IO.Path]::GetDirectoryName($Executable)) "test-$id"
+$artifactRoot = if ($env:NATIVEIME_HARNESS_ARTIFACT_DIRECTORY) { [IO.Path]::GetFullPath($env:NATIVEIME_HARNESS_ARTIFACT_DIRECTORY) } else { [IO.Path]::GetDirectoryName($Executable) }
+$data = Join-Path $artifactRoot "test-$id"
 New-Item -ItemType Directory -Path $data -Force | Out-Null
 try {
   New-Item -Path $path -Force | Out-Null

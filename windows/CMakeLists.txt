@@ -1,33 +1,33 @@
 cmake_minimum_required(VERSION 3.24)
 project(ddskk_ime_windows LANGUAGES CXX RC)
 
-add_library(ddskk-ime SHARED
-  src/ddskk-ime.def
-  src/ddskk-ime.rc
-  src/dllmain.cpp
-  src/candidate_ui.cpp
-  src/candidate_ui.h
-  src/display_attribute.cpp
-  src/display_attribute.h
-  src/langbar_button.cpp
-  src/langbar_button.h
-  src/mode_indicator.cpp
-  src/mode_indicator.h
-  src/realtime_frontend.cpp
-  src/realtime_frontend.h
-  src/engine_client.cpp
-  src/engine_client.h
-  src/engine_protocol.cpp
-  src/engine_protocol.h
-  src/text_service.cpp
-  src/text_service.h
-  src/guids.h)
-
-target_compile_features(ddskk-ime PRIVATE cxx_std_20)
-target_compile_definitions(ddskk-ime PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
-target_compile_options(ddskk-ime PRIVATE /W4 /permissive- /utf-8)
-target_link_libraries(ddskk-ime PRIVATE ole32 oleaut32 advapi32 uuid gdi32 user32)
-set_target_properties(ddskk-ime PROPERTIES OUTPUT_NAME "ddskk-ime")
+set(NATIVEIME_CORE_SOURCES
+  src/core_entry.cpp src/text_service.cpp src/candidate_ui.cpp
+  src/display_attribute.cpp src/langbar_button.cpp src/mode_indicator.cpp
+  src/realtime_frontend.cpp src/engine_client.cpp src/engine_protocol.cpp)
+function(nativeime_dll target)
+  target_compile_features(${target} PRIVATE cxx_std_20)
+  target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+  target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+  target_link_libraries(${target} PRIVATE ole32 oleaut32 advapi32 uuid gdi32 user32)
+endfunction()
+add_library(ddskk-ime SHARED src/ddskk-ime.def src/ddskk-ime.rc src/dllmain.cpp
+  src/shim_service.cpp src/display_attribute.cpp src/langbar_button.cpp src/mode_indicator.cpp)
+nativeime_dll(ddskk-ime)
+add_library(ddskk-ime-core SHARED ${NATIVEIME_CORE_SOURCES})
+nativeime_dll(ddskk-ime-core)
+target_compile_definitions(ddskk-ime-core PRIVATE NATIVEIME_CORE_BUILD)
+# Identical production sources; only diagnostics/failure injection differ.
+foreach(variant IN ITEMS B bad-abi bad-init)
+  add_library(ddskk-ime-core-${variant} SHARED ${NATIVEIME_CORE_SOURCES})
+  nativeime_dll(ddskk-ime-core-${variant})
+  target_compile_definitions(ddskk-ime-core-${variant} PRIVATE NATIVEIME_CORE_BUILD
+    NATIVEIME_CORE_LABEL="${variant}")
+endforeach()
+# Deterministic pending-request coverage: delay only the test B provider worker.
+target_compile_definitions(ddskk-ime-core-B PRIVATE NATIVEIME_CORE_PROVIDER_DELAY_MS=400)
+target_compile_definitions(ddskk-ime-core-bad-abi PRIVATE NATIVEIME_CORE_BAD_ABI)
+target_compile_definitions(ddskk-ime-core-bad-init PRIVATE NATIVEIME_CORE_FAIL_INIT)
 
 enable_testing()
 function(nativeime_test target)

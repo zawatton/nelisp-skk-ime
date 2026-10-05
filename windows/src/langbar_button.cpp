@@ -290,6 +290,7 @@ HRESULT LangBarButton::OnClick(TfLBIClick click, POINT, const RECT*) {
     const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
         cursor.x, cursor.y, 0, GetForegroundWindow(), nullptr);
     DestroyMenu(menu);
+    if (!handler_) return E_UNEXPECTED;
     if (command >= 1 && command <= 4) {
       // Routes through TextService::SelectInputMode(), which sends
       // CONTROL CANCEL (Ctrl+J-equivalent) and, for anything but かな,
@@ -316,6 +317,7 @@ HRESULT LangBarButton::OnClick(TfLBIClick click, POINT, const RECT*) {
   const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
       cursor.x, cursor.y, 0, GetForegroundWindow(), nullptr);
   DestroyMenu(menu);
+  if (!handler_) return E_UNEXPECTED;
   if (command == 1) handler_->SelectEngineId("ddskk");
   if (command == 2) handler_->SelectEngineId("passthrough");
   if (command == 4) handler_->SelectEngineId("lattice");

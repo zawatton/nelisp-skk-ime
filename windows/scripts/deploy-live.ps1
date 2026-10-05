@@ -65,6 +65,11 @@
   Deploy the rebuilt ddskk-ime.dll and repoint the CLSID InprocServer32
   default value at it.
 
+.PARAMETER Core
+  Copy ddskk-ime-core.dll to an immutable versioned directory and publish
+  CoreDll under the settings key. Running shim clients swap at idle; no
+  application or host restart. BuildDirectory selects the build output.
+
 .PARAMETER HostExe
   Deploy the rebuilt ddskk-engine-host.exe (registry update and restart
   happen in the shared step below, alongside -Engine if also given).
@@ -108,6 +113,8 @@
 #>
 param(
   [switch]$Dll,
+  [switch]$Core,
+  [string]$BuildDirectory,
   [switch]$HostExe,
   [switch]$Engine,
   [switch]$Indicator,
@@ -120,6 +127,19 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# Core-only mode has its own narrow path: never reads COM registration,
+# starts/stops a process, or opens the engine pipe.
+if ($Core) {
+  if ($Dll -or $HostExe -or $Engine -or $Indicator) { throw '-Core is core-only; use a separate deployment for other components.' }
+  if (-not $BuildDirectory) { $BuildDirectory = Join-Path $RepoRoot 'windows\build\Release' }
+  $settingsKey = if ($env:NATIVEIME_REGISTRY_KEY) { 'HKCU:\' + $env:NATIVEIME_REGISTRY_KEY } else { 'HKCU:\Software\NativeIME' }
+  . (Join-Path $PSScriptRoot 'core-deployment.ps1')
+  Publish-NativeImeCore -Source (Join-Path $BuildDirectory 'ddskk-ime-core.dll') `
+    -DestinationRoot (Join-Path $env:LOCALAPPDATA 'DDSKK') -RegistryKey $settingsKey -DryRun:$DryRun
+  exit 0
+}
+
 
 if (-not $NelispBufferElSource) {
   $NelispBufferElSource = Join-Path (Split-Path -Parent $RepoRoot) 'nelisp\src\nelisp-buffer.el'
@@ -338,6 +358,7 @@ if ($Dll) {
   Write-Host '--- DLL ---'
   $dllDest = Join-Path $BinDir 'ddskk-ime.dll'
   Copy-Deployed -Source $DllSrc -Destination $dllDest
+  Copy-Deployed -Source (Join-Path ([IO.Path]::GetDirectoryName($DllSrc)) 'ddskk-ime-core.dll') -Destination (Join-Path $BinDir 'ddskk-ime-core.dll')
   Write-Host 'NOTE  : ddskk-ime.dll is an in-process COM server; any application that'
   Write-Host '        already loaded the old copy must be RESTARTED by the user to pick'
   Write-Host '        up this change. DllRegisterServer is never invoked (see README.md).'
@@ -435,6 +456,7 @@ if ($DryRun) {
     deployed_bin = if ($Dll -or $HostExe -or $Indicator) { $BinDir } else { $null }
     deployed_snapshot = if ($Engine) { $SnapshotRoot } else { $null }
     previous = [ordered]@{
+      core = Get-RegistryValueOrNull -Path $NativeImeKey -Name 'CoreDll'
       dll = Get-RegistryValueOrNull -Path $ClsidKey -Name '(default)'
       engine_host = Get-RegistryValueOrNull -Path $NativeImeKey -Name 'EngineHost'
       repository = Get-RegistryValueOrNull -Path $NativeImeKey -Name 'Repository'
@@ -448,7 +470,10 @@ if ($DryRun) {
 
 # 5. Registry writes. SettingsExe is updated only with -Indicator; the
 #    engine and DLL switches retain their previous narrow write sets.
-if ($dllDest) { Set-ClsidDefault -Value $dllDest }
+if ($dllDest) {
+  Set-ClsidDefault -Value $dllDest
+  Set-NativeImeValue -Name 'CoreDll' -Value (Join-Path $BinDir 'ddskk-ime-core.dll')
+}
 if ($hostDest) { Set-NativeImeValue -Name 'EngineHost' -Value $hostDest }
 if ($snapshotDir) { Set-NativeImeValue -Name 'Repository' -Value $snapshotDir }
 if ($indicatorDest) {

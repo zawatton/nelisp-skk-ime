@@ -19,6 +19,12 @@ $ErrorActionPreference = 'Stop'
 $Manifest = [IO.Path]::GetFullPath($Manifest)
 if (-not (Test-Path -LiteralPath $Manifest)) { throw "manifest not found: $Manifest" }
 $record = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
+if ($record.schema -eq 2) {
+  . (Join-Path $PSScriptRoot 'core-deployment.ps1')
+  Restore-NativeImeCore -Record $record -DryRun:$DryRun
+  exit 0
+}
+
 if ($record.schema -ne 1 -or $null -eq $record.previous) {
   throw "unsupported rollback manifest: $Manifest"
 }
@@ -40,6 +46,7 @@ function Show-Or-Set {
   Write-Host "RESTORE: $label = $Value"
 }
 
+if ($record.previous.PSObject.Properties['core']) { Show-Or-Set $nativeImeKey 'CoreDll' $record.previous.core }
 Show-Or-Set $clsidKey '(default)' $record.previous.dll
 Show-Or-Set $nativeImeKey 'EngineHost' $record.previous.engine_host
 Show-Or-Set $nativeImeKey 'Repository' $record.previous.repository

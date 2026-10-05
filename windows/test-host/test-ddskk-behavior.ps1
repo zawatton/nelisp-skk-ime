@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+  [string]$RepositoryPath = "",
   [int]$ColdLoadSleepSec = 12,
   [string]$DllPath = "",
   [string]$TsfHostExe = "",
@@ -13,6 +14,7 @@ $utf8 = New-Object Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $utf8
 $OutputEncoding = $utf8
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+if ($RepositoryPath) { $root = [IO.Path]::GetFullPath($RepositoryPath) }
 $harness = Join-Path $PSScriptRoot 'run-harness.ps1'
 $fixture = Join-Path $PSScriptRoot 'data\behavior-jisyo.utf8'
 $hostExe = Join-Path $root 'windows\build\Release\ddskk-engine-host.exe'

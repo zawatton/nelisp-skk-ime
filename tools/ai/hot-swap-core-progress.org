@@ -2,20 +2,84 @@
 
 * S1 Shim / core split
 ** S1.1 ddskk-ime.dll becomes a small stable shim that loads a versioned core DLL; with the split, ctest (with NELISP_EXECUTABLE), the DDSKK suite and the Emacs integration suite pass as before
-pending
+#+NOTE: Verified by Claude on its own build (NELISP_EXECUTABLE): ctest 9/9, DDSKK suite 45, Emacs integration 33/5 cases, fresh tya/q run ends with ちゃカナかな蚊.
+evidence: build/validation/hot-swap-core/claude-ctest.log sha256=58b83c651256aa30766f12afe6fc318e5163887a6d8895b58c5488310e2d8d15
+evidence: build/validation/hot-swap-core/claude-ddskk-suite.log sha256=83d168dbc981c39f10812121ee47588e43c0c0b9bea2af4e454e5cbea26d108f
+evidence: build/validation/hot-swap-core/claude-emacs-integration.log sha256=11165e7a2fca2b9d216d5cd988cecaad0c5468af1862fdf785d55b70923a5091
+evidence: build/validation/hot-swap-core/claude-fresh-tya-q.log sha256=bc4bcde78067b01ad6803c6df32aa8960a35745a0977e18c28ae1a28c14ab492
+- H5 evidence (2026-10-05): stable COM shim and production core built in build/w,
+  with NELISP_EXECUTABLE supplied on the configure command line. Final serial
+  gates: ctest 9/9 (29.03 s), DDSKK 45 assertions (Ctrl-G max 1.136 ms),
+  Emacs integration 33 assertions / five cases. ERT framework 89/89,
+  stateline/conformance 31/31, lattice 14/14; Elisp unchanged.
+- Logs: [[../../build/validation/hot-swap-core/ctest-final-complete.log][ctest]],
+  [[../../build/validation/hot-swap-core/ddskk-final.log][DDSKK]],
+  [[../../build/validation/hot-swap-core/emacs-integration-final-complete.log][Emacs integration]].
+  Full commands, verbatim tails, counts, hashes and file:line change index:
+  [[../../build/validation/hot-swap-core/validation-report.org][H5 validation report]].
 ** S1.2 The core ABI is versioned (size/version checks); a core that fails to load or initialise is rejected and the previous core keeps running, with a logged reason
-pending
+#+NOTE: bad-abi (80004002), bad-init (80004005) and missing module (8007007E) are rejected and core B keeps running.
+evidence: build/validation/hot-swap-core/claude-hot-swap.log sha256=c06912af5e0e567c8ba8fcc98a846f59b3b7a0273d91cbf9d531d0830b1fac68
+- H5 evidence: ABI v1 uses size/version fields, POD function/callback tables
+  and opaque state/service pointers. Same-process test rejects bad ABI,
+  failed initialization and missing DLL; B continues actual key dispatch.
+  [[../../build/validation/hot-swap-core/core-hot-swap-final.log][19-assertion core gate]]
+  SHA256 ADD8B722D015518DBB0CBACD985B2158AD23B325383C484DABDDD52767A4A26F.
+- Lifetime note: state/dispatch have reference-counted module leases; validated
+  modules also retain a conservative process-lifetime lease for escaped TSF
+  callbacks/window/worker epilogues. No old module is dynamically unloaded.
+  Repeated unique core versions increase address-space use until application
+  exit. Last-reference dynamic reclamation is not implemented or claimed.
 
 * S2 In-process hot swap
 ** S2.1 In one running client process, switching the registered core version makes the next keys use the new core without restarting the process
-pending
+#+NOTE: one tsf-host process (19 assertions): production -> B -> production -> B without restarting.
+evidence: build/validation/hot-swap-core/claude-hot-swap.log sha256=c06912af5e0e567c8ba8fcc98a846f59b3b7a0273d91cbf9d531d0830b1fac68
+- H5 evidence: final trace has one tsf-host PID 47860, production/B COREKEY
+  diagnostics emitted from real core dispatch before/after registry changes.
+  [[../../build/validation/hot-swap-core/core-hot-swap-final.log][Final core gate]].
+- Unchanged-tree reproduction first reported no core boundary/sibling DLL.
+  Stronger negative control built original HEAD sources locally and failed
+  the actual idle A-to-B assertion:
+  [[../../build/validation/hot-swap-core/negative-control-gate.log][original-DLL negative control]].
 ** S2.2 A swap requested during a composition, candidate selection or pending engine request waits until that finishes; no key is lost or reordered
-pending
+#+NOTE: swap requests during ▽ composition, ▼ candidate selection and a pending provider request are deferred; key order preserved.
+evidence: build/validation/hot-swap-core/claude-hot-swap.log sha256=c06912af5e0e567c8ba8fcc98a846f59b3b7a0273d91cbf9d531d0830b1fac68
+- H5 evidence: same-process assertions cover reading and candidate deferral,
+  pending provider request plus queued ENTER, ordered dispatch and exact text.
+  Final buffer length 15 / FNV 6a55bd76644f78f6; mode/open state and increasing
+  publication sequence survive. Engine session and duplicated pipe checkpoint
+  are transferred. Test B has a universal 400 ms provider-worker delay;
+  production has no added delay and no input special cases.
+  [[../../build/validation/hot-swap-core/core-hot-swap-final.log][Final core gate]].
 ** S2.3 Ordinary-key latency stays within the existing checks after the split (no measurable regression)
-pending
+#+NOTE: DDSKK suite Ctrl+G max 0.774 ms (PASS); hot-swap ordinary-key max 8.2 ms.
+evidence: build/validation/hot-swap-core/claude-ddskk-suite.log sha256=83d168dbc981c39f10812121ee47588e43c0c0b9bea2af4e454e5cbea26d108f
+- H5 evidence: final ordinary maximum 4236 us against unchanged 25000 us
+  limit. DDSKK Ctrl-G max 1.136 ms. Earlier lattice behavior passed 17
+  assertions (ordinary max 1.515 ms, control max 0.811 ms).
+- Latest lattice run reports the known red warm-first-candidate 150 ms check:
+  [[../../build/validation/hot-swap-core/lattice-release.log][lattice failure]],
+  [[../../build/validation/hot-swap-core/lattice.log][earlier lattice pass]].
+  Threshold unchanged; no statistical no-regression claim beyond measured
+  checks. Concurrent DDSKK/integration failures are retained in the report;
+  later serial and final serial gates passed.
 
 * S3 End to end
 ** S3.1 deploy-live gains a core-only deployment that switches cores in already running applications (private test client) without restarting them; rollback restores the previous core the same way
-pending
+#+NOTE: deploy-live -Core / rollback helpers against a private key: 9 assertions, rollback without process restart.
+evidence: build/validation/hot-swap-core/claude-deployment.log sha256=13c92d96501df1e7b5e874969949e70ef2359164a4063aca4937d4b079bba946
+- H5 evidence: shared deployment/rollback helpers pass nine private assertions
+  (copy hash, preserved host pointer, previous value and absent-value restore).
+  [[../../build/validation/hot-swap-core/core-deployment-release.log][Helper gate]].
+- Same running PID 47860 invokes versioned deployment (helper PID 36700,
+  exit 0) and rollback (helper PID 50956, exit 0), then continues B dispatch.
+  [[../../build/validation/hot-swap-core/core-hot-swap-final.log][Same-process helper actions]].
+  deploy-live/rollback-live wrappers were parsed statically, never executed.
 ** S3.2 Live: after one restart to install the shim, a later core update takes effect in the user's running Emacs and another application without restarting them
 pending
+- H5 note: NOT RUN under the explicit live-installation prohibition. Initial
+  shim installation and live multi-application acceptance remain outstanding.
+  No live registry, default pipe or live DDSKK data was touched; no commits
+  or staging. Final recorded-PID audit: 94 observed, zero live owned processes:
+  [[../../build/validation/hot-swap-core/process-audit-final.log][cleanup audit]].

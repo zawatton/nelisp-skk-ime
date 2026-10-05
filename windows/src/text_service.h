@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include "core_abi.h"
 #include "engine_client.h"
 #include "realtime_frontend.h"
 #include "candidate_ui.h"
@@ -44,6 +45,10 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
                           public LangBarButtonHandler {
  public:
   TextService();
+  void SetShimCallbacks(const NativeImeCallbacks& callbacks) { shim_ = callbacks; }
+  bool CoreQuiescent() const;
+  HRESULT ExportCoreState(NativeImeSnapshot* state);
+  HRESULT ImportCoreState(const NativeImeSnapshot* state);
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override;
   ULONG STDMETHODCALLTYPE AddRef() override;
@@ -134,7 +139,9 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   std::deque<PublishedState> publications_;
   PublishedState last_publication_;
   void FollowSettings();
-  RegistryWatcher settings_watcher_;
+  mutable uint64_t quiescence_trace_ = UINT64_MAX;
+  NativeImeCallbacks shim_{};
+  RegistryWatcher settings_watcher_{false};
   std::atomic<ULONGLONG> last_host_spawn_{0};
   void EnsureEngineHost();
   void CaptureCaretRect(TfEditCookie edit_cookie, ITfContext* context,

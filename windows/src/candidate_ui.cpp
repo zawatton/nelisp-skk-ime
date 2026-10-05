@@ -16,14 +16,26 @@
 #include "candidate_ui.h"
 
 #include <oleauto.h>
+#ifdef NATIVEIME_CORE_BUILD
+extern LONG g_object_count;
+#endif
 
 namespace {
 const GUID kCandidateUiGuid = {0x776fc53a, 0xba56, 0x47ec,
                               {0xa8, 0x52, 0x24, 0x5d, 0x14, 0x17, 0xe0, 0x41}};
 }
 
-CandidateUI::CandidateUI(CandidateUIHandler* handler) : handler_(handler) {}
-CandidateUI::~CandidateUI() { if (document_) document_->Release(); }
+CandidateUI::CandidateUI(CandidateUIHandler* handler) : handler_(handler) {
+#ifdef NATIVEIME_CORE_BUILD
+  InterlockedIncrement(&g_object_count);
+#endif
+}
+CandidateUI::~CandidateUI() {
+  if (document_) document_->Release();
+#ifdef NATIVEIME_CORE_BUILD
+  InterlockedDecrement(&g_object_count);
+#endif
+}
 HRESULT CandidateUI::QueryInterface(REFIID iid, void** object) {
   if (!object) return E_POINTER;
   *object = nullptr;

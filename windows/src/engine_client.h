@@ -41,6 +41,10 @@ class EngineClient {
   // on focus/composition abandonment so an old application's late callback
   // cannot reset the single shared engine while another app is typing.
   void MarkNeedsResync();
+  const std::string& CoreSession() const { return session_id_; }
+  bool CoreNeedsResync() const { return needs_resync_; }
+  HRESULT ExportCorePipe(HANDLE* duplicate) const;
+  HRESULT RestoreCoreSession(const char* session, bool resync, HANDLE borrowed_pipe);
   void SetConnectionFailureHandler(std::function<void()> handler) {
     connection_failure_ = std::move(handler);
   }

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "guids.h"
-#include "text_service.h"
+#include "shim_service.h"
 
 #include <msctf.h>
 #include <new>
@@ -29,6 +29,7 @@ constexpr LANGID kJapanese = MAKELANGID(LANG_JAPANESE, SUBLANG_DEFAULT);
 
 class ClassFactory final : public IClassFactory {
  public:
+  ClassFactory() { InterlockedIncrement(&g_object_count); }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
     if (object == nullptr) return E_POINTER;
     *object = nullptr;
@@ -48,7 +49,7 @@ class ClassFactory final : public IClassFactory {
   HRESULT STDMETHODCALLTYPE CreateInstance(IUnknown* outer, REFIID iid,
                                            void** object) override {
     if (outer != nullptr) return CLASS_E_NOAGGREGATION;
-    auto* service = new (std::nothrow) TextService();
+    auto* service = new (std::nothrow) ShimService();
     if (service == nullptr) return E_OUTOFMEMORY;
     const HRESULT result = service->QueryInterface(iid, object);
     service->Release();
@@ -59,7 +60,7 @@ class ClassFactory final : public IClassFactory {
     return S_OK;
   }
  private:
-  ~ClassFactory() = default;
+  ~ClassFactory() { InterlockedDecrement(&g_object_count); }
   LONG ref_count_ = 1;
 };
 
@@ -266,7 +267,7 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void** object) {
 }
 
 STDAPI DllCanUnloadNow() {
-  return (g_object_count == 0 && g_lock_count == 0) ? S_OK : S_FALSE;
+  return S_FALSE;  // Stable shim and escaped core callbacks are process-lifetime.
 }
 
 STDAPI DllRegisterServer() {
