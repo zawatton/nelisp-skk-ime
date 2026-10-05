@@ -26,6 +26,7 @@ Windows Registry Editor Version 5.00
 [HKEY_CURRENT_USER\Software\NativeIME\Apps\emacs.exe]
 "OpenMode"="latin"
 "PublishState"=dword:00000001
+"InlinePreedit"=dword:00000001
 #+end_src
 Choose =hiragana= or =katakana= to open in kana. =restore= (default) preserves
 the prior mode. Other applications retain existing behavior unless configured
@@ -51,9 +52,54 @@ Observed engine names in native/frontend and stateline sources are
 Color alists additionally accept =jisx0201= for half-width katakana; current
 engines produce that as a transliteration rather than a persistent input mode.
 
+=nelisp-ime-emacs-inline-preedit= defaults to =t=.  While the global mode is
+on, Emacs listens on an OS-chosen TCP port on =127.0.0.1= and publishes
+=<pid>.json= with a version, port and a fresh 32-hex authentication token.
+The discovery directory is =NELISP_IME_INLINE_DIR= when set, otherwise
+=%LOCALAPPDATA%\DDSKK\emacs-inline= on Windows.  Set
+=nelisp-ime-emacs-inline-directory= to override that default.  On other
+systems, explicitly setting the environment variable or directory opts in.
+Directory changes through Customize restart the listener; environment changes
+take effect after toggling the global mode.  Disabling the inline option through
+Customize or disabling the global mode closes all connections and removes the
+discovery file.  Normal Emacs exit also removes it.
+
+With a core implementing inline Protocol v1, =InlinePreedit=1 and an
+authenticated connection suppress the system composition window.  Emacs
+displays the full =▽かな= / =▼漢字= preedit at point, including in read-only
+buffers and the minibuffer, using the underlined =nelisp-ime-emacs-preedit=
+face.  This overlay leaves the buffer and undo history unchanged.  Committed
+text continues to arrive through normal IME input.  With the option off or
+no connected subscriber, the core uses normal system composition.
+
+Protocol v1 uses UTF-8, LF-terminated lines.  The core sends
+=HELLO 1 <token> <pid>=; Emacs replies =OK 1=, or closes a bad connection.
+An authenticated replacement closes the previous client.  The core sends
+=PREEDIT <seq> <cursor> <text>= or =CLEAR <seq>=; only increasing sequence
+numbers apply.  Cursor indices count Unicode code points, including the
+endpoint.  Text escapes only percent, space, CR and LF as =%25=, =%20=,
+=%0D= and =%0A=.  Emacs sends changed =CARET <x> <y> <height>= screen-pixel
+coordinates after the handshake and on point, window, size, focus or preedit
+changes.  Unavailable display coordinates are skipped in batch/terminal use.
+
 Portable tests:
 #+begin_src sh
 emacs -Q --batch -L emacs -l emacs/nelisp-ime-emacs-test.el -f ert-run-tests-batch-and-exit
+emacs -Q --batch -L emacs -l emacs/nelisp-ime-emacs-test.el -l emacs/nelisp-ime-emacs-inline-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+The second command uses real loopback TCP clients and requires permission to
+listen on localhost.  For a socket-restricted sandbox, the supplementary
+offline transport exercises the same assertions with process objects and an
+in-memory queue; it does not qualify TCP binding or transport:
+#+begin_src sh
+emacs -Q --batch -L emacs -l emacs/nelisp-ime-emacs-test.el -l emacs/nelisp-ime-emacs-inline-test.el -l emacs/nelisp-ime-emacs-inline-offline-test.el --eval '(nelisp-ime-emacs-inline-test-run-offline)'
+#+end_src
+=emacs/nelisp-ime-emacs-inline-frame-test.el= additionally exercises a real
+second frame and an active minibuffer in terminal Emacs.  Use =script= to
+provide a controlling terminal and write a plain ERT log:
+#+begin_src sh
+mkdir -p build/validation/inline-preedit
+script -q -e -c 'emacs -Q -nw -L emacs -l emacs/nelisp-ime-emacs-inline-frame-test.el -l emacs/nelisp-ime-emacs-inline-offline-test.el --eval '\''(nelisp-ime-emacs-inline-test-run-offline "inline-s22-interactive" "build/validation/inline-preedit/frames.log")'\''' build/validation/inline-preedit/frames-terminal.log < /dev/null
 #+end_src
 Native harness: =windows/test-host/test-emacs-integration.ps1=, with explicit
 =-DllPath=, =-TsfHostExe=, =-EngineHostPath=, =-EngineExecutablePath= and

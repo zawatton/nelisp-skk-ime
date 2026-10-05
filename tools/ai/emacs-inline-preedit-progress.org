@@ -10,9 +10,19 @@ pending
 
 * S2 Emacs rendering
 ** S2.1 nelisp-ime-emacs.el serves the channel (127.0.0.1 only, token, per-pid discovery file removed on exit) and renders PREEDIT inline at point as an overlay with the cursor at the reported index, removes it on CLEAR, ignores stale sequence numbers, and never modifies the buffer or the undo list
-pending
+#+NOTE: E2 implemented the Emacs listener, OS-backed token, per-connection UTF-8/LF parser, authenticated replacement, atomic discovery and cleanup, strict percent decoding, monotonic sequences, and read-only overlay rendering in emacs/nelisp-ime-emacs.el. Cursor uses integer 1; endpoint/newline carriers cover indices with no normal glyph. Customize changes apply the inline option and directory immediately.
+#+NOTE: GNU Emacs 31.1: existing suite 11/11; combined supplementary offline transport 34/34; four changed/new Elisp files byte-compile with zero warnings. The cursor=t negative control is rejected (1 test, 0 expected results, 1 unexpected). Astra ultra audit confirmed the cursor fixes through terminal redisplay probes.
+#+NOTE: Validation artifact: build/validation/inline-preedit/gate-results.json sha256=297eec15b94de254be732e2c63d7a127710bffa362baa778f32c6bd73bb5c6f9. It records source/log hashes, exact commands, counts, and transport limitations. Logs and the full command/tail/change report are under build/validation/inline-preedit/ (report.txt).
+#+NOTE: Acceptance stays pending: the unmodified real-TCP suite ran 34 tests, 11 expected results and 23 unexpected results; every inline fixture fails to bind 127.0.0.1 with Operation not permitted in this sandbox. Offline transport substitutes an in-memory queue and cannot establish TCP binding, accepted-client coding, or actual TCP fragmentation. No thresholds or tests were weakened.
+#+NOTE: Claude reran the real-TCP suite outside the Codex sandbox (which denies socket bind): 34/34 as expected.
+evidence: build/validation/inline-preedit/claude-tcp-ert.log sha256=f2ca3005ca78d497d1ecb19283964d0e64213d3ee8269b3ed3b9365089648f49
 ** S2.2 It reports the caret's screen position (CARET) after the handshake and whenever it changes, including the minibuffer and other frames; ERT with a fake core client
-pending
+#+NOTE: E2 implemented CARET after OK and after PREEDIT/CLEAR, post-command, window selection/buffer/size and focus changes. It samples the selected window's point and line height in the selected buffer, sends only changed coordinates, and skips nil positions. Errors are contained and reported once per listener lifecycle.
+#+NOTE: Six batch CARET tests pass on the supplementary offline transport. Two additional terminal ERT tests pass with a genuine second frame and an active minibuffer, using stubbed pixel coordinates: build/validation/inline-preedit/frames.log. The full batch/offline suite is 34/34; terminal suite is 2/2. The shared gate-results.json artifact above records their exact counts and hashes.
+#+NOTE: Recheck stored supplementary results from the repository root: python3 -c 'import json; r=json.load(open("build/validation/inline-preedit/gate-results.json")); assert r["gates"]["offline"]["counts"] == [34,34,0]; assert r["gates"]["frames"]["counts"] == [2,2,0]; assert r["gates"]["tcp"]["counts"] == [34,11,23]; assert r["leftover_test_processes"] == 0; assert r["s2_acceptance_complete"] is False'. This checks supplementary results, not S2 acceptance.
+#+NOTE: Acceptance stays pending with S2.1's TCP restriction; actual graphical Windows coordinates/redisplay and the real IME core remain for integration. All started validation processes exited; zero test processes remain. Changes are unstaged and no commit or push was made.
+#+NOTE: Claude reran the real-TCP suite outside the Codex sandbox (which denies socket bind): 34/34 as expected.
+evidence: build/validation/inline-preedit/claude-tcp-ert.log sha256=f2ca3005ca78d497d1ecb19283964d0e64213d3ee8269b3ed3b9365089648f49
 
 * S3 End to end
 ** S3.1 Integrated private run: the real core in the test host and the real library in an Emacs process exchange HELLO/PREEDIT/CLEAR/CARET and the committed text lands exactly once

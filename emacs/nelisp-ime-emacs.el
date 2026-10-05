@@ -1,4 +1,4 @@
-;;; nelisp-ime-emacs.el --- Follow evil with the Windows NeLisp IME -*- lexical-binding: t; -*-
+;;; nelisp-ime-emacs.el --- Evil and inline Windows NeLisp IME integration -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 nelisp-skk-ime contributors
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -9,6 +9,7 @@
 
 ;;; Code:
 (require 'cl-lib)
+(require 'json)
 (defgroup nelisp-ime-emacs nil "Windows NeLisp IME integration." :group 'environment)
 (defcustom nelisp-ime-emacs-open-states '(insert replace)
   "Evil states whose entry opens the IME in the selected buffer."
@@ -35,6 +36,31 @@
 (defcustom nelisp-ime-emacs-mode-line t
   "Display a mode label in the global mode line."
   :type 'boolean)
+(defcustom nelisp-ime-emacs-inline-preedit t
+  "Render the IME's preedit inline while `nelisp-ime-emacs-mode' is on.
+On Windows this is enabled by default.  Elsewhere, explicitly set
+`nelisp-ime-emacs-inline-directory' or NELISP_IME_INLINE_DIR to opt in."
+  :type 'boolean
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         (when (and (bound-and-true-p nelisp-ime-emacs-mode)
+                    (fboundp 'nelisp-ime-emacs--inline-start))
+           (if value (nelisp-ime-emacs--inline-start)
+             (nelisp-ime-emacs--inline-stop)))))
+(defcustom nelisp-ime-emacs-inline-directory nil
+  "Local discovery directory, or nil for the Windows default.
+NELISP_IME_INLINE_DIR takes precedence.  The Windows default is
+DDSKK/emacs-inline under LOCALAPPDATA.  Setting a directory also opts
+into inline preedit on other systems."
+  :type '(choice (const nil) directory)
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         (when (and (bound-and-true-p nelisp-ime-emacs-mode)
+                    (fboundp 'nelisp-ime-emacs--inline-start))
+           (nelisp-ime-emacs--inline-stop)
+           (nelisp-ime-emacs--inline-start))))
+(defface nelisp-ime-emacs-preedit '((t (:inherit underline)))
+  "Face for inline IME composition text.")
 (defvar nelisp-ime-emacs-before-open-hook nil
   "Predicates called before opening. Any nil return vetoes opening.
 For example, add `nelisp-ime-emacs-outside-org-src-p'.")
@@ -44,6 +70,15 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
 (defvar nelisp-ime-emacs--cursors (make-hash-table :test #'eq))
 (defvar nelisp-ime-emacs--warned nil)
 (defvar nelisp-ime-emacs-mode nil)
+(defvar nelisp-ime-emacs--inline-server nil)
+(defvar nelisp-ime-emacs--inline-client nil)
+(defvar nelisp-ime-emacs--inline-connections nil)
+(defvar nelisp-ime-emacs--inline-token nil)
+(defvar nelisp-ime-emacs--inline-file nil)
+(defvar nelisp-ime-emacs--inline-overlay nil)
+(defvar nelisp-ime-emacs--inline-warned nil)
+(defvar nelisp-ime-emacs--inline-test-pid nil
+  "Override the discovery PID and HELLO PID in tests only.")
 (defvar evil-state)
 (declare-function w32-read-registry "w32fns.c" (root key name))
 (declare-function w32-set-ime-open-status "w32fns.c" (status))
@@ -139,9 +174,231 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
 (with-eval-after-load 'evil
   (when nelisp-ime-emacs-mode (nelisp-ime-emacs--install-evil-hooks)))
 
+(defun nelisp-ime-emacs--inline-directory ()
+  (or (let ((directory (getenv "NELISP_IME_INLINE_DIR")))
+        (and directory (not (equal directory "")) directory))
+      nelisp-ime-emacs-inline-directory
+      (and (eq system-type 'windows-nt) (getenv "LOCALAPPDATA")
+           (expand-file-name "DDSKK/emacs-inline" (getenv "LOCALAPPDATA")))))
+
+(defun nelisp-ime-emacs--inline-pid ()
+  (or nelisp-ime-emacs--inline-test-pid (emacs-pid)))
+
+(defun nelisp-ime-emacs--inline-random-token ()
+  "Return 128 bits of OS-backed entropy as 32 hexadecimal characters."
+  (require 'gnutls)
+  (let ((bytes
+         (if (memq 'digests (gnutls-available-p))
+             ;; iv-auto uses GnuTLS's cryptographic random generator.
+             (gnutls-hash-digest 'SHA256 '(iv-auto 16))
+           (with-temp-buffer
+             (set-buffer-multibyte nil)
+             (insert-file-contents-literally "/dev/urandom" nil 0 16)
+             (buffer-string)))))
+    (unless (and (stringp bytes) (>= (length bytes) 16))
+      (error "No cryptographic random source for inline preedit"))
+    (mapconcat (lambda (byte) (format "%02x" byte)) (substring bytes 0 16) "")))
+
+(defun nelisp-ime-emacs--inline-warn (error-data)
+  (unless nelisp-ime-emacs--inline-warned
+    (setq nelisp-ime-emacs--inline-warned t)
+    (condition-case nil
+        (display-warning 'nelisp-ime-emacs
+                         (concat "Inline preedit: " (error-message-string error-data)))
+      (error nil))))
+
+(defun nelisp-ime-emacs--inline-clear ()
+  (when (overlayp nelisp-ime-emacs--inline-overlay)
+    (delete-overlay nelisp-ime-emacs--inline-overlay))
+  (setq nelisp-ime-emacs--inline-overlay nil))
+
+(defun nelisp-ime-emacs--inline-move ()
+  (when nelisp-ime-emacs--inline-overlay
+    (let* ((window (selected-window)) (buffer (window-buffer window))
+           (position (window-point window)))
+      (move-overlay nelisp-ime-emacs--inline-overlay position position buffer)
+      (overlay-put nelisp-ime-emacs--inline-overlay 'window window))))
+
+(defun nelisp-ime-emacs--inline-render (text cursor)
+  ;; The cursor needs a glyph, including at end of text and before a
+  ;; newline.  The newline carrier needs a drawable pixel to produce a glyph;
+  ;; the endpoint carrier can have zero width.  Integer 1 also overrides
+  ;; the visible buffer cursor.
+  (let ((display (if (or (= cursor (length text)) (= (aref text cursor) ?\n))
+                     (concat (substring text 0 cursor)
+                             (propertize " " 'display
+                                         `(space :width ,(if (= cursor (length text)) 0 '(1))))
+                             (substring text cursor))
+                   (copy-sequence text))))
+    (put-text-property 0 (length display) 'face 'nelisp-ime-emacs-preedit display)
+    (put-text-property cursor (1+ cursor) 'cursor 1 display)
+    (unless (and (overlayp nelisp-ime-emacs--inline-overlay)
+                 (overlay-buffer nelisp-ime-emacs--inline-overlay))
+      (setq nelisp-ime-emacs--inline-overlay
+            (make-overlay (window-point) (window-point)
+                          (window-buffer (selected-window)))))
+    (overlay-put nelisp-ime-emacs--inline-overlay 'after-string display)
+    (nelisp-ime-emacs--inline-move)))
+
+(defun nelisp-ime-emacs--inline-update (&rest _)
+  "Move the overlay and publish a changed caret; contain hook errors."
+  (condition-case error-data
+      (progn
+        (nelisp-ime-emacs--inline-move)
+        (when (process-live-p nelisp-ime-emacs--inline-client)
+          (let* ((window (selected-window))
+                 (position (window-absolute-pixel-position (window-point window) window)))
+            (when position
+              (let ((caret (list (car position) (cdr position)
+                                 (with-current-buffer (window-buffer window)
+                                   (save-excursion
+                                     (goto-char (window-point window))
+                                     (line-pixel-height))))))
+                (unless (equal caret (process-get nelisp-ime-emacs--inline-client 'caret))
+                  (process-send-string nelisp-ime-emacs--inline-client
+                                       (apply #'format "CARET %d %d %d\n" caret))
+                  (process-put nelisp-ime-emacs--inline-client 'caret caret)))))))
+    (error (nelisp-ime-emacs--inline-warn error-data))))
+
+(defun nelisp-ime-emacs--inline-decode (text)
+  "Decode precisely the four Protocol v1 percent escapes in TEXT."
+  (replace-regexp-in-string
+   "%..\\|%" (lambda (escape)
+                (or (cdr (assoc escape '(("%25" . "%") ("%20" . " ")
+                                         ("%0D" . "\r") ("%0A" . "\n"))))
+                    (error "Invalid inline preedit escape")))
+   text t t))
+
+(defun nelisp-ime-emacs--inline-line (client line)
+  (let ((case-fold-search nil))
+    (when (cl-some (lambda (char) (> char #x10ffff)) line)
+      (error "Invalid UTF-8 in inline preedit"))
+    (if (not (process-get client 'authenticated))
+        (if (and (string-match "\\`HELLO 1 \\([0-9a-f]\\{32\\}\\) \\([0-9]+\\)\\'" line)
+                 (equal (match-string 1 line) nelisp-ime-emacs--inline-token)
+                 (= (string-to-number (match-string 2 line)) (nelisp-ime-emacs--inline-pid)))
+            (let ((old nelisp-ime-emacs--inline-client))
+              (setq nelisp-ime-emacs--inline-client client)
+              (process-put client 'authenticated t)
+              (nelisp-ime-emacs--inline-clear)
+              (when (and old (not (eq old client))) (delete-process old))
+              (process-send-string client "OK 1\n")
+              (nelisp-ime-emacs--inline-update))
+          (error "Invalid inline preedit handshake"))
+      (cond
+       ((string-match "\\`PREEDIT \\([0-9]+\\) \\([0-9]+\\) \\([^ \r\n]*\\)\\'" line)
+        (let* ((sequence (string-to-number (match-string 1 line)))
+               (cursor (string-to-number (match-string 2 line)))
+               (text (nelisp-ime-emacs--inline-decode (match-string 3 line))))
+          (when (> cursor (length text)) (error "Inline preedit cursor out of range"))
+          (when (> sequence (process-get client 'sequence))
+            (nelisp-ime-emacs--inline-render text cursor)
+            (process-put client 'sequence sequence)
+            (nelisp-ime-emacs--inline-update))))
+       ((string-match "\\`CLEAR \\([0-9]+\\)\\'" line)
+        (let ((sequence (string-to-number (match-string 1 line))))
+          (when (> sequence (process-get client 'sequence))
+            (nelisp-ime-emacs--inline-clear)
+            (process-put client 'sequence sequence)
+            (nelisp-ime-emacs--inline-update))))
+       (t (error "Invalid inline preedit command"))))))
+
+(defun nelisp-ime-emacs--inline-filter (client chunk)
+  (condition-case error-data
+      (let ((pending (concat (process-get client 'pending) chunk)) end)
+        (while (and (process-live-p client) (setq end (string-match "\n" pending)))
+          (let ((line (substring pending 0 end)))
+            (setq pending (substring pending (1+ end)))
+            (nelisp-ime-emacs--inline-line client line)))
+        (process-put client 'pending pending))
+    (error
+     (nelisp-ime-emacs--inline-warn error-data)
+     (delete-process client))))
+
+(defun nelisp-ime-emacs--inline-sentinel (client _event)
+  (unless (process-live-p client)
+    (setq nelisp-ime-emacs--inline-connections
+          (delq client nelisp-ime-emacs--inline-connections))
+    (when (eq client nelisp-ime-emacs--inline-client)
+      (setq nelisp-ime-emacs--inline-client nil)
+      (nelisp-ime-emacs--inline-clear))))
+
+(defun nelisp-ime-emacs--inline-accept (_server client _message)
+  (process-put client 'pending "")
+  (process-put client 'sequence -1)
+  (process-put client 'authenticated nil)
+  (process-put client 'caret nil)
+  (push client nelisp-ime-emacs--inline-connections))
+
+(defun nelisp-ime-emacs--inline-write-discovery (directory)
+  (let ((temporary (make-temp-file (expand-file-name ".inline-" directory)))
+        (coding-system-for-write 'utf-8-unix))
+    (unwind-protect
+        (progn
+          (write-region
+           (json-serialize `((version . 1)
+                             (port . ,(process-contact nelisp-ime-emacs--inline-server :service))
+                             (token . ,nelisp-ime-emacs--inline-token)))
+           nil temporary nil 'silent)
+          (rename-file temporary nelisp-ime-emacs--inline-file t))
+      (when (file-exists-p temporary) (delete-file temporary)))))
+
+(defun nelisp-ime-emacs--inline-stop ()
+  "Close all inline connections and remove this instance's discovery."
+  (remove-hook 'post-command-hook #'nelisp-ime-emacs--inline-update)
+  (remove-hook 'window-selection-change-functions #'nelisp-ime-emacs--inline-update)
+  (remove-hook 'window-size-change-functions #'nelisp-ime-emacs--inline-update)
+  (remove-hook 'window-buffer-change-functions #'nelisp-ime-emacs--inline-update)
+  (remove-function after-focus-change-function #'nelisp-ime-emacs--inline-update)
+  (remove-hook 'kill-emacs-hook #'nelisp-ime-emacs--inline-stop)
+  (dolist (process (cons nelisp-ime-emacs--inline-server nelisp-ime-emacs--inline-connections))
+    (when (processp process)
+      (condition-case error-data (delete-process process)
+        (error (nelisp-ime-emacs--inline-warn error-data)))))
+  (setq nelisp-ime-emacs--inline-server nil nelisp-ime-emacs--inline-client nil
+        nelisp-ime-emacs--inline-connections nil nelisp-ime-emacs--inline-token nil)
+  (nelisp-ime-emacs--inline-clear)
+  (when nelisp-ime-emacs--inline-file
+    (condition-case error-data
+        (when (file-exists-p nelisp-ime-emacs--inline-file)
+          (delete-file nelisp-ime-emacs--inline-file))
+      (error (nelisp-ime-emacs--inline-warn error-data))))
+  (setq nelisp-ime-emacs--inline-file nil))
+
+(defun nelisp-ime-emacs--inline-start ()
+  (when (and nelisp-ime-emacs-inline-preedit (nelisp-ime-emacs--inline-directory)
+             (not (process-live-p nelisp-ime-emacs--inline-server)))
+    (setq nelisp-ime-emacs--inline-warned nil)
+    (condition-case error-data
+        (let ((directory (expand-file-name (nelisp-ime-emacs--inline-directory))))
+          (when (file-remote-p directory) (error "Inline discovery must be local"))
+          (unless (file-directory-p directory)
+            (make-directory directory t)
+            (set-file-modes directory #o700))
+          (setq nelisp-ime-emacs--inline-token (nelisp-ime-emacs--inline-random-token)
+                nelisp-ime-emacs--inline-file
+                (expand-file-name (format "%d.json" (nelisp-ime-emacs--inline-pid)) directory)
+                nelisp-ime-emacs--inline-server
+                (make-network-process
+                 :name "nelisp-ime-inline" :server t :host "127.0.0.1" :family 'ipv4
+                 :service t :coding 'utf-8-unix :noquery t
+                 :filter #'nelisp-ime-emacs--inline-filter
+                 :sentinel #'nelisp-ime-emacs--inline-sentinel
+                 :log #'nelisp-ime-emacs--inline-accept))
+          (nelisp-ime-emacs--inline-write-discovery directory)
+          (add-hook 'kill-emacs-hook #'nelisp-ime-emacs--inline-stop)
+          (add-hook 'post-command-hook #'nelisp-ime-emacs--inline-update)
+          (add-hook 'window-selection-change-functions #'nelisp-ime-emacs--inline-update)
+          (add-hook 'window-size-change-functions #'nelisp-ime-emacs--inline-update)
+          (add-hook 'window-buffer-change-functions #'nelisp-ime-emacs--inline-update)
+          (add-function :after after-focus-change-function #'nelisp-ime-emacs--inline-update))
+      (error
+       (nelisp-ime-emacs--inline-warn error-data)
+       (nelisp-ime-emacs--inline-stop)))))
+
 ;;;###autoload
 (define-minor-mode nelisp-ime-emacs-mode
-  "Follow evil states and show the Windows NeLisp IME's input mode."
+  "Follow Evil and show the Windows NeLisp IME's mode and inline preedit."
   :global t :group 'nelisp-ime-emacs
   (if nelisp-ime-emacs-mode
       (progn
@@ -151,7 +408,9 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
         (unless nelisp-ime-emacs--timer
           (setq nelisp-ime-emacs--timer
                 (run-at-time nil nelisp-ime-emacs-poll-interval #'nelisp-ime-emacs--poll)))
-        (nelisp-ime-emacs--check-settings))
+        (nelisp-ime-emacs--check-settings)
+        (nelisp-ime-emacs--inline-start))
+    (nelisp-ime-emacs--inline-stop)
     (when (timerp nelisp-ime-emacs--timer) (cancel-timer nelisp-ime-emacs--timer))
     (setq nelisp-ime-emacs--timer nil nelisp-ime-emacs--label "")
     (dolist (state '(normal insert replace visual motion operator emacs))
