@@ -364,6 +364,10 @@ class DocumentStore final : public ITextStoreACP,
     if (!locked_ || !IsReadWriteLocked()) return TS_E_NOLOCK;
     if (ulCount == 0) return S_OK;
     if (pSelection == nullptr) return E_INVALIDARG;
+    if (GetEnvironmentVariableW(L"NATIVEIME_TEST_SELECTION_UNAVAILABLE", nullptr, 0)) {
+      std::printf("SELECTION unavailable=E_NOINTERFACE\n");
+      return E_NOINTERFACE;
+    }
     const LONG len = static_cast<LONG>(buffer_.size());
     LONG s = std::clamp(pSelection[0].acpStart, 0L, len);
     LONG e = std::clamp(pSelection[0].acpEnd, 0L, len);
@@ -1114,6 +1118,8 @@ HRESULT SetKeyboardOpen(ITfThreadMgr* thread_mgr, TfClientId client_id,
   return result;
 }
 
+#include "inline_context_alias.h"
+
 void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
                ITfThreadMgr* thread_mgr, TfClientId client_id,
                ITfContext* const contexts[2], DocumentStore* const stores[2],
@@ -1122,8 +1128,11 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   std::wstringstream stream(script);
   std::wstring token;
   size_t active = 0;
+  bool alias_next = false;
   while (stream >> token) {
-    if (token == L"EXITNOW") {
+    if (token == L"CONTEXTALIAS") {
+      alias_next = true;
+    } else if (token == L"EXITNOW") {
       wchar_t root[1024]{};
       GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", root, _countof(root));
       if (!std::wstring(root).starts_with(L"Software\\NativeIME-test-")) std::exit(1);
@@ -1279,7 +1288,22 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
     } else {
       KeyEvent key{};
       if (TokenToKey(token, &key)) {
-        SendScriptedKey(key_sink, keystroke_mgr, contexts[active], key, token);
+        if (alias_next) {
+          auto* alias = new InlineContextAlias(contexts[active]);
+          IUnknown* base_identity = nullptr;
+          IUnknown* alias_identity = nullptr;
+          contexts[active]->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&base_identity));
+          alias->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&alias_identity));
+          std::printf("CONTEXT_ALIAS distinct=%d same_identity=%d\n",
+                      alias != contexts[active], base_identity == alias_identity);
+          if (base_identity) base_identity->Release();
+          if (alias_identity) alias_identity->Release();
+          SendScriptedKey(key_sink, keystroke_mgr, alias, key, token);
+          alias->Release();
+          alias_next = false;
+        } else {
+          SendScriptedKey(key_sink, keystroke_mgr, contexts[active], key, token);
+        }
       } else {
         PrintHrStr("UnknownToken:" + Utf8FromWide(token), E_INVALIDARG);
       }

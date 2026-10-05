@@ -8,8 +8,8 @@
        ;; All writes, including process-filter advice, use the log protocol's
        ;; encoding regardless of Windows locale or Emacs coding defaults.
        (coding-system-for-write 'utf-8-unix)
-       (pairing (equal (getenv "INLINE_TEST_PAIR") "1"))
-       (imported nil)
+       (pairing (member (getenv "INLINE_TEST_PAIR") '("1" "2")))
+       (imported-text "")
        (deadline (+ (float-time) 150)))
   (with-temp-buffer
     (insert (format "EMACS_PID=%d\n" (emacs-pid)))
@@ -50,7 +50,7 @@
             (accept-process-output nil 0.02)
             ;; Batch Emacs has no IMM input queue. Import the actual committed
             ;; opener from the TSF fixture, independently of PAIR handling.
-            (when (and pairing (not imported))
+            (when pairing
               (let* ((artifacts (getenv "INLINE_TEST_ARTIFACTS"))
                      (logs (file-expand-wildcards
                             (expand-file-name "harness-*/tsf.stdout.log" artifacts)))
@@ -60,12 +60,17 @@
                                 (let ((coding-system-for-read 'utf-8))
                                   (insert-file-contents file))
                                 (buffer-string))) logs "")))
-                (when (string-match "AFTER WAIT100 BUF=\\[\\([^]\n]+\\)\\] SEL=\\([0-9]+\\),\\2 COMP=-" text)
-                  (let ((opener (match-string 1 text)))
-                    (with-current-buffer "*inline-integrated-probe*"
-                      (insert opener)
-                      (run-hooks 'post-command-hook)))
-                  (setq imported t)))))
+                (let ((offset 0))
+                  (while (string-match "AFTER WAIT100 BUF=\\[\\([^]\n]+\\)\\] SEL=\\([0-9]+\\),\\2 COMP=-" text offset)
+                    (let ((committed (match-string 1 text)))
+                      (setq offset (match-end 0))
+                      (when (and (string-prefix-p imported-text committed)
+                                 (> (length committed) (length imported-text)))
+                        (let ((opener (substring committed (length imported-text))))
+                          (with-current-buffer "*inline-integrated-probe*"
+                            (insert-before-markers opener)
+                            (run-hooks 'post-command-hook)))
+                        (setq imported-text committed))))))))
           (when pairing
             (let ((result (with-current-buffer "*inline-integrated-probe*"
                             (format "PAIR_BUFFER=%s POINT=%d\n" (buffer-string) (point)))))

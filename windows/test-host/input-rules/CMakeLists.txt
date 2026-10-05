@@ -18,7 +18,7 @@ add_executable(input-rules-probe probe.cpp ../../src/engine_protocol.cpp ../../s
 add_executable(input-rules-imm32 imm32_host.cpp)
 target_link_libraries(input-rules-imm32 PRIVATE imm32)
 foreach(t input-rules-host input-rules-probe input-rules-imm32)
-  target_include_directories(${t} PRIVATE . ../../src ../../keymap "${CMAKE_CURRENT_BINARY_DIR}")
+  target_include_directories(${t} PRIVATE . .. ../../src ../../keymap "${CMAKE_CURRENT_BINARY_DIR}")
   target_compile_features(${t} PRIVATE cxx_std_20)
   target_compile_options(${t} PRIVATE /W4 /permissive- /utf-8)
   target_compile_definitions(${t} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
