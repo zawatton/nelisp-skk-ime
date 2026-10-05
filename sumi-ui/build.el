@@ -196,6 +196,11 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
          (rules-logic-obj (expand-file-name "rules-logic.o" sumi-ui-target-dir))
          (rules-window-obj (expand-file-name "rules-window.o" sumi-ui-target-dir))
          (rules-test-obj (expand-file-name "rules-selftest.o" sumi-ui-target-dir))
+         (editor-logic-obj (expand-file-name "editor-logic.o" sumi-ui-target-dir))
+         (editor-window-obj (expand-file-name "editor-window.o" sumi-ui-target-dir))
+         (editor-capture-obj (expand-file-name "editor-capture.o" sumi-ui-target-dir))
+         (editor-native-obj (expand-file-name "editor-native.o" sumi-ui-target-dir))
+         (editor-test-obj (expand-file-name "editor-selftest.o" sumi-ui-target-dir))
          (pipe-client-obj (expand-file-name "pipe-client.o" sumi-ui-target-dir))
          (settings-obj (expand-file-name "settings.o" sumi-ui-target-dir))
          (main-obj (expand-file-name "main.o" sumi-ui-target-dir))
@@ -216,6 +221,11 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
     (sumi-ui-compile-nelisp "rules-logic" rules-logic-obj)
     (sumi-ui-compile-nelisp "rules-window" rules-window-obj)
     (sumi-ui-compile-c "rules-selftest" rules-test-obj all-cflags)
+    (sumi-ui-compile-nelisp "editor-logic" editor-logic-obj)
+    (sumi-ui-compile-nelisp "editor-window" editor-window-obj)
+    (sumi-ui-compile-nelisp "editor-capture" editor-capture-obj)
+    (sumi-ui-compile-c "editor-native" editor-native-obj all-cflags)
+    (sumi-ui-compile-c "editor-selftest" editor-test-obj all-cflags)
     ;; pipe-client.c/settings.c only need glib.h (for `gboolean') plus
     ;; plain <windows.h> -- gtk4's own cflags already cover glib's
     ;; include path, so reuse ALL-CFLAGS rather than pkg-config'ing glib
@@ -240,7 +250,7 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
     (sumi-ui-compile-c "main" main-obj all-cflags)
     (let ((linked (sumi-ui-link
                    (list main-obj mode-logic-obj registry-obj widgets-obj
-                         colors-obj window-obj logic-obj text-logic-obj rules-logic-obj rules-window-obj rules-test-obj pipe-client-obj settings-obj text-obj)
+                         colors-obj window-obj logic-obj text-logic-obj rules-logic-obj rules-window-obj rules-test-obj editor-logic-obj editor-window-obj editor-capture-obj editor-native-obj editor-test-obj pipe-client-obj settings-obj text-obj)
                    exe
                    ;; advapi32 for settings.c's RegGetValueW/RegSetKeyValueW/
                    ;; RegDeleteTreeW (Phase 3) -- not pulled in transitively

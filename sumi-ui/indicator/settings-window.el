@@ -366,7 +366,7 @@
      (progn
        (if (= _done 0) (setq sw user_data) 0)
        (if (= _done 0) (setq action (extern-call g_object_get_data button (data-addr sn_str_39))) 0)
-       (if (= _done 0) (if (= action 3) (extern-call rules_show (ptr-read-u64 sw 8)) (if (= (extern-call text_settings_open (/= (logand action 1) 0) (/= (logand action 2) 0)) 0) (extern-call gtk_label_set_text (ptr-read-u64 sw 328) (data-addr sn_str_40)) 0)) 0))
+       (if (= _done 0) (if (= action 2) (extern-call editor_show (ptr-read-u64 sw 8)) (if (= action 3) (extern-call rules_show (ptr-read-u64 sw 8)) (if (= (extern-call text_settings_open (/= (logand action 1) 0) (/= (logand action 2) 0)) 0) (extern-call gtk_label_set_text (ptr-read-u64 sw 328) (data-addr sn_str_40)) 0))) 0))
 
      _result))
  (defun on_text_status (button user_data)
@@ -423,6 +423,7 @@
        (if (= _done 0) (extern-call gtk_label_set_wrap note 1) 0)
        (if (= _done 0) (extern-call gtk_grid_attach grid note 0 (let ((_old row)) (setq row (+ row 1)) _old) 2 1) 0)
        (if (= _done 0) (if rules (extern-call gtk_grid_attach grid (extern-call rules_build (ptr-read-u64 sw 8)) 0 8 2 1) 0) 0)
+       (if (= _done 0) (if (= rules 0) (extern-call gtk_grid_attach grid (extern-call editor_build (ptr-read-u64 sw 8)) 0 8 2 1) 0) 0)
        (if (= _done 0) (if (= rules 0) (progn
 					 (if (= _done 0) (ptr-write-u64 sw 320 (extern-call gtk_label_new (data-addr sn_str_56))) 0)
 					 (if (= _done 0) (extern-call gtk_label_set_xalign (ptr-read-u64 sw 320) (:f32 0.0)) 0)

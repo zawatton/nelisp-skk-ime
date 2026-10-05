@@ -17,7 +17,7 @@ evidence: build/validation/sumi-settings/claude-hotswap.log sha256=5dea166dc9002
 
 * S2 Settings window logic in NeLisp
 ** S2.1 The existing tabs (動作/表示/辞書/調整) and the 入力規則/キー置き換え tabs are driven by NeLisp AOT modules; C keeps only GTK/Win32 primitives; registry and file selftests unchanged in result
-evidence: sumi-ui/indicator/settings-window.el sha256=033b823ee2df92579d2df7649adc66655e1e07eaa575d37cb089d0544f9d6a03
+evidence: sumi-ui/indicator/settings-window.el sha256=501623db1f360dc59a75f7478e8ae835d58cf9ee258b950bac5711d09cc2d2ac
 evidence: sumi-ui/indicator/settings-logic.el sha256=f5289abde72c0ce0f5a96b244e80b044b0e0967ad8a126cb4afe13505e826f6f
 evidence: sumi-ui/indicator/text-logic.el sha256=5c688f04f97d748a8b2a79d28f7f79c0ee42692f1df4f513e3c147295b8ac9bb
 evidence: build/validation/sumi-settings/final-registry.log sha256=efacb15ed05dfb4c452e3f1e0e99d1628b7fa8a32979d1af0860417f6429bc58
@@ -39,7 +39,9 @@ evidence: build/validation/sumi-settings/sn3-e2e-gate.log sha256=038b4a40e7a9f5a
 
 * S4 Key remapping editor and key inspector in Sumi
 ** S4.1 Rule list add/edit/delete, enable, layout, exclusions; key inspector shows name, scan code, virtual key and current mapping; direct remap from the inspector; parity with the old editor self-test checks
-pending
+evidence: build/validation/sumi-settings/sn4-verify-editor.log sha256=95df3aec00ba5eb0696383a214872989a3c01c9f6aecc74f4e4542d891263d55
+evidence: build/validation/sumi-settings/sn4-verify-resident-editor.log sha256=0aa3cb5b41754ce1a9b0487f60ccbf726276921d296683a33c699d6aafcb321c
+evidence: build/validation/sumi-settings/sn4-keymap-ctest.log sha256=fba63f755a099b642442fb3086b8943309ca60294f3fd1a34f059aa4f41e4572
 ** S4.2 End to end: the Sumi editor's changes are applied by the resident remapper in a private setup
 pending
 

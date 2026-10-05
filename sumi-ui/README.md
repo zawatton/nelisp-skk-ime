@@ -134,3 +134,40 @@ engine parser in stock Emacs. The end-to-end fixture runs the real remapper
 with `--no-hook`, invokes Sumi's GTK edit/save callbacks, and verifies the
 next TSF symbol after the watcher reloads the real engine. It sends no
 explicit reload request and leaves its private fixtures under build for review.
+
+The キー置き換え tab now embeds the remapping editor and inspector.
+`sumi-skk-ui.exe --editor` requests `NativeIME.Sumi.ShowEditor.v1` on the
+registry-scoped resident endpoint, with a standalone fallback. The old
+`nelisp-ime-keymap.exe --editor` remains available.
+
+`editor-logic.el` owns parsing, validation, comment-preserving edits and
+exclusions; `editor-window.el` owns controls, save/reload and conflict policy;
+`editor-capture.el` owns chord capture and mapping lookup. Saves reuse the
+atomic text-file primitive and the remapper's existing live watcher.
+
+While capture has focus, Sumi sets the remapper's existing
+`NelispImeKeymapCapture` window property and requests its held-output release
+handshake (`WM_APP+4`). Only after acknowledgment does Sumi install a temporary
+physical-key hook. This avoids observing remapped output, releases previously
+owned outputs before capture, and leaves the normal remapping algorithm
+unchanged. The property and hook are removed after completion, Esc, focus
+loss, ten seconds or window destruction. Injected events and keys held before
+capture pass through. Windows Scancode Map still precedes capture; secure
+attention sequences such as Ctrl+Alt+Del cannot be captured. Character labels
+use the current Windows keyboard layout, without changing its dead-key state.
+
+Private gates (with the MSYS2 DLL directory already on `PATH`):
+
+```powershell
+./sumi-ui/verify/verify-editor.ps1
+./sumi-ui/verify/verify-resident-editor.ps1
+ctest --test-dir build/keymap -C Release --output-on-failure
+./windows/test-host/sumi-editor/test-sumi-editor.ps1 -KeymapExe $KeymapExe `
+  -IndicatorExe sumi-ui/target/sumi-skk-ui.exe
+```
+
+The editor selftest drives real GTK actions and the AOT capture state machine
+without global input. The end-to-end gate runs an isolated `--no-hook`
+remapper and queries its live decision snapshot after a Sumi edit. Its
+capture handshake portion requires an interactive desktop with an owned
+foreground window; a headless desktop must fail that assertion.

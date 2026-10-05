@@ -42,6 +42,7 @@
 #include "settings.h"
 #include "text-settings.h"
 #include "rules-settings.h"
+#include "editor-settings.h"
 
 /* ------------------------------------------------------------------ */
 /* Decision logic, compiled from indicator/mode-logic.el by build.el's
@@ -947,6 +948,16 @@ void skkui_window_selftest(App *app, SettingsWindow *sw, GtkWidget *notebook) {
         !gtk_widget_get_visible(sw->window);
     printf("%s hidden-settings-rules-page-button\n", rules_ok ? "PASS" : "FAIL");
     app->settings_smoke_failed |= !rules_ok;
+    GtkWidget *editor_button = gtk_button_new(); g_object_ref_sink(editor_button);
+    g_object_set_data(G_OBJECT(editor_button), "text-action", GINT_TO_POINTER(2));
+    on_text_open(GTK_BUTTON(editor_button), sw); g_object_unref(editor_button);
+    KeymapEditor *editor = g_object_get_data(G_OBJECT(sw->window), "keymap-editor");
+    gboolean editor_ok = editor && gtk_widget_get_visible(editor->prefix.page) &&
+        gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook)) == 5 &&
+        !gtk_widget_get_visible(sw->window);
+    printf("%s hidden-settings-keymap-page-button\n", editor_ok ? "PASS" : "FAIL");
+    app->settings_smoke_failed |= !editor_ok;
+
 
 
     gtk_drop_down_set_selected(GTK_DROP_DOWN(sw->engine_dropdown),
@@ -1038,6 +1049,9 @@ static void on_right_click_released(GtkGestureClick *gesture, int n_press, doubl
 int rules_selftest(void);
 int rules_apply_selftest(void);
 int rules_parse_selftest(void);
+static gboolean initial_editor;
+static gboolean queued_editor;
+static UINT editor_request;
 static gboolean initial_rules;
 static gboolean queued_rules;
 static UINT rules_request;
@@ -1049,15 +1063,19 @@ static gboolean resident_open_idle(gpointer data) {
   open_settings_window(data);
   if (queued_rules) rules_show(((App *)data)->settings_window);
   queued_rules = FALSE;
+  if (queued_editor) editor_show(((App *)data)->settings_window);
+  queued_editor = FALSE;
   return G_SOURCE_REMOVE;
 }
 static LRESULT CALLBACK settings_endpoint_proc(HWND hwnd, UINT message,
                                                WPARAM wp, LPARAM lp) {
   if ((message == settings_request && settings_request != 0) ||
-      (message == rules_request && rules_request != 0)) {
+      (message == rules_request && rules_request != 0) ||
+      (message == editor_request && editor_request != 0)) {
     App *app = (App *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
     if (!app) return 0;
     if (message == rules_request) queued_rules = TRUE;
+    if (message == editor_request) queued_editor = TRUE;
     if (!resident_open_queued) {
       resident_open_queued = TRUE;
       g_idle_add(resident_open_idle, app);
@@ -1077,7 +1095,8 @@ static void resident_settings_start(App *app) {
   settings_registry_path(identity, 512);
   settings_request = RegisterWindowMessageW(L"NativeIME.Sumi.ShowSettings.v1");
   rules_request = RegisterWindowMessageW(L"NativeIME.Sumi.ShowRules.v1");
-  if (!settings_request || !rules_request) return;
+  editor_request = RegisterWindowMessageW(L"NativeIME.Sumi.ShowEditor.v1");
+  if (!settings_request || !rules_request || !editor_request) return;
   settings_endpoint = CreateWindowExW(0, cls, identity, 0, 0, 0, 0, 0,
                                       HWND_MESSAGE, NULL, wc.hInstance, NULL);
   if (settings_endpoint)
@@ -1245,6 +1264,7 @@ static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
      * close_settings_window()). */
     open_settings_window(app);
     if (initial_rules) rules_show(app->settings_window);
+    if (initial_editor) editor_show(app->settings_window);
     return;
   }
 
@@ -1260,6 +1280,8 @@ int main(int argc, char **argv) {
    * settings_selftest() docstring for the DDSKK_SETTINGS_KEY safety
    * guard this requires the caller to set. */
   for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--editor-selftest") == 0) return editor_selftest();
+    if (strcmp(argv[i], "--editor-apply-selftest") == 0) return editor_apply_selftest();
     if (strcmp(argv[i], "--rules-selftest") == 0) return rules_selftest();
     if (strcmp(argv[i], "--rules-apply-selftest") == 0) return rules_apply_selftest();
     if (strcmp(argv[i], "--rules-parse-selftest") == 0) return rules_parse_selftest();
@@ -1270,16 +1292,17 @@ int main(int argc, char **argv) {
   gboolean settings_only = FALSE;
   gboolean settings_smoke = FALSE;
   for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--editor") == 0) initial_editor = settings_only = TRUE;
     if (strcmp(argv[i], "--rules") == 0) initial_rules = settings_only = TRUE;
     if (strcmp(argv[i], "--settings") == 0) settings_only = TRUE;
     if (strcmp(argv[i], "--settings-window-selftest") == 0) settings_only = settings_smoke = TRUE;
   }
 
-  if (initial_rules) {
+  if (initial_rules || initial_editor) {
     wchar_t identity[512]; settings_registry_path(identity,512);
     HWND endpoint = FindWindowExW(HWND_MESSAGE,NULL,L"NeLispSumiSettingsV1",identity);
     DWORD_PTR ack=0;
-    UINT request=RegisterWindowMessageW(L"NativeIME.Sumi.ShowRules.v1");
+    UINT request=RegisterWindowMessageW(initial_editor ? L"NativeIME.Sumi.ShowEditor.v1" : L"NativeIME.Sumi.ShowRules.v1");
     if (endpoint && request && SendMessageTimeoutW(endpoint,request,0,0,
         SMTO_ABORTIFHUNG,500,&ack) && ack==1) return 0;
   }

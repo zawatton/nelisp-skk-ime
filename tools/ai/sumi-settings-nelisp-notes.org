@@ -266,3 +266,12 @@ The full file:line map, gate commands, verbatim tails, corrected bring-up failur
 and scope limitations are recorded below.
 evidence: build/validation/sumi-settings/sn3-report.txt sha256=1e665c4a97aa493d436eebf19b3d5d5cae33939453bc645d042ef37d4cbfcd0a
 evidence: build/validation/sumi-settings/sn3-cleanup.log sha256=3a511588860ff0c26cabf3455358a6839c4f77e651e962e61a901cb583c81acb
+
+* Stage C / SN4 — 2026-10-06
+Implementation is present and unstaged. The keymap page and inspector policy are NeLisp AOT; C supplies GTK/Win32 primitives and immutable key names. --editor uses the private resident endpoint with standalone fallback. Old Win32 entry points remain available.
+
+The physical capture design reuses the remapper capture property and held-output-release acknowledgment before installing the temporary Sumi hook. It restores remapping on completion, Esc, focus loss, timeout and destruction. The only remapper source addition is a read-only decision query using local scratch state for the private watcher probe.
+
+Editor/inspector selftest:41/41; all existing Sumi gates pass; keymap CTest:8/8. Resident opening was measured at standalone924ms versus resident201ms in the initial run; current measurements are in the resident log. The private probe passed Sumi save and actual watcher A→B to A→C with comments retained. Its foreground assertion then failed because GetForegroundWindow() was0; handshake and real hook delivery remain unverified. S4.2 stays pending. No live state changed, no commits, and all owned children exited.
+
+Full source locations, commands, verbatim tails, counts and limitations: [[../../build/validation/sumi-settings/sn4-report.txt]]. Gate logs: sn4-verify-*.log, sn4-keymap-ctest.log, sn4-e2e.log under the same evidence directory. The acceptance failure was kept rather than skipped.
