@@ -91,15 +91,23 @@ bool InlinePreedit::Publish(uint64_t epoch, const std::wstring& text, size_t cur
   if (text.size() > 65536 || updates_.size() >= 64) {
     epoch_ = 0; return false; // bounded memory, caller falls back losslessly
   }
-  if (!updates_.empty() && !updates_.back().clear) updates_.pop_back();
-  updates_.push_back({false, text, cursor}); return true;
+  if (!updates_.empty() && updates_.back().kind == Update::Preedit) updates_.pop_back();
+  updates_.push_back({Update::Preedit, text, cursor, {}}); return true;
 }
 void InlinePreedit::Clear(uint64_t epoch) {
   std::lock_guard lock(mutex_);
   if (!epoch || epoch != epoch_) return;
-  if (!updates_.empty() && !updates_.back().clear) updates_.pop_back();
-  if (updates_.size() < 64) updates_.push_back({true, {}, 0});
+  if (!updates_.empty() && updates_.back().kind == Update::Preedit) updates_.pop_back();
+  if (updates_.size() < 64) updates_.push_back({Update::Clear, {}, 0, {}});
   else epoch_ = 0;
+}
+bool InlinePreedit::Pair(uint64_t epoch, const std::wstring& opener,
+                         const std::wstring& closer) {
+  std::lock_guard lock(mutex_);
+  if (!epoch || epoch != epoch_ || !pair_capable_ || opener.empty() || closer.empty() ||
+      opener.size() > 65536 || closer.size() > 65536 || updates_.size() >= 64) return false;
+  updates_.push_back({Update::Pair, opener, 0, closer});
+  return true;
 }
 bool InlinePreedit::Caret(uint64_t epoch, RECT* rect) {
   std::lock_guard lock(mutex_);
@@ -147,7 +155,10 @@ void InlinePreedit::Run() {
           if (!updates_.empty()) { update = std::move(updates_.front()); updates_.pop_front(); have = true; }
         }
         if (have) {
-          outbound = update.clear ? "CLEAR " + std::to_string(++sequence) + "\n"
+          outbound = update.kind == Update::Pair
+              ? "PAIR " + std::to_string(++sequence) + " " + Encode(update.text) +
+                " " + Encode(update.closer) + "\n"
+              : update.kind == Update::Clear ? "CLEAR " + std::to_string(++sequence) + "\n"
               : "PREEDIT " + std::to_string(++sequence) + " " +
                 std::to_string(update.cursor) + " " + Encode(update.text) + "\n";
           send_deadline = GetTickCount64() + 1000;
@@ -167,9 +178,9 @@ void InlinePreedit::Run() {
       while ((end = incoming.find('\n')) != std::string::npos) {
         std::string line = incoming.substr(0, end); incoming.erase(0, end + 1);
         if (!authenticated) {
-          if (line != "OK 1") { failed = true; break; }
+          if (line != "OK 1" && line != "OK 1 pair") { failed = true; break; }
           { std::lock_guard lock(mutex_);
-            updates_.clear(); caret_valid_ = false;
+            updates_.clear(); caret_valid_ = false; pair_capable_ = line == "OK 1 pair";
             connection_epoch = ++generation; epoch_ = connection_epoch;
           }
           authenticated = true;
@@ -186,7 +197,7 @@ void InlinePreedit::Run() {
         }
       }
     }
-    { std::lock_guard lock(mutex_); epoch_ = 0; updates_.clear(); caret_valid_ = false; }
+    { std::lock_guard lock(mutex_); epoch_ = 0; updates_.clear(); caret_valid_ = false; pair_capable_ = false; }
     closesocket(socket);
     if (authenticated && !stop_) PostMessageW(notify_, message_, 0, 0);
   }

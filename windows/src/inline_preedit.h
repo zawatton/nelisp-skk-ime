@@ -17,10 +17,17 @@ class InlinePreedit final {
   uint64_t Epoch() const { return epoch_.load(); }
   bool Publish(uint64_t epoch, const std::wstring& text, size_t cursor);
   void Clear(uint64_t epoch);
+  // Queued only for a live listener advertising Protocol v1.1 pairing.
+  bool Pair(uint64_t epoch, const std::wstring& opener, const std::wstring& closer);
   bool Caret(uint64_t epoch, RECT* rect);
  private:
   void Run();
-  struct Update { bool clear; std::wstring text; size_t cursor; };
+  struct Update {
+    enum Kind { Preedit, Clear, Pair } kind;
+    std::wstring text;
+    size_t cursor;
+    std::wstring closer;
+  };
   std::atomic<bool> stop_{false};
   std::atomic<uint64_t> epoch_{0};
   std::thread worker_;
@@ -28,6 +35,7 @@ class InlinePreedit final {
   std::deque<Update> updates_;
   RECT caret_{};
   bool caret_valid_ = false;
+  bool pair_capable_ = false;
   HWND notify_ = nullptr;
   UINT message_ = 0;
 };

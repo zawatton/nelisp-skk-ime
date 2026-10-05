@@ -55,7 +55,7 @@
                                       nelisp-ime-emacs--inline-token
                                       (nelisp-ime-emacs--inline-pid)))
   (nelisp-ime-emacs-inline-test--wait
-   (lambda () (string-prefix-p "OK 1\n" (or (process-get client 'received) "")))))
+   (lambda () (string-prefix-p "OK 1 pair\n" (or (process-get client 'received) "")))))
 
 (defun nelisp-ime-emacs-inline-test--sequence (sequence)
   (nelisp-ime-emacs-inline-test--wait
@@ -410,7 +410,7 @@
                 ((symbol-function 'line-pixel-height) (lambda () height)))
         (nelisp-ime-emacs-inline-test--hello client)
         (nelisp-ime-emacs-inline-test--wait
-         (lambda () (equal (process-get client 'received) "OK 1\nCARET 100 200 19\n")))
+         (lambda () (equal (process-get client 'received) "OK 1 pair\nCARET 100 200 19\n")))
         (run-hooks 'post-command-hook)
         (run-hook-with-args 'window-size-change-functions (selected-frame))
         (funcall after-focus-change-function)
@@ -422,7 +422,7 @@
         (funcall after-focus-change-function)
         (nelisp-ime-emacs-inline-test--wait
          (lambda () (equal (process-get client 'received)
-                            "OK 1\nCARET 100 200 19\nCARET 110 210 19\nCARET 110 210 21\nCARET -20 30 21\n")))))))
+                            "OK 1 pair\nCARET 100 200 19\nCARET 110 210 19\nCARET 110 210 21\nCARET -20 30 21\n")))))))
 
 (ert-deftest nelisp-ime-emacs-inline-s22-nil-position-and-replacement ()
   (nelisp-ime-emacs-inline-test--with-server
@@ -431,11 +431,11 @@
       (cl-letf (((symbol-function 'window-absolute-pixel-position) (lambda (&rest _) position))
                 ((symbol-function 'line-pixel-height) (lambda () 17)))
         (nelisp-ime-emacs-inline-test--hello client)
-        (should (equal (process-get client 'received) "OK 1\n"))
+        (should (equal (process-get client 'received) "OK 1 pair\n"))
         (setq position '(1 . 2))
         (run-hooks 'post-command-hook)
         (nelisp-ime-emacs-inline-test--wait
-         (lambda () (equal (process-get client 'received) "OK 1\nCARET 1 2 17\n")))
+         (lambda () (equal (process-get client 'received) "OK 1 pair\nCARET 1 2 17\n")))
         (setq position nil)
         (run-hooks 'post-command-hook)
         (setq position '(1 . 2))
@@ -444,7 +444,7 @@
           (push replacement test-clients)
           (nelisp-ime-emacs-inline-test--hello replacement)
           (nelisp-ime-emacs-inline-test--wait
-           (lambda () (equal (process-get replacement 'received) "OK 1\nCARET 1 2 17\n"))))))))
+           (lambda () (equal (process-get replacement 'received) "OK 1 pair\nCARET 1 2 17\n"))))))))
 
 (ert-deftest nelisp-ime-emacs-inline-s22-minibuffer-and-selected-window ()
   (nelisp-ime-emacs-inline-test--with-server
@@ -459,7 +459,7 @@
         (select-window (minibuffer-window))
         (run-hooks 'post-command-hook)
         (nelisp-ime-emacs-inline-test--wait
-         (lambda () (equal (process-get client 'received) "OK 1\nCARET 10 20 18\nCARET 40 50 18\n")))
+         (lambda () (equal (process-get client 'received) "OK 1 pair\nCARET 10 20 18\nCARET 40 50 18\n")))
         (should (eq (cadar calls) (minibuffer-window)))
         (should (eq (nth 2 (car calls)) (selected-frame)))))))
 
@@ -495,7 +495,7 @@
                      20)))
           (nelisp-ime-emacs-inline-test--hello client)
           (nelisp-ime-emacs-inline-test--wait
-           (lambda () (equal (process-get client 'received) "OK 1\nCARET 12 34 20\n"))))))))
+           (lambda () (equal (process-get client 'received) "OK 1 pair\nCARET 12 34 20\n"))))))))
 
 (ert-deftest nelisp-ime-emacs-inline-s22-caret-after-display-change ()
   (nelisp-ime-emacs-inline-test--with-server
@@ -509,6 +509,222 @@
         (nelisp-ime-emacs-inline-test--sequence 2)
         (nelisp-ime-emacs-inline-test--wait
          (lambda () (equal (process-get client 'received)
-                            "OK 1\nCARET 10 20 18\nCARET 40 50 18\nCARET 10 20 18\n")))))))
+                            "OK 1 pair\nCARET 10 20 18\nCARET 40 50 18\nCARET 10 20 18\n")))))))
+
+(defmacro nelisp-ime-emacs-inline-test--pair-buffer (&rest body)
+  (declare (indent 0))
+  `(nelisp-ime-emacs-inline-test--with-server
+     (with-temp-buffer
+       (switch-to-buffer (current-buffer))
+       (buffer-enable-undo)
+       (let ((client (nelisp-ime-emacs-inline-test--client)))
+         (push client test-clients)
+         (nelisp-ime-emacs-inline-test--hello client)
+         ,@body))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-before-opener ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (process-send-string client "PAIR 1 ( )\n")
+    (nelisp-ime-emacs-inline-test--sequence 1)
+    (should (equal (buffer-string) ""))
+    (insert "(")
+    (run-hooks 'post-command-hook)
+    (should (equal (buffer-string) "()"))
+    (should (= (point) 2))
+    (should-not nelisp-ime-emacs--inline-pair)))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-after-opener-and-undo ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (insert "prefix")
+    (undo-boundary)
+    (insert "(")
+    (undo-boundary)
+    (process-send-string client "PAIR 1 ( )\n")
+    (nelisp-ime-emacs-inline-test--sequence 1)
+    (should (equal (buffer-string) "prefix()"))
+    (should (= (point) 8))
+    (undo-boundary)
+    (let ((inhibit-message t)) (undo 1))
+    (should (equal (buffer-string) "prefix"))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-before-opener-undo-and-hooks ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (let (changes)
+      (add-hook 'after-change-functions
+                (lambda (beg end old) (push (list beg end old) changes)) nil t)
+      (process-send-string client "PAIR 1 ( )\n")
+      (nelisp-ime-emacs-inline-test--sequence 1)
+      (insert "(")
+      (run-hooks 'post-command-hook)
+      (should (equal (reverse changes) '((1 2 0) (2 3 0))))
+      (undo-boundary)
+      (let ((inhibit-message t)) (undo 1))
+      (should (equal (buffer-string) "")))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-expired-and-stale-sequence ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (process-send-string client "PAIR 2 ( )\nPAIR 1 { }\n")
+    (nelisp-ime-emacs-inline-test--sequence 2)
+    (setf (nth 2 nelisp-ime-emacs--inline-pair) (- (float-time) 2))
+    (insert "(")
+    (run-hooks 'post-command-hook)
+    (should (equal (buffer-string) "("))
+    (process-send-string client "PAIR 2 ( )\n")
+    (accept-process-output nil 0.05)
+    (should (equal (buffer-string) "("))
+    (should-not nelisp-ime-emacs--inline-pair)))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-mismatched-opener ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (process-send-string client "PAIR 1 ( )\n")
+    (nelisp-ime-emacs-inline-test--sequence 1)
+    (insert "[")
+    (run-hooks 'post-command-hook)
+    (should-not nelisp-ime-emacs--inline-pair)
+    (insert "(")
+    (run-hooks 'post-command-hook)
+    (should (equal (buffer-string) "[("))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-read-only-and-hook-veto ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (insert "(")
+    (let ((buffer-read-only t))
+      (process-send-string client "PAIR 1 ( )\n")
+      (nelisp-ime-emacs-inline-test--sequence 1)
+      (should (equal (buffer-string) "(")))
+    (add-hook 'before-change-functions (lambda (&rest _) (error "Veto")) nil t)
+    (process-send-string client "PAIR 2 ( )\n")
+    (nelisp-ime-emacs-inline-test--sequence 2)
+    (should (equal (buffer-string) "("))
+    (should (process-live-p nelisp-ime-emacs--inline-client))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-minibuffer ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (select-window (minibuffer-window))
+    (with-current-buffer (window-buffer)
+      (let ((inhibit-read-only t)) (erase-buffer) (insert "("))
+      (process-send-string client "PAIR 1 ( )\n")
+      (nelisp-ime-emacs-inline-test--sequence 1)
+      (should (equal (buffer-string) "("))
+      ;; Model an active editable minibuffer, with normal modification hooks.
+      (cl-letf (((symbol-function 'active-minibuffer-window) #'selected-window))
+        (process-send-string client "PAIR 2 ( )\n")
+        (nelisp-ime-emacs-inline-test--sequence 2)
+        (should (equal (buffer-string) "()"))
+        (should (= (point) 2)))
+      (let ((inhibit-read-only t)) (erase-buffer)))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-custom-encoded-and-buffer-switch ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (insert "begin %")
+    (process-send-string client "PAIR 1 begin%20%25 end%20%25\n")
+    (nelisp-ime-emacs-inline-test--sequence 1)
+    (should (equal (buffer-string) "begin %end %"))
+    (should (= (point) 8))
+    (erase-buffer)
+    (process-send-string client "PAIR 2 ( )\n")
+    (nelisp-ime-emacs-inline-test--sequence 2)
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (insert "(")
+      (run-hooks 'post-command-hook)
+      (should (equal (buffer-string) "(")))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-disconnect-and-preexisting-opener ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (insert "(")
+    (setf (nth 2 nelisp-ime-emacs--inline-insertion) (- (float-time) 2))
+    (process-send-string client "PAIR 1 ( )\n")
+    (nelisp-ime-emacs-inline-test--sequence 1)
+    (should (equal (buffer-string) "("))
+    (process-send-string client "PAIR 2 ( )\n")
+    (nelisp-ime-emacs-inline-test--sequence 2)
+    (delete-process client)
+    (nelisp-ime-emacs-inline-test--wait (lambda () (not nelisp-ime-emacs--inline-client)))
+    (should-not nelisp-ime-emacs--inline-pair)))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-before-opener-with-existing-text-and-replacement ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (insert "[")
+    (process-send-string client "PAIR 1 ( )\n")
+    (nelisp-ime-emacs-inline-test--sequence 1)
+    (should nelisp-ime-emacs--inline-pair)
+    (insert "(")
+    (run-hooks 'post-command-hook)
+    (should (equal (buffer-string) "[()"))
+    (erase-buffer)
+    (process-send-string client "PAIR 2 ( )\n")
+    (nelisp-ime-emacs-inline-test--sequence 2)
+    (insert "x")
+    (delete-char -1)
+    (insert "(")
+    (run-hooks 'post-command-hook)
+    (should (equal (buffer-string) "("))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-property-read-only-preserves-undo ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (insert "(")
+    (put-text-property 1 2 'read-only t)
+    (undo-boundary)
+    (let ((undo buffer-undo-list))
+      ;; Simulate a fresh IMM insertion ending at a read-only field.
+      (setq nelisp-ime-emacs--inline-insertion
+            (list 1 2 (float-time) (buffer-chars-modified-tick)))
+      (process-send-string client "PAIR 1 ( )\n")
+      (nelisp-ime-emacs-inline-test--sequence 1)
+      (should (equal (buffer-string) "("))
+      (should (eq undo buffer-undo-list)))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-with-undo-disabled ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (buffer-disable-undo)
+    (insert "(")
+    (process-send-string client "PAIR 1 ( )\n")
+    (nelisp-ime-emacs-inline-test--sequence 1)
+    (should (equal (buffer-string) "()"))
+    (should (= (point) 2))
+    (should (eq buffer-undo-list t))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-custom-without-table-both-orders ()
+  (dolist (arrival '(before after))
+    (nelisp-ime-emacs-inline-test--pair-buffer
+      (when (eq arrival 'after) (insert "<<"))
+      (process-send-string client "PAIR 1 << >>\n")
+      (nelisp-ime-emacs-inline-test--sequence 1)
+      (when (eq arrival 'before)
+        (insert "<<")
+        (run-hooks 'post-command-hook))
+      (should (equal (buffer-string) "<<>>"))
+      (should (= (point) 3))
+      (undo-boundary)
+      (let ((inhibit-message t)) (undo 1))
+      (should (equal (buffer-string) "")))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-malformed-ignored ()
+  (nelisp-ime-emacs-inline-test--pair-buffer
+    (let ((warnings 0))
+      (cl-letf (((symbol-function 'display-warning)
+                 (lambda (&rest _) (cl-incf warnings))))
+        ;; In particular the unreleased closer-only form is no longer valid.
+        (dolist (line '("PAIR" "PAIR 1" "PAIR 1 )" "PAIR 1 ("
+                        "PAIR 1  )" "PAIR 1 ( " "PAIR -1 ( )"
+                        "PAIR x ( )" "PAIR 1 ( ) extra" "PAIR\t1 ( )"
+                        "PAIR 1 %2F )" "PAIR 1 ( %2F" "PAIR 1 % )"
+                        "PAIR 1 ( %" "PAIR 1 %0a )" "PAIR 1 ( %0a"))
+          ;; Direct calls ensure malformed requests do not signal an error.
+          (nelisp-ime-emacs--inline-line nelisp-ime-emacs--inline-client line)
+          (should (process-live-p nelisp-ime-emacs--inline-client))
+          (should (= (process-get nelisp-ime-emacs--inline-client 'sequence) -1))
+          (should-not nelisp-ime-emacs--inline-pair)
+          (should (equal (buffer-string) "")))
+        ;; Network delivery must also preserve an existing valid request.
+        (process-send-string client "PAIR 1 << >>\nPAIR 99 %2F >>\nPAIR 99 <<\nCLEAR 2\n")
+        (nelisp-ime-emacs-inline-test--sequence 2)
+        (should nelisp-ime-emacs--inline-pair)
+        (insert "<<")
+        (run-hooks 'post-command-hook)
+        (should (equal (buffer-string) "<<>>"))
+        (should (= (point) 3))
+        (should (= warnings 0))))))
 
 ;;; nelisp-ime-emacs-inline-test.el ends here
