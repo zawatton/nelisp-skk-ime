@@ -1,0 +1,16 @@
+;;; bench-server-reader.el --- Private relay parser comparison -*- lexical-binding: t; -*-
+(load "engine/ddskk-engine.el" nil t)
+(let* ((reply "1/仮名/哉/金/加奈/佳奈/香奈/漢字;annotation with spaces, quotes \" and backslash \\/")
+       (expected (ddskk-engine--parse-server-reply reply))
+       (encoded (concat "LIST " (prin1-to-string expected)))
+       (ddskk-engine--utf8-wire t))
+  (unless (equal expected (ddskk-engine--parse-server-reply encoded))
+    (error "Relay reader candidate parity"))
+  (dolist (kind '(server-slash server-list))
+    (nelisp--write-stdout-bytes (concat "READY " (symbol-name kind) "\n"))
+    (read-stdin-bytes 8192)
+    (dotimes (i 100)
+      (ddskk-engine--parse-server-reply
+       (if (eq kind 'server-slash) reply encoded)))
+    (nelisp--write-stdout-bytes (concat "DONE " (symbol-name kind) "\n")))
+  (read-stdin-bytes 8192))

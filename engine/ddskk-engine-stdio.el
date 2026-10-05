@@ -23,8 +23,18 @@
 ;;   malformed request        -> ERR <ASCII-token>
 ;; Strings are UTF-8 bytes represented as lowercase hex, keeping framing
 ;; independent from whitespace, newline, and future candidate annotations.
+;; A host may negotiate WIRE UTF8 1. STATE2 then has a one-line numeric
+;; header followed by scalar-count-prefixed UTF-8 fields and one final LF.
+;; The host restores the existing DLL-facing STATE encoding. Negotiated
+;; batch requests carry UTF-8; host dictionary replies carry LIST data for
+;; the native reader. Legacy peers retain the line protocol above.
 
 (load "engine/ddskk-engine.el")
+
+;; Explicitly opt in only for private profiling runs. PHASE lines are
+;; consumed by the host and never become protocol responses.
+(when (equal (getenv "DDSKK_CONVERSION_PROFILE") "1")
+  (load "engine/conversion-profile.el"))
 
 ;; The host gives each blue-green child its own selection. DDSKK used to
 ;; require an ENGINE SET from the first client even for passthrough startup.

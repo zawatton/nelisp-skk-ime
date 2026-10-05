@@ -2,20 +2,100 @@
 
 * S1 Measurement and profile
 ** S1.1 A repeatable conversion benchmark on a private host (copy of SKK-JISYO.L, temporary user jisyo, live runtime build): warm conversions without and with okuri, plus the first conversion of each kind after a cold start, with and without a private skkserv relay; reports wall p50/p90/max and engine CPU per request
-pending
+#+NOTE: L1 (2026-10-05): windows/test-host/bench-conversion.ps1 + conversion-corpus.json. Baseline warm CPU p50 plain 250 ms (N=80), okuri 797 ms (N=40); first okuri 1531 ms CPU / 1629 ms wall. Private skkserv relay runs on port 31181 verified a real L hit.
+evidence: build/w/baseline.json sha256=d878e11a79a3701180a8b56fd69052336638c3ed6380de33bcec8c973296317e
+#+NOTE: check: evidence: build/w/baseline-relay.json sha256=5b4ca356dfbda029418b3e7bfd2b3655d197fd7284d3aacc91084e79c43e2439
+#+NOTE: L2 resumed after 8fec8cf: final no-server run uses RequireQuiet and Learning, N=80/40 warm. CPU p50 plain 109.375 ms, okuri 281.250 ms; wall p50/p90/max plain 139.417/157.787/388.256, okuri 301.134/557.564/789.336 ms. Private server-only port 31183 CPU p50 296.875/250.000 ms (busy load); all 122 responses and six learning cases match. Every measurement stores machine load.
+#+NOTE: check: evidence: build/w/round2-selected.json sha256=c3aab8952ed552fb5d7778cda71759fa507376f4b49f935943f6af988d86521c
+#+NOTE: check: evidence: build/w/round2-selected-relay.json sha256=3c25ad862836861e0fd58d1121249432d7d3cf7caf40de8171b26198dc1cf385
+#+NOTE: check: evidence: build/w/round2-wire-micro-load.json sha256=d2b3d3ca86b0aa5522241e7fafd655970e4b2a75af61eb859b8e8c8c9a28dd77
+#+NOTE: check: evidence: build/w/round2-checkpoint-direct.json sha256=4a7903dc0399c0b2b944bf77d7e9eaedfa6a7936268a998e34a7d9d578883c31
+#+NOTE: check: evidence: build/w/round2-server-reader-micro.json sha256=2b42fe604a06016cc8ce028d9be1f1e5ec38ea5f668ccd7311c1c8c75f121720
+#+NOTE: check: evidence: build/w/round2-phase-cpu.log sha256=28b46a9bb4891e558cf7ecda44fc9f81cc9710200c706ddbdae061729bbf79bc
+#+NOTE: check: evidence: build/w/round2-profile-final.json sha256=18d0041f937616b1ceffb44a0b6910a642fd1d8e87176abaad024e90c72a2c9a
+#+NOTE: check: evidence: build/w/round2-profile-plain-summary.log sha256=fcd4a828497d0eb8c27247f037d0fcf7d53e6c187937a53f69c063ee02c856d1
+#+NOTE: check: evidence: build/w/round2-profile-okuri-summary.log sha256=c8ee5e497d800e72e4aa3138bc39002d4b6388c55c4f425b5475e740ea367212
+#+NOTE: L2 final private-server retry passed cold before/after load checks after five cold-plain retries. Plain CPU p50/p90/max 140.625/234.375/421.875, wall 202.563/349.487/481.307 ms; okuri CPU 265.625/578.125/1015.625, wall 367.947/629.967/1200.559 ms. Cold plain CPU/wall 187.500/291.246, okuri 250.000/305.193 ms. Full load arrays stored.
+#+NOTE: check: evidence: build/w/round2-quiet-relay.json sha256=e0c7751894230f023b1e3096ecef6c13c1c525b5b3c52a8e6b2acd6f978e0e87
+#+NOTE: check: evidence: build/w/round2-quiet-relay.log sha256=a12447dbc1d2a3b5b61504bfcf510805e71910eb09abc9804db8c2482e7ef148
+#+NOTE: check: evidence: build/w/round2-quiet-relay-phases.log sha256=1893acbcd77e8d8ae31b83070ac3087c0d0d683e3aef23a5095c0949b0960b45
+
 ** S1.2 Phase breakdown of one conversion request (protocol, DDSKK command, user-jisyo search, host dictionary relay and skkserv, candidate formatting, GC) with the top hot functions, recorded as evidence
+#+NOTE: L1: five traced plain requests: ddskk-engine--hex self 437 ms / 136 calls, dispatch inclusive 1234 ms, skk-henkan 280 ms, server relay 79 ms. TSF path per conversion: checkpoint 31, replay 141, convert 156, dispatch 62 ms (median). Automatic GC cannot be separated (no runtime counter), so the criterion stays open.
+#+NOTE: L2: current profile evidence is listed under S1.1. Warm plain CPU phase p50 dispatch 15, replay 46, checkpoint 0, conversion 46, response tail 2 ms (16 ms CPU clock quantum; phase medians are not additive). Quiet TSF CPU p50 phases dispatch 15, replay 46, conversion 78, checkpoint 0, tail 1 ms. Profiled plain skk-henkan self 265 ms/5 calls, skk-henkan-1 self 157 ms/5; user search 0 ms at this resolution. Explicit maintenance GC costs 218.750 ms CPU; automatic GC CPU remains unobservable. Arena/debug APIs exist but contain no collection CPU duration; raw GC resolver is unavailable. No native compilation/runtime changes.
 pending
 
 * S2 Faster conversions without behaviour change
 ** S2.1 Warm conversion engine CPU p50 at most half of the S1.1 baseline, checked by a script over the benchmark logs
-pending
+#+NOTE: L1 candidate: plain ratio 1.063, okuri 0.412 (known red).
+#+NOTE: Superseded L1 check removed (it evaluated the round-1 candidate, not the current code): powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/check-conversion-cpu.ps1 -Baseline build/w/baseline.json -Candidate build/w/candidate.json
+#+NOTE: L2: current ratios plain 0.438, okuri 0.353, both pass. Preserve the historical red command above as instructed. New Python comparator infers missing serverOnly=False only in old server=False logs; it validates runtime/dictionary/corpus hashes, sample counts and unchanged 0.5 limit. Boundary ratios exactly 0.5 pass; the old candidate and a mutated state fail.
+cmd: python tools/ai/check-conversion-round2.py cpu build/w/baseline.json build/w/round2-selected.json && python tools/ai/check-conversion-round2.py cpu build/w/baseline-relay.json build/w/round2-quiet-relay.json
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py cpu build/w/baseline.json build/w/round2-selected.json
+#+NOTE: check: evidence: build/w/round2-cpu-gate.log sha256=3ea93411334c0a8a0c43930586d1ea146593320966584452a9ae146c0e0a0ce4
+#+NOTE: check: evidence: build/w/round2-cpu-boundary.log sha256=d408bc80f81b890f39dc15339e41f5ae07b91e09e5d56a5cd7197dd59717153f
+#+NOTE: check: evidence: build/w/round2-cpu-negative.log sha256=87d3ab03a7c8a990ac69cdc8515daf432c4ad2e204d7da978fa59ab44364fa95
+
+#+NOTE: check: evidence: build/w/round2-verifier-controls.log sha256=fa6cedcfa6aca7161e7fa2ade61fa67cc90b50f7cf628409dfea809702c31eee
+
+#+NOTE: L2 private-server baseline comparison: CPU plain 453.125 -> 296.875 ms (0.655), okuri 421.875 -> 250.000 ms (0.593). Both fail the same 0.5 threshold in this busy run; a quiet server retry is measured separately.
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py cpu build/w/baseline-relay.json build/w/round2-selected-relay.json
+#+NOTE: check: evidence: build/w/round2-relay-cpu-gate.log sha256=877c88882c638d042472accca4b172fdd64c797ecba876b4f51970bc78612c07
+#+NOTE: L2 final server comparison: plain ratio 0.310 passes, okuri ratio 0.630 fails. Okuri CPU p50 265.625 vs limit 210.938 ms, gap 54.688 ms. No-server results remain passing; server okuri is not claimed green.
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py cpu build/w/baseline-relay.json build/w/round2-quiet-relay.json
+#+NOTE: check: evidence: build/w/round2-quiet-relay-cpu-gate.log sha256=bc6323430e025d74a6e4d7e0a4db965d65b660f649c5edcb7232424e880e8dc3
+
 ** S2.2 First okuri conversion after a cold start under 500 ms wall on a quiet machine
-pending
+#+NOTE: L1 quiet run: 862 ms wall / 828 ms CPU (known red). Checked from the stored measurement build/w/quiet-cold.json.
+#+NOTE: Superseded L1 check removed (it evaluated the round-1 candidate, not the current code): python -c 'import json,sys; j=json.load(open("build/w/quiet-cold.json",encoding="utf-8-sig")); c=[x for x in j["samples"] if x.get("cold")]; sys.exit(0 if c and c[0]["wallMs"] < 500 else 1)'
+#+NOTE: L2: cold plain 344.742 ms wall/296.875 CPU; cold okuri 273.788 ms wall/203.125 CPU. Quiet checks before/after okuri passed after one retry (discarded Brother iPrint&Scan 406.2/1293.6 ms sample). Stored-value check also validates quiet load. Historical red command retained.
+cmd: python tools/ai/check-conversion-round2.py cold build/w/round2-selected.json && python tools/ai/check-conversion-round2.py cold build/w/round2-quiet-relay.json
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py cold build/w/round2-selected.json
+#+NOTE: check: evidence: build/w/round2-cold-gate.log sha256=9a5f9fb48475a19d682d44016f90338a2f7437216eab8a0322b0df8b5c9d47db
+#+NOTE: L2 final private-server cold okuri also passes at 305.193 ms wall; accepted okuri load before/after top WindowsTerminal 265.6/1239.781 and 218.8/1354.455 ms.
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py cold build/w/round2-quiet-relay.json
+#+NOTE: check: evidence: build/w/round2-quiet-relay-cold-gate.log sha256=d5e40f27f5a98c54d5bb937340194611847728e15f0e845f8762b49d9cc7af00
+
 ** S2.3 No behaviour change: candidate lists for a fixed reading corpus identical before and after; DDSKK suite, ctest with NELISP_EXECUTABLE, ERT and the live-input tests pass
-pending
+#+NOTE: L1: candidate equality 122/122 (also with the relay), learning 8/8 states and 6/6 readings, DDSKK suite 45 assertions, ctest 9/9, ERT 45/45, live-input 3/3, cache checks 528.
+cmd: powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/compare-conversion-candidates.ps1 -Baseline build/w/learning-baseline.json -Candidate build/w/learning-candidate.json && python tools/ai/check-conversion-round2.py states build/w/baseline.json build/w/round2-selected.json && python tools/ai/check-conversion-round2.py states build/w/baseline-relay.json build/w/round2-quiet-relay.json && python tools/ai/check-conversion-round2.py learning build/w/learning-baseline.json build/w/round2-selected.json && python tools/ai/check-conversion-round2.py learning build/w/learning-baseline.json build/w/round2-quiet-relay.json && python tools/ai/check-conversion-round2.py behavior build/w
+#+NOTE: check: cmd: powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/compare-conversion-candidates.ps1 -Baseline build/w/learning-baseline.json -Candidate build/w/learning-candidate.json
+#+NOTE: check: evidence: build/w/behavior-candidate.log sha256=7aba22f5b0ab0edef4cc13bd5c661f2ada502cc5a1f3e8f38eb3ae1ff367a1a1
+#+NOTE: check: evidence: build/w/ctest-candidate.log sha256=a8db0bf93d385c2d918cf7a659fc0f9bd0e067f6f93210558d56854c081bf9f3
+#+NOTE: check: evidence: build/w/ert-candidate.log sha256=8a81f7c43110983f429ff9d886d9c99933b1a61b1c67714ff064a36559c93e58
+#+NOTE: check: evidence: build/w/live-input-candidate.log sha256=4d1bad8508dddb14a0af3ad0c1afbb2d19c789a98fb134f19439f67a5886d18e
+
+#+NOTE: L2: candidates 122/122 without server and 122/122 with private server; learning 6/6 for both. Full DDSKK checkpoint and snapshot replay 38/38, marker/unbound parity 2, host reader 6, host protocol 43, DDSKK 45 assertions, CTest 10/10 with fixed runtime, ERT 45/45, live-input 3/3.
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py states build/w/baseline.json build/w/round2-selected.json
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py states build/w/baseline-relay.json build/w/round2-selected-relay.json
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py learning build/w/learning-baseline.json build/w/round2-selected.json
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py learning build/w/learning-baseline.json build/w/round2-selected-relay.json
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py behavior build/w
+#+NOTE: check: evidence: build/w/round2-ctest-final.log sha256=ffb39aef9f4ae4f9cced94d004f47b3b9a8292a1c4e88b35193f0d2fedfd2c5c
+#+NOTE: check: evidence: build/w/round2-ert-final.log sha256=b10d2f600f98cea9fdf2093bc4c209a617867d01e93c29e911222cc1e1188275
+#+NOTE: check: evidence: build/w/round2-live-input-final.log sha256=7748bc548b7e5a87c47873140d259f2d4b78f9558cab67167dea3ad95200d26b
+#+NOTE: check: evidence: build/w/round2-host-protocol.log sha256=bcc2120bda3f23a3b05acaf6d50c71628975334c9db8e70e16b0beca5fc2a1a2
+#+NOTE: check: evidence: build/w/round2-behavior-final.log sha256=8a1d2e144a59b152f8a6f9878af40fd9e1a4d8c3f8408f5117775a2d54f8c85f
+#+NOTE: check: evidence: build/w/round2-reader-replay.log sha256=71d7eab5ad6826d4d63f34abc6c10b0b52555205d543798c2dcdf4529d85ab83
+#+NOTE: L2 final private-server retry candidates 122/122 and learning 6/6 also match.
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py states build/w/baseline-relay.json build/w/round2-quiet-relay.json
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py learning build/w/learning-baseline.json build/w/round2-quiet-relay.json
+#+NOTE: check: evidence: build/w/round2-quiet-relay-states.log sha256=a333b697379cfb4443bd1c3a07d793616f9d5ae67ceada51f5477b0e46b840f5
+#+NOTE: check: evidence: build/w/round2-quiet-relay-learning.log sha256=8dd1354665ce979aea2b1be85a79be86d79d1417f029f4c4ff88075221b77aed
 
 * S3 End to end
 ** S3.1 TSF harness Space-to-candidate p50 at most 100 ms and p90 at most 150 ms (quiet machine, private host)
-pending
+#+NOTE: L1 quiet run with SKK-JISYO.L: N=20, p50 407 ms, p90 563 ms (known red). Checked from the stored gate log written by windows/test-host/bench-conversion-tsf.ps1.
+#+NOTE: Superseded L1 TSF check removed (round-1 log); the round-2 TSF check below still fails.
+#+NOTE: L2: first TSF run 234/375 ms was invalidated by closing load (OneDrive 1140.625/1320.807 ms; unrelated NeLisp 796.875). Retry passed quiet checks after five initial retries, N=20 p50 157 p90 297 max 437 ms; target still fails by 57/147 ms. Preserve both historical and current failing commands. DLL-facing protocol unchanged; no DLL deployment/app restarts performed.
+cmd: python tools/ai/check-conversion-round2.py tsf build/w/tsf-conversion-9809c5c5a24a4393859f4f0d173b32d1
+#+NOTE: check: cmd: python tools/ai/check-conversion-round2.py tsf build/w/tsf-conversion-9809c5c5a24a4393859f4f0d173b32d1
+#+NOTE: check: evidence: build/w/round2-tsf-retry.log sha256=4cbe055a74dd194de91b5579f23e166033c594185edc27b48f2d6b3e93d85f98
+#+NOTE: check: evidence: build/w/tsf-conversion-9809c5c5a24a4393859f4f0d173b32d1/tsf.log sha256=e0c55cb2dafa4093acf932fc0e5e6ab0e04b47e13a204c07651b86c41f0e39f9
+#+NOTE: check: evidence: build/w/tsf-conversion-9809c5c5a24a4393859f4f0d173b32d1/load-before.json sha256=1473638b2efd51affc5e7a5feaaef2ce35a37893950ea210c60d2881fd653e82
+#+NOTE: check: evidence: build/w/tsf-conversion-9809c5c5a24a4393859f4f0d173b32d1/load-after.json sha256=fc632e109f9f9a310cd47d81452b6a478fec34d5c100d9b093e890da779dc1b8
+#+NOTE: check: evidence: build/w/round2-tsf-cpu-phases.log sha256=aee317d26307a68b704486d7cc9d5704ed0cf9b5d9909d45a2adcd65439a08c9
+
 ** S3.2 Live: deployed, paired measurement against the previous live build, and the user confirms conversions feel fast
 pending
+#+NOTE: L2: deployment and live settings remain outside authorization; no live IME or port 1179 was touched.

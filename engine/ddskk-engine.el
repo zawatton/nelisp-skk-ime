@@ -393,7 +393,22 @@ harness can see what actually failed.")
 (defconst ddskk-engine--hex-digits "0123456789abcdef"
   "Lowercase nibble table for `ddskk-engine--hex'.")
 
+(defvar ddskk-engine--hex-cache (make-hash-table :test 'equal)
+  "Bounded content cache for immutable scalar-hex wire encodings.")
+
 (defun ddskk-engine--hex (string)
+  "Encode STRING, reusing an encoding only for identical current content.
+Copy keys because callers may later edit their input strings. The cache
+contains no dictionary results and cannot hide a host dictionary update."
+  (if (= (length string) 0) "-"
+    (or (gethash string ddskk-engine--hex-cache)
+        (let ((encoded (ddskk-engine--hex-uncached string)))
+          (when (>= (hash-table-count ddskk-engine--hex-cache) 512)
+            (clrhash ddskk-engine--hex-cache))
+          (puthash (copy-sequence string) encoded ddskk-engine--hex-cache)
+          encoded))))
+
+(defun ddskk-engine--hex-uncached (string)
   "Return STRING as fixed-width 6-digit lowercase scalar hex, or \"-\".
 The wire format is unchanged; only the encoding cost is.  The previous
 implementation grew a result string with `concat' (quadratic) and called
@@ -481,7 +496,20 @@ from entering the line protocol."
         (setq start (1+ end)))
       (and valid out))))
 
-(defun ddskk-engine--raw-state-line (state)
+(defvar ddskk-engine--utf8-wire nil)
+
+(defun ddskk-engine--request-keys (line offset)
+  "Decode legacy decimal keys, or negotiated UTF-8 keys already in LINE."
+  (if (and ddskk-engine--utf8-wire
+           (equal (substring line (- offset 5) offset) "UTF8 "))
+      (substring line offset)
+    (ddskk-engine--decode-codepoints (substring line offset))))
+
+(defun ddskk-engine--utf8-field (text)
+  "Frame TEXT by Unicode scalar count without walking its characters."
+  (concat (number-to-string (length text)) ":" text))
+
+(defun ddskk-engine--raw-state-line (state &optional registration-reading)
   "Return the wire STATE line for STATE.
 
 Assembled with `concat' rather than one `format'.  Measured on this
@@ -491,13 +519,27 @@ directives costs 23.5 ms per call, while the whole `concat' below costs
 keystroke, so that difference is most of the per-key budget: the common
 short-state line went from 28.7 ms to 9.8 ms.
 
-The emitted bytes are unchanged.  Every numeric field here is an
+Legacy STATE bytes are unchanged; negotiated STATE2 fields carry raw
+UTF-8 for the host to translate back to the DLL-facing STATE format.
+Every numeric field here is an
 integer -- `skk-ime-session-snapshot' derives them from `point',
 `marker-position' and `skk-henkan-count' -- so `number-to-string' and
 %d agree; `%s' on a string and on `symbol-name' output is likewise the
 identity.  `:candidates' is read once instead of twice."
   (let ((candidates (plist-get state :candidates)))
-    (concat "STATE "
+    (if ddskk-engine--utf8-wire
+        (concat "STATE2 " (symbol-name (plist-get state :mode)) " "
+                (number-to-string (plist-get state :cursor)) " "
+                (number-to-string (or (plist-get state :composition-start) -1)) " "
+                (number-to-string (or (plist-get state :candidate-index) -1)) " "
+                (number-to-string (length candidates)) " "
+                (if registration-reading "1" "0") "\n"
+                (ddskk-engine--utf8-field (plist-get state :text))
+                (ddskk-engine--utf8-field (plist-get state :pending-romaji))
+                (mapconcat #'ddskk-engine--utf8-field candidates "")
+                (if registration-reading
+                    (ddskk-engine--utf8-field registration-reading) ""))
+      (concat "STATE "
             (symbol-name (plist-get state :mode)) " "
             (number-to-string (plist-get state :cursor)) " "
             (number-to-string (or (plist-get state :composition-start) -1)) " "
@@ -506,7 +548,9 @@ identity.  `:candidates' is read once instead of twice."
             (number-to-string (or (plist-get state :candidate-index) -1)) " "
             (if candidates
                 (mapconcat #'ddskk-engine--hex candidates ",")
-              "-"))))
+              "-")
+            (if registration-reading
+                (concat " " (ddskk-engine--hex registration-reading)) "")))))
 
 ;; CorvusSKK keeps dictionary registration inside the TIP rather than
 ;; focusing an ordinary edit control.  Mirror that architecture with a
@@ -541,8 +585,8 @@ identity.  `:candidates' is read once instead of twice."
     (when start
       (setq wire-state
             (plist-put wire-state :composition-start (+ cursor start))))
-      (concat (ddskk-engine--raw-state-line wire-state) " "
-              (ddskk-engine--hex ddskk-engine--registration-reading)))))
+      (ddskk-engine--raw-state-line wire-state
+                                    ddskk-engine--registration-reading))))
 
 (defun ddskk-engine--registration-flush (state)
   "Move finalized DDSKK text in STATE into the registration editor."
@@ -627,9 +671,10 @@ leaves remain engine-owned; punctuation is resolved in the current buffer."
                                     (ddskk-engine--romaji-walk
                                      (ddskk-engine--rule-tree)) " ")))))
 
-(defun ddskk-engine--convert-or-register ()
+(defun ddskk-engine--convert-or-register (&optional before-state)
   "Convert once, preserving a zero-result reading for native registration."
-  (let* ((before (skk-ime-session-snapshot ddskk-engine--session))
+  (let* ((before (or before-state
+                     (skk-ime-session-snapshot ddskk-engine--session)))
          (checkpoint (progn
                        (ddskk-engine--phase "checkpoint-begin")
                        (prog1 (skk-ime-session-checkpoint ddskk-engine--session)
@@ -776,8 +821,10 @@ misses exhaustion after one or more real candidates."
                 ;; flush on the same key, including batched registration input.
                 (ddskk-engine--registration-state-line)))))
          ((and (> (length line) 18)
-               (equal (substring line 0 18) "CONTROL FEED-KEYS "))
-          (let ((keys (ddskk-engine--decode-codepoints (substring line 18))))
+               (or (equal (substring line 0 18) "CONTROL FEED-KEYS ")
+                   (and ddskk-engine--utf8-wire
+                        (equal (substring line 0 18) "CONTROL FEED-UTF8 "))))
+          (let ((keys (ddskk-engine--request-keys line 18)))
             (if (not keys)
                 "ERR FEED-KEYS"
               (progn
@@ -908,11 +955,42 @@ The data carries the missing symbol name for `void-variable' /
    ((and (ddskk-engine--registration-active-p)
          (ddskk-engine--registration-request-p line))
     (ddskk-engine--dispatch-registration line))
+   ((and (> (length line) 21)
+         (or (equal (substring line 0 21) "CONTROL CONVERT-KEYS ")
+             (and ddskk-engine--utf8-wire
+                  (equal (substring line 0 21) "CONTROL CONVERT-UTF8 "))))
+    ;; Native real-time input keeps ordinary romaji off the NeLisp critical
+    ;; path.  At the conversion barrier replay the exact DDSKK key sequence
+    ;; into a clean session and start conversion atomically, so no other
+    ;; client can observe or interleave the intermediate states.
+    ;; Do not use `string-match' here.  The standalone NeLisp regexp shim
+    ;; does not implement Emacs' \\`/\\' anchors and silently failed to
+    ;; recognize this otherwise-valid request in the real stdio runner.
+    (let ((keys (ddskk-engine--request-keys line 21)))
+      (if (not keys) "ERR CONVERT-KEYS"
+        (condition-case err
+            (progn
+              (ddskk-engine--phase "replay-begin")
+              (skk-ime-session-reset ddskk-engine--session t)
+              (let ((state (skk-ime-session-feed-string
+                            ddskk-engine--session keys)))
+                (ddskk-engine--phase "replay-end")
+                ;; Okuri-ari conversion starts automatically when its final
+                ;; kana resolves.  A second CONVERT here advances past that
+                ;; fresh candidate (and a one-candidate entry immediately
+                ;; exhausts into registration).  Preserve the automatic
+                ;; result; only an ordinary ▽ reading needs explicit convert.
+                (if (memq (plist-get state :mode) '(candidate registration))
+                    (ddskk-engine--state-line state)
+                  (ddskk-engine--convert-or-register state))))
+          (error (ddskk-engine--error-token "ERR CONVERT-KEYS" err))))))
     ((equal line "HELLO 1") "OK 1")
    ((equal line "ROMAJI RULES 1") (ddskk-engine--romaji-rules))
    ((and (> (length line) 18)
-         (equal (substring line 0 18) "CONTROL SYNC-KEYS "))
-    (let ((keys (ddskk-engine--decode-codepoints (substring line 18))))
+         (or (equal (substring line 0 18) "CONTROL SYNC-KEYS ")
+             (and ddskk-engine--utf8-wire
+                  (equal (substring line 0 18) "CONTROL SYNC-UTF8 "))))
+    (let ((keys (ddskk-engine--request-keys line 18)))
       (if (not keys) "ERR SYNC-KEYS"
         (condition-case err
             (progn
@@ -963,33 +1041,6 @@ The data carries the missing symbol name for `void-variable' /
     (condition-case err
         (ddskk-engine--convert-or-register)
       (error (ddskk-engine--error-token "ERR CONVERT" err))))
-   ((and (> (length line) 21)
-         (equal (substring line 0 21) "CONTROL CONVERT-KEYS "))
-    ;; Native real-time input keeps ordinary romaji off the NeLisp critical
-    ;; path.  At the conversion barrier replay the exact DDSKK key sequence
-    ;; into a clean session and start conversion atomically, so no other
-    ;; client can observe or interleave the intermediate states.
-    ;; Do not use `string-match' here.  The standalone NeLisp regexp shim
-    ;; does not implement Emacs' \\`/\\' anchors and silently failed to
-    ;; recognize this otherwise-valid request in the real stdio runner.
-    (let ((keys (ddskk-engine--decode-codepoints (substring line 21))))
-      (if (not keys) "ERR CONVERT-KEYS"
-        (condition-case err
-            (progn
-              (ddskk-engine--phase "replay-begin")
-              (skk-ime-session-reset ddskk-engine--session)
-              (let ((state (skk-ime-session-feed-string
-                            ddskk-engine--session keys)))
-                (ddskk-engine--phase "replay-end")
-                ;; Okuri-ari conversion starts automatically when its final
-                ;; kana resolves.  A second CONVERT here advances past that
-                ;; fresh candidate (and a one-candidate entry immediately
-                ;; exhausts into registration).  Preserve the automatic
-                ;; result; only an ordinary ▽ reading needs explicit convert.
-                (if (memq (plist-get state :mode) '(candidate registration))
-                    (ddskk-engine--state-line state)
-                  (ddskk-engine--convert-or-register))))
-          (error (ddskk-engine--error-token "ERR CONVERT-KEYS" err))))))
    ((equal line "CONTROL PREVIOUS")
     ;; DDSKK's henkan guards compare a marker with `point' arithmetically.
     ;; This runtime does not coerce a marker to its position, so the guard
@@ -1180,6 +1231,9 @@ The data carries the missing symbol name for `void-variable' /
   ;; Metadata must not create or activate a legacy editing session. The
   ;; host fetches this once at startup and after replacement publication.
   (cond
+   ((equal line "WIRE UTF8 1")
+    (setq ddskk-engine--utf8-wire t)
+    "OK WIRE UTF8 1")
    ((equal line "ROMAJI RULES 1") (ddskk-engine--romaji-rules))
    ((equal line "DIAG SESSION-COUNT")
       (concat "SESSIONS " (number-to-string
@@ -1191,7 +1245,8 @@ The data carries the missing symbol name for `void-variable' /
             "ERR SESSION"
           (let ((session-id (substring line 8 separator))
                 (request (substring line (1+ separator))))
-            (if (or (not (ddskk-engine--session-id-valid-p session-id))
+            (if (or (not (or (gethash session-id ddskk-engine--sessions)
+                             (ddskk-engine--session-id-valid-p session-id)))
                     (= (length request) 0))
                 "ERR SESSION"
               (ddskk-engine--dispatch-session-line session-id request))))))
@@ -1272,7 +1327,15 @@ string and splits it back off again at display time -- see the
 -- so keeping it here matches what the rest of DDSKK already expects to
 receive."
   (let ((count (length reply)))
-    (when (and (> count 0) (= (aref reply 0) ?1))
+    (if (and ddskk-engine--utf8-wire (> count 4)
+             (equal (substring reply 0 5) "LIST "))
+        (condition-case nil
+            (let ((candidates (read (substring reply 5))))
+              (and (listp candidates)
+                   (cl-every #'stringp candidates)
+                   candidates))
+          (error nil))
+      (when (and (> count 0) (= (aref reply 0) ?1))
       (let ((candidates nil)
             (start 1)
             (index 1))
@@ -1282,7 +1345,7 @@ receive."
               (push (substring reply start index) candidates))
             (setq start (1+ index)))
           (setq index (1+ index)))
-        (nreverse candidates)))))
+        (nreverse candidates))))))
 
 (defun ddskk-engine-server-search ()
   "Search the host-relayed dictionary for the current midasi.

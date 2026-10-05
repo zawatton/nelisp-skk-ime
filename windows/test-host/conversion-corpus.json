@@ -1,0 +1,8 @@
+[
+  {"name":"kana","kind":"plain","keys":"Kana"},
+  {"name":"kanji","kind":"plain","keys":"Kanji"},
+  {"name":"nihon","kind":"plain","keys":"Nihon"},
+  {"name":"ka","kind":"plain","keys":"Ka"},
+  {"name":"kaku","kind":"okuri","keys":"KaKu"},
+  {"name":"yomu","kind":"okuri","keys":"YoMu"}
+]

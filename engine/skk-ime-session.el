@@ -43,22 +43,29 @@
     skk-okuri-index-min skk-okuri-index-max skk-after-prefix
     skk-jisx0201-roman skk-jisx0201-mode skk-num-list skk-echo))
 
-(defun skk-ime-session--capture-native-state ()
-  (let (state)
-    (dolist (symbol skk-ime-session--native-state-symbols (nreverse state))
-      (when (boundp symbol)
-        (let ((value (symbol-value symbol)))
-          ;; A live marker is not a snapshot: `erase-buffer' in restore moves
-          ;; even a copied marker to point-min.  Store its numeric position
-          ;; behind a private tag and allocate a fresh marker only after the
-          ;; saved text has been inserted again.
-          (push (cons symbol
-                      (if (markerp value)
-                          (cons 'skk-ime-session--marker
-                                (marker-position value))
-                        value))
-                state))))))
+(defmacro skk-ime-session--define-capture-native-state ()
+  "Expand fixed checkpoint getters once, preserving optional variables."
+  `(defun skk-ime-session--capture-native-state ()
+     ;; This is interpreted Lisp, not native compilation. Direct variable
+     ;; reads avoid the per-symbol traversal and symbol-value calls. Keep
+     ;; boundp and tagged marker positions exactly as in the reference loop.
+     (let ((missing nil))
+       (let ((state
+              (list
+               ,@(mapcar
+                  (lambda (symbol)
+                    `(if (boundp ',symbol)
+                         (let ((value ,symbol))
+                           (cons ',symbol
+                                 (if (markerp value)
+                                     (cons 'skk-ime-session--marker
+                                           (marker-position value))
+                                   value)))
+                       (progn (setq missing t) nil)))
+                  skk-ime-session--native-state-symbols))))
+         (if missing (delq nil state) state)))))
 
+(skk-ime-session--define-capture-native-state)
 (defun skk-ime-session--restore-native-state (state)
   (dolist (entry state)
     (let ((value (cdr entry)))
@@ -129,7 +136,7 @@
      (plist-get checkpoint :native-state))
     (skk-ime-session-snapshot session)))
 
-(defun skk-ime-session-reset (session)
+(defun skk-ime-session-reset (session &optional omit-snapshot)
   "Clear SESSION and return it to hiragana direct-input mode."
   (skk-ime-session--with-buffer session
     (erase-buffer)
@@ -138,7 +145,7 @@
       (skk-kakutei-initialize)
       (skk-j-mode-on nil))
     (setf (skk-ime-session-last-command session) nil)
-    (skk-ime-session-snapshot session)))
+    (unless omit-snapshot (skk-ime-session-snapshot session))))
 
 (defun skk-ime-session--active-keymap ()
   "Return the DDSKK minor-mode keymap that is active in this buffer.
@@ -193,7 +200,7 @@ calls it with 1, which is both arity-correct and semantically harmless."
         (funcall command 1)
       (wrong-number-of-arguments (funcall command))))))
 
-(defun skk-ime-session-feed-key (session key &optional preserve-point)
+(defun skk-ime-session-feed-key (session key &optional preserve-point omit-snapshot)
   "Feed character KEY to DDSKK in SESSION and return a state snapshot.
 
 KEY is a character integer.  The key is dispatched through the DDSKK
@@ -204,6 +211,11 @@ instead of kana."
   (unless (characterp key)
     (signal 'wrong-type-argument (list 'characterp key)))
   (skk-ime-session--with-buffer session
+    (skk-ime-session--feed-key-in-buffer session key preserve-point)
+    (unless omit-snapshot (skk-ime-session-snapshot session))))
+
+(defun skk-ime-session--feed-key-in-buffer (session key preserve-point)
+  "Dispatch KEY with SESSION's buffer already selected by the caller."
     ;; Point-at-end invariant -- see the comment above `skk-ime-session-
     ;; control' for the full explanation.  Normalizing here, before KEY is
     ;; interpreted at all, is what actually closes the bug: the previous
@@ -238,16 +250,18 @@ instead of kana."
                 last-command-event key
                 this-command command)
           (skk-ime-session--call-command command)))
-      (setf (skk-ime-session-last-command session) this-command))
-    (skk-ime-session-snapshot session)))
+      (setf (skk-ime-session-last-command session) this-command)))
 
 (defun skk-ime-session-feed-string (session string)
   "Feed every character in STRING to SESSION and return the final snapshot."
   (unless (stringp string)
     (signal 'wrong-type-argument (list 'stringp string)))
-  (let ((snapshot (skk-ime-session-snapshot session)))
-    (dolist (key (string-to-list string) snapshot)
-      (setq snapshot (skk-ime-session-feed-key session key)))))
+  ;; Intermediate snapshots are discarded by this API. Dispatch every key
+  ;; normally (including automatic okuri conversion), then observe once.
+  (skk-ime-session--with-buffer session
+    (dolist (key (string-to-list string))
+      (skk-ime-session--feed-key-in-buffer session key nil))
+    (skk-ime-session-snapshot session)))
 
 (defun skk-ime-session-control (session control &optional argument)
   "Apply native CONTROL to SESSION and return its state snapshot.

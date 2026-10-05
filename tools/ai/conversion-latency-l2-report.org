@@ -1,0 +1,537 @@
+#+TITLE: L2 resumed conversion optimization: results and gates
+#+DATE: 2026-10-05
+
+* Result
+Current no-server S2.1 and S2.2 measurements pass: warm engine CPU p50 plain
+109.375/250.000 = 0.438, okuri 281.250/796.875 = 0.353; first cold
+okuri is 273.788 ms wall on a checked quiet machine. S2.3 remains green.
+Private-server CPU plain passes (0.310); okuri still fails (0.630),
+54.688 ms over its CPU limit. Private-server cold okuri passes at 305.193 ms.
+S3.1 still fails: quiet TSF N=20 p50 157 ms, p90 297 ms, versus limits
+100/150 ms. Remaining gaps are 57/147 ms. This work does not establish
+that further engine-only optimization is impossible. DDSKK replay and
+conversion are now the largest measured costs; runtime work is proposed,
+not implemented. Automatic GC duration remains unresolved (S1.2).
+
+The strict ledger meter is 2/7 because all historical failing commands
+remain alongside current checks, as instructed. Current CPU/cold checks
+pass; their historical checks remain red. No criteria were changed.
+S3.2 remains pending: deployment/live measurements are outside scope.
+
+Production changes were already in 8fec8cf when this run resumed. New
+unstaged work fixes and makes the replay oracle self-contained, adds a
+private test runner, stored-value checks, phase CPU summaries, a strict
+ledger meter, protocol comments, and this evidence. No commit/staging.
+The existing untracked target/ directory was preserved.
+
+* Reproduction before edits
+Command (unchanged 8fec8cf):
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/check-conversion-cpu.ps1 -Baseline build/w/baseline.json -Candidate build/w/candidate.json
+Child exit 1, verbatim tail (build/w/resumed-reproduce-r1.log):
+#+begin_example
+plain n=80 baseline=250.000 candidate=265.625 ratio=1.063 limit=0.5
+okuri n=40 baseline=796.875 candidate=328.125 ratio=0.412 limit=0.5
+FAIL S2.1: engine CPU p50 ratio exceeds 0.5
+#+end_example
+The old PowerShell comparator also rejects old/new metadata when the old
+non-server log lacks serverOnly. It was not changed. The new comparator
+infers False only when server=False (ServerOnly requires a server), and
+otherwise requires the explicit tier. Hashes/counts/0.5 limit stay fixed.
+
+* Changes and locations
+- windows/host/main.cpp:248: child-local wire negotiation flags.
+- windows/host/main.cpp:1135: quote UTF-8 candidate data, escaping quotes,
+  backslashes and C0/DEL controls as three-digit octal reader escapes.
+- windows/host/main.cpp:1149: relay slash lists become LIST reader data;
+  exact legacy scanner semantics for empty and unterminated fields.
+- windows/host/main.cpp:1168: strict STATE2 scalar-count framing/parser;
+  translate to unchanged DLL STATE format. Bounds: 4096 candidates,
+  65536 scalars/field, 1 MiB frame; reject invalid/overlong UTF-8,
+  surrogates, out-of-range scalars, malformed header/truncation/terminator.
+- windows/host/main.cpp:1229: bounded reading/deadline for STATE2 body.
+- windows/host/main.cpp:1245: convert decimal batch key lists to raw UTF-8;
+  preserve legacy fallback for invalid input or line terminators.
+- windows/host/main.cpp:1294: negotiate WIRE UTF8 1 for DDSKK; legacy
+  peers/providers retain their existing protocol. No DLL API changes.
+- windows/host/main.cpp:1335: process CPU deltas alongside wall PHASE logs.
+- engine/ddskk-engine.el:501: O(1) interpreted decoding for raw key strings.
+- engine/ddskk-engine.el:508: scalar-count field framing with native length,
+  number-to-string and concat; no interpreted per-character encoding.
+- engine/ddskk-engine.el:512: STATE2 replies and unchanged legacy fallback.
+- engine/ddskk-engine.el:672: reuse already captured conversion snapshot.
+- engine/ddskk-engine.el:950: atomic conversion dispatch first; omit
+  discarded reset/snapshot work, preserving registration/checkpoints.
+- engine/ddskk-engine.el:1174: reuse validation of existing session IDs.
+- engine/ddskk-engine.el:1227: negotiated wire state is protocol metadata.
+- engine/ddskk-engine.el:1318: native read of LIST data, validated string
+  lists; no eval. Legacy slash scanner remains for legacy peers.
+- engine/skk-ime-session.el:46: macro expands fixed checkpoint getters once,
+  interpreted source; preserve boundp, declaration order and marker tags.
+- engine/skk-ime-session.el:139: optional omission of unused reset snapshot.
+- engine/skk-ime-session.el:203: share full per-key DDSKK command helper.
+- engine/skk-ime-session.el:255: one buffer selection and final snapshot
+  per batch; every key still executes the full DDSKK command semantics.
+- engine/conversion-profile.el:17: additional checkpoint/capture/feed/kana
+  wrappers, opt-in private profiling only.
+- engine/ddskk-engine-stdio.el:26: document negotiated internal protocol.
+- windows/test-host/host_utf8_protocol_test.cpp:1: production parser tests,
+  43 checks including spaces/slashes/semicolons/non-BMP/empty fields,
+  malformed UTF-8/header/lengths/requests and quoted candidate controls.
+- windows/CMakeLists.txt:156: host protocol unit target, already committed
+  in 8fec8cf; no CMake edit during this resumed run.
+- engine/test-server-reader.el:1: six reader parity/malformed-data checks.
+- engine/test-replay-equivalence.el:8: embed independent round-1 capture
+  oracle, replacing optional generated-file dependency; compare all
+  checkpoint and snapshot fields over 38 sequences. Marker/unbound checks
+  run in the selected session buffer (fixes the earlier copy-marker error).
+- engine/test-conversion-round2.el:1 and
+  windows/test-host/test-conversion-round2.ps1:1: repeatable private runtime
+  test entry, temporary user jisyo, bounded process lifetime and cleanup.
+- engine/bench-wire.el:1, engine/bench-checkpoint.el:1,
+  engine/bench-server-reader.el:1, windows/test-host/bench-wire.ps1:1:
+  same-process microbenchmarks with CPU deltas/load and private dictionaries.
+- tools/ai/check-conversion-round2.py:1: explicit measurement/count checks
+  for CPU, cold, TSF, state/learning equality and all behaviour gates.
+- tools/ai/check-conversion-elisp.el:1: structure/read checks for eight files.
+- tools/ai/summarize-conversion-round2.py:1: phase CPU distributions, measured
+  corpus limits exclude subsequent learning requests; response tail includes
+  uninstrumented response/write work. UTF-16/UTF-8 BOM decoding supported.
+- tools/ai/check-conversion-ledger.py:1: hash every evidence file, run every
+  stored-value command from repository root in Bash, preserve failing gates.
+  Discover Git Bash via installed Git on Windows, avoiding an empty WSL.
+- tools/ai/conversion-latency-progress.org:8: appended notes/evidence/checks;
+  fixed criteria and old checks preserved exactly.
+- tools/ai/conversion-latency-l2-report.org:1: this report.
+
+No windows/src, vendor, runtime, existing harnesses, keymap/config, README
+or live settings edits. The DLL-facing format remains STATE v1. No
+application restart/deployment was attempted or tested.
+
+* Measurements and machine load
+All runtime executions use the coordinator-supplied executable parameter
+$Runtime, SHA256 3FB43697A8BF01E10BC993C468365489EF98A30D5ACBE05206F9E9FAEFDDE3DB.
+Public dictionary copy SHA256
+2119AA28A6EBA24AD3BB2F11CE9DE2AD7907636F7FBD1A9E3B68F359BD68B206;
+corpus SHA256 F27075F2E655DBD48C63032BFFA1291914C4F1CE842C95D2C16DBFB0F85D311E.
+$Dictionary denotes the supplied read-only public SKK-JISYO.L input;
+$Server denotes the supplied private emacs-skkserv executable. These are
+external parameters, not repository paths or live configuration.
+Every bench creates private registry/pipe/LOCALAPPDATA/user jisyo and copies
+L. Server-only uses a unique instance/config and port 31183. No port 1179.
+
+Selected no-server N=80 plain, N=40 okuri, RequireQuiet + Learning:
+| kind | warm CPU p50/p90/max ms | warm wall p50/p90/max ms | cold CPU/wall ms |
+| plain | 109.375/140.625/359.375 | 139.417/157.787/388.256 | 296.875/344.742 |
+| okuri | 281.250/515.625/765.625 | 301.134/557.564/789.336 | 203.125/273.788 |
+Baseline CPU p50 250.000/796.875; baseline first okuri CPU/wall
+1531.250/1629.302 ms.
+Quiet cold plain before/after intervals 1229.862/1226.569 ms; top CPU
+125/125 ms (own harness). Okuri required one retry: rejected Brother
+iPrint&Scan 406.2/1293.583 ms. Accepted before/after intervals
+1296.337/1453.777 ms; top 140.6/203.1 ms (own harness), external top
+62.5/62.5 ms. The full load arrays are stored with the measurements.
+Explicit maintenance GC, outside timed samples: 218.750 ms CPU each,
+245.944/222.705 ms wall. This is not automatic GC attribution.
+
+Private server-only N=80/40 (busy; not wall-gate evidence):
+| kind | warm CPU p50/p90/max ms | warm wall p50/p90/max ms | cold CPU/wall ms |
+| plain | 296.875/453.125/906.250 | 400.852/624.520/954.084 | 234.375/308.849 |
+| okuri | 250.000/359.375/625.000 | 320.652/460.998/687.317 | 484.375/579.063 |
+Private-server baseline CPU p50 453.125/421.875 ms; current busy ratios
+0.655/0.593 both fail the 0.5 threshold. A separate quiet retry follows.
+Initial load: unrelated NeLisp 1218.8/1540.031 ms. Closing: cl 1250,
+OneDrive 1234.4, unrelated NeLisp 1218.8 over 1492.043 ms. Private
+server relay 128 lookups, wall p50 63 ms/max 359 ms. All built-in lookups
+empty as intended; real candidates match the L-only baseline.
+Host LookupDictionary at main.cpp:1059 returns immediately on built-in
+L hit (1083) before skkserv; it does not duplicate a built-in hit through
+the server. Live settings/server were not queried, so no live duplicate
+cost is claimed. Server-only measurements force and include relay work.
+
+The first TSF attempt was invalidated by closing load: OneDrive
+1140.625/1320.807 ms, unrelated NeLisp 796.875 ms, OneDrive.Sync.Service
+609.375 ms. It measured 234/375 ms but is not quiet wall evidence.
+The retry passed load checks after five initial retries. Accepted closing
+load interval 1220.019 ms; top own PowerShell 93.750, WindowsTerminal
+62.500, Brother iPrint&Scan/claude 31.250 ms. N=20 p50 157, p90 297,
+max 437 ms. Baseline quiet TSF 407/563 ms; reductions 61.4%/47.2%.
+
+** Step measurements (do not infer causal differences across load)
+All step JSONs contain load. Busy worker CPU/cache/frequency effects make
+cross-run CPU noisy too; the final quiet run and same-process probes are
+the acceptance evidence. No rejected run was discarded from the report.
+- reply protocol: CPU p50 218.750/796.875 ms; initial top OneDrive 1312.5/1463.7 ms; build/w/round2-encoding.json.
+- raw requests: CPU p50 281.250/562.500 ms; initial top emacs 1406.2/1814.7 ms; build/w/round2-request.json.
+- batch session replay: CPU p50 203.125/453.125 ms; initial top base-plain 1234.4/1595.2 ms; build/w/round2-batch.json.
+- rejected mapcar experiment: CPU p50 500.000/562.500 ms; initial top emacs 1328.1/1661.0 ms; build/w/round2-final.json.
+- discarded snapshots, before LIST/getter: CPU p50 609.375/906.250 ms; initial top nelisp 1265.6/1528.5 ms; build/w/round2-candidate.json.
+- early private relay: CPU p50 531.250/468.750 ms; initial top emacs 1968.8/3002.6 ms; build/w/round2-candidate-relay.json.
+- final LIST/getter quiet: CPU p50 109.375/281.250 ms; initial top powershell 156.2/1317.3 ms; build/w/round2-selected.json.
+- final private relay busy: CPU p50 296.875/250.000 ms; initial top nelisp 1218.8/1540.0 ms; build/w/round2-selected-relay.json.
+
+Same-process microbenchmarks, 100 iterations each, CPU ms per call:
+| operation | reference | candidate |
+| uncached reply vs UTF8 | 524.375 | 3.750 |
+| cached old reply vs UTF8 | 4.375 | 3.750 |
+| decimal batch keys vs UTF8 | 37.188 | 1.406 |
+| checkpoint reference vs generated getter | 17.656 | 12.188 |
+| checkpoint mapcar experiment (rejected) | 17.656 | 30.625 |
+| slash relay reader vs LIST native reader | 6.250 | 1.719 |
+Uncached reply is a cache-miss probe, not the baseline warm request cost.
+Micro load: see round2-wire-micro-load.json, round2-checkpoint-direct.json,
+round2-server-reader-micro.json; each records the machine interval/top.
+These are synthetic public fixture strings, never personal dictionary data.
+
+** Phase evidence and remaining work
+Quiet TSF phase wall medians before/after (old ledger vs current 21
+requests including opening Kana episode): checkpoint 31 -> 0 ms,
+replay 141 -> 47, conversion 156 -> 78, dispatch 62 -> 16 ms.
+Current warm-only TSF phase CPU N=20: dispatch p50/p90 15/31,
+replay 46/140, conversion 78/171, checkpoint 0/15, response tail 1/1 ms.
+Total runtime CPU p50/p90 140/265 ms, host round trip 156/281 ms;
+TSF UI publication p50/p90 157/297 ms. Independent phase medians do
+not add exactly; process CPU clock quantization is about 16 ms.
+
+Quiet corpus plain N=80 phase CPU p50: dispatch 15, replay 46,
+checkpoint 0, conversion 46, response tail 2 ms. Cold plain: dispatch
+46, replay 46, conversion 203, response tail 1 ms, total 296 ms.
+Cold okuri: dispatch 31, replay including automatic okuri conversion
+171, tail 1, total 203 ms. Warm okuri N=40 replay including conversion
+p50/p90 265/500 ms; dispatch 15/31, tail 1/1. Okuri converts inside
+replay, so its DDSKK conversion is not a separate phase in coarse traces.
+Protocol parsing/session dispatch share the dispatch bucket; formatting
+and writing share response tail. Exact separation would require more
+runtime profiling support; these labels are not claimed as exact CPU
+attribution to only one function.
+
+Current traced plain: 5 requests, 15 observed functions. Self wall totals:
+skk-henkan 265, dispatch 172, feed-string 170, skk-henkan-1 157,
+call-command 96 (20 calls), capture 93 (6), search 76, server-request
+63, kana-input 47 (20), raw-state 47, snapshots 31 (11), native reader
+16, user search 0 ms at clock resolution. Okuri 3 requests: henkan-1
+141, henkan 111, call-command 78 (12), kana 62 (12), server-request
+45, dispatch 31 ms self; user search/reader/snapshot 0 at resolution.
+Tracing includes marker/pipe instrumentation overhead and wall scheduling;
+it is not a substitute for the uninstrumented CPU acceptance run.
+
+No native compilation work. Existing .neln probes cover ASCII vowel and
+decimal primitives; the prior loader rejects its artifact with
+void-function (:format). No demonstrated DDSKK hot-path native execution.
+Runtime proposal: repair documented artifact/loader compatibility, then
+compile measured DDSKK command/conversion paths; expose per-request GC
+CPU/duration and a usable CPU profiler. Read-only runtime project-cli.md
+profiling documents compiled inclusive wall wrappers, not interpreter CPU
+sampling; requires rebuilt application. Runtime GC docs expose arena/debug
+tuples (allocation/root/parking counts), but raw GC stats need an unavailable
+resolver and vetted ABI. The current capability probe confirms this.
+No runtime source or executable was modified. Remaining phase data support
+prioritizing DDSKK conversion/replay; they do not prove a particular runtime
+symbol-lookup primitive dominates without sampling.
+
+Batching was selected over injecting kana or extending prior session state:
+it reduces selections/snapshots while preserving every DDSKK key command,
+hooks, counters, point normalization and fallback for okuri/special/mode
+keys. Full-state parity is checked, not merely final candidates. Direct
+kana injection/state reuse were not shipped or claimed equivalent.
+
+* Commands, counts and verbatim tails
+All commands run at repository root. $Runtime/$Dictionary/$Server are
+caller-supplied external parameters; never hard-coded into scripts. Every
+Emacs invocation prefixes HOME as required. Full logs are linked in the
+ledger; below are the exact successful/result tails rather than stack paths.
+
+Build commands, both exit 0:
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64 -DNELISP_EXECUTABLE="$Runtime"
+cmake --build build/w --config Release
+Full verbatim build output: build/w/round2-resumed-build.log (successful
+MSBuild target paths are machine-specific and retained only in that artifact).
+No install/register target executable was run.
+
+Command: ctest --test-dir build/w -C Release --output-on-failure
+Stored log: build/w/round2-ctest-final.log
+#+begin_example
+100% tests passed, 0 tests failed out of 10
+Total Test time (real) =  31.36 sec
+#+end_example
+
+Command: build/w/Release/ddskk-host-utf8-protocol-test.exe
+Stored log: build/w/round2-host-protocol.log
+#+begin_example
+host UTF8 protocol: 43 checks, 0 failures
+#+end_example
+
+Command: powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-conversion-round2.ps1 -Runtime "$Runtime" -BuildDir build/w
+Stored log: build/w/round2-reader-replay.log
+#+begin_example
+Host LIST reader: 6 checks PASS
+Replay full checkpoint/snapshot: 38/38 sequences PASS
+Checkpoint unbound/marker parity: 2 checks PASS
+Profile capability gc-stats=unavailable
+Profile capability nelisp--arena-stats=available
+Profile capability nelisp--debug-switch=available
+Profile capability nl-unix-time-usec=available
+Profile capability nelisp-native-load--raw-symbol-addr=unavailable
+#+end_example
+
+Command: $env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+Stored log: build/w/round2-ert-final.log
+#+begin_example
+Ran 45 tests, 45 results as expected, 0 unexpected (2026-10-05 11:41:56+0900, 0.084666 sec)
+#+end_example
+
+Command: $env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L vendor/ddskk -L engine -l engine/test-live-input.el -f ert-run-tests-batch-and-exit
+Stored log: build/w/round2-live-input-final.log
+#+begin_example
+Ran 3 tests, 3 results as expected, 0 unexpected (2026-10-05 11:41:56+0900, 0.025931 sec)
+#+end_example
+
+Command: powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-ddskk-behavior.ps1 -DllPath build/w/Release/ddskk-ime.dll -TsfHostExe build/w/Release/tsf-host.exe -EngineHostPath build/w/Release/ddskk-engine-host.exe -EngineExecutablePath "$Runtime" -ColdLoadSleepSec 45
+Stored log: build/w/round2-behavior-final.log
+#+begin_example
+Result CtrlGMaxMs Assertions
+------ ---------- ----------
+PASS        1.217         45
+#+end_example
+
+Command: python tools/ai/check-conversion-round2.py cpu build/w/baseline.json build/w/round2-selected.json
+Stored log: build/w/round2-cpu-gate.log
+#+begin_example
+plain n=80 baseline=250.000 candidate=109.375 ratio=0.438 limit=0.5
+okuri n=40 baseline=796.875 candidate=281.250 ratio=0.353 limit=0.5
+PASS S2.1: 2/2 kinds
+#+end_example
+
+Command: python tools/ai/check-conversion-round2.py cold build/w/round2-selected.json
+Stored log: build/w/round2-cold-gate.log
+#+begin_example
+PASS S2.2: first okuri wall=273.788 ms <500; quiet before/after
+#+end_example
+
+Command: python tools/ai/check-conversion-round2.py behavior build/w
+Stored log: build/w/round2-behavior-stored-check.log
+#+begin_example
+PASS ctest counts=(0, 10)
+PASS ERT counts=(45, 45, 0)
+PASS live-input counts=(3, 3, 0)
+PASS protocol counts=(43, 0)
+PASS replay counts=(38, 38)
+PASS capture counts=(2,)
+PASS reader counts=(6,)
+PASS DDSKK assertions=45 CtrlGMaxMs=1.217
+#+end_example
+
+Command: python tools/ai/check-conversion-round2.py states build/w/baseline.json build/w/round2-selected.json; python tools/ai/check-conversion-round2.py states build/w/baseline-relay.json build/w/round2-selected-relay.json
+Stored log: build/w/round2-states-gate.log
+#+begin_example
+PASS state equality: 122/122
+PASS state equality: 122/122
+#+end_example
+
+Command: python tools/ai/check-conversion-round2.py learning build/w/learning-baseline.json build/w/round2-selected.json; python tools/ai/check-conversion-round2.py learning build/w/learning-baseline.json build/w/round2-selected-relay.json
+Stored log: build/w/round2-learning-gate.log
+#+begin_example
+PASS learning equality: 6/6
+PASS learning equality: 6/6
+#+end_example
+
+Benchmark commands:
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion.ps1 -Runtime "$Runtime" -Dictionary "$Dictionary" -BuildDir build/w -Iterations 20 -Learning -RequireQuiet -ColdLoadSleepSec 45 -Output build/w/round2-selected.json
+Server command prefixes HOME because it starts the private Emacs-backed service:
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion.ps1 -Runtime "$Runtime" -Dictionary "$Dictionary" -BuildDir build/w -SkkServExecutable "$Server" -Port 31183 -ServerOnly -Iterations 20 -Learning -ColdLoadSleepSec 45 -Output build/w/round2-selected-relay.json
+Both exit 0. Verbatim measured distribution lines:
+
+Command: (benchmark above)
+Stored log: build/w/round2-selected-resumed.log
+#+begin_example
+plain cpuMs n=80 p50=109.375 p90=140.625 max=359.375
+plain wallMs n=80 p50=139.417 p90=157.787 max=388.256
+okuri cpuMs n=40 p50=281.250 p90=515.625 max=765.625
+okuri wallMs n=40 p50=301.134 p90=557.564 max=789.336
+#+end_example
+
+Command: (benchmark above)
+Stored log: build/w/round2-selected-relay.log
+#+begin_example
+plain cpuMs n=80 p50=296.875 p90=453.125 max=906.250
+plain wallMs n=80 p50=400.852 p90=624.520 max=954.084
+okuri cpuMs n=40 p50=250.000 p90=359.375 max=625.000
+okuri wallMs n=40 p50=320.652 p90=460.998 max=687.317
+#+end_example
+
+Command: powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion-tsf.ps1 -Runtime "$Runtime" -Dictionary "$Dictionary" -BuildDir build/w -ColdLoadSleepSec 45
+Stored log: build/w/round2-tsf-retry.log
+#+begin_example
+FAIL S3.1: p50 >100 ms or p90 >150 ms
++ ... 100 -or $p90 -gt 150) {throw 'FAIL S3.1: p50 >100 ms or p90 >150 ms'}
+    + CategoryInfo          : OperationStopped: (FAIL S3.1: p50 >100 ms or p90 >150 ms:String) [], RuntimeException
+    + FullyQualifiedErrorId : FAIL S3.1: p50 >100 ms or p90 >150 ms
+#+end_example
+
+Command: python tools/ai/check-conversion-round2.py tsf build/w/tsf-conversion-9809c5c5a24a4393859f4f0d173b32d1
+Stored log: build/w/round2-tsf-stored-check.log
+#+begin_example
+TSF n=20 p50=157 p90=297 max=437; quiet before/after
+AssertionError: FAIL S3.1: p50 >100 ms or p90 >150 ms
+#+end_example
+
+Command: python tools/ai/check-conversion-ledger.py
+Stored log: build/w/round2-ledger-meter.log
+#+begin_example
+S1.1 PASS
+S1.2 PENDING
+S2.1 FAIL
+S2.2 FAIL
+S2.3 PASS
+S3.1 FAIL
+S3.2 PENDING
+Ledger meter: 2/7
+#+end_example
+
+Profiling and microbench commands (exit 0):
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion.ps1 -Runtime "$Runtime" -Dictionary "$Dictionary" -BuildDir build/w -Iterations 1 -Profile -ColdLoadSleepSec 45 -Output build/w/round2-profile-final.json
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/summarize-conversion-profile.ps1 -Trace build/w/conversion-dc85229199264fa597f28406a5dc5936/plain-host.log
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/summarize-conversion-profile.ps1 -Trace build/w/conversion-dc85229199264fa597f28406a5dc5936/okuri-host.log
+python tools/ai/summarize-conversion-round2.py --warm 80 build/w/conversion-452dd0beb6284c298b98e245f68208fb/plain-host.log
+python tools/ai/summarize-conversion-round2.py --warm 40 build/w/conversion-452dd0beb6284c298b98e245f68208fb/okuri-host.log
+python tools/ai/summarize-conversion-round2.py build/w/tsf-conversion-9809c5c5a24a4393859f4f0d173b32d1/tsf.log
+& windows/test-host/bench-wire.ps1 -Runtime $Runtime -Output build/w/round2-wire-micro-load.json
+& windows/test-host/bench-wire.ps1 -Runtime $Runtime -Script engine/bench-checkpoint.el -Cases @('checkpoint-reference','checkpoint-map','checkpoint-direct') -Output build/w/round2-checkpoint-direct.json
+& windows/test-host/bench-wire.ps1 -Runtime $Runtime -Script engine/bench-server-reader.el -Cases @('server-slash','server-list') -Output build/w/round2-server-reader-micro.json
+
+Checkpoint microbench prerequisite: extract the round-1 function, not the
+new HEAD getter. The reference comes from the fixed committed baseline:
+#+begin_src python
+import subprocess
+from pathlib import Path
+root = Path.cwd().as_posix()
+s = subprocess.run(['git', '-c', 'safe.directory=' + root,
+                    'show', 'be35842:engine/skk-ime-session.el'],
+                   capture_output=True, text=True, check=True).stdout
+s = s[s.index('(defun skk-ime-session--capture-native-state '):
+      s.index('(defun skk-ime-session--restore-native-state ')]
+Path('build/w/capture-reference.el').write_text(
+    s.replace('skk-ime-session--capture-native-state',
+              'skk-ime-session--capture-reference'), encoding='utf-8')
+#+end_src
+The replay test now embeds its own independent reference and does not need
+this generated microbenchmark file.
+
+Command: $env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -l tools/ai/check-conversion-elisp.el
+Stored log: build/w/round2-elisp-structure.log
+#+begin_example
+Elisp structure: 8 files PASS
+#+end_example
+
+PowerShell Parser.ParseFile check of windows/test-host/test-conversion-round2.ps1:
+#+begin_example
+PowerShell structure: 1 file PASS
+#+end_example
+git diff --check exits 0 (only line-ending advisories).
+Verifier controls, all expected outcomes; stored in
+build/w/round2-verifier-controls.log:
+
+Command: (mutated stored values checked with the same Python subcommands)
+Stored log: build/w/round2-verifier-controls.log
+#+begin_example
+CPU boundary 0.5: exit=0 expected=PASS
+CPU original red: exit=1 expected=REJECT
+Candidate mutation: exit=1 expected=REJECT
+Learning mutation: exit=1 expected=REJECT
+Cold boundary 500: exit=1 expected=REJECT
+Behavior count 9 instead of 10: exit=1 expected=REJECT
+TSF boundary 100/150: exit=0 expected=PASS
+TSF n=20 p50=100 p90=150 max=150; quiet before/after
+TSF over boundary: exit=1 expected=REJECT
+TSF busy load: exit=1 expected=REJECT
+#+end_example
+
+* Failures, limitations, cleanup
+The unchanged CPU gate is red, as reproduced. One early WIP DDSKK harness
+run failed its fixed candidate-observation timing while the machine was
+busy; build/w/round2-behavior.log remains. The current untouched harness
+passes 45 assertions, CtrlGMaxMs 1.217. A replay marker probe originally
+ran outside the session buffer and errored in copy-marker; that test was
+fixed and rerun to 38+2+6 checks. A first Bash meter invocation hit Windows'
+empty WSL launcher; Git Bash discovery fixed it, without installation or
+changing the ledger commands. The TSF log uses UTF-16 PowerShell redirection;
+BOM-aware decoding fixes the initial missing-count parsing error. These
+were test/instrument errors, not accepted performance results.
+
+All successful benchmark/test subprocesses completed or were stopped by
+their private runners' finally blocks. Hosts own kill-on-close engine jobs;
+private server process is stopped by the benchmark. Current process audit:
+
+Command: (trace-owned PID audit across the final benchmarks and both TSF runs)
+Stored log: build/w/round2-process-audit.log
+#+begin_example
+Trace-owned engine PIDs=8; remaining=0
+#+end_example
+
+No executable process under this workspace remained. Only the preexisting
+live host, other worker's host/TSF processes and unrelated services were
+observed; none was stopped or changed. No known owned leftover. Process
+command-line inventory is sandbox-denied, so no claim is made about
+unrelated/inaccessible process ownership. No personal dictionary was opened
+or printed. No live registry/pipe/LOCALAPPDATA, live server, deployment or
+application restart was touched. New changes remain unstaged.
+
+Private-server stored CPU gate command:
+python tools/ai/check-conversion-round2.py cpu build/w/baseline-relay.json build/w/round2-selected-relay.json
+#+begin_example
+plain n=80 baseline=453.125 candidate=296.875 ratio=0.655 limit=0.5
+okuri n=40 baseline=421.875 candidate=250.000 ratio=0.593 limit=0.5
+AssertionError: FAIL S2.1: engine CPU p50 ratio exceeds 0.5
+#+end_example
+
+* Final private-server retry
+Command, exit 0:
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion.ps1 -Runtime "$Runtime" -Dictionary "$Dictionary" -BuildDir build/w -SkkServExecutable "$Server" -Port 31183 -ServerOnly -RequireQuiet -Iterations 20 -Learning -ColdLoadSleepSec 45 -Output build/w/round2-quiet-relay.json
+The RequireQuiet checks apply to initial load and cold requests; warm CPU
+remains the primary metric and loadAfter is recorded, not silently ignored.
+Cold plain needed five retries due to OneDrive CPU 1046.9-1265.6 ms over
+1217.6-1242.5 ms intervals. Accepted cold plain before/after top CPU
+WindowsTerminal 187.5/1227.858, claude 156.2/1230.708 ms. Accepted okuri
+before/after top WindowsTerminal 265.6/1239.781, 218.8/1354.455 ms.
+Verbatim distribution tail (build/w/round2-quiet-relay.log):
+#+begin_example
+plain cpuMs n=80 p50=140.625 p90=234.375 max=421.875
+plain wallMs n=80 p50=202.563 p90=349.487 max=481.307
+okuri cpuMs n=40 p50=265.625 p90=578.125 max=1015.625
+okuri wallMs n=40 p50=367.947 p90=629.967 max=1200.559
+#+end_example
+
+Cold plain CPU/wall 187.500/291.246 ms; cold okuri 250.000/305.193 ms.
+Command: python tools/ai/check-conversion-round2.py cpu build/w/baseline-relay.json build/w/round2-quiet-relay.json
+Exit 1, verbatim result lines:
+#+begin_example
+plain n=80 baseline=453.125 candidate=140.625 ratio=0.310 limit=0.5
+okuri n=40 baseline=421.875 candidate=265.625 ratio=0.630 limit=0.5
+AssertionError: FAIL S2.1: engine CPU p50 ratio exceeds 0.5
+#+end_example
+Server okuri target 210.938 ms; gap 54.688 ms. Its warm phase CPU N=40
+p50/p90 replay including automatic conversion 250/453 ms, dispatch
+15/31, response tail 1/1. Total CPU p50/p90 265/578 ms. The maximum
+unattributed response tail was 563 ms; automatic GC duration is unavailable,
+so it is not labeled as measured GC. Current coarse tracing cannot split
+that tail into snapshot/formatting and hidden runtime pauses.
+
+Command: python tools/ai/check-conversion-round2.py cold build/w/round2-quiet-relay.json
+#+begin_example
+PASS S2.2: first okuri wall=305.193 ms <500; quiet before/after
+#+end_example
+Command: python tools/ai/check-conversion-round2.py states build/w/baseline-relay.json build/w/round2-quiet-relay.json
+#+begin_example
+PASS state equality: 122/122
+#+end_example
+Command: python tools/ai/check-conversion-round2.py learning build/w/learning-baseline.json build/w/round2-quiet-relay.json
+#+begin_example
+PASS learning equality: 6/6
+#+end_example
+Final server load: top powershell 156.2/1338.781 ms.
+Final server loadAfter: top emacs 562.5/1452.142 ms.
+
+Final audit after private-server retry, build/w/round2-final-process-audit.log:
+#+begin_example
+Trace-owned engine PIDs=10; remaining=0
+Workspace host/engine/TSF processes remaining=0
+#+end_example

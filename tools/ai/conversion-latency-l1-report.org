@@ -1,0 +1,398 @@
+#+TITLE: Worker L1 conversion measurement and optimization evidence
+#+DATE: 2026-10-05
+
+* Result and scope
+The latency target is not achieved. The engine changes are small, preserve
+the checked responses, and remain unstaged. No host, runtime, vendor,
+existing harness, live registry, live pipe, or personal dictionary was changed.
+S3.2 is outside this worker's authorized scope: no deployment attempted.
+
+All engine executions used the runtime supplied by the coordinator, passed
+as a command parameter, SHA256
+3FB43697A8BF01E10BC993C468365489EF98A30D5ACBE05206F9E9FAEFDDE3DB.
+The copied public dictionary SHA256 is
+2119AA28A6EBA24AD3BB2F11CE9DE2AD7907636F7FBD1A9E3B68F359BD68B206.
+The corpus SHA256 is
+F27075F2E655DBD48C63032BFFA1291914C4F1CE842C95D2C16DBFB0F85D311E.
+
+* Reproduction and measurement
+The first unchanged-engine exploratory run tried KieRu, a behavior-fixture
+reading absent from L. It correctly returned registration:
+#+begin_example
+Conversion failed kieru: STATE registration 0 -1 - - -1 - 00304d003048000072
+#+end_example
+The corrected key corpus was checked against L: Kana, Kanji, Nihon, Ka,
+KaKu, YoMu. No entries from a personal dictionary were used. Timed warm samples
+cancel rather than commit, so learning cannot turn shared-dictionary
+conversion into a one-candidate personal-dictionary hit. Each kind starts
+a fresh host/engine; the first request after a 45-second load wait is cold.
+
+Each request is SESSION bench CONTROL CONVERT-KEYS with decimal codepoints.
+CPU is the child process TotalProcessorTime delta. p50/p90 use nearest rank;
+CPU granularity on this Windows machine is approximately 15.625 ms.
+Wall time covers the whole host request and excludes corpus encoding.
+Each run owns its pipe, registry-key name, LOCALAPPDATA, user jisyo and
+dictionary copy. Hosts own kill-on-close jobs for runtime children.
+
+| Log under build/w | Kind | Warm N | CPU p50/p90/max ms | Wall p50/p90/max ms | Cold CPU/wall ms |
+|-------------------+------+--------+-------------------+--------------------+------------------|
+| baseline.json | plain | 80 | 250/500/937.5 | 254.752/530.980/968.876 | 296.875/335.409 |
+| baseline.json | okuri | 40 | 796.875/1281.25/1453.125 | 827.806/1319.586/1510.280 | 1531.25/1629.302 |
+| candidate.json | plain | 80 | 265.625/421.875/796.875 | 287.189/449.768/818.924 | 234.375/248.247 |
+| candidate.json | okuri | 40 | 328.125/968.75/1625 | 349.706/1017.582/1649.180 | 1015.625/1036.050 |
+| baseline-server.json | plain | 80 | 421.875/1000/1593.75 | 439.822/1067.102/1696.549 | 1531.25/1579.063 |
+| baseline-server.json | okuri | 40 | 406.25/578.125/812.5 | 425.971/629.105/830.581 | 562.5/628.039 |
+| candidate-server.json | plain | 80 | 296.875/609.375/1296.875 | 307.842/637.649/1320.553 | 687.5/702.032 |
+| candidate-server.json | okuri | 40 | 265.625/453.125/546.875 | 278.282/451.495/586.368 | 500/514.030 |
+
+The server-enabled table is host-first configuration evidence, not server
+round-trip evidence. Those early runs did not validate server readiness;
+the full-L hits were answered by the host regardless. Later server-only
+runs verify an actual private-server L hit before beginning measurement.
+
+Load snapshots are embedded in every JSON. This is a 20-logical-processor
+machine. The first baseline's approximate one-second opening snapshot
+had emacs and python each using 1359.4 ms CPU; closing snapshot had several
+other NeLisp/Emacs processes using roughly 1640-1688 ms each. Server-enabled
+baseline closed with cl at 1281.2 ms. These are loaded-machine results,
+not quiet wall-clock acceptance evidence. Later snapshots record the actual
+snapshot interval and quiet retries. Quiet selection rejects another
+process above 0.3 CPU seconds per elapsed second, retries at five-second
+intervals, and retains every observed load. It never stops other workers.
+
+* Profile
+Opt-in wrappers send PHASE enter/leave markers consumed by the existing
+host. The summarizer reconstructs inclusive and self time with a stack.
+These are instrumented wall times, rounded to the host's approximately
+16-ms timestamp granularity, not exact per-function CPU measurements.
+
+Before optimization, five plain requests (one cold, four corpus requests):
+#+begin_example
+Profile requests=5 functions=12; host timestamp resolution about 16 ms; tracing overhead included
+function                         calls inclusiveMs selfMs
+ddskk-engine--hex                  136         437    437
+ddskk-engine-dispatch-line           5        1234    297
+skk-henkan                           5         280    170
+skk-ime-session--call-command       20         141    141
+ddskk-engine--server-request         5          79     79
+ddskk-engine--raw-state-line         5         484     47
+skk-ime-session-snapshot            41          32     32
+ddskk-engine--parse-server-reply     5          16     16
+skk-henkan-1                         5         110     15
+ddskk-engine-server-search           5          95      0
+ddskk-user-jisyo-search              5           0      0
+skk-search                           5          95      0
+#+end_example
+Three okuri requests: command dispatch inclusive 487/self 299 ms;
+outer dispatch inclusive 765/self 138; hex 125; skk-henkan 188/94;
+server-request 46; skk-search 78/32; reply parsing and user search round
+to zero. See build/w/profile-plain.txt and profile-okuri.txt and the raw
+traces referenced by profile-baseline.json.
+
+After optimization, the same plain trace has 21 snapshots rather than 41;
+hex self time 328 ms rather than 437; outer dispatch inclusive 1047 ms
+rather than 1234. This is evidence of eliminated work, not proof of S2.1.
+The trace includes dispatch/protocol parsing in outer self time; it does
+not isolate protocol parsing from all other glue. No explicit collection
+was observed inside the instrumented conversions. The runtime probe
+(list (fboundp 'gc-stats) (fboundp 'garbage-collect)
+      (fboundp 'nelisp-artifact-load-file)) returned (nil t nil).
+Automatic runtime GC is not separately observable by this instrumentation.
+Therefore S1.2's full GC/parse separation remains incomplete.
+
+The read-only runtime sample-profile.sh documents gdb attach sampling;
+runtime Doc 201 explains each attachment may cost 0.3-3 seconds. That is
+unsuitable for a single subsecond request here. The traces identify
+interpreted command dispatch and scalar encoding as hot paths. Proposed
+runtime work: expose allocation/GC CPU counters to the engine; provide the
+same native artifact loader in ordinary source/stdio execution as in the
+artifact CLI; then sample evaluator dispatch/root-frame construction
+over many repeated requests. No runtime attribution is claimed without
+sampling evidence.
+
+* Native compilation investigation
+engine/ddskk-hotpath.neln contains only ascii-vowel-p and decimal-step.
+No engine/ or host source loads or calls those probes. Conversion functions
+therefore still execute from source in the current host path.
+
+The read-only hosted compiler accepts three extracted production loops:
+#+begin_example
+((:name "ddskk-engine--hex-uncached" :native t)
+ (:name "ddskk-engine--decode-codepoints" :native t)
+ (:name "ddskk-engine--parse-server-reply" :native t))
+#+end_example
+The runtime artifact CLI evaluates the decode probe to "Ka". Ordinary
+engine-path load of the artifact fails with void-function (:format).
+Calling nelisp-artifact-load-file fails with void-function. Loading the
+read-only artifact implementation first gets further, but fails with
+nelisp-artifact-invalid: ("unsupported manifest format" nil ...).
+The executable reports these errors while exiting zero; exit status alone
+cannot validate such a probe. No native artifact was installed or claimed
+to execute in the production engine.
+
+* Changes (file:line)
+- engine/ddskk-engine.el:396: bounded scalar-hex cache, with copied string
+  keys and current-content equality; original encoder retained unchanged.
+- engine/skk-ime-session.el:196: optional suppression of discarded batch
+  snapshots; every key command still executes; one final snapshot returned.
+- engine/ddskk-engine-stdio.el:29: explicit opt-in private phase profiler.
+- engine/conversion-profile.el:1: phase wrappers for command, search,
+  relay, parsing, snapshots, formatting and explicit GC.
+- engine/test-conversion-cache.el:1: Unicode, input mutation and bounded
+  eviction checks against the original encoder.
+- windows/test-host/conversion-corpus.json:1: six public-dictionary readings.
+- windows/test-host/bench-conversion.ps1:1: private host/CPU/wall/load,
+  cold/warm, server readiness/relay, learning and explicit GC measurements.
+- windows/test-host/check-conversion-cpu.ps1:1: unchanged S2.1 ratio gate.
+- windows/test-host/compare-conversion-candidates.ps1:1: complete response
+  and learning comparison; rejects zero samples and mismatches.
+- windows/test-host/summarize-conversion-profile.ps1:1: nested phase totals.
+- windows/test-host/bench-conversion-tsf.ps1:1: private TSF wall-clock gate
+  with quiet retry/load evidence.
+- tools/ai/probe-conversion-native.el:1: compile-only production-loop probe.
+- tools/ai/conversion-latency-progress.org:6: evidence/cmd/notes appended,
+  criteria and pending markers unchanged.
+- tools/ai/conversion-latency-l1-report.org:1: this evidence report.
+
+* Commands and verbatim gate tails
+Runtime, Dictionary and SkkServExecutable below are invocation variables
+for coordinator-provided paths, not constants in repository scripts.
+All PowerShell file invocations use -NoProfile -ExecutionPolicy Bypass.
+
+** Build
+#+begin_src powershell
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64 "-DNELISP_EXECUTABLE=$Runtime"
+#+end_src
+Exit 0 for each. Build produced the private DLL, host and TSF harness.
+Existing MSVC wchar_t-to-char C4244 warnings remain.
+
+** S1.1 and S2.1
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion.ps1 -Runtime $Runtime -Dictionary $Dictionary -Output build/w/baseline.json -Iterations 20 -ColdLoadSleepSec 45
+# Same command after the engine edit, Output build/w/candidate.json.
+# Repeat with -SkkServExecutable $SkkServExecutable for *-server.json.
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/check-conversion-cpu.ps1 -Baseline build/w/baseline.json -Candidate build/w/baseline.json
+#+end_src
+Unchanged-tree reproduction, exit 1, tail:
+#+begin_example
+plain n=80 baseline=250.000 candidate=250.000 ratio=1.000 limit=0.5
+okuri n=40 baseline=796.875 candidate=796.875 ratio=1.000 limit=0.5
+FAIL S2.1: engine CPU p50 ratio exceeds 0.5
+#+end_example
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/check-conversion-cpu.ps1 -Baseline build/w/baseline.json -Candidate build/w/candidate.json
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/check-conversion-cpu.ps1 -Baseline build/w/baseline-server.json -Candidate build/w/candidate-server.json
+#+end_src
+Both exit 1. Verbatim result lines:
+#+begin_example
+plain n=80 baseline=250.000 candidate=265.625 ratio=1.063 limit=0.5
+okuri n=40 baseline=796.875 candidate=328.125 ratio=0.412 limit=0.5
+FAIL S2.1: engine CPU p50 ratio exceeds 0.5
+plain n=80 baseline=421.875 candidate=296.875 ratio=0.704 limit=0.5
+okuri n=40 baseline=406.250 candidate=265.625 ratio=0.654 limit=0.5
+FAIL S2.1: engine CPU p50 ratio exceeds 0.5
+#+end_example
+
+** Candidate and learning equality
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/compare-conversion-candidates.ps1 -Baseline build/w/baseline.json -Candidate build/w/candidate.json
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/compare-conversion-candidates.ps1 -Baseline build/w/baseline-server.json -Candidate build/w/candidate-server.json
+# Learning: benchmark -Learning -Iterations 1; baseline uses a source copy
+# under build/w/baseline-repo with the three changed engine files from HEAD.
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/compare-conversion-candidates.ps1 -Baseline build/w/learning-baseline.json -Candidate build/w/learning-candidate.json
+#+end_src
+All exit 0:
+#+begin_example
+PASS candidate/state equality: 122/122
+PASS candidate/state equality: 122/122
+PASS candidate/state equality: 8/8
+PASS learned candidate/state equality: 6/6
+#+end_example
+A copied JSON with sample 0's response replaced fails, exit 1:
+#+begin_example
+Candidate/state mismatch at sample 0 (kana)
+#+end_example
+The original logs were untouched. This negative control and unchanged-log
+CPU rejection follow verify-the-verifier; no threshold was relaxed.
+
+** DDSKK suite
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-ddskk-behavior.ps1 -ColdLoadSleepSec 45 -DllPath build/w/Release/ddskk-ime.dll -TsfHostExe build/w/Release/tsf-host.exe -EngineHostPath build/w/Release/ddskk-engine-host.exe -EngineExecutablePath $Runtime
+#+end_src
+Exit 0, build/w/behavior-candidate.log:
+#+begin_example
+Result CtrlGMaxMs Assertions
+------ ---------- ----------
+PASS        1.497         45
+#+end_example
+
+** ctest
+#+begin_src powershell
+ctest --test-dir build/w -C Release --output-on-failure
+#+end_src
+Baseline and candidate exit 0; candidate verbatim tail:
+#+begin_example
+9/9 Test #9: ddskk-engine-e2e-test ..............   Passed   39.38 sec
+
+100% tests passed, 0 tests failed out of 9
+
+Total Test time (real) =  42.88 sec
+#+end_example
+Baseline: 9/9, Total Test time (real) = 50.32 sec.
+
+** ERT
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L vendor/ddskk -L engine -l skk -l skk-ime-session -l engine/test-live-input.el -f ert-run-tests-batch-and-exit
+#+end_src
+Baseline and candidate exit 0. Candidate verbatim tails:
+#+begin_example
+Ran 45 tests, 45 results as expected, 0 unexpected (2026-10-05 08:32:00+0900, 0.155000 sec)
+Ran 3 tests, 3 results as expected, 0 unexpected (2026-10-05 08:32:00+0900, 0.069337 sec)
+#+end_example
+
+** Standalone cache checks
+#+begin_src powershell
+# Set DDSKK_USER_JISYO and LOCALAPPDATA to private build/w paths first.
+& $Runtime --load engine/test-conversion-cache.el
+#+end_src
+Exit 0; output checked (the runtime can exit zero after Lisp errors):
+#+begin_example
+PASS conversion-cache checked=528
+nil
+#+end_example
+
+** Profiling and native probe
+#+begin_src powershell
+# benchmark -Profile -Iterations 1, before and after optimization.
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/summarize-conversion-profile.ps1 -Trace $Trace
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L ../nelisp/lisp -L ../nelisp/src -l tools/ai/probe-conversion-native.el
+& $Runtime eval-elisp-artifact build/w/conversion-native-probe.neln '(ddskk-engine--decode-codepoints "75,97")'
+#+end_src
+Profiler: 5 plain/3 okuri requests, 12 functions; native probe 3 functions;
+artifact CLI returns "Ka". Engine-path loader failures are described above.
+
+* Private server-only results
+The final launchers derive the DLL directory from the installed Emacs
+executable (or accept SkkServDependencyDir), reserve/check only the requested
+test port before starting their server, and verify a real L-dictionary hit.
+Both server-only runs used port 31181 and a unique SKKSERV_INSTANCE, with
+all configs/cache/user data under their private build directory. Readiness
+took 1162 ms for baseline and 1666 ms for candidate. The copied L dictionary
+was served by the private server; the host tier was a private empty file.
+
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion.ps1 -Runtime $Runtime -Dictionary $Dictionary -Output build/w/baseline-relay.json -RepositoryPath build/w/baseline-repo -Iterations 20 -ColdLoadSleepSec 45 -SkkServExecutable $SkkServExecutable -ServerOnly -RequireQuiet
+# Candidate: omit RepositoryPath and use Output build/w/candidate-relay.json.
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/check-conversion-cpu.ps1 -Baseline build/w/baseline-relay.json -Candidate build/w/candidate-relay.json
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/compare-conversion-candidates.ps1 -Baseline build/w/baseline-relay.json -Candidate build/w/candidate-relay.json
+#+end_src
+Benchmarks exit 0; comparator CPU gate exit 1; response equality exit 0.
+#+begin_example
+plain cpuMs n=80 p50=453.125 p90=921.875 max=2546.875
+plain wallMs n=80 p50=569.483 p90=1095.386 max=2746.631
+okuri cpuMs n=40 p50=421.875 p90=656.250 max=1093.750
+okuri wallMs n=40 p50=517.744 p90=779.542 max=1151.870
+plain cpuMs n=80 p50=218.750 p90=328.125 max=656.250
+plain wallMs n=80 p50=302.990 p90=432.818 max=827.835
+okuri cpuMs n=40 p50=375.000 p90=531.250 max=1000.000
+okuri wallMs n=40 p50=476.765 p90=622.333 max=1110.657
+plain n=80 baseline=453.125 candidate=218.750 ratio=0.483 limit=0.5
+okuri n=40 baseline=421.875 candidate=375.000 ratio=0.889 limit=0.5
+FAIL S2.1: engine CPU p50 ratio exceeds 0.5
+PASS candidate/state equality: 122/122
+#+end_example
+Baseline cold CPU/wall: plain 1046.875/1139.539 ms; okuri
+1453.125/1515.244 ms. Candidate: plain 406.25/567.455 ms; okuri
+765.625/921.324 ms. These are not quiet wall acceptance: later per-cold
+snapshots show other Emacs processes consuming approximately 1250 ms CPU
+over 1421-1643 ms intervals. The initial quiet check alone was insufficient;
+the final benchmark also retries immediately before each cold request
+and rejects a measurement if load rises across it.
+Explicit post-benchmark GC was separated from conversion CPU: baseline
+plain/okuri 328.125/265.625 ms; candidate 359.375/375 ms. Host dictionary
+hits in host-first mode return before contacting skkserv, as verified in
+windows/host/main.cpp:1070. There is no duplicate L lookup on those hits.
+
+* Quiet wall-clock gates
+** First okuri
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion.ps1 -Runtime $Runtime -Dictionary $Dictionary -Output build/w/quiet-cold.json -Iterations 1 -ColdLoadSleepSec 45 -Kinds okuri -RequireQuiet
+$j=Get-Content build/w/quiet-cold.json -Raw|ConvertFrom-Json
+$c=$j.samples|Where-Object cold
+"First okuri quiet wallMs=$($c.wallMs) cpuMs=$($c.cpuMs) limitMs=500"
+if($c.wallMs -ge 500){Write-Output 'FAIL S2.2'; exit 1}
+#+end_src
+Benchmark succeeds; wall gate exits 1. Verbatim tail:
+#+begin_example
+First okuri quiet wallMs=862.3179 cpuMs=828.125 limitMs=500
+FAIL S2.2
+#+end_example
+Both immediate before/after cold snapshots passed the quiet selector;
+their actual intervals and process CPU deltas are in quiet-cold.json and
+the private trace directory's cold-load.json.
+
+** TSF
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion-tsf.ps1 -Runtime $Runtime -Dictionary $Dictionary -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/measure-live-input-log.ps1 -Path $TsfLog
+#+end_src
+TSF gate exits 1, unchanged parser exits 0:
+#+begin_example
+Quiet check: heavy processes present; retry 1/10
+TSF n=20 p50=407 p90=563 max=640 log=<private build/w trace>/tsf.log
+FAIL S3.1: p50 >100 ms or p90 >150 ms
+#+end_example
+The path above is abbreviated; build/w/tsf-gate.log retains the full tail.
+Two opening load observations; final selected interval 1316 ms, top external
+64DriverLoad 203 ms and WindowsTerminal 109 ms. Closing interval 1600 ms,
+top external mep 109 ms. Both selected observations pass the quiet selector.
+The existing parser counts 20 warm candidate latencies; its conventional
+even-sample median is 430 ms, while the new gate uses nearest-rank p50=407.
+Both methods fail the 100-ms limit. Host/CPU statistics include 21 provider
+transactions (including the provider warm-up) rather than 20 candidates:
+#+begin_example
+DLL-Space-key-return count=22 median_ms=2.073 p90_ms=3.083 min_ms=0.007 max_ms=4.223
+Host-engine-roundtrip count=21 median_ms=422 p90_ms=547 min_ms=172 max_ms=625
+Runtime-process-CPU count=21 median_ms=406 p90_ms=531 min_ms=187 max_ms=593
+Dictionary-host-relay count=1 median_ms=0 p90_ms=0 min_ms=0 max_ms=0
+Engine-checkpoint-begin count=21 median_ms=31 p90_ms=62 min_ms=0 max_ms=63
+Engine-convert-begin count=21 median_ms=156 p90_ms=204 min_ms=78 max_ms=266
+Engine-dispatch count=21 median_ms=62 p90_ms=94 min_ms=16 max_ms=109
+Engine-replay-begin count=21 median_ms=141 p90_ms=203 min_ms=47 max_ms=344
+#+end_example
+Learning during TSF commit means only the first dictionary lookup reaches
+the host; subsequent conversions hit the temporary user jisyo. They remain
+CPU-bound in replay/dispatch/DDSKK, not dictionary I/O.
+
+* Verifier calibration and remaining work
+Synthetic copies of baseline samples with CPU multiplied by exactly 0.5
+pass the comparator (80 plain/40 okuri; ratio 0.500; PASS S2.1: 2/2 kinds).
+This is a verifier boundary control, not a performance result. Original
+logs remain untouched. Unchanged performance logs and mutated candidate
+states are the negative controls recorded above.
+
+S2.1, S2.2 and S3.1 fail. S1.2 cannot yet separate automatic GC and exact
+protocol parse CPU. S3.2 was deliberately not attempted because deployment
+and live processes/settings are outside this lane. The native compiler
+accepts the hot loops, but the ordinary engine-path loader integration
+needs runtime/host work outside this worker's file scope. No threshold,
+test, or vendor source was weakened.
+
+* Cleanup
+All benchmark/harness finally blocks shut down or kill only their owned
+hosts and servers; host jobs terminate their runtime children. The final
+workspace-executable process inventory returned no entries. Recorded server
+PID 17696 no longer exists; PID 3632 was reused by audiodg, so that unrelated
+process was left alone. No owned server or TSF host remains. All changes are
+unstaged; git diff --check returned no whitespace findings.
+Final syntax inventory used PowerShell's Language.Parser.ParseFile on
+windows/test-host/*conversion*.ps1; tail:
+#+begin_example
+PowerShell syntax checked=6 findings=0
+Recorded owned runtime PIDs checked=24 leftover=0
+#+end_example
+The runtime audit matched only PIDs from this workspace's host dispatch
+traces and process name nelisp. No process was killed based on that audit.
