@@ -16,6 +16,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'live-host-processes.ps1')
 $Manifest = [IO.Path]::GetFullPath($Manifest)
 if (-not (Test-Path -LiteralPath $Manifest)) { throw "manifest not found: $Manifest" }
 $record = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
@@ -53,15 +54,13 @@ Show-Or-Set $nativeImeKey 'Repository' $record.previous.repository
 Show-Or-Set $nativeImeKey 'SettingsExe' $record.previous.settings_exe
 Show-Or-Set $runKey $runName $record.previous.sumi_run
 
+Stop-DdskkLiveHost -LiveRoot (Join-Path $env:LOCALAPPDATA 'DDSKK') -DryRun:$DryRun
 if ($DryRun) {
-  Write-Host '[DRYRUN] would restart only ddskk-engine-host.exe and sumi-skk-ui.exe'
+  Write-Host '[DRYRUN] would start restored live host and restart sumi-skk-ui.exe'
   Write-Host '[DRYRUN] would verify STATUS on \\.\pipe\ddskk-ime-v1'
   exit 0
 }
 
-Get-CimInstance Win32_Process -Filter "Name='ddskk-engine-host.exe'" |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -Confirm:$false -ErrorAction SilentlyContinue }
-Start-Sleep -Milliseconds 400
 foreach ($name in 'DDSKK_PIPE_NAME','DDSKK_USER_JISYO',
                   'DDSKK_USER_JISYO_SAVE_BATCH_SIZE','DDSKK_ENGINE_IDLE_GC_MS') {
   Remove-Item "Env:\$name" -ErrorAction SilentlyContinue

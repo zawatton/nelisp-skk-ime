@@ -57,9 +57,14 @@ pwsh -File windows\scripts\deploy-live.ps1 -Dll -HostExe -Engine -Indicator -Dry
 
 Prints every action the script would take -- file copies, registry
 reads/writes, process stop/start, and live-pipe round trips -- and
-performs none of them. It never touches the registry, never enumerates
-or stops processes, and never opens a named pipe, so it has no
-dependency on the target machine actually having DDSKK installed. This
+performs none of them. It never touches the registry or stops processes,
+and never opens a named pipe. Host restart previews enumerate executable
+paths and list every selected PID, path, and reason, plus protected hosts.
+Only `ddskk-engine-host.exe` executables under `%LOCALAPPDATA%\DDSKK` are
+eligible; outside-root hosts (including private worktree hosts) and hosts
+with unreadable paths are protected. The root comparison ignores case,
+normalizes separators and dot segments, and requires a directory boundary.
+The live pipe is not opened to infer ownership of outside-root hosts. This
 is also how the script itself is validated: a syntax parse plus several
 `-DryRun` invocations covering each switch and combination, run before
 any real deployment.

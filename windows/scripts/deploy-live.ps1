@@ -51,9 +51,9 @@
 
   -DryRun prints every action this script would take -- file copies,
   registry reads/writes, process stop/start, and live-pipe round trips --
-  and performs NONE of them. It never touches the registry, never
-  enumerates or stops processes, and never opens a named pipe, so it has
-  no dependency on the target machine actually having DDSKK installed.
+  and performs NONE of them. It never touches the registry or stops
+  processes, and never opens a named pipe. It reads process executable
+  paths to list the exact live host PIDs and selection reasons.
   This is what makes it safe to run anywhere and is this script's own
   test vehicle; see README.md.
 
@@ -127,6 +127,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'live-host-processes.ps1')
 
 # Core-only mode has its own narrow path: never reads COM registration,
 # starts/stops a process, or opens the engine pipe.
@@ -167,11 +168,10 @@ $HostSrc = Join-Path $RepoRoot 'windows\build\Release\ddskk-engine-host.exe'
 $IndicatorExe = Join-Path $RepoRoot 'sumi-ui\target\sumi-skk-ui.exe'
 $LivePipeName = 'ddskk-ime-v1'
 
-# Only ddskk-engine-host.exe processes are ever stopped by this script --
+# Only ddskk-engine-host.exe processes under LiveRoot are stopped --
 # never any other NeLisp process, and never an application that merely has
 # the DLL loaded (that case is handled by the -Dll restart-reminder above,
 # not by stopping anything).
-$HostProcessName = 'ddskk-engine-host.exe'
 $IndicatorProcessName = 'sumi-skk-ui'
 
 # Explicitly cleared before starting the live host so it serves the
@@ -188,7 +188,7 @@ $EnvVarsToClear = @(
 # ---------------------------------------------------------------------------
 # Shared helpers. Every one of them honors $DryRun by printing what it
 # would do and returning without touching the filesystem, the registry, a
-# process, or a pipe -- this is the single choke point that makes -DryRun
+# process, or a pipe (host selection reads process paths) -- this makes -DryRun
 # a complete, live-system-independent preview instead of a partial one.
 # ---------------------------------------------------------------------------
 function Write-Step {
@@ -256,12 +256,7 @@ function Get-RegistryValueOrNull {
 }
 
 function Stop-LiveHost {
-  if ($DryRun) { Write-Step "would stop all running $HostProcessName processes"; return }
-  Get-CimInstance Win32_Process -Filter "Name='$HostProcessName'" | ForEach-Object {
-    Write-Host "STOP  : pid=$($_.ProcessId)"
-    Stop-Process -Id $_.ProcessId -Force -Confirm:$false -ErrorAction SilentlyContinue
-  }
-  Start-Sleep -Milliseconds 400
+  Stop-DdskkLiveHost -LiveRoot $LiveRoot -DryRun:$DryRun
 }
 
 function Clear-DdskkEnv {
