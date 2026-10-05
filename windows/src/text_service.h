@@ -88,7 +88,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   HRESULT STDMETHODCALLTYPE OnChange(REFGUID guid) override;
 
   HRESULT ApplyEngineState(TfEditCookie edit_cookie, ITfContext* context,
-                           const ddskk::EngineState& state);
+                           const ddskk::EngineState& state,
+                           ddskk::AutoPairCaretUpdate* pair_caret = nullptr);
   void UpdateCandidateUI(ITfContext* context,
                          const ddskk::EngineState& state);
   HRESULT SelectCandidate(UINT index) override;
@@ -226,6 +227,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   ddskk::EngineClient engine_;
   ddskk::RealtimeFrontend realtime_frontend_;
   ddskk::AutoPair auto_pair_;
+  ddskk::AutoPairCaret auto_pair_caret_ = ddskk::AutoPairCaret::Selection;
   HWND provider_window_ = nullptr;
   std::mutex provider_engine_mutex_;
   std::atomic<uint64_t> provider_sequence_{0};

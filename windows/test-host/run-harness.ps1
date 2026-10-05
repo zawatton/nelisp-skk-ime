@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Drives tsf-host.exe against the real ddskk-ime engine on a private,
   disposable named pipe -- no shared state with any live Emacs/anvil
@@ -81,6 +81,7 @@ param(
   [string]$InlineDirectory = '',
   [string]$InlinePidFile = '',
   [string]$CaretMapName = '',
+  [ValidateSet("", "selection", "left-key")][string]$AutoPairCaret = "",
   [ValidateRange(0,1)][int]$LocalConversion = 0,
   [ValidateRange(-1,1)][int]$ApplicationLocalConversion = -1,
   [ValidateSet('none','missing','corrupt')][string]$LocalIndexFailure = 'none',
@@ -255,6 +256,11 @@ New-ItemProperty -Path $regPath -Name SkkServEnable -Value 0 -PropertyType DWord
 New-ItemProperty -Path $regPath -Name InitialKanaMode -Value 1 -PropertyType DWord -Force | Out-Null
 if ($env:DDSKK_HARNESS_LOCAL_CONVERSION -eq '1') { $LocalConversion = 1 }
 New-ItemProperty -Path $regPath -Name LocalConversion -Value $LocalConversion -PropertyType DWord -Force | Out-Null
+if ($AutoPairCaret) {
+  $appPath = Join-Path $regPath ('Apps\' + [IO.Path]::GetFileName($TsfHostExe).ToLowerInvariant())
+  New-Item -Path $appPath -Force | Out-Null
+  New-ItemProperty -Path $appPath -Name AutoPairCaret -Value $AutoPairCaret -PropertyType String -Force | Out-Null
+}
 if ($ApplicationLocalConversion -ge 0) {
   $appPath = Join-Path $regPath ('Apps\' + [IO.Path]::GetFileName($TsfHostExe).ToLowerInvariant())
   New-Item -Path $appPath -Force | Out-Null

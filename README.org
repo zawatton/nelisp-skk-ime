@@ -201,7 +201,37 @@ deleting an opener retains the closer, as in DDSKK. Special midashi are
 excluded. Active-region wrapping is deliberately omitted. IMM32 depends
 on CUAS exposing a TSF context; the isolated legacy EDIT probe on this
 machine currently cannot obtain one (=E_NOINTERFACE=), so IMM32 caret
-placement remains unverified. No injected-key fallback is implemented.
+placement remains unverified.
+
+Per-application =Apps\<exe>\AutoPairCaret= (REG_SZ) selects =selection=
+(the default for ordinary applications) or =left-key=. If the value is
+absent, =WindowsTerminal.exe=, =OpenConsole.exe=, =conhost.exe=, =msedge.exe=
+and =chrome.exe= use =left-key=. The case-insensitive executable list lives
+only in =windows/src/auto_pair.cpp=. Explicit =selection= overrides these
+defaults; malformed values fall back to =selection=.
+
+Terminal TSF selection does not move the shell cursor. Chromium's
+[[https://github.com/chromium/chromium/blob/main/ui/base/ime/win/tsf_text_store.cc][TSFTextStore]] commits with =kMoveCursorAfterText= and guards forwarding
+selection changes to TextInputClient with =!IsInputIME()=. A later pure
+selection session therefore cannot reliably repair the caret for our IME
+profile; Edge/Chrome use the key strategy rather than a selection workaround.
+
+For =left-key=, the core sends one extended Left down/up message per Unicode
+closer character synchronously to the original focused window, after the
+commit edit lock has closed (including LocalConversion commits). This keeps
+arrows ahead of subsequent queued typing. Sent messages bypass TSF keyboard
+message-pump preprocessing and the keymap LL hook; they also carry the
+keymap's =0x4e494b4d= input tag. Shift/Ctrl/Alt thread state is saved,
+neutralized, and restored. No SendInput is used. Focus loss cancels delivery.
+Keys are armed only when the closer was successfully committed, never for
+pair-off, latin-mode, failed text writes, or failed composition termination.
+
+This strategy requires a host that accepts Win32 key messages on its same-thread
+focused window. Cross-thread focus cancels delivery. Raw-input-only hosts and asynchronously applied renderer/shell edits
+are not guaranteed. One Left assumes one cursor step per Unicode character:
+combining sequences, grapheme clusters, or shells that navigate by display
+cell can differ, including multi-cell closers. Real Terminal/Edge/Chrome UI
+validation remains separate from the isolated host tests.
 The TSF core changes require no shim or ABI change. For an operator-created
 Start Menu entry, run =windows/keymap/New-RulesShortcut.ps1 -Executable
 <nelisp-ime-keymap.exe>=; it points to =--rules=. The script is not run by
