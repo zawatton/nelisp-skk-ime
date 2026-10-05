@@ -1,0 +1,13 @@
+#+TITLE: Input rules and key remapping in the NeLisp IME settings window (Sumi)
+
+* S1 File settings in the settings window
+** S1.1 Headless selftest: input-rules.conf and keymap.conf round trips keep comments, unknown lines and order; missing keys are inserted, a missing file is created from the template, writes are atomic and nothing changes when nothing changed
+pending
+** S1.2 The built window shows the 入力規則 and キー置き換え tabs, and Apply writes only the changed lines through the test overrides (hidden-window smoke or recorded screenshot)
+pending
+
+* S2 Regression and live use
+** S2.1 The existing --settings-selftest still passes (9 PASS before SU1) and the registry-backed tabs are unchanged
+pending
+** S2.2 Live: Sumi deployed with only Sumi restarted, and the user confirms both tabs, including that saved changes take effect
+pending

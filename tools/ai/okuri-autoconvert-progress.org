@@ -1,0 +1,14 @@
+#+TITLE: Okuri conversion starts at the okuri kana, as in DDSKK
+
+* S1 Behaviour equals DDSKK
+** S1.1 TSF harness with a SKK-JISYO.L copy: K a K u shows ▼書く without SPACE; SPACE then moves to the next candidate and ENTER commits it
+#+NOTE: Before the fix (Claude, 2026-10-05, main dadca8f): K a K u stays ▽か*く until SPACE; the first SPACE shows ▼書く only after the engine answers, a second SPACE gives 掛く.
+pending
+** S1.2 Edge cases equal a stock DDSKK oracle: sokuon (KaTta), n (SiNda), K i e R u, Ctrl+G back to ▽, Backspace in the okuri part
+pending
+
+* S2 Regression and live use
+** S2.1 ctest with NELISP_EXECUTABLE, the DDSKK suite (Require count 15), input rules, core hot swap and Emacs integration pass
+pending
+** S2.2 Live: deployed with deploy-live -Core and the user confirms that one SPACE is no longer needed for okuri conversions
+pending

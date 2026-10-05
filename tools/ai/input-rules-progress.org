@@ -2,21 +2,35 @@
 
 * S1 Rules in the engine
 ** S1.1 input-rules.conf (defaults equal the user's Emacs DDSKK config: hankaku and zenkaku symbol tables, bracket pairs) is parsed by the engine with per-line errors; the effective rom-kana rules contain the active symbol table and the rule tree exported to the DLL matches the engine for every configured symbol key in hiragana and katakana
-pending
+#+NOTE: IR1 (merged ff005a0..dadca8f; no production change after the round 2 gates): ERT 13/13 (defaults, per-line errors, export cache); TSF parity 525 checks per width, 7 symbols, 0 failures against the stock-DDSKK oracle tables; identical in the round 3 rerun.
+evidence: build/validation/input-rules/ert-input-rules.log sha256=2102bf6c3e3d29407b7433d14b2c88c49459d856c00702c784049b72ae79e014
+evidence: build/validation/input-rules/input-rules-verified.log sha256=6e1d3e56c903ae0d1f5d2cd7643ca4b754cefe7093436a7c9c7d8cd03a1084b6
+evidence: build/validation/input-rules/oracle-hankaku.txt sha256=68f35e30f3123511bf3e932a57943f92108c2129e9ae497c0d8499c6dc2aba71
+evidence: build/validation/input-rules/oracle-zenkaku.txt sha256=44ac9a1f95b5c2924228d42fdae1e3d284afaa11940149ec77453a955bbffec3
+evidence: build/validation/input-rules/round3-input-rules.log sha256=34c349d316655f60b4915a71d22bad290b875b23626bc0b0ca61b8714476a3dd
 ** S1.2 Switching width (hankaku/zenkaku) and editing the file take effect without restarting applications (engine reload); a harness run shows the output change after a file edit
-pending
+#+NOTE: The TSF input-rules test switches width (hankaku/zenkaku) and edits the file externally in one running application; INPUT_RELOAD OK and the edited PERIOD output are asserted (17 assertions, round 3).
+evidence: build/validation/input-rules/round3-input-rules.log sha256=34c349d316655f60b4915a71d22bad290b875b23626bc0b0ca61b8714476a3dd
 
 * S2 Auto-pair
 ** S2.1 In kana modes a configured opener commits open + close with the caret between them (TSF harness BUF and SEL checks); latin mode, ▽/▼ preedit and Backspace follow DDSKK semantics
+#+NOTE: Asserted by the TSF input-rules test (round 3): pair with the caret between, typing inside, Backspace, no pairing in latin mode, katakana. Not asserted yet: openers typed during ▽/▼ preedit, so this stays pending.
 pending
 ** S2.2 Caret placement also works in IMM32 applications such as Emacs (IMM32 harness window, or a documented live check)
+#+NOTE: IR1 found no caret control through CUAS in Emacs (E_NOINTERFACE). Worker EP1 (inline protocol v1.1 PAIR, branch worker/emacs-autopair) is implementing it.
 pending
 
 * S3 Editing and live use
 ** S3.1 GUI: an input-rules page in the settings editor (symbol rows, pairs, width, auto-pair on/off) with comment-preserving atomic writes and external-edit reload, plus a Start Menu entry
-pending
+#+NOTE: nelisp-ime-keymap.exe --rules: rules-editor-self-test (comment kept, atomic writes, external-change conflict) passes in keymap ctest 7/7 (round 3); the cmd checks the live Start Menu entry.
+evidence: build/validation/input-rules/round3-keymap-ctest.log sha256=b3b140bc75873e67f7da696f62accbe0e63aa43742c8f0e8144eafc07264f711
+cmd: test -f "$APPDATA/Microsoft/Windows/Start Menu/Programs/nelisp-ime 入力規則.lnk"
 ** S3.2 DDSKK suite, ctest with NELISP_EXECUTABLE and the Emacs integration suite still pass; ordinary-key latency unchanged
-pending
+#+NOTE: Round 2 gates on the final production code (ff005a0..dadca8f changed only tests): Emacs integration 33 assertions/5 cases, core hot swap 19, DDSKK suite 45, ctest 9/9. Round 3: ctest 10/10, input rules 17, core hot swap 19 (ordinary-key threshold unchanged, max 7067 us), DDSKK suite 45 with the final suite.
+evidence: build/validation/input-rules/gates-final.log sha256=d023b425f5189c67dce99ee320b57d02770c52d79aaed01e056c38b8489ab306
+evidence: build/validation/input-rules/round3-gates.log sha256=e84e307d8fe1b1f4b9a2acc33ac2f3ef523be1d8adad14f72754656239ce44e0
+evidence: build/validation/input-rules/round3-ctest.log sha256=cfb5c4571ac3d06af3dd18ca35599c6bb08815b5323e94de26201dac7d87e00a
+evidence: build/validation/input-rules/round3-proposal-validation.log sha256=66d3d16332dcab28b9eb5cfbc9cfaa51d49f8bfdaa74525a4e57b5c00679aa51
 ** S3.3 Live: deployed without application restarts and the user confirms in Emacs and another application
 pending
 
@@ -50,7 +64,7 @@ engine resolves NELISP_IME_INPUT_RULES, otherwise inherited APPDATA. No
 windows/host/main.cpp edit, live deployment, registration, commit or staging
 was performed. The fixed criteria above are intentionally unchanged.
 
-** Change locations
+*** Change locations
 | File and line | Change |
 | engine/skk-input-rules.el:1 | New parser, exact width defaults, line errors, environment path, idempotent rule installation and pair/options/error export. |
 | engine/skk-input-rules.el:14 | Wire export cache invalidated by tree, configuration and punctuation settings. |
@@ -91,7 +105,7 @@ was performed. The fixed criteria above are intentionally unchanged.
 | README.org:123 | Format, editor, runtime file resolution, unsupported registry override, reload and explicit IMM32/region limitations. |
 | tools/ai/input-rules-progress.org:23 | Historical red reproduction and appended implementation evidence only. |
 
-** Gate commands and recorded results
+*** Gate commands and recorded results
 All runtime commands pass the external runtime through an invocation
 parameter. Below, =$Runtime= denotes that supplied executable, =$Root=
 the current worktree, =$Core= =build/w/Release=, =$Rules=
@@ -167,7 +181,7 @@ Logs under ignored build/ preserve the full output.
   This does not establish caret behavior in Emacs. No injected-key fallback
   was added without a validating application path. Evidence: build/imm32.log.
 
-** Retained failures and limits
+*** Retained failures and limits
 - The full feature command is =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/input-rules/test-input-rules.ps1 -BuildDirectory $Core -RulesBuildDirectory $Rules -KeymapExe $Keymap -EngineExecutablePath $Runtime -ColdLoadSleepSec 45=.
   Historical logs retain the missing-file native reader failure, the two
   zenkaku exclamation parity failures, watcher reload failures and pair-off
@@ -186,7 +200,7 @@ Logs under ignored build/ preserve the full output.
   settings, deployment, registration and processes belonging to others.
   Active-region wrapping is omitted as authorized. IMM32 S2.2 remains open.
 
-** Final serialized regression commands
+*** Final serialized regression commands
 These invocations follow the feature runs without another IR1 engine suite
 running concurrently. The private missing file override is used for Emacs
 integration, hot-swap and CTest. DDSKK behavior uses a private two-line file
@@ -245,7 +259,7 @@ candidate or tested buffer. All existing assertions/waits/thresholds remain.
   and unchanged 120-second e2e timeout were used. The four sequential gates
   together ended =GATES failures=0 gates=4= (build/gates-final.log).
 
-** Final feature result and artifact hashes
+*** Final feature result and artifact hashes
 - The unchanged full feature command above, after the session guard, exited
   0. Verbatim tail (build/input-rules-verified.log):
   =INPUT_PARITY checks=525 symbols=7 failures=0=
