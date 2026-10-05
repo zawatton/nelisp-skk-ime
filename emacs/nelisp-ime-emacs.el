@@ -218,26 +218,33 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
         (when (and sequence (integerp revision) (zerop (% revision 2))
                    (equal revision (nelisp-ime-emacs--read key "revision"))
                    (equal sequence (nelisp-ime-emacs--read key "sequence")))
-          (if (or (not (equal open 1))
-                  (not (memq (nelisp-ime-emacs--state) nelisp-ime-emacs-open-states)))
-              (progn (setq nelisp-ime-emacs--label "")
-                     (nelisp-ime-emacs--restore frame))
-            ;; Preedit/candidate/registration are engine states, not scripts.
-            ;; Retain the last input script for their cursor and label.
-            (when (member mode '("hiragana" "katakana" "jisx0201" "wide-latin" "latin" "abbrev"))
-              (setq nelisp-ime-emacs--base-mode mode))
-            (unless (gethash frame nelisp-ime-emacs--cursors)
-              (puthash frame (frame-parameter frame 'cursor-color) nelisp-ime-emacs--cursors))
-            (let ((color (cdr (assoc nelisp-ime-emacs--base-mode
-                                     (if (eq (frame-parameter frame 'background-mode) 'dark)
-                                         nelisp-ime-emacs-dark-colors nelisp-ime-emacs-light-colors)))))
-              (when color (set-cursor-color color)))
-            (setq nelisp-ime-emacs--label
-                  (or (cdr (assoc nelisp-ime-emacs--base-mode
-                                  '(("hiragana" . "[あ]") ("katakana" . "[ア]")
-                                    ("jisx0201" . "[ｱ]") ("wide-latin" . "[Ａ]")
-                                    ("latin" . "[A]") ("abbrev" . "[aA]")))) ""))))
-        (force-mode-line-update t)))))
+          ;; Every side effect below forces a frame or mode-line redisplay,
+          ;; which costs 10-30 ms in large buffers; at 10 Hz that is a
+          ;; sizable share of a core, so apply only actual changes.
+          (let ((old-label nelisp-ime-emacs--label))
+            (if (or (not (equal open 1))
+                    (not (memq (nelisp-ime-emacs--state) nelisp-ime-emacs-open-states)))
+                (unless (equal old-label "")
+                  (setq nelisp-ime-emacs--label "")
+                  (nelisp-ime-emacs--restore frame))
+              ;; Preedit/candidate/registration are engine states, not scripts.
+              ;; Retain the last input script for their cursor and label.
+              (when (member mode '("hiragana" "katakana" "jisx0201" "wide-latin" "latin" "abbrev"))
+                (setq nelisp-ime-emacs--base-mode mode))
+              (unless (gethash frame nelisp-ime-emacs--cursors)
+                (puthash frame (frame-parameter frame 'cursor-color) nelisp-ime-emacs--cursors))
+              (let ((color (cdr (assoc nelisp-ime-emacs--base-mode
+                                       (if (eq (frame-parameter frame 'background-mode) 'dark)
+                                           nelisp-ime-emacs-dark-colors nelisp-ime-emacs-light-colors)))))
+                (when (and color (not (equal color (frame-parameter frame 'cursor-color))))
+                  (set-cursor-color color)))
+              (setq nelisp-ime-emacs--label
+                    (or (cdr (assoc nelisp-ime-emacs--base-mode
+                                    '(("hiragana" . "[あ]") ("katakana" . "[ア]")
+                                      ("jisx0201" . "[ｱ]") ("wide-latin" . "[Ａ]")
+                                      ("latin" . "[A]") ("abbrev" . "[aA]")))) "")))
+            (unless (equal old-label nelisp-ime-emacs--label)
+              (force-mode-line-update t))))))))
 
 (defun nelisp-ime-emacs--install-evil-hooks ()
   (dolist (state '(normal insert replace visual motion operator emacs))
