@@ -17,8 +17,9 @@ evidence: build/validation/input-rules/round3-input-rules.log sha256=34c349d3166
 #+NOTE: Asserted by the TSF input-rules test (round 3): pair with the caret between, typing inside, Backspace, no pairing in latin mode, katakana. Not asserted yet: openers typed during ▽/▼ preedit, so this stays pending.
 pending
 ** S2.2 Caret placement also works in IMM32 applications such as Emacs (IMM32 harness window, or a documented live check)
-#+NOTE: IR1 found no caret control through CUAS in Emacs (E_NOINTERFACE). Worker EP1 (inline protocol v1.1 PAIR, branch worker/emacs-autopair) is implementing it.
-pending
+#+NOTE: IR1 found no caret control through CUAS in Emacs (E_NOINTERFACE). EP1 (inline protocol v1.1: PAIR <seq> <opener> <closer>, 2 s window) inserts the closer in Emacs with point between; Claude's run on main 828cceb: the real batch-Emacs emacs-pair case (custom << >> pair from a private input-rules.conf) and Emacs ERT 59/59.
+evidence: build/validation/release-828cceb/inline-emacs-pair.log sha256=f728d076cfe2699cd4d2eeea1ca16a4781b3e6c17c51f4bd73b7edc0106de08b
+evidence: build/validation/release-828cceb/ert.log sha256=465805ea9a0fbbbd9c8913e12a6763b47abe72c0d1f9621f7411ce3e924c1f2e
 
 * S3 Editing and live use
 ** S3.1 GUI: an input-rules page in the settings editor (symbol rows, pairs, width, auto-pair on/off) with comment-preserving atomic writes and external-edit reload, plus a Start Menu entry
@@ -32,6 +33,7 @@ evidence: build/validation/input-rules/round3-gates.log sha256=e84e307d8fe1b1f4b
 evidence: build/validation/input-rules/round3-ctest.log sha256=cfb5c4571ac3d06af3dd18ca35599c6bb08815b5323e94de26201dac7d87e00a
 evidence: build/validation/input-rules/round3-proposal-validation.log sha256=66d3d16332dcab28b9eb5cfbc9cfaa51d49f8bfdaa74525a4e57b5c00679aa51
 ** S3.3 Live: deployed without application restarts and the user confirms in Emacs and another application
+#+NOTE: Emacs pairing went live 2026-10-05 22:30 (core-20261005-222957 plus the live Emacs library reload). Waiting for the user's check in Emacs and another application.
 pending
 
 * Worker IR1 investigation notes (2026-10-05)

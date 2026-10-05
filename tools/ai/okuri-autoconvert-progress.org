@@ -3,12 +3,22 @@
 * S1 Behaviour equals DDSKK
 ** S1.1 TSF harness with a SKK-JISYO.L copy: K a K u shows ▼書く without SPACE; SPACE then moves to the next candidate and ENTER commits it
 #+NOTE: Before the fix (Claude, 2026-10-05, main dadca8f): K a K u stays ▽か*く until SPACE; the first SPACE shows ▼書く only after the engine answers, a second SPACE gives 掛く.
-pending
+#+NOTE: Claude's combined run on main 7ce4634 (OK1 + EP1), SKK-JISYO.L, busy machine: the okuri handoff's SyncKeys timed out after 5141 ms, the preedit stayed ▽か and ENTER committed "か*k". Fixed by OK1 rounds 3-5 (timeout fallback, lost-reply recovery); Claude's run on main 828cceb: ▽か*k, ▽か*く, ▼書く without SPACE, SPACE ▼掛く, ENTER 掛く.
+evidence: build/validation/release-828cceb/harness-kaku.log sha256=68db5b51ce4c43f74cb8c30d545e17a225e47f8f056f364e1aea4f76789c6998
 ** S1.2 Edge cases equal a stock DDSKK oracle: sokuon (KaTta), n (SiNda), K i e R u, Ctrl+G back to ▽, Backspace in the okuri part
+#+NOTE: K a T t a gives ▽か*った then ▼勝った (harness-katta.log, sha256 5c0132fa...). The fixture oracle run (23 checkpoints) passes in the worker's environment, but on Claude's Japanese-locale machine the oracle writes its temporary fixture in cp932 and its Backspace case enters registration; pending until that test fix lands.
 pending
 
 * S2 Regression and live use
 ** S2.1 ctest with NELISP_EXECUTABLE, the DDSKK suite (Require count 15), input rules, core hot swap and Emacs integration pass
-pending
-** S2.2 Live: deployed with deploy-live -Core and the user confirms that one SPACE is no longer needed for okuri conversions
+#+NOTE: Claude's run on main 828cceb (core 21:58, unchanged at 8a33873): ctest 10/10, DDSKK suite 45, hot swap 19, Emacs integration 33, input rules 17, the real-Emacs inline case and the fault-injection handoff test (19 assertions).
+evidence: build/validation/release-828cceb/ctest.log sha256=0a5dc4023b9e2d2c0261d402e1ea842ec9648b566d6544309df5065f3280a50a
+evidence: build/validation/release-828cceb/behavior.log sha256=17ec72ce3ef4dc09a7d382c8d15157179bcf5ec581fe74eca6cd9f1a214e9dc8
+evidence: build/validation/release-828cceb/inputrules.log sha256=6e1d3e56c903ae0d1f5d2cd7643ca4b754cefe7093436a7c9c7d8cd03a1084b6
+evidence: build/validation/release-828cceb/hotswap.log sha256=aec3755a3c469e83353e48c310bf79d70747d2398d9316ff0655c7d33fb19a9b
+evidence: build/validation/release-828cceb/emacs.log sha256=324ebcc130640187d3323058f13786fd9b10042357013f27730d05e8c19ecdf3
+evidence: build/validation/release-828cceb/inline-emacs-3.log sha256=aba59a77d93e15234c1505a9e0f2fbf8b5883a0e6616b078ea85df1c6683e07b
+evidence: build/validation/release-828cceb/okuri-handoff.log sha256=a06bc45cb737fb1e74efc8f82ddf75030419512c80f272cde01a79a1a953003b
+** S2.2 Live: deployed with deploy-live -Core and the user confirms that okuri conversions no longer need SPACE
+#+NOTE: Deployed 2026-10-05 22:29 (engine snapshot live-20261005-222909) and 22:30 (core-20261005-222957). Waiting for the user's check.
 pending

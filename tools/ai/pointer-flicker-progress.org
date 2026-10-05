@@ -1,0 +1,18 @@
+#+TITLE: Mouse pointer flicker while typing in Emacs (mode indicator anchor)
+
+* S1 The mode indicator never touches the pointer
+** S1.1 Without a known caret the transient indicator is not shown at GetCursorPos; it anchors at the TSF caret, the inline listener's caret or the system caret, and the window is mouse-transparent (indicator regression and unit tests)
+#+NOTE: MI1 (2b782ea, merged 999418d) reproduced the GetCursorPos fallback before the change. This ledger was created after dispatch (late).
+#+NOTE: Claude ran the regression host on main e47aa2f (MI1 code unchanged since): PASS mode indicator regression assertions=25.
+evidence: build/validation/release-ep1-ok1-mi1/indicator.log sha256=2b907635a03163703e5f040cdcf67a7a865db14aa04bfcf219d12f976dfeefd8
+** S1.2 Per-application Apps\<exe>\ModeIndicator 0/1 overrides the global setting, and the DDSKK suite, hot swap and Emacs integration still pass
+#+NOTE: The per-app override is among the 25 regression assertions; suites from Claude's run on main 828cceb.
+evidence: build/validation/release-ep1-ok1-mi1/indicator.log sha256=2b907635a03163703e5f040cdcf67a7a865db14aa04bfcf219d12f976dfeefd8
+evidence: build/validation/release-828cceb/behavior.log sha256=17ec72ce3ef4dc09a7d382c8d15157179bcf5ec581fe74eca6cd9f1a214e9dc8
+evidence: build/validation/release-828cceb/hotswap.log sha256=aec3755a3c469e83353e48c310bf79d70747d2398d9316ff0655c7d33fb19a9b
+evidence: build/validation/release-828cceb/emacs.log sha256=324ebcc130640187d3323058f13786fd9b10042357013f27730d05e8c19ecdf3
+
+* S2 Live use
+** S2.1 Live: deployed with deploy-live -Core and the user no longer sees the pointer flicker while typing in Emacs
+#+NOTE: Not reproduced in three passive WinEvent captures (no Emacs typing captured); the fix addresses the most likely mechanism, so the user's check is the acceptance. Deployed 2026-10-05 22:30 (core-20261005-222957).
+pending
