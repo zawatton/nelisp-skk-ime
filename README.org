@@ -82,7 +82,15 @@ the existing Sumi caret bridge, so the regular candidate panel appears below
 it with its usual styling and controls.  No extra core popup is created.
 Commits use =ITfInsertAtSelection= with
 =TF_IAS_NO_DEFAULT_COMPOSITION= in an edit session: no temporary TSF
-composition is created, and committed text never crosses the TCP channel.
+composition is created.  Committed text arrives through normal IME input.
+Protocol v1.1 listeners advertise =OK 1 pair=.  For an auto-paired kana-mode
+commit, the core sends =PAIR <seq> <opener> <closer>= with both strings
+percent-encoded like PREEDIT.  Pairs are configured only in =input-rules.conf=.
+Emacs waits up to two seconds for the opener, or matches an opener inserted
+at point within the preceding two seconds, then inserts the closer with point
+between them.  Older requests and insertions are ignored.  Buffer modification
+hooks, read-only fields, and minibuffer insertion restrictions still apply.
+
 The private TSF harness checks insertion; IMM32 =GCS_RESULTSTR=/character
 delivery and absence of a visible composition window still require a live
 Windows Emacs check.
@@ -97,7 +105,8 @@ check uses a private Win32 observer of the caret bridge and counts it plus
 any extra core popup; actual Sumi rendering and placement require a live check.
 
 Protocol v1 uses UTF-8, LF-terminated lines.  The core sends
-=HELLO 1 <token> <pid>=; Emacs replies =OK 1=, or closes a bad connection.
+=HELLO 1 <token> <pid>=; Emacs replies =OK 1 pair= (legacy listeners reply
+=OK 1=), or closes a bad connection.
 An authenticated replacement closes the previous client.  The core sends
 =PREEDIT <seq> <cursor> <text>= or =CLEAR <seq>=; only increasing sequence
 numbers apply.  Cursor indices count Unicode code points, including the

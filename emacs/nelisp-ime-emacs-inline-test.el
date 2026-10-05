@@ -511,16 +511,37 @@
          (lambda () (equal (process-get client 'received)
                             "OK 1 pair\nCARET 10 20 18\nCARET 40 50 18\nCARET 10 20 18\n")))))))
 
+(defun nelisp-ime-emacs-inline-test--clocked (function clock)
+  "Call pairing FUNCTION with CLOCK, keeping network wait time real."
+  (lambda (&rest args)
+    (cl-letf (((symbol-function 'float-time) (lambda (&rest _) (funcall clock))))
+      (apply function args))))
+
 (defmacro nelisp-ime-emacs-inline-test--pair-buffer (&rest body)
   (declare (indent 0))
   `(nelisp-ime-emacs-inline-test--with-server
      (with-temp-buffer
        (switch-to-buffer (current-buffer))
        (buffer-enable-undo)
-       (let ((client (nelisp-ime-emacs-inline-test--client)))
-         (push client test-clients)
-         (nelisp-ime-emacs-inline-test--hello client)
-         ,@body))))
+       (let ((test-pair-time 1000.0))
+         ;; Only product pairing functions use this clock. The TCP fixture's
+         ;; three-second timeout must still expire if a message never arrives.
+         (cl-letf (((symbol-function 'nelisp-ime-emacs--inline-after-change)
+                    (nelisp-ime-emacs-inline-test--clocked
+                     (symbol-function 'nelisp-ime-emacs--inline-after-change)
+                     (lambda () test-pair-time)))
+                   ((symbol-function 'nelisp-ime-emacs--inline-pair-receive)
+                    (nelisp-ime-emacs-inline-test--clocked
+                     (symbol-function 'nelisp-ime-emacs--inline-pair-receive)
+                     (lambda () test-pair-time)))
+                   ((symbol-function 'nelisp-ime-emacs--inline-pair-apply)
+                    (nelisp-ime-emacs-inline-test--clocked
+                     (symbol-function 'nelisp-ime-emacs--inline-pair-apply)
+                     (lambda () test-pair-time))))
+           (let ((client (nelisp-ime-emacs-inline-test--client)))
+             (push client test-clients)
+             (nelisp-ime-emacs-inline-test--hello client)
+             ,@body))))))
 
 (ert-deftest nelisp-ime-emacs-inline-pair-before-opener ()
   (nelisp-ime-emacs-inline-test--pair-buffer
@@ -565,7 +586,7 @@
   (nelisp-ime-emacs-inline-test--pair-buffer
     (process-send-string client "PAIR 2 ( )\nPAIR 1 { }\n")
     (nelisp-ime-emacs-inline-test--sequence 2)
-    (setf (nth 2 nelisp-ime-emacs--inline-pair) (- (float-time) 2))
+    (cl-incf test-pair-time 2.001)
     (insert "(")
     (run-hooks 'post-command-hook)
     (should (equal (buffer-string) "("))
@@ -633,7 +654,7 @@
 (ert-deftest nelisp-ime-emacs-inline-pair-disconnect-and-preexisting-opener ()
   (nelisp-ime-emacs-inline-test--pair-buffer
     (insert "(")
-    (setf (nth 2 nelisp-ime-emacs--inline-insertion) (- (float-time) 2))
+    (cl-incf test-pair-time 2.001)
     (process-send-string client "PAIR 1 ( )\n")
     (nelisp-ime-emacs-inline-test--sequence 1)
     (should (equal (buffer-string) "("))
@@ -669,7 +690,7 @@
     (let ((undo buffer-undo-list))
       ;; Simulate a fresh IMM insertion ending at a read-only field.
       (setq nelisp-ime-emacs--inline-insertion
-            (list 1 2 (float-time) (buffer-chars-modified-tick)))
+            (list 1 2 test-pair-time (buffer-chars-modified-tick)))
       (process-send-string client "PAIR 1 ( )\n")
       (nelisp-ime-emacs-inline-test--sequence 1)
       (should (equal (buffer-string) "("))
@@ -726,5 +747,28 @@
         (should (equal (buffer-string) "<<>>"))
         (should (= (point) 3))
         (should (= warnings 0))))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-request-two-second-boundary ()
+  (dolist (age '(1.5 2.0 2.001))
+    (nelisp-ime-emacs-inline-test--pair-buffer
+      (process-send-string client "PAIR 1 ( )\n")
+      (nelisp-ime-emacs-inline-test--sequence 1)
+      (cl-incf test-pair-time age)
+      (insert "(")
+      (run-hooks 'post-command-hook)
+      (should (equal (buffer-string) (if (<= age 2.0) "()" "(")))
+      (should (= (point) 2))
+      (should-not nelisp-ime-emacs--inline-pair))))
+
+(ert-deftest nelisp-ime-emacs-inline-pair-insertion-two-second-boundary ()
+  (dolist (age '(1.5 2.0 2.001))
+    (nelisp-ime-emacs-inline-test--pair-buffer
+      (insert "(")
+      (cl-incf test-pair-time age)
+      (process-send-string client "PAIR 1 ( )\n")
+      (nelisp-ime-emacs-inline-test--sequence 1)
+      (run-hooks 'post-command-hook)
+      (should (equal (buffer-string) (if (<= age 2.0) "()" "(")))
+      (should (= (point) 2)))))
 
 ;;; nelisp-ime-emacs-inline-test.el ends here
