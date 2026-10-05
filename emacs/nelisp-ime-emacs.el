@@ -320,10 +320,96 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
     (overlay-put nelisp-ime-emacs--inline-overlay 'after-string display)
     (nelisp-ime-emacs--inline-move)))
 
+;;; Pair requests are scoped to the selected buffer and expire after one second.
+(defvar nelisp-ime-emacs--inline-pair nil)
+(defvar-local nelisp-ime-emacs--inline-insertion nil)
+
+(defun nelisp-ime-emacs--inline-pair-clear ()
+  (when nelisp-ime-emacs--inline-pair
+    (set-marker (nth 1 nelisp-ime-emacs--inline-pair) nil))
+  (setq nelisp-ime-emacs--inline-pair nil))
+
+(defun nelisp-ime-emacs--inline-after-change (beg end old)
+  ;; Record real buffer insertion, never an overlay or replacement.  Defer
+  ;; the closer until hooks are enabled again so modification hooks see it.
+  (when (and (> old 0) nelisp-ime-emacs--inline-pair
+             (eq (current-buffer) (marker-buffer (nth 1 nelisp-ime-emacs--inline-pair))))
+    (nelisp-ime-emacs--inline-pair-clear))
+  (setq nelisp-ime-emacs--inline-insertion
+        (and (= old 0) (< beg end)
+             (list beg end (float-time) (buffer-chars-modified-tick)))))
+
+(defun nelisp-ime-emacs--inline-pair-apply ()
+  (when nelisp-ime-emacs--inline-pair
+    (pcase-let* ((`(,closer ,marker ,deadline ,opener) nelisp-ime-emacs--inline-pair)
+                 (buffer (marker-buffer marker))
+                 (window (selected-window)))
+      (if (or (> (float-time) deadline) (not (buffer-live-p buffer))
+              (not (eq buffer (window-buffer window))))
+          (nelisp-ime-emacs--inline-pair-clear)
+        (with-current-buffer buffer
+          (let* ((position (window-point window))
+                 (recent nelisp-ime-emacs--inline-insertion)
+                 (size (and opener (length opener))))
+            (cond
+             ((or buffer-read-only
+                  (and (minibufferp) (not (eq window (active-minibuffer-window)))))
+              (nelisp-ime-emacs--inline-pair-clear))
+             ((and recent (> (- (float-time) (nth 2 recent)) 1))
+              (nelisp-ime-emacs--inline-pair-clear))
+             ((and recent (= (nth 3 recent) (buffer-chars-modified-tick)))
+              ;; A request received before insertion anchors at its beginning;
+              ;; one received after insertion anchors at its end.
+              (when (and size (= position (nth 1 recent))
+                         (= size (- position (car recent)))
+                         (memq (marker-position marker) (list (car recent) position))
+                         (equal opener (buffer-substring-no-properties (car recent) position)))
+                (nelisp-ime-emacs--inline-pair-clear)
+                (let ((undo-before buffer-undo-list))
+                  (condition-case nil
+                    (save-excursion
+                      (goto-char position)
+                      ;; Drop only the immediately preceding opener's boundary.
+                      (let ((entry (and (listp buffer-undo-list)
+                                        (if (null (car-safe buffer-undo-list))
+                                            (cadr buffer-undo-list)
+                                          (car-safe buffer-undo-list)))))
+                        (when (and (consp entry) (equal entry (cons (car recent) position))
+                                   (null (car-safe buffer-undo-list)))
+                          (setq buffer-undo-list (cdr buffer-undo-list))))
+                      (atomic-change-group (insert closer)))
+                    ((error quit) (setq buffer-undo-list undo-before))))
+                (set-window-point window position))
+              ;; Consume mismatched insertions too, never a later matching key.
+              (when (and nelisp-ime-emacs--inline-pair
+                         (or (>= (car recent) (marker-position marker))
+                             (= (nth 1 recent) (marker-position marker))))
+                (nelisp-ime-emacs--inline-pair-clear))))))))))
+
+(defun nelisp-ime-emacs--inline-pair-receive (opener closer)
+  "Queue the effective input-rule OPENER and CLOSER supplied by the core."
+  (nelisp-ime-emacs--inline-pair-clear)
+  (let ((window (selected-window)))
+    (with-current-buffer (window-buffer window)
+      ;; Prior typing is not the insertion awaited by a new request. Keep
+      ;; it only if it could be the opener that raced ahead of PAIR.
+      (let ((recent nelisp-ime-emacs--inline-insertion))
+        (unless (and recent (< (- (float-time) (nth 2 recent)) 1)
+                     (= (nth 1 recent) (window-point window))
+                     (= (nth 3 recent) (buffer-chars-modified-tick))
+                     (equal opener (buffer-substring-no-properties
+                                    (car recent) (nth 1 recent))))
+          (setq nelisp-ime-emacs--inline-insertion nil)))
+      (setq nelisp-ime-emacs--inline-pair
+            (list closer (copy-marker (window-point window)) (+ (float-time) 1) opener)))
+    (nelisp-ime-emacs--inline-pair-apply)))
+
+
 (defun nelisp-ime-emacs--inline-update (&rest _)
   "Move the overlay and publish a changed caret; contain hook errors."
   (condition-case error-data
       (progn
+        (nelisp-ime-emacs--inline-pair-apply)
         (nelisp-ime-emacs--inline-move)
         (when (process-live-p nelisp-ime-emacs--inline-client)
           (let* ((window (selected-window))
@@ -361,17 +447,33 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
               (setq nelisp-ime-emacs--inline-client client)
               (process-put client 'authenticated t)
               (nelisp-ime-emacs--inline-clear)
+              (nelisp-ime-emacs--inline-pair-clear)
               (when (and old (not (eq old client))) (delete-process old))
-              (process-send-string client "OK 1\n")
+              (process-send-string client "OK 1 pair\n")
               (nelisp-ime-emacs--inline-update))
           (error "Invalid inline preedit handshake"))
       (cond
+       ((string-match-p "\\`PAIR\\(?:[ \t\r]\\|\\'\\)" line)
+        ;; PAIR is advisory. A malformed request must not disconnect the
+        ;; listener, advance the sequence, or erase a valid pending pair.
+        (condition-case nil
+            (when (string-match "\\`PAIR \\([0-9]+\\) \\([^ \r\n]+\\) \\([^ \r\n]+\\)\\'" line)
+              (let* ((sequence (string-to-number (match-string 1 line)))
+                     (opener-field (match-string 2 line))
+                     (closer-field (match-string 3 line))
+                     (opener (nelisp-ime-emacs--inline-decode opener-field))
+                     (closer (nelisp-ime-emacs--inline-decode closer-field)))
+                (when (> sequence (process-get client 'sequence))
+                  (process-put client 'sequence sequence)
+                  (nelisp-ime-emacs--inline-pair-receive opener closer))))
+          (error nil)))
        ((string-match "\\`PREEDIT \\([0-9]+\\) \\([0-9]+\\) \\([^ \r\n]*\\)\\'" line)
         (let* ((sequence (string-to-number (match-string 1 line)))
                (cursor (string-to-number (match-string 2 line)))
                (text (nelisp-ime-emacs--inline-decode (match-string 3 line))))
           (when (> cursor (length text)) (error "Inline preedit cursor out of range"))
           (when (> sequence (process-get client 'sequence))
+            (nelisp-ime-emacs--inline-pair-clear)
             (nelisp-ime-emacs--inline-render text cursor)
             (process-put client 'sequence sequence)
             (nelisp-ime-emacs--inline-update))))
@@ -400,6 +502,7 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
     (setq nelisp-ime-emacs--inline-connections
           (delq client nelisp-ime-emacs--inline-connections))
     (when (eq client nelisp-ime-emacs--inline-client)
+      (nelisp-ime-emacs--inline-pair-clear)
       (setq nelisp-ime-emacs--inline-client nil)
       (nelisp-ime-emacs--inline-clear))))
 
@@ -425,6 +528,9 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
 
 (defun nelisp-ime-emacs--inline-stop ()
   "Close all inline connections and remove this instance's discovery."
+  (nelisp-ime-emacs--inline-pair-clear)
+  (remove-hook 'after-change-functions #'nelisp-ime-emacs--inline-after-change)
+  (remove-hook 'post-self-insert-hook #'nelisp-ime-emacs--inline-update)
   (remove-hook 'post-command-hook #'nelisp-ime-emacs--inline-update)
   (remove-hook 'window-selection-change-functions #'nelisp-ime-emacs--inline-update)
   (remove-hook 'window-size-change-functions #'nelisp-ime-emacs--inline-update)
@@ -467,6 +573,8 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
                  :log #'nelisp-ime-emacs--inline-accept))
           (nelisp-ime-emacs--inline-write-discovery directory)
           (add-hook 'kill-emacs-hook #'nelisp-ime-emacs--inline-stop)
+          (add-hook 'after-change-functions #'nelisp-ime-emacs--inline-after-change)
+          (add-hook 'post-self-insert-hook #'nelisp-ime-emacs--inline-update)
           (add-hook 'post-command-hook #'nelisp-ime-emacs--inline-update)
           (add-hook 'window-selection-change-functions #'nelisp-ime-emacs--inline-update)
           (add-hook 'window-size-change-functions #'nelisp-ime-emacs--inline-update)

@@ -19,7 +19,7 @@ def main():
     p = argparse.ArgumentParser()
     for name in ('dll', 'core', 'tsf-host', 'engine-host', 'runtime', 'artifacts'):
         p.add_argument('--' + name, required=True)
-    p.add_argument('--case', choices=('inline', 'missing', 'wrong', 'drop', 'emacs'), default='inline')
+    p.add_argument('--case', choices=('inline', 'missing', 'wrong', 'drop', 'emacs', 'pair', 'pair-legacy', 'pair-down', 'emacs-pair'), default='inline')
     p.add_argument('--cold-load', type=int, default=45)
     args = p.parse_args()
     root = Path(__file__).resolve().parents[2]
@@ -65,7 +65,7 @@ def main():
                 return
             while not done.is_set() and not pidfile.exists():
                 time.sleep(.02)
-            if done.is_set() or args.case in ('missing', 'emacs'):
+            if done.is_set() or args.case in ('missing', 'emacs', 'pair-down', 'emacs-pair'):
                 return
             pid = int(pidfile.read_text())
             published_token = 'f' * 32 if args.case == 'wrong' else token
@@ -96,7 +96,8 @@ def main():
                                     assert line == f'HELLO 1 {published_token} {pid}', line
                                     break
                                 assert line == f'HELLO 1 {token} {pid}', line
-                                conn.sendall(b'OK 1\nCARET 321 456 23\n')
+                                conn.sendall(b'OK 1 pair\nCARET 321 456 23\n' if args.case == 'pair'
+                                             else b'OK 1\nCARET 321 456 23\n')
                         if args.case == 'wrong':
                             break
         except Exception as error:
@@ -111,6 +112,9 @@ def main():
               'K WAIT100 a WAIT100 n WAIT100 a WAIT100 q WAIT3000 '
               'K WAIT100 a WAIT100 n WAIT100 a WAIT100 SPACE WAIT3000 '
               'SPACE WAIT1000 SPACE WAIT1000 SPACE WAIT1000 SPACE WAIT1000 ENTER WAIT1000 WAIT500')
+    pairing = args.case in ('pair', 'pair-legacy', 'pair-down', 'emacs-pair')
+    if pairing:
+        script = 'WAIT2500 a i SPACE WAIT3000 ENTER WAIT500 APPCLEAR BRACKET WAIT100 WAIT500'
     # The fake server's CARET is deterministic. The real Emacs runner reports
     # its rendered overlays and uses batch-safe pixel stubs for CARET only.
     command = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
@@ -125,7 +129,16 @@ def main():
     env['DDSKK_HARNESS_DIAGNOSTICS'] = '1'
     env['INLINE_TEST_PIDFILE'] = str(pidfile)
     env['NELISP_IME_INLINE_DIR'] = str(directory)
+    env['INLINE_TEST_PAIR'] = '1' if args.case == 'emacs-pair' else ''
+    env['INLINE_TEST_ARTIFACTS'] = str(artifacts)
     env['INLINE_TEST_LOG'] = str(directory / 'emacs.log')
+    if args.case == 'emacs-pair':
+        # Only the engine sees this configuration. The real Emacs library
+        # must learn both strings from PAIR, with no local pair table.
+        rules = directory / 'input-rules.conf'
+        rules.write_text('width = hankaku\nauto-pair = yes\n[pairs-hankaku]\n[ = "<<" ">>"\n',
+                         encoding='utf-8')
+        env['NELISP_IME_INPUT_RULES'] = str(rules)
     try:
         (directory / 'stop').unlink(missing_ok=True)
         if args.case in ('inline', 'emacs'):
@@ -133,7 +146,7 @@ def main():
             observer = subprocess.Popen([os.sys.executable,
                 str(root / 'windows/test-host/candidate-window-observer.py'),
                 str(directory), str(artifacts), caret_map])
-        if args.case == 'emacs':
+        if args.case in ('emacs', 'emacs-pair'):
             # Same prefix required for every PowerShell launch of Emacs.
             emacs_command = "$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L emacs -l windows/test-host/inline-emacs-subscriber.el"
             emacs = subprocess.Popen(['powershell', '-NoProfile', '-Command', emacs_command], cwd=root, env=env)
@@ -178,6 +191,27 @@ def main():
     assert not errors, errors
     assert 'UnknownToken' not in host_text, 'Invalid test script'
     assert 'exited=True' in output, 'Harness did not confirm owned process cleanup'
+    if pairing:
+        pairs = [line for line in lines if line.startswith('PAIR ')]
+        if args.case == 'pair-down':
+            assert not pairs and 'AFTER WAIT500 BUF=[「」] SEL=1,1 COMP=-' in host_text, host_text[-2000:]
+        else:
+            opener = '<<' if args.case == 'emacs-pair' else '「'
+            position = len(opener)
+            assert f'AFTER WAIT500 BUF=[{opener}] SEL={position},{position} COMP=-' in host_text, host_text[-2000:]
+            assert 'COMPOSITION START' not in host_text, 'Inline pairing created a TSF composition'
+            if args.case == 'pair':
+                assert len(pairs) == 1 and re.fullmatch(r'PAIR [0-9]+ 「 」', pairs[0]), pairs
+            elif args.case == 'pair-legacy':
+                assert not pairs, pairs
+            else:
+                rendered = (directory / 'emacs.log').read_text(encoding='utf-8')
+                pairs = re.findall(r'^PAIR [0-9]+ << >>$', rendered, re.MULTILINE)
+                assert len(pairs) == 1, rendered
+                assert 'PAIR_BUFFER=<<>> POINT=3' in rendered, rendered
+                assert emacs.returncode == 0, emacs.returncode
+        print(f'PASS inline-preedit case={args.case} pair_lines={len(pairs)} opener_only={args.case != "pair-down"} cleanup=confirmed')
+        return
     expected = 'あい蚊消えるカナ佳奈'
     final = re.findall(r'AFTER WAIT500 BUF=\[([^\n]*)\] SEL=10,10 COMP=-', host_text)
     assert final and final[-1] == expected, (final, expected)

@@ -3004,6 +3004,7 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
   const bool has_preedit = state.composition_start >= 0 || !state.pending_romaji.empty();
   const bool inline_commit = !has_preedit && !composition_ &&
       (inline_epoch_ || (!preedit_episode_ && inline_enabled_ && inline_channel_.Epoch()));
+  const auto commit_epoch = inline_epoch_ ? inline_epoch_ : inline_channel_.Epoch();
   if (!preedit_episode_ && has_preedit) {
     preedit_episode_ = true;
     inline_epoch_ = inline_enabled_ ? inline_channel_.Epoch() : 0;
@@ -3060,6 +3061,8 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       CaptureCaretRect(edit_cookie, context, inserted);
     }
     if (inserted) inserted->Release();
+    if (SUCCEEDED(result))
+      inline_channel_.Pair(commit_epoch, state.text, auto_pair_.Closer(state));
     return result;
   }
   wchar_t diagnostics[2]{};
