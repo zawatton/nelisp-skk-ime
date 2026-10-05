@@ -65,6 +65,8 @@ into inline preedit on other systems."
   "Predicates called before opening. Any nil return vetoes opening.
 For example, add `nelisp-ime-emacs-outside-org-src-p'.")
 (defvar nelisp-ime-emacs--timer nil)
+(defvar nelisp-ime-emacs--reconcile-timer nil)
+(defvar nelisp-ime-emacs--selection nil)
 (defvar nelisp-ime-emacs--label "")
 (defvar nelisp-ime-emacs--base-mode "hiragana")
 (defvar nelisp-ime-emacs--cursors (make-hash-table :test #'eq))
@@ -82,6 +84,7 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
 (defvar evil-state)
 (declare-function w32-read-registry "w32fns.c" (root key name))
 (declare-function w32-set-ime-open-status "w32fns.c" (status))
+(declare-function w32-get-ime-open-status "w32fns.c" ())
 (declare-function evil-refresh-cursor "evil-core")
 
 (defun nelisp-ime-emacs-outside-org-src-p ()
@@ -121,6 +124,76 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
 (defun nelisp-ime-emacs--read (key name)
   (when (fboundp 'w32-read-registry)
     (condition-case nil (w32-read-registry 'HKCU key name) (error nil))))
+
+(defun nelisp-ime-emacs--selected-context ()
+  "Return the real selected window and its buffer, independent of current buffer."
+  (let ((window (selected-window)))
+    (cons window (window-buffer window))))
+
+(defun nelisp-ime-emacs--desired-open ()
+  "Compute the selected buffer's requested IME status at its window point."
+  (let ((window (selected-window)))
+    (with-current-buffer (window-buffer window)
+      (save-excursion
+        (goto-char (window-point window))
+        (and (bound-and-true-p evil-local-mode)
+             (bound-and-true-p evil-state)
+             (memq evil-state nelisp-ime-emacs-open-states)
+             (run-hook-with-args-until-failure
+              'nelisp-ime-emacs-before-open-hook)
+             t)))))
+
+(defun nelisp-ime-emacs--reconcile ()
+  "Reconcile a coalesced selection or focus event with the actual IME status."
+  (setq nelisp-ime-emacs--reconcile-timer nil)
+  (when nelisp-ime-emacs-mode
+    (setq nelisp-ime-emacs--selection (nelisp-ime-emacs--selected-context))
+    ;; Minibuffer entry/exit retains its existing behavior.
+    (unless (minibufferp (cdr nelisp-ime-emacs--selection))
+      (when (and (fboundp 'w32-get-ime-open-status)
+                 (fboundp 'w32-set-ime-open-status))
+        (let ((open (nelisp-ime-emacs--desired-open)))
+          (unless (eq open (and (w32-get-ime-open-status) t))
+            (w32-set-ime-open-status open)
+            (unless open
+              (setq nelisp-ime-emacs--label "")
+              (nelisp-ime-emacs--restore (selected-frame)))))))))
+
+(defun nelisp-ime-emacs--schedule-reconcile ()
+  (unless nelisp-ime-emacs--reconcile-timer
+    (setq nelisp-ime-emacs--reconcile-timer
+          (run-at-time 0 nil #'nelisp-ime-emacs--reconcile))))
+
+(defun nelisp-ime-emacs--selection-change (frame)
+  "Handle global window hooks for FRAME, ignoring unchanged selections."
+  (when (and nelisp-ime-emacs-mode (eq frame (selected-frame))
+             (not (equal nelisp-ime-emacs--selection
+                         (nelisp-ime-emacs--selected-context))))
+    (nelisp-ime-emacs--schedule-reconcile)))
+
+(defun nelisp-ime-emacs--focus-change ()
+  "Reconcile when the selected frame gains focus."
+  (when (and nelisp-ime-emacs-mode
+             (eq (frame-focus-state (selected-frame)) t))
+    (nelisp-ime-emacs--schedule-reconcile)))
+
+;;;###autoload
+(defun nelisp-ime-emacs-describe ()
+  "Show the selected buffer's Evil state and desired/actual IME status."
+  (interactive)
+  (let* ((buffer (window-buffer (selected-window)))
+         (state (with-current-buffer buffer
+                  (and (boundp 'evil-state) evil-state)))
+         (desired (nelisp-ime-emacs--desired-open))
+         (actual (if (fboundp 'w32-get-ime-open-status)
+                     (if (w32-get-ime-open-status) "open" "closed")
+                   "unavailable"))
+         (mode (nelisp-ime-emacs--read
+                (format "%s\\Clients\\%d" nelisp-ime-emacs-registry-key (emacs-pid))
+                "mode")))
+    (message "Buffer: %s; Evil state: %s; desired IME: %s; actual IME: %s; published mode: %s"
+             (buffer-name buffer) state (if desired "open" "closed") actual
+             (or mode "unavailable"))))
 
 (defun nelisp-ime-emacs--check-settings ()
   (when (and (fboundp 'w32-read-registry) (not nelisp-ime-emacs--warned)
@@ -403,6 +476,10 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
   (if nelisp-ime-emacs-mode
       (progn
         (nelisp-ime-emacs--install-evil-hooks)
+        (setq nelisp-ime-emacs--selection (nelisp-ime-emacs--selected-context))
+        (add-hook 'window-selection-change-functions #'nelisp-ime-emacs--selection-change)
+        (add-hook 'window-buffer-change-functions #'nelisp-ime-emacs--selection-change)
+        (add-function :after after-focus-change-function #'nelisp-ime-emacs--focus-change)
         (add-to-list 'global-mode-string
                      '(nelisp-ime-emacs-mode (:eval (when nelisp-ime-emacs-mode-line nelisp-ime-emacs--label))))
         (unless nelisp-ime-emacs--timer
@@ -411,6 +488,12 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
         (nelisp-ime-emacs--check-settings)
         (nelisp-ime-emacs--inline-start))
     (nelisp-ime-emacs--inline-stop)
+    (remove-hook 'window-selection-change-functions #'nelisp-ime-emacs--selection-change)
+    (remove-hook 'window-buffer-change-functions #'nelisp-ime-emacs--selection-change)
+    (remove-function after-focus-change-function #'nelisp-ime-emacs--focus-change)
+    (when (timerp nelisp-ime-emacs--reconcile-timer)
+      (cancel-timer nelisp-ime-emacs--reconcile-timer))
+    (setq nelisp-ime-emacs--reconcile-timer nil nelisp-ime-emacs--selection nil)
     (when (timerp nelisp-ime-emacs--timer) (cancel-timer nelisp-ime-emacs--timer))
     (setq nelisp-ime-emacs--timer nil nelisp-ime-emacs--label "")
     (dolist (state '(normal insert replace visual motion operator emacs))
