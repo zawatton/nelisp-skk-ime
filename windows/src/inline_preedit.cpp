@@ -114,6 +114,12 @@ bool InlinePreedit::Caret(uint64_t epoch, RECT* rect) {
   if (!epoch || epoch != epoch_ || !caret_valid_) return false;
   *rect = caret_; return true;
 }
+bool InlinePreedit::LastCaret(RECT* rect) {
+  std::lock_guard lock(mutex_);
+  if (!epoch_ || !caret_valid_ || rect == nullptr) return false;
+  *rect = caret_;
+  return true;
+}
 void InlinePreedit::Run() {
   WSADATA startup{};
   if (WSAStartup(MAKEWORD(2, 2), &startup)) return;

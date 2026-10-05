@@ -25,7 +25,7 @@
 
 // mode_indicator.cpp references this (normally defined in dllmain.cpp) for
 // the window class/window hInstance. This test never creates an actual
-// window -- it only exercises the pure ModeIndicatorLabel() mapping -- but
+// window during its mapping checks, but later checks the popup styles;
 // the symbol must still resolve at link time since mode_indicator.cpp is
 // linked in as a directly-specified object file, not a library member.
 HMODULE g_module = nullptr;
@@ -95,4 +95,21 @@ int main() {
   assert(unknown.background == latin.background);
   assert(unknown.border == latin.border);
   assert(unknown.text == latin.text);
+  g_module = GetModuleHandleW(nullptr);
+  ModeIndicator indicator;
+  indicator.Show(L"SKK", POINT{200, 200});
+  HWND window = FindWindowW(L"DdskkModeIndicatorWindow", nullptr);
+  assert(window != nullptr);
+  assert(GetWindowThreadProcessId(window, nullptr) == GetCurrentThreadId());
+  const LONG_PTR styles = GetWindowLongPtrW(window, GWL_EXSTYLE);
+  const LONG_PTR expected = WS_EX_TRANSPARENT | WS_EX_LAYERED |
+      WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+  assert((styles & expected) == expected);
+  assert(SendMessageW(window, WM_NCHITTEST, 0, MAKELPARAM(200, 224)) == HTTRANSPARENT);
+  BYTE alpha = 0; DWORD flags = 0; COLORREF color = 0;
+  assert(GetLayeredWindowAttributes(window, &color, &alpha, &flags));
+  assert(alpha == 255 && (flags & LWA_ALPHA));
+  indicator.Hide();
+  assert(!IsWindowVisible(window));
+
 }

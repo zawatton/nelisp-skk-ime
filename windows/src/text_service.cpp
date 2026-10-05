@@ -1513,6 +1513,7 @@ void TextService::LoadApplicationSettings() {
   CharLowerBuffW(name.data(), static_cast<DWORD>(name.size()));
   const std::wstring path = NativeImeRegistryKey() + L"\\Apps\\" + name;
   application_open_mode_ = L"restore";
+  application_mode_indicator_ = -1;
   inline_enabled_ = false;
   bool enabled = false;
   HKEY key = nullptr;
@@ -1526,6 +1527,12 @@ void TextService::LoadApplicationSettings() {
         bytes <= sizeof(mode) && mode[bytes / sizeof(wchar_t) - 1] == 0) {
       if (wcscmp(mode, L"latin") == 0 || wcscmp(mode, L"hiragana") == 0 ||
           wcscmp(mode, L"katakana") == 0) application_open_mode_ = mode;
+    }
+    bytes = sizeof(value);
+    if (RegQueryValueExW(key, L"ModeIndicator", nullptr, &type,
+        reinterpret_cast<BYTE*>(&value), &bytes) == ERROR_SUCCESS &&
+        type == REG_DWORD && bytes == sizeof(value) && value <= 1) {
+      application_mode_indicator_ = static_cast<int>(value);
     }
     bytes = sizeof(value);
     enabled = RegQueryValueExW(key, L"PublishState", nullptr, &type,
@@ -3332,12 +3339,57 @@ void TextService::MaybeShowModeIndicator(ITfContext* context,
   if (label == last_mode_label_) return;
   last_mode_label_ = label;
 
-  if (context != nullptr && last_caret_valid_) {
-    mode_indicator_anchor_.x = last_caret_rect_.left;
-    mode_indicator_anchor_.y = last_caret_rect_.bottom;
-  } else {
-    GetCursorPos(&mode_indicator_anchor_);
-  }
+  ITfContext* caret_context = context != nullptr ? context : active_context_;
+  mode_indicator_anchor_valid_ = ResolveModeIndicatorAnchor(
+      [this, context = caret_context](RECT* rect) {
+        // Inline events also fill last_caret_rect_; query TSF afresh so an
+        // old inline snapshot cannot masquerade as the highest-priority caret.
+        last_caret_valid_ = false;
+        if (context == nullptr) return false;
+        class CaretReadSession final : public ITfEditSession {
+         public:
+          CaretReadSession(TextService* service, ITfContext* context)
+              : service_(service), context_(context) {}
+          HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+            if (out == nullptr) return E_POINTER;
+            *out = nullptr;
+            if (iid != IID_IUnknown && iid != IID_ITfEditSession) return E_NOINTERFACE;
+            *out = static_cast<ITfEditSession*>(this); AddRef(); return S_OK;
+          }
+          ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
+          ULONG STDMETHODCALLTYPE Release() override {
+            const ULONG refs = --refs_;
+            if (!refs) delete this;
+            return refs;
+          }
+          HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie cookie) override {
+            TF_SELECTION selection{}; ULONG fetched = 0;
+            if (SUCCEEDED(context_->GetSelection(cookie, TF_DEFAULT_SELECTION,
+                                                1, &selection, &fetched)) &&
+                fetched == 1 && selection.range != nullptr) {
+              if (SUCCEEDED(selection.range->Collapse(cookie, TF_ANCHOR_END)))
+                service_->CaptureCaretRect(cookie, context_, selection.range);
+              selection.range->Release();
+            }
+            return S_OK;
+          }
+         private:
+          ULONG refs_ = 1;
+          TextService* service_;
+          ITfContext* context_;
+        };
+        auto* session = new (std::nothrow) CaretReadSession(this, context);
+        if (session == nullptr) return false;
+        HRESULT result = E_FAIL;
+        const HRESULT request = context->RequestEditSession(
+            client_id_, session, TF_ES_SYNC | TF_ES_READ, &result);
+        session->Release();
+        if (FAILED(request) || FAILED(result) || !last_caret_valid_) return false;
+        *rect = last_caret_rect_;
+        return true;
+      },
+      [this](RECT* rect) { return inline_channel_.LastCaret(rect); },
+      FocusedSystemCaret, &mode_indicator_anchor_);
   // Taskbar NotifyUpdate and first popup creation can take tens of ms in a
   // fully activated Windows TSF host. Defer both beyond the key callback.
   if (!indicator_update_queued_ && provider_window_ != nullptr)
@@ -3356,7 +3408,12 @@ void TextService::FlushModeIndicator() {
     input_mode_button_->NotifyUpdate(TF_LBI_ICON | TF_LBI_STATUS);
   }
 
-  if (!mode_indicator_enabled_) return;
+  const bool enabled = application_mode_indicator_ < 0
+      ? mode_indicator_enabled_ : application_mode_indicator_ != 0;
+  if (!enabled || !mode_indicator_anchor_valid_) {
+    mode_indicator_.Hide();
+    return;
+  }
   mode_indicator_.Show(last_mode_label_, mode_indicator_anchor_);
 }
 
