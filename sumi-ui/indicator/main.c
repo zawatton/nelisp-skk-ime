@@ -53,6 +53,7 @@
 
 #include "pipe-client.h"
 #include "settings.h"
+#include "text-settings.h"
 
 
 
@@ -186,6 +187,8 @@ typedef struct {
   int64_t mode;           /* last mode this process observed, incl. 7 */
   int64_t previous_base;  /* last *base* mode (never 4/5/7) */
   gboolean have_state;     /* FALSE until the first poll completes */
+  gboolean settings_smoke;
+  gboolean settings_smoke_failed;
   gboolean settings_only;  /* TRUE when launched with --settings: no pill, no poll */
   PangoFontDescription *label_font;
   GPtrArray *candidates;   /* UTF-8 strings decoded from STATE field 8 */
@@ -732,6 +735,8 @@ typedef struct {
   GtkWidget *spin_idle_gc_ms;
   GtkWidget *check_dll_debug;
 
+  TextSettings text_baseline;
+  GtkWidget *radio_half, *check_pair, *check_remap, *drop_layout, *remap_status;
   GtkWidget *status_label;
 } SettingsWindow;
 
@@ -1143,6 +1148,8 @@ static GtkWidget *build_tab_maintenance(SettingsWindow *sw) {
   return grid;
 }
 
+#include "text-tabs.inc"
+
 static void settings_read_from_widgets(SettingsWindow *sw, Settings *out) {
   *out = sw->app->settings;
 
@@ -1231,7 +1238,9 @@ static void app_sync_pill_visibility(App *app) {
 
 static void skkui_spawn_engine_host(void) {
   HKEY key = NULL;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NativeIME", 0, KEY_READ,
+  wchar_t key_path[512];
+  settings_registry_path(key_path, 512);
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, key_path, 0, KEY_READ,
                     &key) != ERROR_SUCCESS)
     return;
   wchar_t host[32768], exe[32768], repo[32768];
@@ -1316,7 +1325,15 @@ static void on_apply_clicked(GtkButton *button, gpointer user_data) {
   /* Read before the app's copy is overwritten below. */
   const gboolean engine_changed =
       wcscmp(sw->app->settings.engine, s.engine) != 0;
-  const gboolean ok = settings_save(&s);
+  TextSettings text = {
+    !gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->radio_half)),
+    gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_pair)),
+    gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_remap)),
+    (int)gtk_drop_down_get_selected(GTK_DROP_DOWN(sw->drop_layout))
+  };
+  const gboolean files_ok = text_settings_save(&text, &sw->text_baseline);
+  const gboolean ok = settings_save(&s) && files_ok;
+  on_text_status(NULL, sw);
   /* Reflect the just-applied values in the running app (pill color/
    * visibility, poll cadence) regardless of whether persistence fully
    * succeeded, so what the user just set is what they see immediately;
@@ -1398,6 +1415,7 @@ static void open_settings_window(App *app) {
 
   SettingsWindow *sw = g_new0(SettingsWindow, 1);
   sw->app = app;
+  text_settings_load(&sw->text_baseline);
 
   GtkWidget *window = app->settings_only && app->gtk_app
                           ? gtk_application_window_new(app->gtk_app)
@@ -1422,6 +1440,8 @@ static void open_settings_window(App *app) {
                            gtk_label_new("\xe8\xbe\x9e\xe6\x9b\xb8" /* 辞書 */));
   gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_maintenance(sw),
                            gtk_label_new("\xe8\xaa\xbf\xe6\x95\xb4" /* 調整 */));
+  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_text(sw, TRUE), gtk_label_new("入力規則"));
+  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_text(sw, FALSE), gtk_label_new("キー置き換え"));
   gtk_box_append(GTK_BOX(root_box), notebook);
 
   sw->status_label = gtk_label_new("");
@@ -1450,7 +1470,18 @@ static void open_settings_window(App *app) {
   gtk_box_append(GTK_BOX(button_box), close_button);
   gtk_box_append(GTK_BOX(root_box), button_box);
 
-  gtk_window_present(GTK_WINDOW(window));
+  if (app->settings_smoke) {
+    const gboolean ok = gtk_notebook_get_n_pages(GTK_NOTEBOOK(notebook)) == 6 &&
+        gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->radio_half)) == !sw->text_baseline.width &&
+        gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_pair)) == sw->text_baseline.auto_pair &&
+        gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_remap)) == sw->text_baseline.enabled &&
+        gtk_drop_down_get_selected(GTK_DROP_DOWN(sw->drop_layout)) == (guint)sw->text_baseline.layout;
+    printf("%s hidden-settings-six-tabs-and-file-controls\n", ok ? "PASS" : "FAIL");
+    printf("%s\n", gtk_label_get_text(GTK_LABEL(sw->remap_status)));
+    fflush(stdout);
+    app->settings_smoke_failed = !ok;
+    close_settings_window(app);
+  } else gtk_window_present(GTK_WINDOW(window));
 }
 
 static void on_right_click_released(GtkGestureClick *gesture, int n_press, double x,
@@ -1636,12 +1667,15 @@ int main(int argc, char **argv) {
    * settings_selftest() docstring for the DDSKK_SETTINGS_KEY safety
    * guard this requires the caller to set. */
   for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--text-settings-selftest") == 0) return text_settings_selftest();
     if (strcmp(argv[i], "--settings-selftest") == 0) return settings_selftest();
   }
 
   gboolean settings_only = FALSE;
+  gboolean settings_smoke = FALSE;
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--settings") == 0) settings_only = TRUE;
+    if (strcmp(argv[i], "--settings-window-selftest") == 0) settings_only = settings_smoke = TRUE;
   }
 
   App app;
@@ -1650,6 +1684,16 @@ int main(int argc, char **argv) {
   app.mode = MODE_UNREACHABLE;
   app.previous_base = MODE_HIRAGANA;
   app.have_state = FALSE;
+  if (settings_smoke) {
+    wchar_t key[512]; settings_registry_path(key, 512);
+    if (wcsncmp(key, L"Software\\NativeIME-Tests\\", 25) != 0 ||
+        !getenv("NELISP_IME_INPUT_RULES") || !*getenv("NELISP_IME_INPUT_RULES") ||
+        !getenv("NELISP_IME_KEYMAP_FILE") || !*getenv("NELISP_IME_KEYMAP_FILE")) {
+      fprintf(stderr, "Hidden window selftest requires a private NativeIME-Tests key and both file overrides\n");
+      return 1;
+    }
+  }
+  app.settings_smoke = settings_smoke;
   app.settings_only = settings_only;
   settings_defaults(&app.settings); /* overwritten by settings_load() in on_activate() */
   app.label_font = pango_font_description_from_string("Sans 14");
@@ -1699,5 +1743,5 @@ int main(int argc, char **argv) {
   g_free(app.registration_text);
   g_free(app.registration_pending);
   g_ptr_array_free(app.candidates, TRUE);
-  return status;
+  return app.settings_smoke_failed ? 1 : status;
 }
