@@ -2,18 +2,15 @@
 
 * S1 IME side (per-application behaviour and published state)
 ** S1.1 HKCU\Software\NativeIME\Apps\<exe>\OpenMode (restore | latin | hiragana | katakana) is applied when the keyboard open compartment turns on in that process
-pending
 notes: H4 private harness passed all four OpenMode cases (33 assertion groups including abrupt exit). After the final DLL visual/activation deferral, the Latin/publication case passed 8 assertion groups again. No live registry changes.
 evidence: build/validation/emacs-integration/integration-harness-final.log sha256=e74a8e763d2eb02d37f1648005724b9f1eee896771f3b8b84d6120c2fcfcb17b
 evidence: build/validation/emacs-integration/integration-latest.log sha256=09dabc396636f4ce5c2767fa930addfa07c253e7ceb80c052e4d14a62074cd53
 ** S1.2 With Apps\<exe>\PublishState=1 the DLL publishes Clients\<pid> (mode, open, composing, sequence) on every change, off the keystroke path, and the entry disappears when the process or text service goes away
-pending
 notes: H4 harness observed mode/open/reading/candidate/committed transitions, increasing sequences, unchanged idle sequence, normal exit removal and host dead-PID removal after ExitProcess bypassed TIP teardown. Publication and visual writes are queued; Clients telemetry is excluded from settings reloads. README.org documents engine/transient names and revision-fenced snapshots. Final ctest passed 9/9.
 evidence: build/validation/emacs-integration/integration-harness-final.log sha256=e74a8e763d2eb02d37f1648005724b9f1eee896771f3b8b84d6120c2fcfcb17b
 evidence: build/validation/emacs-integration/abrupt-harness.log sha256=c36122c1f871221f590b41bfa448670bc52e1a2124041b7d4c8b957210432efc
 evidence: build/validation/emacs-integration/ctest-final.log sha256=8d5b1ab7b75c554905a318198795bb28bd58da4c643e9882c4bfd1b34b6b1a7e
 ** S1.3 No keystroke latency regression: ordinary keys stay within the existing 25 ms check of the lattice suite and the DDSKK suite passes as before
-pending
 notes: RED full behavior gates: lattice fails the unchanged 150 ms check; DDSKK fails candidate traversal beyond four, also reproduced with an unchanged HEAD DLL/TSF-host build. Final valid ordinary-key maxima were DDSKK 5.116 ms (54 keys, 53 claimed; Latin pass-through expected) and lattice 4.294 ms (50/50 claimed). Before moving activation refresh/taskbar/popup work off keys, activated-host maxima were 38.069/33.948 ms. An unclaimed lattice run is retained and explicitly excluded. Thresholds and both behavior scripts were untouched.
 evidence: build/validation/emacs-integration/latency-summary.log sha256=8a3edc0fa44a27392a683f93a6443f72a4f5d560f18e9aad8a9db665146e8541
 evidence: build/validation/emacs-integration/ddskk-latency-final.log sha256=c4ff1e6b8481336f9ba8d4858a6bcc68b0d36a1dd6f94ef13b2779cc011bd55a
@@ -22,7 +19,6 @@ evidence: build/validation/emacs-integration/baseline-ddskk.log sha256=e207145b9
 
 * S2 Emacs side
 ** S2.1 emacs/nelisp-ime-emacs.el ERT passes on GNU Emacs with mocked w32 functions (evil state -> open/close, mode -> cursor colour and mode-line label, focus/buffer reapply, src-block predicate)
-pending
 notes: H4 source ERT passed 9/9 on GNU Emacs 31.1 with mocked w32 functions, including late evil hooks, focus/window/buffer reapply, both color palettes, labels, Org veto, unfocused polling and partial-snapshot rejection. Strict byte compilation exited 0; generated elc removed. Existing framework/stateline/lattice ERT passed 89/89, 31/31, 14/14 unchanged. Before edits, requiring the library failed with file-missing.
 evidence: build/validation/emacs-integration/emacs-ert-source.log sha256=04295a44a9a8b497a26558f388445eed7c2fc11cb8293862acadccde592b9eb0
 notes: Coordinator follow-up supersedes the earlier focus/buffer reapplication policy: only Evil state-entry hooks in the selected window's buffer may open/close the IME. All reapply callbacks were removed. Enabling, focus/UI hooks, temporary buffers, background Evil transitions and polling do not change open status; the opening veto remains. The new regression failed against the unchanged library (0/1, five unwanted setter calls), then portable ERT passed 11/11. Strict byte compilation exited 0 with no warnings; elc removed. The private native Latin/publication boundary case also passed 8 assertions in 1 case; it does not execute Emacs Lisp. No new native code changes, no live session changes, no owned host/runtime leftovers. Existing behavior reds and live criteria remain as recorded above/below.

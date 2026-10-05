@@ -2,15 +2,12 @@
 
 * S1 IME core inline mode
 ** S1.1 With Apps\<exe> InlinePreedit=1 and an authenticated subscriber, typing ▽/▼ sequences creates no TSF composition and publishes PREEDIT/CLEAR lines with the right text and cursor for every state change (harness with a fake subscriber)
-pending
 #+NOTE: E1 private Windows core run passes: authenticated fake TCP subscriber, reordered discovery JSON fields, 28 PREEDIT and 5 CLEAR messages (sequences 1-33), zero COMPOSITION START. Required reading/candidate/okuri/q/Ctrl+G/candidate-selection states and code-point cursors are asserted. Mode is pinned per episode; socket/discovery work runs on a core-owned worker. The unchanged DLL failed the no-composition assertion before the implementation was built.
 evidence: build/validation/inline-e1/gate-results.json sha256=70781256c807910b88de75605fa3c48ff0f6d6021f78dd21ceaef4b7acdb4a3e
 ** S1.2 Commits arrive exactly once as normal text input (okuri, q/katakana, Ctrl+G cancel, candidate selection); the candidate window is placed at the caret the subscriber reported
-pending
 #+NOTE: E1 private run commits exactly one final buffer, あい蚊消えるカナ佳奈 (10 UTF-16 units, FNV=0f0ffbbf62b1d8b2); cancellation contributes no text. Candidate GetWindowRect verifies (321,479) below CARET (321,456,23). Inline insertion uses ITfInsertAtSelection with TF_IAS_NO_DEFAULT_COMPOSITION because SetText was observed creating default temporary compositions. The TSF host confirms zero composition starts. No IMM32 test window was added; GCS_RESULTSTR/character delivery and actual graphical Emacs still require live validation, which E1 did not perform.
 evidence: build/validation/inline-e1/gate-results.json sha256=70781256c807910b88de75605fa3c48ff0f6d6021f78dd21ceaef4b7acdb4a3e
 ** S1.3 No subscriber, a wrong token or a subscriber lost mid-composition falls back to the normal composition without losing keys; the TSF thread never blocks on the channel and ordinary-key latency stays within the existing checks
-pending
 #+NOTE: E1 private missing-subscriber/Emacs-not-running, wrong-token and separately started subscriber killed after its first PREEDIT cases pass with the same exact final buffer; normal composition is observed after loss without replaying engine keys. Case ordinary maxima: inline 6343 us, missing 3030 us, wrong 4154 us, killed subscriber 4079 us, real Emacs 7552 us. Final core hot swap passes 19 assertions, one process, ordinary maximum 4426 us (existing 25 ms limit); DDSKK behavior passes 45 assertions, Ctrl+G maximum 1.107 ms. A prior serial run hit 24524 us against the new test's unchanged 20 ms limit; parallel cold-runtime attempts had provider timeouts. These failed attempts are retained in the report, and final cases ran sequentially. No thresholds were weakened.
 #+NOTE: Final build passes; CTest with NELISP_EXECUTABLE configured passes 9/9; Emacs integration passes 33 assertions across five cases; stateline ERT 31/31 and lattice ERT 14/14. Existing Emacs inline TCP ERT remains 22/23 on Windows (file mode 438 versus expected 384); Emacs-owned files/tests were not modified. Commands, verbatim tails, counts, source/binary hashes and failed attempts: build/validation/inline-e1/report.md. Owned-process audit records 79 PIDs and zero remaining host/runtime/Emacs processes; the killed subscriber was waited to exit. Changes remain unstaged; no shim/ABI, host/engine, live installation or other-checkout changes.
 evidence: build/validation/inline-e1/gate-results.json sha256=70781256c807910b88de75605fa3c48ff0f6d6021f78dd21ceaef4b7acdb4a3e
@@ -33,7 +30,6 @@ evidence: build/validation/inline-preedit/claude-tcp-ert.log sha256=f2ca3005ca78
 
 * S3 End to end
 ** S3.1 Integrated private run: the real core in the test host and the real library in an Emacs process exchange HELLO/PREEDIT/CLEAR/CARET and the committed text lands exactly once
-pending
 #+NOTE: E1 integrated private Windows run passes with GNU Emacs's real nelisp-ime-emacs.el TCP listener and tsf-host's real core. The test PID override names tsf-host in discovery; Emacs logs real overlay RENDER states with cursor=1, CLEAR and BUFFER_UNCHANGED=t. The TSF host's final buffer is exactly あい蚊消えるカナ佳奈 once, with zero composition starts. Only batch caret pixel sampling is stubbed to (321,456,23); the real protocol reports it and the actual candidate HWND rectangle is asserted. No SendInput or foreground activation. Emacs and the harness's owned processes exited. S2 and S3.2 were not changed.
 evidence: build/validation/inline-e1/gate-results.json sha256=70781256c807910b88de75605fa3c48ff0f6d6021f78dd21ceaef4b7acdb4a3e
 ** S3.2 Live: deployed with deploy-live -Core and a library reload, no application restart; the user confirms inline preedit in Emacs with no composition window over the text
