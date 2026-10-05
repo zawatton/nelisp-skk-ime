@@ -22,6 +22,8 @@ def main():
     p.add_argument('--case', choices=('inline', 'missing', 'wrong', 'drop', 'emacs', 'pair', 'pair-legacy', 'pair-down', 'emacs-pair'), default='inline')
     p.add_argument('--cold-load', type=int, default=45)
     p.add_argument('--repository', default=None)
+    p.add_argument('--cycle-regression', action='store_true',
+                   help='Cycle to candidate five, lose its commit reply, then settle')
     args = p.parse_args()
     root = Path(args.repository).resolve() if args.repository else Path(__file__).resolve().parents[2]
     artifacts = Path(args.artifacts).resolve()
@@ -117,6 +119,12 @@ def main():
               'K WAIT100 a WAIT100 n WAIT100 a WAIT100 SPACE WAIT3000 '
               'SPACE WAIT1000 SPACE WAIT1000 SPACE WAIT1000 SPACE WAIT1000 ENTER WAIT1000 WAIT500')
     pairing = args.case in ('pair', 'pair-legacy', 'pair-down', 'emacs-pair')
+    if args.cycle_regression:
+        assert args.case == 'emacs', 'Cycle regression requires the real Emacs listener'
+        script = ('WAIT2500 K a n a SPACE SETTLE30000:first '
+                  'SPACE SETTLE30000:second SPACE SETTLE30000:third '
+                  'SPACE SETTLE30000:fourth SPACE SETTLE30000:fifth '
+                  'ENTER SETTLE30000:commit WAIT500')
     if pairing:
         script = 'WAIT2500 a i SPACE WAIT3000 ENTER WAIT500 APPCLEAR BRACKET WAIT100 WAIT500'
     # The fake server's CARET is deterministic. The real Emacs runner reports
@@ -131,6 +139,8 @@ def main():
                '-ArtifactDirectory', str(artifacts), '-TsfHostTimeoutSec', '90']
     env = os.environ.copy()
     env['DDSKK_HARNESS_DIAGNOSTICS'] = '1'
+    if args.cycle_regression:
+        env['NATIVEIME_TEST_CANDIDATE_CONTROL_FAIL_MS'] = '1600'
     env['INLINE_TEST_PIDFILE'] = str(pidfile)
     env['NELISP_IME_INLINE_DIR'] = str(directory)
     env['INLINE_TEST_PAIR'] = '1' if args.case == 'emacs-pair' else ''
@@ -195,6 +205,14 @@ def main():
     assert not errors, errors
     assert 'UnknownToken' not in host_text, 'Invalid test script'
     assert 'exited=True' in output, 'Harness did not confirm owned process cleanup'
+    if args.cycle_regression:
+        assert 'CANDIDATE_TEST lost-reply' in host_text, 'Fault injection did not run'
+        assert 'AFTER commit BUF=[佳奈] SEL=2,2 COMP=-' in host_text, host_text[-2000:]
+        rendered = (directory / 'emacs.log').read_text(encoding='utf-8')
+        assert '▼佳奈' in rendered and emacs.returncode == 0, rendered
+        assert 'COMPOSITION START' not in host_text, 'Inline created a TSF composition'
+        print('PASS candidate-cycle fifth=佳奈 lost_commit_reply=recovered settle=idle cleanup=confirmed')
+        return
     if pairing:
         pairs = [line for line in lines if line.startswith('PAIR ')]
         if args.case == 'pair-down':

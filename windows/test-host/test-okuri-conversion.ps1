@@ -24,6 +24,11 @@ try {
   $env:OKURI_DICTIONARY = [IO.Path]::GetFullPath($DictionaryPath)
   $env:OKURI_ARTIFACT_DIRECTORY = $artifacts
   $env:HOME=[Environment]::GetFolderPath('UserProfile');
+  # Override the profile before Emacs starts: even DDSKK initialization must
+  # never discover the real personal dictionary or Emacs directory.
+  $oracleHome = Join-Path $artifacts ('oracle-home-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $oracleHome -Force | Out-Null
+  $env:HOME = $oracleHome
   # Windows PowerShell treats native stderr as an error record under Stop.
   # Emacs warnings are diagnostics; its exit code determines oracle success.
   $oracle = Start-Process -FilePath (Get-Command emacs).Source -WindowStyle Hidden -PassThru `
@@ -42,7 +47,12 @@ try {
     }
     Get-Content (Join-Path $artifacts 'oracle.stdout.log'), (Join-Path $artifacts 'oracle.stderr.log') |
       Set-Content (Join-Path $artifacts 'oracle.log') -Encoding UTF8
-    if ($oracle.ExitCode -ne 0) { throw 'Stock DDSKK oracle failed; see oracle.log' }
+    if ($oracle.ExitCode -ne 0) {
+      if (Select-String -LiteralPath (Join-Path $artifacts 'oracle.log') -Pattern 'Stock DDSKK oracle entered registration' -Quiet) {
+        throw 'Stock DDSKK oracle entered registration: fixture lookup failed; see oracle.log'
+      }
+      throw 'Stock DDSKK oracle failed; see oracle.log'
+    }
   } finally { $oracle.Dispose() }
   $env:DDSKK_DICTIONARY_FILES = $env:OKURI_DICTIONARY
   $env:DDSKK_HARNESS_DIAGNOSTICS = '1'
