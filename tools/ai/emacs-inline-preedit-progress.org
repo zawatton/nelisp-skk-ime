@@ -1,0 +1,21 @@
+#+TITLE: Inline preedit in Emacs (no composition window over the text)
+
+* S1 IME core inline mode
+** S1.1 With Apps\<exe> InlinePreedit=1 and an authenticated subscriber, typing ▽/▼ sequences creates no TSF composition and publishes PREEDIT/CLEAR lines with the right text and cursor for every state change (harness with a fake subscriber)
+pending
+** S1.2 Commits arrive exactly once as normal text input (okuri, q/katakana, Ctrl+G cancel, candidate selection); the candidate window is placed at the caret the subscriber reported
+pending
+** S1.3 No subscriber, a wrong token or a subscriber lost mid-composition falls back to the normal composition without losing keys; the TSF thread never blocks on the channel and ordinary-key latency stays within the existing checks
+pending
+
+* S2 Emacs rendering
+** S2.1 nelisp-ime-emacs.el serves the channel (127.0.0.1 only, token, per-pid discovery file removed on exit) and renders PREEDIT inline at point as an overlay with the cursor at the reported index, removes it on CLEAR, ignores stale sequence numbers, and never modifies the buffer or the undo list
+pending
+** S2.2 It reports the caret's screen position (CARET) after the handshake and whenever it changes, including the minibuffer and other frames; ERT with a fake core client
+pending
+
+* S3 End to end
+** S3.1 Integrated private run: the real core in the test host and the real library in an Emacs process exchange HELLO/PREEDIT/CLEAR/CARET and the committed text lands exactly once
+pending
+** S3.2 Live: deployed with deploy-live -Core and a library reload, no application restart; the user confirms inline preedit in Emacs with no composition window over the text
+pending
