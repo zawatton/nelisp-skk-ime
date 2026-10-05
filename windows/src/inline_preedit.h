@@ -20,6 +20,8 @@ class InlinePreedit final {
   // Queued only for a live listener advertising Protocol v1.1 pairing.
   bool Pair(uint64_t epoch, const std::wstring& opener, const std::wstring& closer);
   bool Caret(uint64_t epoch, RECT* rect);
+  // Last listener caret for the live connection, including outside preedit.
+  bool LastCaret(RECT* rect);
  private:
   void Run();
   struct Update {

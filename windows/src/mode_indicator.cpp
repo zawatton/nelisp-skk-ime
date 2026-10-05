@@ -50,7 +50,7 @@ constexpr COLORREF kColorTextOnLight = RGB(0x11, 0x11, 0x11);
 constexpr wchar_t kWindowClassName[] = L"DdskkModeIndicatorWindow";
 constexpr UINT_PTR kTimerId = 1;
 
-// Anchor offset (below-right of the caret/cursor) and label padding, in
+// Anchor offset (below-right of the caret) and label padding, in
 // logical (96 DPI) pixels; both are scaled by the window's DPI, and the
 // padding is additionally scaled by ModeIndicator::SetScalePercent().
 constexpr int kAnchorGapX = 0;
@@ -182,7 +182,7 @@ bool ModeIndicator::EnsureWindow() {
     window_class.cbSize = sizeof(window_class);
     window_class.lpfnWndProc = &ModeIndicator::WindowProc;
     window_class.hInstance = g_module;
-    window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    window_class.hCursor = nullptr;  // Never replace the application pointer.
     window_class.hbrBackground = nullptr;  // OnPaint fills the client area.
     window_class.lpszClassName = kWindowClassName;
     if (RegisterClassExW(&window_class) == 0 &&
@@ -195,9 +195,16 @@ bool ModeIndicator::EnsureWindow() {
   // this window from ever taking focus or appearing in the taskbar/alt-tab
   // list; a TSF text service that steals focus breaks input everywhere.
   hwnd_ = CreateWindowExW(
-      WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, kWindowClassName,
+      WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW |
+          WS_EX_TRANSPARENT | WS_EX_LAYERED, kWindowClassName,
       L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, g_module, this);
-  return hwnd_ != nullptr;
+  if (hwnd_ == nullptr) return false;
+  if (!SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA)) {
+    DestroyWindow(hwnd_);
+    hwnd_ = nullptr;
+    return false;
+  }
+  return true;
 }
 
 HFONT ModeIndicator::EnsureFont(UINT dpi) {
@@ -310,6 +317,8 @@ LRESULT CALLBACK ModeIndicator::WindowProc(HWND hwnd, UINT message,
   auto* self =
       reinterpret_cast<ModeIndicator*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   switch (message) {
+    case WM_NCHITTEST:
+      return HTTRANSPARENT;
     case WM_PAINT:
       if (self != nullptr) self->OnPaint();
       return 0;

@@ -160,6 +160,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   void FlushModeIndicator();
   bool indicator_update_queued_ = false;
   POINT mode_indicator_anchor_{};
+  bool mode_indicator_anchor_valid_ = false;
+  int application_mode_indicator_ = -1;  // absent: use global setting
   // Closes the candidate-selection UI element (if open) and clears the
   // per-candidate state tracked alongside it (candidate_context_/
   // candidate_count_/candidate_index_). Safe to call whether or not a

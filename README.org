@@ -28,6 +28,13 @@ Windows Registry Editor Version 5.00
 "PublishState"=dword:00000001
 "InlinePreedit"=dword:00000001
 #+end_src
+Optional DWORD =ModeIndicator= under =Apps\<exe>= controls the transient
+caret popup: =0= disables it, =1= enables it, and an absent value uses the
+global =ModeIndicator= setting. The taskbar icon and resident Sumi pill still
+update. The popup uses the TSF caret, connected inline listener's last caret,
+or focused window's system caret, in that order; without a caret it stays
+hidden. It is mouse-transparent and never uses the mouse position.
+
 Choose =hiragana= or =katakana= to open in kana. =restore= (default) preserves
 the prior mode. Other applications retain existing behavior unless configured
 under =Apps\<lowercase executable filename>=. The library warns once when

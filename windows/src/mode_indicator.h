@@ -54,8 +54,33 @@ struct ModeIndicatorPalette {
 // ModeIndicatorLabel().
 ModeIndicatorPalette ModeIndicatorColors(const std::wstring& label);
 
+// Sources are queried lazily in priority order; failure leaves no usable anchor.
+// Kept injectable so tests can cover unavailable TSF/inline/system carets.
+template <typename Tsf, typename Inline, typename System>
+bool ResolveModeIndicatorAnchor(Tsf tsf, Inline inline_caret, System system,
+                                POINT* anchor) {
+  RECT rect{};
+  if (!tsf(&rect) && !inline_caret(&rect) && !system(&rect)) return false;
+  *anchor = {rect.left, rect.bottom};
+  return true;
+}
+
+inline bool FocusedSystemCaret(RECT* rect) {
+  GUITHREADINFO info{};
+  info.cbSize = sizeof(info);
+  if (!GetGUIThreadInfo(0, &info) || !info.hwndFocus ||
+      !info.hwndCaret || info.hwndCaret != info.hwndFocus ||
+      info.rcCaret.bottom <= info.rcCaret.top) return false;
+  POINT top{info.rcCaret.left, info.rcCaret.top};
+  POINT bottom{info.rcCaret.right, info.rcCaret.bottom};
+  if (!ClientToScreen(info.hwndCaret, &top) ||
+      !ClientToScreen(info.hwndCaret, &bottom)) return false;
+  *rect = {top.x, top.y, bottom.x, bottom.y};
+  return true;
+}
+
 // A small always-on-top, non-activating popup window that shows the
-// current input mode near the caret (or the mouse cursor as a fallback)
+// current input mode near an available caret
 // for a short time, CorvusSKK-style: CorvusSKK's "入力モードを表示する"
 // setting shows "キャレットまたは辞書登録ウィンドウ付近に入力モードを表示
 // します" for a configurable duration (default 3000 ms); this class
