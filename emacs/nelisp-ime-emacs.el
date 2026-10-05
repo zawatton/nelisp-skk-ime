@@ -412,14 +412,36 @@ An opener already inserted at point may also be up to two seconds old."
     (nelisp-ime-emacs--inline-pair-apply)))
 
 
+(defun nelisp-ime-emacs--inline-forget-client (client)
+  "Clear CLIENT's connection state without disturbing its replacement."
+  (setq nelisp-ime-emacs--inline-connections
+        (delq client nelisp-ime-emacs--inline-connections))
+  (when (eq client nelisp-ime-emacs--inline-client)
+    (nelisp-ime-emacs--inline-pair-clear)
+    (setq nelisp-ime-emacs--inline-client nil)
+    (nelisp-ime-emacs--inline-clear)))
+
+(defun nelisp-ime-emacs--inline-disconnect (client)
+  "Close CLIENT silently, including when its disconnect sentinel is delayed."
+  (when (processp client)
+    (condition-case nil (delete-process client) (error nil))
+    (nelisp-ime-emacs--inline-forget-client client)))
+
+(defun nelisp-ime-emacs--inline-send (client text)
+  "Send TEXT to CLIENT; treat a write failure as its disconnect."
+  (condition-case nil
+      (progn (process-send-string client text) t)
+    (error (nelisp-ime-emacs--inline-disconnect client) nil)))
+
 (defun nelisp-ime-emacs--inline-update (&rest _)
   "Move the overlay and publish a changed caret; contain hook errors."
-  (condition-case error-data
+  (condition-case nil
       (progn
         (nelisp-ime-emacs--inline-pair-apply)
         (nelisp-ime-emacs--inline-move)
         (when (process-live-p nelisp-ime-emacs--inline-client)
-          (let* ((window (selected-window))
+          (let* ((client nelisp-ime-emacs--inline-client)
+                 (window (selected-window))
                  (position (window-absolute-pixel-position (window-point window) window)))
             (when position
               (let ((caret (list (car position) (cdr position)
@@ -427,11 +449,11 @@ An opener already inserted at point may also be up to two seconds old."
                                    (save-excursion
                                      (goto-char (window-point window))
                                      (line-pixel-height))))))
-                (unless (equal caret (process-get nelisp-ime-emacs--inline-client 'caret))
-                  (process-send-string nelisp-ime-emacs--inline-client
-                                       (apply #'format "CARET %d %d %d\n" caret))
-                  (process-put nelisp-ime-emacs--inline-client 'caret caret)))))))
-    (error (nelisp-ime-emacs--inline-warn error-data))))
+                (unless (equal caret (process-get client 'caret))
+                  (when (nelisp-ime-emacs--inline-send
+                         client (apply #'format "CARET %d %d %d\n" caret))
+                    (process-put client 'caret caret))))))))
+    (error nil)))
 
 (defun nelisp-ime-emacs--inline-decode (text)
   "Decode precisely the four Protocol v1 percent escapes in TEXT."
@@ -455,9 +477,10 @@ An opener already inserted at point may also be up to two seconds old."
               (process-put client 'authenticated t)
               (nelisp-ime-emacs--inline-clear)
               (nelisp-ime-emacs--inline-pair-clear)
-              (when (and old (not (eq old client))) (delete-process old))
-              (process-send-string client "OK 1 pair\n")
-              (nelisp-ime-emacs--inline-update))
+              (when (and old (not (eq old client)))
+                (nelisp-ime-emacs--inline-disconnect old))
+              (when (nelisp-ime-emacs--inline-send client "OK 1 pair\n")
+                (nelisp-ime-emacs--inline-update)))
           (error "Invalid inline preedit handshake"))
       (cond
        ((string-match-p "\\`PAIR\\(?:[ \t\r]\\|\\'\\)" line)
@@ -493,25 +516,18 @@ An opener already inserted at point may also be up to two seconds old."
        (t (error "Invalid inline preedit command"))))))
 
 (defun nelisp-ime-emacs--inline-filter (client chunk)
-  (condition-case error-data
+  (condition-case nil
       (let ((pending (concat (process-get client 'pending) chunk)) end)
         (while (and (process-live-p client) (setq end (string-match "\n" pending)))
           (let ((line (substring pending 0 end)))
             (setq pending (substring pending (1+ end)))
             (nelisp-ime-emacs--inline-line client line)))
         (process-put client 'pending pending))
-    (error
-     (nelisp-ime-emacs--inline-warn error-data)
-     (delete-process client))))
+    (error (nelisp-ime-emacs--inline-disconnect client))))
 
 (defun nelisp-ime-emacs--inline-sentinel (client _event)
   (unless (process-live-p client)
-    (setq nelisp-ime-emacs--inline-connections
-          (delq client nelisp-ime-emacs--inline-connections))
-    (when (eq client nelisp-ime-emacs--inline-client)
-      (nelisp-ime-emacs--inline-pair-clear)
-      (setq nelisp-ime-emacs--inline-client nil)
-      (nelisp-ime-emacs--inline-clear))))
+    (nelisp-ime-emacs--inline-forget-client client)))
 
 (defun nelisp-ime-emacs--inline-accept (_server client _message)
   (process-put client 'pending "")
@@ -544,10 +560,11 @@ An opener already inserted at point may also be up to two seconds old."
   (remove-hook 'window-buffer-change-functions #'nelisp-ime-emacs--inline-update)
   (remove-function after-focus-change-function #'nelisp-ime-emacs--inline-update)
   (remove-hook 'kill-emacs-hook #'nelisp-ime-emacs--inline-stop)
-  (dolist (process (cons nelisp-ime-emacs--inline-server nelisp-ime-emacs--inline-connections))
-    (when (processp process)
-      (condition-case error-data (delete-process process)
-        (error (nelisp-ime-emacs--inline-warn error-data)))))
+  (dolist (client nelisp-ime-emacs--inline-connections)
+    (nelisp-ime-emacs--inline-disconnect client))
+  (when (processp nelisp-ime-emacs--inline-server)
+    (condition-case error-data (delete-process nelisp-ime-emacs--inline-server)
+      (error (nelisp-ime-emacs--inline-warn error-data))))
   (setq nelisp-ime-emacs--inline-server nil nelisp-ime-emacs--inline-client nil
         nelisp-ime-emacs--inline-connections nil nelisp-ime-emacs--inline-token nil)
   (nelisp-ime-emacs--inline-clear)
