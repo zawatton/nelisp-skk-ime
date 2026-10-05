@@ -72,6 +72,26 @@ face.  This overlay leaves the buffer and undo history unchanged.  Committed
 text continues to arrive through normal IME input.  With the option off or
 no connected subscriber, the core uses normal system composition.
 
+The Windows core reads =Apps\emacs.exe\InlinePreedit= as DWORD 1 under
+the settings key (=NATIVEIME_REGISTRY_KEY= is honored).  It pins this choice
+at preedit start; a dropped channel materializes the latest preedit through
+ordinary composition without replaying keys.  Discovery retries once per
+second on a worker thread, which also authenticates, sends coalesced updates,
+and receives CARET.  In inline mode the core candidate popup appears below
+that caret.  Commits use =ITfInsertAtSelection= with
+=TF_IAS_NO_DEFAULT_COMPOSITION= in an edit session: no temporary TSF
+composition is created, and committed text never crosses the TCP channel.
+The private TSF harness checks insertion; IMM32 =GCS_RESULTSTR=/character
+delivery and absence of a visible composition window still require a live
+Windows Emacs check.
+
+Private core integration tests (supply build/runtime paths as parameters):
+=python windows/test-host/test-inline-preedit.py --dll DLL --core CORE
+--tsf-host TSFHOST --engine-host ENGINEHOST --runtime NELISP --artifacts DIR
+--case inline=.  Cases =missing=, =wrong=, =drop= and =emacs= cover fallback
+and the real batch Emacs listener.  Batch CARET coordinates are stubbed;
+overlay rendering and TCP transport use the real library.
+
 Protocol v1 uses UTF-8, LF-terminated lines.  The core sends
 =HELLO 1 <token> <pid>=; Emacs replies =OK 1=, or closes a bad connection.
 An authenticated replacement closes the previous client.  The core sends

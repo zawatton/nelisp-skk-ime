@@ -53,6 +53,7 @@ class CandidateUI final : public ITfCandidateListUIElementBehavior {
   HRESULT STDMETHODCALLTYPE Abort() override;
   void DetachHandler() { handler_ = nullptr; }
   void Update(const ddskk::EngineState& state, ITfDocumentMgr* document);
+  void SetInlineCaret(const RECT* caret);
 
  private:
   ~CandidateUI();
@@ -65,4 +66,5 @@ class CandidateUI final : public ITfCandidateListUIElementBehavior {
   std::vector<std::wstring> candidates_;
   ITfDocumentMgr* document_ = nullptr;
   CandidateUIHandler* handler_;
+  HWND inline_window_ = nullptr;
 };

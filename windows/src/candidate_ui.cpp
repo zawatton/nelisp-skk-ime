@@ -16,6 +16,8 @@
 #include "candidate_ui.h"
 
 #include <oleauto.h>
+#include <cstdio>
+#pragma comment(lib, "user32.lib")
 #ifdef NATIVEIME_CORE_BUILD
 extern LONG g_object_count;
 #endif
@@ -31,6 +33,7 @@ CandidateUI::CandidateUI(CandidateUIHandler* handler) : handler_(handler) {
 #endif
 }
 CandidateUI::~CandidateUI() {
+  SetInlineCaret(nullptr);
   if (document_) document_->Release();
 #ifdef NATIVEIME_CORE_BUILD
   InterlockedDecrement(&g_object_count);
@@ -67,4 +70,34 @@ void CandidateUI::Update(const ddskk::EngineState& state, ITfDocumentMgr* docume
   selection_ = state.candidate_index < 0 ? 0 : static_cast<UINT>(state.candidate_index);
   updated_flags_ = TF_CLUIE_COUNT | TF_CLUIE_SELECTION | TF_CLUIE_STRING |
                    TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE;
+}
+
+void CandidateUI::SetInlineCaret(const RECT* caret) {
+  if (!caret || candidates_.empty()) {
+    if (inline_window_) DestroyWindow(inline_window_);
+    inline_window_ = nullptr; return;
+  }
+  // A non-activating standard control keeps all window procedures in user32;
+  // no callbacks into an unloaded core can survive core replacement.
+  if (!inline_window_)
+    inline_window_ = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+        L"STATIC", L"", WS_POPUP | WS_BORDER | SS_LEFT,
+        0, 0, 320, 80, nullptr, nullptr, nullptr, nullptr);
+  if (!inline_window_) return;
+  std::wstring label;
+  for (size_t i = 0; i < candidates_.size() && i < 9; ++i) {
+    label += i == selection_ ? L"▶ " : L"  ";
+    label += std::to_wstring(i + 1) + L" " + candidates_[i] + L"\r\n";
+  }
+  SetWindowTextW(inline_window_, label.c_str());
+  SetWindowPos(inline_window_, HWND_TOPMOST, caret->left, caret->bottom,
+      320, static_cast<int>(std::min<size_t>(candidates_.size(), 9)) * 24 + 4,
+      SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  wchar_t diagnostics[2]{};
+  if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", diagnostics, 2)) {
+    RECT actual{}; GetWindowRect(inline_window_, &actual);
+    std::printf("INLINE_CANDIDATE x=%ld y=%ld height=%ld actual_x=%ld actual_y=%ld\n",
+        caret->left, caret->top, caret->bottom - caret->top, actual.left, actual.top);
+    std::fflush(stdout);
+  }
 }

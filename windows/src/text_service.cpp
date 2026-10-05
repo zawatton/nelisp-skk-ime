@@ -38,6 +38,22 @@ constexpr UINT kProviderResultMessage = WM_APP + 0x4e1;
 constexpr wchar_t kProviderWindowClass[] = L"NeLispImeProviderResultWindow";
 constexpr UINT kPublishStateMessage = WM_APP + 91;
 constexpr UINT kModeIndicatorMessage = WM_APP + 92;
+constexpr UINT kInlineMessage = WM_APP + 93;
+size_t InlineCursor(const ddskk::EngineState& state) {
+  const auto display = state.text + state.pending_romaji;
+  size_t units = display.size();
+  if (!state.segments.empty() && state.active_segment >= 0 &&
+      static_cast<size_t>(state.active_segment) < state.segments.size()) {
+    const auto& segment = state.segments[state.active_segment];
+    units = static_cast<size_t>(std::clamp(segment.start + segment.length,
+                                         0, static_cast<int>(display.size())));
+  }
+  size_t points = 0;
+  for (size_t i = 0; i < units; ++i, ++points)
+    if (IS_HIGH_SURROGATE(display[i]) && i + 1 < units &&
+        IS_LOW_SURROGATE(display[i + 1])) ++i;
+  return points;
+}
 void DelayTestProvider() {
 #ifdef NATIVEIME_CORE_PROVIDER_DELAY_MS
   Sleep(NATIVEIME_CORE_PROVIDER_DELAY_MS);
@@ -254,6 +270,7 @@ TextService::TextService() {
 }
 
 TextService::~TextService() {
+  inline_channel_.Stop();
   if (candidate_ui_) candidate_ui_->DetachHandler();
   RemovePublishedState();
   settings_watcher_.Stop();
@@ -280,6 +297,10 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
   }
   auto* service = reinterpret_cast<TextService*>(
       GetWindowLongPtrW(window, GWLP_USERDATA));
+  if (message == kInlineMessage && service != nullptr) {
+    service->HandleInlineEvent();
+    return 0;
+  }
   if (message == kPublishStateMessage && service != nullptr) {
     service->FlushPublishedState();
     return 0;
@@ -862,6 +883,8 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
 }
 
 HRESULT TextService::Deactivate() {
+  ClearInlineEpisode();
+  inline_channel_.Stop();
   RemovePublishedState();
   settings_watcher_.Stop();
   CancelPendingProvider();
@@ -1472,6 +1495,7 @@ void TextService::LoadApplicationSettings() {
   CharLowerBuffW(name.data(), static_cast<DWORD>(name.size()));
   const std::wstring path = NativeImeRegistryKey() + L"\\Apps\\" + name;
   application_open_mode_ = L"restore";
+  inline_enabled_ = false;
   bool enabled = false;
   HKEY key = nullptr;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_QUERY_VALUE,
@@ -1489,10 +1513,16 @@ void TextService::LoadApplicationSettings() {
     enabled = RegQueryValueExW(key, L"PublishState", nullptr, &type,
         reinterpret_cast<BYTE*>(&value), &bytes) == ERROR_SUCCESS &&
         type == REG_DWORD && bytes == sizeof(value) && value == 1;
+    bytes = sizeof(value);
+    inline_enabled_ = RegQueryValueExW(key, L"InlinePreedit", nullptr, &type,
+        reinterpret_cast<BYTE*>(&value), &bytes) == ERROR_SUCCESS &&
+        type == REG_DWORD && bytes == sizeof(value) && value == 1;
     RegCloseKey(key);
   }
   if (publish_state_ && !enabled) RemovePublishedState();
   publish_state_ = enabled;
+  if (inline_enabled_ && provider_window_ != nullptr)
+    inline_channel_.Start(provider_window_, kInlineMessage);
   if (enabled && thread_manager_ != nullptr && !publication_registered_) {
     if (shim_.publisher_delta) shim_.publisher_delta(shim_.owner, 1);
     else ++process_publishers;
@@ -2446,6 +2476,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
 // OnKeyDown failure path that abandons a composition, from
 // OnCompositionTerminated(), and from Deactivate().
 void TextService::ResetAbandonedComposition() {
+  ClearInlineEpisode();
   // Do not send RESET here.  This callback can arrive late from an old
   // Edge/Electron/Terminal context after another application has already
   // started using the process-wide engine session; an immediate RESET then
@@ -2475,6 +2506,7 @@ void TextService::ResetAbandonedComposition() {
 }
 
 void TextService::ForceCancelComposition(ITfContext* context) {
+  ClearInlineEpisode();
   // Close this client's pipe even when the failure happened before an I/O
   // operation was queued (Connect failure).  RESET is intentionally lazy:
   // the engine is process-wide, and another application's live session
@@ -2537,6 +2569,23 @@ void TextService::ForceCancelComposition(ITfContext* context) {
 }
 
 void TextService::SettleContextComposition(ITfContext* context) {
+  if (inline_epoch_ && context) {
+    // Match the ordinary focus-settle path: confirm the visible reading,
+    // excluding only the SKK marker, in its original document.
+    auto settled = inline_state_;
+    settled.text += settled.pending_romaji;
+    if (!settled.text.empty() && (settled.text[0] == L'▽' || settled.text[0] == L'▼'))
+      settled.text.erase(0, 1);
+    settled.pending_romaji.clear(); settled.composition_start = -1;
+    settled.candidates.clear(); settled.segments.clear();
+    auto* edit = new (std::nothrow) StateEditSession(this, context, settled);
+    if (edit) {
+      HRESULT result = E_FAIL;
+      context->RequestEditSession(client_id_, edit, TF_ES_SYNC | TF_ES_READWRITE, &result);
+      edit->Release();
+    }
+  }
+  ClearInlineEpisode();
   CancelPendingProvider();
   engine_.Disconnect();
   engine_.MarkNeedsResync();
@@ -2635,6 +2684,7 @@ bool TextService::AcknowledgeEndingComposition(ITfComposition* composition) {
 }
 
 void TextService::CloseCandidateUi() {
+  if (candidate_ui_) candidate_ui_->SetInlineCaret(nullptr);
   wchar_t harness_diagnostics[2]{};
   if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS",
                               harness_diagnostics, 2) > 0) {
@@ -2916,11 +2966,88 @@ std::optional<char32_t> TextService::TranslateKey(WPARAM wparam,
 // -- plus any still-unresolved romaji prefix. The composition itself only
 // closes once an episode ends with no pending romaji left (see the tail
 // below).
+void TextService::ClearInlineEpisode() {
+  inline_channel_.Clear(inline_epoch_);
+  inline_epoch_ = 0; preedit_episode_ = false; inline_state_ = {};
+  if (candidate_ui_) candidate_ui_->SetInlineCaret(nullptr);
+}
+
+void TextService::HandleInlineEvent() {
+  if (!inline_epoch_ || !thread_manager_) return;
+  RECT caret{};
+  if (inline_channel_.Caret(inline_epoch_, &caret)) {
+    last_caret_rect_ = caret; last_caret_valid_ = true;
+    if (candidate_ui_) candidate_ui_->SetInlineCaret(&caret);
+  }
+  if (inline_channel_.Epoch() == inline_epoch_ || !active_context_) return;
+  // Transport loss materializes the latest full preedit immediately, even
+  // without another key. The episode remains pinned to ordinary composition.
+  auto* edit = new (std::nothrow) StateEditSession(this, active_context_, inline_state_);
+  if (!edit) return;
+  HRESULT result = E_FAIL;
+  active_context_->RequestEditSession(client_id_, edit,
+      TF_ES_SYNC | TF_ES_READWRITE, &result);
+  edit->Release();
+}
+
 HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
                                       ITfContext* context,
                                       const ddskk::EngineState& state) {
   // A TSF edit session may retain this core after its shim deactivated.
   if (thread_manager_ == nullptr) return S_FALSE;
+  const bool has_preedit = state.composition_start >= 0 || !state.pending_romaji.empty();
+  const bool inline_commit = !has_preedit && !composition_ &&
+      (inline_epoch_ || (!preedit_episode_ && inline_enabled_ && inline_channel_.Epoch()));
+  if (!preedit_episode_ && has_preedit) {
+    preedit_episode_ = true;
+    inline_epoch_ = inline_enabled_ ? inline_channel_.Epoch() : 0;
+  }
+  if (inline_epoch_) {
+    if (has_preedit && inline_channel_.Publish(inline_epoch_,
+          state.text + state.pending_romaji,
+          InlineCursor(state))) {
+      inline_state_ = state;
+      RECT caret{};
+      if (inline_channel_.Caret(inline_epoch_, &caret)) {
+        last_caret_rect_ = caret; last_caret_valid_ = true;
+        if (candidate_ui_) candidate_ui_->SetInlineCaret(&caret);
+      }
+      return S_OK; // No document edit and, crucially, no StartComposition.
+    }
+    if (has_preedit) {
+      // Apply this same full engine snapshot through normal composition.
+      // No engine replay: replaying the last key would duplicate text.
+      inline_channel_.Clear(inline_epoch_);
+      inline_epoch_ = 0;
+      if (candidate_ui_) candidate_ui_->SetInlineCaret(nullptr);
+    } else {
+      inline_channel_.Clear(inline_epoch_);
+      inline_epoch_ = 0;
+    }
+  }
+  if (!has_preedit) preedit_episode_ = false;
+  if (inline_commit) {
+    if (state.text.empty()) return S_OK; // cancellation
+    ITfInsertAtSelection* insertion = nullptr;
+    HRESULT result = context->QueryInterface(IID_ITfInsertAtSelection,
+        reinterpret_cast<void**>(&insertion));
+    if (FAILED(result)) return result;
+    ITfRange* inserted = nullptr;
+    // SetText creates an implicit temporary composition even without an
+    // explicit StartComposition. Suppress that documented default here.
+    result = insertion->InsertTextAtSelection(edit_cookie,
+        TF_IAS_NO_DEFAULT_COMPOSITION, state.text.data(),
+        static_cast<LONG>(state.text.size()), &inserted);
+    insertion->Release();
+    if (SUCCEEDED(result) && inserted) {
+      inserted->Collapse(edit_cookie, TF_ANCHOR_END);
+      TF_SELECTION selection{inserted, {TF_AE_NONE, FALSE}};
+      result = context->SetSelection(edit_cookie, 1, &selection);
+      CaptureCaretRect(edit_cookie, context, inserted);
+    }
+    if (inserted) inserted->Release();
+    return result;
+  }
   wchar_t diagnostics[2]{};
   if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", diagnostics, 2) > 0) {
     std::printf("ENGINE_APPLY mode=%ls text_units=%zu segments=%zu active=%d\n",

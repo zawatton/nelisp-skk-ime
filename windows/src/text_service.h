@@ -24,6 +24,7 @@
 #include "langbar_button.h"
 #include "mode_indicator.h"
 #include "registry_watcher.h"
+#include "inline_preedit.h"
 
 #include <atomic>
 #include <deque>
@@ -125,6 +126,13 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   void LoadApplicationSettings();
   void QueuePublishedState(const ddskk::EngineState* state);
   void FlushPublishedState();
+  void HandleInlineEvent();
+  void ClearInlineEpisode();
+  InlinePreedit inline_channel_;
+  bool inline_enabled_ = false;
+  bool preedit_episode_ = false;
+  uint64_t inline_epoch_ = 0;
+  ddskk::EngineState inline_state_;
   void RemovePublishedState();
   struct PublishedState {
     std::wstring mode;

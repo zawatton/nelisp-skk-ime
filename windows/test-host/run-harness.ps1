@@ -72,6 +72,9 @@ param(
   [ValidateSet('restore','latin','hiragana','katakana')]
   [string]$OpenMode = 'restore',
   [switch]$PublishState,
+  [switch]$InlinePreedit,
+  [string]$InlineDirectory = '',
+  [string]$InlinePidFile = '',
 
   # Engine cold load has been measured anywhere from 3.4s (quiet machine)
   # to ~12s (loaded machine); a 6s default let the first scripted keys race
@@ -208,7 +211,7 @@ $tempJisyo = Join-Path $env:TEMP "ddskk-test-jisyo-$runId.jisyo"
 # its own E2E test already rely on (see host/main.cpp PipeName()).
 $savedEnvironment = @{}
 foreach ($name in @('DDSKK_PIPE_NAME','DDSKK_USER_JISYO','NATIVEIME_REGISTRY_KEY',
-    'LOCALAPPDATA','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH','NATIVEIME_TEST_CORE_DIRECTORY','NATIVEIME_TEST_CORE_ACTION_SCRIPT')) {
+    'LOCALAPPDATA','NELISP_IME_INLINE_DIR','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH','NATIVEIME_TEST_CORE_DIRECTORY','NATIVEIME_TEST_CORE_ACTION_SCRIPT')) {
   $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 $hostProcess = $null
@@ -238,11 +241,13 @@ if ($CoreDllPath) {
 }
 New-ItemProperty -Path $regPath -Name SkkServEnable -Value 0 -PropertyType DWord -Force | Out-Null
 New-ItemProperty -Path $regPath -Name InitialKanaMode -Value 1 -PropertyType DWord -Force | Out-Null
-if ($PublishState -or $OpenMode -ne 'restore') {
+if ($InlineDirectory) { $env:NELISP_IME_INLINE_DIR = [IO.Path]::GetFullPath($InlineDirectory) }
+if ($PublishState -or $InlinePreedit -or $OpenMode -ne 'restore') {
   $appPath = Join-Path $regPath ('Apps\' + [IO.Path]::GetFileName($TsfHostExe).ToLowerInvariant())
   New-Item -Path $appPath -Force | Out-Null
   New-ItemProperty -Path $appPath -Name OpenMode -Value $OpenMode -PropertyType String -Force | Out-Null
   New-ItemProperty -Path $appPath -Name PublishState -Value ([int][bool]$PublishState) -PropertyType DWord -Force | Out-Null
+  New-ItemProperty -Path $appPath -Name InlinePreedit -Value ([int][bool]$InlinePreedit) -PropertyType DWord -Force | Out-Null
 }
 # Logs and user data must also stay out of the installed IME's directory.
 if (-not $ArtifactDirectory) { $ArtifactDirectory = $env:NATIVEIME_HARNESS_ARTIFACT_DIRECTORY }
@@ -332,6 +337,7 @@ if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repositor
   # Cache the handle before exit. Windows PowerShell's Wait-Process can
   # otherwise leave Start-Process's ExitCode null, silently skipping checks.
   Write-Host "HARNESS_TSF pid=$($tsfProcess.Id)"
+  if ($InlinePidFile) { [IO.File]::WriteAllText([IO.Path]::GetFullPath($InlinePidFile), [string]$tsfProcess.Id) }
   $tsfHandle = $tsfProcess.Handle
   try {
     if (-not $tsfProcess.WaitForExit($TsfHostTimeoutSec * 1000)) { throw 'TSF host timeout' }
