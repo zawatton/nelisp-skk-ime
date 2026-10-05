@@ -1,6 +1,6 @@
 ;;; bench-checkpoint.el --- Interleaved baseline checkpoint probe -*- lexical-binding: t; -*-
 (load "engine/ddskk-engine.el" nil t)
-;; Generated from HEAD by the command in the round-2 report, never vendor.
+;; Generated from be35842 by the command in the round-2 report, never vendor.
 (load "build/w/capture-reference.el" nil t)
 (defun ddskk-bench-checkpoint-map ()
   ;; mapcar preserves the declaration order and avoids an interpreted

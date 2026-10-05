@@ -5,14 +5,23 @@
   (or (cdr (assoc midasi '(("かな" . "1/仮名/哉/金/加奈/佳奈/香奈/")
                            ("か" . "1/蚊/")
                            ("きえr" . "1/消え/[る/消え/]/")))) "4"))
-(when (file-exists-p "build/w/capture-reference.el")
-  (load "build/w/capture-reference.el" nil t))
+;; Independent round-1 checkpoint implementation. Keep this oracle in the
+;; test so it cannot silently skip comparisons on a fresh build directory.
+(defun skk-ime-session--capture-reference ()
+  (let (state)
+    (dolist (symbol skk-ime-session--native-state-symbols (nreverse state))
+      (when (boundp symbol)
+        (let ((value (symbol-value symbol)))
+          (push (cons symbol
+                      (if (markerp value)
+                          (cons 'skk-ime-session--marker (marker-position value))
+                        value))
+                state))))))
 
 (defun ddskk-replay--check-capture ()
-  (when (fboundp 'skk-ime-session--capture-reference)
-    (unless (equal (skk-ime-session--capture-native-state)
-                   (skk-ime-session--capture-reference))
-      (error "Generated checkpoint differs from HEAD capture"))))
+  (unless (equal (skk-ime-session--capture-native-state)
+                 (skk-ime-session--capture-reference))
+    (error "Generated checkpoint differs from round-1 capture")))
 (let ((keys-list '("" "a" "ai" "Kana" "Kanji" "Nihon" "Ka" "KaKu" "YoMu"
                    "KieRu" "tya" "tyu" "tyo" "tta" "nn" "n'" "nka"
                    "z." "z/" "z0" "z*" "zL" "Kanaq" "qKanaq" "KanaQ"
@@ -26,20 +35,20 @@
           reference-error actual-error)
       (condition-case err
           (dolist (key (string-to-list keys))
-          (skk-ime-session-feed-key ddskk-engine--session key)
-          )
+            (skk-ime-session-feed-key ddskk-engine--session key)
+            )
         (error (setq reference-error (car err))))
-    (let ((reference (skk-ime-session-checkpoint ddskk-engine--session))
-          (state (skk-ime-session-snapshot ddskk-engine--session)))
-      (ddskk-replay--check-capture)
-      (skk-ime-session-restore ddskk-engine--session initial)
-      (progn
-        (condition-case err
-            (skk-ime-session-feed-string ddskk-engine--session keys)
-          (error (setq actual-error (car err))))
-        (unless (eq reference-error actual-error)
-          (error "Replay error differs: %S" keys))
-        (ddskk-replay--check-capture)
+      (let ((reference (skk-ime-session-checkpoint ddskk-engine--session))
+            (state (skk-ime-session-snapshot ddskk-engine--session)))
+	(ddskk-replay--check-capture)
+	(skk-ime-session-restore ddskk-engine--session initial)
+	(progn
+          (condition-case err
+              (skk-ime-session-feed-string ddskk-engine--session keys)
+            (error (setq actual-error (car err))))
+          (unless (eq reference-error actual-error)
+            (error "Replay error differs: %S" keys))
+          (ddskk-replay--check-capture)
           (unless (equal reference (skk-ime-session-checkpoint ddskk-engine--session))
             (let ((actual (skk-ime-session-checkpoint ddskk-engine--session)))
               (dolist (entry (plist-get reference :native-state))
@@ -55,15 +64,16 @@
   (nelisp--write-stdout-bytes
    (concat "Replay full checkpoint/snapshot: " (number-to-string checks)
            "/" (number-to-string (length keys-list)) " sequences PASS\n")))
-(let ((saved (and (boundp 'skk-echo) skk-echo))
-      (was-bound (boundp 'skk-echo))
-      (previous skk-previous-point))
-  (unwind-protect
-      (progn
-        (makunbound 'skk-echo)
-        (ddskk-replay--check-capture)
-        (setq skk-previous-point (copy-marker 1))
-        (ddskk-replay--check-capture))
-    (setq skk-previous-point previous)
-    (if was-bound (setq skk-echo saved) (makunbound 'skk-echo))))
+(skk-ime-session--with-buffer ddskk-engine--session
+			      (let ((saved (and (boundp 'skk-echo) skk-echo))
+				    (was-bound (boundp 'skk-echo))
+				    (previous skk-previous-point))
+				(unwind-protect
+				    (progn
+				      (makunbound 'skk-echo)
+				      (ddskk-replay--check-capture)
+				      (setq skk-previous-point (copy-marker 1))
+				      (ddskk-replay--check-capture))
+				  (setq skk-previous-point previous)
+				  (if was-bound (setq skk-echo saved) (makunbound 'skk-echo)))))
 (nelisp--write-stdout-bytes "Checkpoint unbound/marker parity: 2 checks PASS\n")

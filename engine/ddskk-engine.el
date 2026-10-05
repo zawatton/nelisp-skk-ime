@@ -519,7 +519,9 @@ directives costs 23.5 ms per call, while the whole `concat' below costs
 keystroke, so that difference is most of the per-key budget: the common
 short-state line went from 28.7 ms to 9.8 ms.
 
-The emitted bytes are unchanged.  Every numeric field here is an
+Legacy STATE bytes are unchanged; negotiated STATE2 fields carry raw
+UTF-8 for the host to translate back to the DLL-facing STATE format.
+Every numeric field here is an
 integer -- `skk-ime-session-snapshot' derives them from `point',
 `marker-position' and `skk-henkan-count' -- so `number-to-string' and
 %d agree; `%s' on a string and on `symbol-name' output is likewise the
