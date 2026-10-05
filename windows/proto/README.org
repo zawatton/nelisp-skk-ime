@@ -1,0 +1,89 @@
+#+TITLE: LF1 standalone dictionary experiment
+
+This library/bench is independent of the core. See
+../../docs/design/local-first-conversion.org for semantics, measured results,
+limitations, proposed parity tests and rollout. No live files are read.
+user-copy.jisyo is a synthetic fixture copied to the build dir before use.
+Do not point it at a live user jisyo or its journal. Pass all input paths.
+
+* Reproduce (PowerShell, repository root)
+Set $runtime to the user-provided NeLisp executable; set $notesRoot to the
+Notes root. Neither is embedded in repository code. Build/gate logs and raw
+traces remain under build/, not in production source.
+
+#+begin_src powershell
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+ctest --test-dir build/w -C Release
+$dictionary = Join-Path $notesRoot 'assets/ddskk/SKK-JISYO.L.utf8'
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion-tsf.ps1 -Runtime $runtime -Dictionary $dictionary -BuildDir build/w -Iterations 20 -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/bench-conversion.ps1 -Runtime $runtime -Dictionary $dictionary -Output build/w/phases.json -BuildDir build/w -Iterations 3 -Profile -ColdLoadSleepSec 45
+$data = Get-Content build/w/phases.json -Raw | ConvertFrom-Json
+foreach ($kind in @('plain','okuri')) {
+  powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/summarize-conversion-profile.ps1 -Trace (Join-Path $data.traceDir "$kind-host.log")
+}
+cmake -S windows/proto -B build/lf1-proto -G "Visual Studio 17 2022" -A x64
+cmake --build build/lf1-proto --config Release
+ctest --test-dir build/lf1-proto -C Release
+build/lf1-proto/Release/local-first-bench.exe selftest build/lf1-proto/selftest
+Copy-Item windows/proto/user-copy.jisyo build/lf1-proto/user-copy.jisyo
+build/lf1-proto/Release/local-first-bench.exe build $dictionary build/lf1-proto/user-copy.jisyo build/lf1-proto/full.index
+build/lf1-proto/Release/local-first-bench.exe bench build/lf1-proto/full.index windows/proto/corpus.utf8 100000
+$keys = @(Get-Content $dictionary -Encoding UTF8 | ForEach-Object { if ($_ -match '^([^; ]+) /') { $Matches[1] } })
+[IO.File]::WriteAllLines((Join-Path $PWD 'build/lf1-proto/all-keys.utf8'), $keys, [Text.UTF8Encoding]::new($false))
+build/lf1-proto/Release/local-first-bench.exe bench build/lf1-proto/full.index build/lf1-proto/all-keys.utf8 100000
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+If full L is unavailable, use windows/test-host/data/behavior-jisyo.utf8 and
+report fixture results separately. LF1 used full L, not this fallback.
+
+* Gate tails recorded in this run
+Production configure exit 0: -- Configuring done (2.0s); -- Generating done
+(0.2s). Production build exit 0, final built target tsf-host.exe. No register
+executable was run. CTest command above, verbatim tail:
+#+begin_example
+100% tests passed, 0 tests failed out of 9
+
+Total Test time (real) =   3.88 sec
+#+end_example
+Unchanged-tree latency check exit 1, meaningful verbatim tail before stack:
+#+begin_example
+TSF n=20 p50=125 p90=141 max=360 log=<build/w/tsf-conversion-8ee01609ee31477283e96fa7ee8e957a/tsf.log>
+FAIL S3.1: p50 >100 ms or p90 >150 ms
+#+end_example
+The log path above is normalized to repository-relative form; raw output
+including the PowerShell stack is preserved in build/w/baseline-tsf.log.
+Profile command exit 0, verbatim result lines (cold rows also in phases.log):
+#+begin_example
+plain cpuMs n=12 p50=125.000 p90=187.500 max=281.250
+plain wallMs n=12 p50=137.772 p90=218.931 max=293.189
+okuri cpuMs n=6 p50=125.000 p90=156.250 max=156.250
+okuri wallMs n=6 p50=154.467 p90=172.120 max=172.120
+#+end_example
+Profile summarizer headers: plain requests=13/functions=15; okuri
+requests=7/functions=15. First attempt without ExecutionPolicy Bypass failed
+with UnauthorizedAccess (scripts disabled); corrected invocation succeeded.
+CPU model CIM query denied; the design records PROCESSOR_IDENTIFIER instead.
+
+Prototype configure/build exit 0. Final prototype CTest tail, verbatim:
+#+begin_example
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.02 sec
+PASS selftest 6 positive checks; 3 corrupt-index negative controls
+#+end_example
+Selftest is a separate invocation after CTest; no production parity claim.
+ERT commands above, verbatim tails:
+#+begin_example
+   passed  31/31  nelisp-ime-stateline-test-status-has-no-side-effects (0.000289 sec)
+
+Ran 31 tests, 31 results as expected, 0 unexpected (2026-10-06 00:19:38+0900, 0.064838 sec)
+   passed  14/14  nelisp-ime-lattice-test-selects-candidate-within-active-segment (0.000227 sec)
+
+Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-06 00:19:39+0900, 0.069334 sec)
+#+end_example
+Measurements: build/w/proto-measure.log and proto-wide.log. Raw artifacts are
+not committed. Immutable index input, runtime and dictionary hashes are in
+the design and build/w/phases.json; the experimental header does not store hashes.

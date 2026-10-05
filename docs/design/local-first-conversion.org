@@ -1,0 +1,401 @@
+#+TITLE: Local-first DDSKK conversion: design and LF1 measurements
+#+DATE: 2026-10-06
+
+* Decision and scope
+The TSF core should own ordinary conversion: reading construction, dictionary
+lookup, ordered candidate traversal, cancel and document commit. It reads an
+immutable shared memory-mapped dictionary generation and a small user overlay.
+No ordinary conversion or subsequent key waits for the engine. NeLisp DDSKK
+remains an asynchronous learning/registration/advanced-feature service. Emacs
+is an optional inline display consumer, never a required engine process.
+
+LF1 changes only this design, the S1 ledger and windows/proto. The prototype
+is not connected to windows/CMakeLists.txt or any DLL. It establishes lookup
+cost, not DDSKK state-machine equivalence or the S2.3 <=30 ms target.
+
+* Evidence from the current implementation
+- windows/src/realtime_frontend.{h,cpp}: native romaji, mode transitions,
+  pending prefixes, raw_keys, local q and RestorePreedit already exist.
+  preview_reading deliberately excludes pending romaji and okuri.
+- windows/src/text_service.cpp: BeginProviderConversion calls ConvertKeys
+  on a worker; provider_sequence rejects stale replies. ApplyProviderResult
+  requests a TSF edit, updates candidate UI and replays deferred provider keys.
+  Candidate control and commit still call the engine. Retry restoration uses
+  candidate identity, because late learning can reorder candidates.
+- windows/src/engine_client.cpp and windows/host/main.cpp: named-pipe requests
+  enter a serialized engine transaction. CONTROL CONVERT-KEYS restores/replays
+  the reading. Engine SERVER requests synchronously re-enter the host's
+  dictionary lookup. Dispatch emits existing opt-in wall/CPU phase traces.
+- engine/ddskk-engine.el: native DDSKK loaded through the compatibility layer,
+  checkpoint/replay, raw state serialization, registration overlay and per-client
+  sessions; search configuration at lines 1391-1455.
+- engine/skk-ime-session.el: DDSKK keymap precedence (abbrev before other modes),
+  command dispatch, checkpoint/restore and registration/control semantics.
+- engine/skk-input-rules.el and skk-rule-tree-cache.el: selected/custom input
+  rule profiles. ROMAJI RULES 1 exports engine rules to the native frontend.
+- engine/skk-user-jisyo.el: UTF-8 table plus append journal, full checkpoint
+  compaction, move-to-front learning, immediate purge flush and candidate hygiene.
+- vendor/ddskk/skk.el: skk-search, skk-henkan-1, skk-kakutei,
+  skk-compute-henkan-lists, skk-select-words-from-list,
+  skk-update-jisyo-original and skk-update-jisyo-1.
+- vendor/ddskk/skk-macs.el: skk-nunion; vendor/ddskk/skk-num.el:
+  normalized numeric keys, template expansion and #4 recursive lookup.
+
+* Search source split
+Stock skk-search-prog-list in vendor/ddskk/skk-vars.el:438 contains the
+following sources in order. The core must carry an explicit source plan,
+not assume every installation has only one large dictionary.
+
+| Stock source | Proposed ownership and requirement |
+|--------------+------------------------------------|
+| skk-search-kakutei-jisyo-file | Local indexed file; preserve its special immediate-confirm semantics, initially engine until oracle passes |
+| skk-tankan-search wrapping large jisyo | Engine: radical/stroke/special @ search |
+| skk-search-jisyo-file initial jisyo | Local optional indexed tier in configured order |
+| skk-search-jisyo-file personal jisyo | Local overlay; engine is the sole persistent writer |
+| skk-okuri-search | Engine initially; auto-okuri is more than exact key lookup |
+| skk-search-cdb-jisyo | Builder can import CDB as a typed tier; engine until importer parity exists |
+| skk-search-jisyo-file large jisyo | Local shared mmap tier |
+| skk-search-server aux large jisyo | Local imported snapshot where available; remote/network-only sources asynchronous, engine fallback when required |
+| skk-search-ja-dic-maybe | Engine until compatible adapter exists |
+| skk-search-extra-jisyo-files | Local indexed files, preserving their concatenation and filtering behavior |
+| skk-search-katakana-maybe | Local generated terminal tier after dictionaries, enabled only by matching setting |
+| skk-search-sagyo-henkaku-maybe | Engine initially; special conjugation |
+| skk-search-itaiji | Local indexed special tier after matching its single-character guard |
+
+The current engine replaces this entire default list with
+ddskk-user-jisyo-search then ddskk-engine-server-search; optionally
+skk-search-katakana-maybe is appended. The host shared tier merges configured
+DictionaryFiles in first-occurrence order, then can relay to a configured
+server. These current supported sources are the initial local scope.
+Uninstalled stock features must not be advertised as supported already.
+Alternate numbered search lists and arbitrary Lisp search/end hooks require
+the engine unless the exported configuration explicitly certifies a local
+equivalent. A finite capability digest selects the path before conversion.
+
+** Candidate order, identity and laziness
+skk-search stops at the first nonempty source and advances
+skk-current-search-prog-list. skk-henkan-1 asks further sources only when
+necessary, unioning results with skk-nunion. Therefore a flattened eager
+union can be cached internally, but the visible frontier and source exhaustion
+must remain DDSKK-equivalent, including when the candidate menu opens.
+Space/next/previous/page/select and Enter operate entirely on the pinned
+local candidate state. Exhaustion starts registration only after all enabled
+sources are actually exhausted; an unavailable source is not a miss.
+
+Store raw candidate identity, displayed word and annotation separately.
+DDSKK union uses equal on the full values; the current host shared merge
+deduplicates the word before ';' while preserving the first annotation.
+These are different policies at different boundaries. Preserve them explicitly
+in the current-engine compatibility plan; use stock DDSKK as the final oracle,
+and document any deliberately corrected current-engine difference.
+Do not insert ';annotation' into the document. Lisp-expression candidates,
+ignored-word expressions and hooks are engine features; never evaluate them
+as native code or display their source as an ordinary word.
+
+* Okuri, modes and input behavior
+** Okuri-nasi and okuri-ari
+An okuri-nasi key is the completed reading. An okuri-ari key combines the
+hiragana stem and roman okuri discriminator, e.g. KaKu -> かk with resolved
+okuri く. The uppercase boundary and rule tree, not a guessed last byte,
+determine that key; ASCII abbrev readings must carry a separate mode flag.
+Do not normalize kana, punctuation or Unicode beyond DDSKK's actual rules.
+Retain stem, okuri letter, resolved okuri, pending prefix, raw input and
+editing/cancel policy independently. Complete okuri can trigger conversion
+without Space; another Space advances candidates rather than reconverting.
+
+SKK entries retain plain fields and each [okuri/candidates/] block.
+Stock skk-select-words-from-list returns only matching-block candidates
+when skk-henkan-okuri-strictly is true; with strict-okuri-precedence it unions
+matching candidates before plain ones; otherwise it returns plain candidates.
+Missing blocks, cancellation retaining/deleting okuri, Backspace inside an
+unresolved okuri prefix and automatic conversion must all follow the oracle.
+Current host MergeBuiltinCandidates and user --plain-candidates discard
+blocks. Consequently today's strict toggle cannot reproduce stock block
+ranking. The future index preserves blocks; LF1 raw views already preserve
+them, but its PlainCandidates intentionally does not implement ranking.
+This discrepancy must be fixed in coordinated engine learning/export too,
+otherwise later compaction would erase locally preserved ranking.
+
+** Numeric conversion
+Stock skk-num-compute-henkan-key normalizes fullwidth digits, strips grouping
+commas and replaces numeric runs (optionally decimal runs) with '#', keeping
+the original numeric list. skk-search can union exact and numeric searches
+for numeric-enabled programs. Candidate templates support #0 unchanged,
+#1 fullwidth, #2 digitwise kanji, #3 positional kanji, #4 dictionary relookup,
+#5 financial kanji, #8 grouping and #9 shogi. Template/raw identity is distinct
+from displayed expansion. Numeric learning can use the normalized template
+key; #4 also has numeric-key update semantics (skk-num-update-jisyo).
+Implement pure expansions locally only after stock-oracle coverage, retaining
+leading zeros, multiple runs, decimals, large numbers and annotation behavior.
+Initially route numeric features, recursive #4 and expression candidates to
+the engine. An exact mmap lookup is not numeric conversion support.
+
+** Abbrev, katakana and rules
+Abbrev starts with '/' and uses the abbrev keymap; lookup must retain the
+literal ASCII key and mode (case, digits and punctuation included). It must
+not accidentally romaji-convert or classify Latin keys as okuri stems.
+Ordinary katakana mode and q toggles stay in RealtimeFrontend. Katakana
+candidate generation is a distinct last search source, gated by the setting;
+it must not preempt an existing dictionary candidate.
+Use the engine-exported rule tree/profile and settings digest. Preserve n,
+nn, n', carry/remainder, doubled consonants, punctuation, z sequences and
+custom rules. Persist a last-known verified export so ordinary typing and
+conversion work without a running engine. Unknown rule/profile digests route
+unsupported commands explicitly; do not silently substitute default romaji.
+
+** Registration
+Empty confirmed search or candidate exhaustion opens the engine registration
+editor. Send one explicit handover containing session/context epoch, reading,
+mode, okuri, raw input, candidate frontier and selected identity. The future
+protocol needs state import; today's ConvertKeys replay is a compatibility
+fallback, not an asynchronous learning operation. Registration remains modal
+and can nest; cancellation restores the pre-registration reading/candidate
+checkpoint. Registration commit returns a validated candidate plus a learning
+delta, updates the local overlay and commits once. New local conversions need
+not await unrelated registration or learning in another application.
+
+* Shared index and publication
+** Proposed production format (not yet implemented)
+Use fixed-width little-endian offsets, never process pointers, with magic,
+schema, file length, generation, source/config/rule digests, source content
+hashes, checksum and build completion marker. Sorted UTF-8 key table points
+to source-specific candidate vectors and a string pool. Candidate records
+retain raw word/template, annotation, source rank, flags and typed okuri-block
+vectors. Keep user ranking as its own generation/overlay; do not bake its
+priority into an unchangeable shared list. Reject unknown versions, overflow,
+out-of-bounds/overlapping sections, malformed UTF-8 and incomplete publication.
+Builder parses source files off the keystroke thread. Record bad-line counts;
+never silently treat a missing dictionary as an empty successful generation.
+
+Build a new uniquely named file, flush, validate, then atomically publish a
+small manifest. Readers open read-only with delete sharing, pin the mapping
+for a composition, and map the next generation only at a safe boundary.
+Old mappings remain valid until their final reader releases them. No in-place
+editing under readers; cap generation retention and validate file access
+permissions. Mapped pages are shared through the OS cache across app processes.
+Measure private bytes separately from mapped bytes and working set.
+
+** LF1 experimental format
+windows/proto/mmap_index.h defines a 32-byte header (magic/version/count/size),
+48-byte sorted record (offset/length pairs for key/user/shared) and UTF-8 raw
+payload. Read-only CreateFileMappingW/MapViewOfFile, binary search, zero-copy
+Hit views; caller must retain Index lifetime. Open validates header, bounds
+and strict key order. Build preserves raw annotations/blocks and duplicate
+key last-wins behavior. PlainCandidates drops block fields and exact-unions
+user before shared. It handles one shared source only; no checksum, content
+digest, UTF-8 validator, durability/manifest publisher or ranking protocol.
+It is not a distributable dictionary or production-safe index format.
+
+* Learning and cross-process consistency
+Stock skk-update-jisyo-original moves the confirmed word to the front, updates
+matching okuri ranking blocks and history, handles numeric template keys,
+and records shared-personal updates. Purging a shared word can install an
+ignored-word expression; merely deleting the local word does not suppress
+the shared result. Current ddskk-user-jisyo--update is narrower: cleans the
+full candidate, exact-equal move-to-front by skk-henkan-key, append of the
+whole changed entry to .journal; purge removes it and immediately flushes;
+compaction writes the base before truncating the journal. It drops okuri
+blocks on load. Existing journal behavior is useful, but not a stock-parity
+specification. The design must migrate storage/export with explicit schema
+and stock-oracle tests for okuri, purge tombstones and numeric learning.
+
+Document commit is immediate in the core. Add a pending in-memory learning
+delta so a second conversion in that same client sees its just-confirmed
+word first. Enqueue LEARN(session, epoch, unique operation id, generation,
+key, okuri, raw candidate/template, display word, action). The engine is the
+single writer and orders operations globally, journals them durably, then
+ACKs with an authoritative sequence and changed-entry delta. At-least-once
+delivery must be idempotent; the acknowledged operation-id watermark must
+survive restart. Never infer confirmation by candidate index alone.
+
+Publish the new overlay to all clients; fold pending deltas over the confirmed
+generation until their ids are acknowledged. Concurrent same-key learning
+uses engine sequence order. Purges and registration are explicit operations.
+A composition pins its candidate list even when another app learns a word;
+apply new ranks on the next conversion. Late ACKs cannot rewrite committed
+text, move a selection or revive an expired context. Engine failure leaves
+ordinary input usable; bounded queued learning and an explicit unsaved status
+avoid claiming durability that did not occur. A protected local spool is
+needed for crash-safe pending learning; implement it off the TSF thread.
+
+The engine must not maintain a shadow local-key stream and later replay it
+one key at a time. Supported local conversions own their complete state.
+Engine calls for unsupported commands use an explicit epoch-tagged handover
+barrier. A late fallback response applies only to that barrier's live context.
+Engine responses/learning ACKs carry no authority over a newer local session.
+
+* Document and inline channels
+Produce one core state snapshot for candidate UI and document edits. Obtain
+the TSF edit session to replace the reading/okuri range and commit synchronously
+when permitted; preserve existing edit-session failure handling and caret
+identity. New keys update local state directly, without provider waiting and
+per-key replay. Closing/switching context invalidates UI epochs and callbacks.
+InlinePreedit already publishes snapshots on its own socket worker with epochs.
+Use the same local state there; inline socket/listener delay cannot block input.
+Candidate caret placement and Emacs rendering are presentation consumers.
+Missing/wrong/disconnected listeners retain existing TSF fallback behavior.
+
+* Failure policy and rollout
+- Missing/corrupt index: keep last verified generation; otherwise explicitly
+  choose the existing private-engine path before displaying a candidate.
+- Not-yet-built/user-overlay-not-ready: do not claim a dictionary miss or
+  open registration; keep the reading and offer fallback/unavailable status.
+- Engine down: local ordinary conversion and commits work; learning is
+  pending, registration/unsupported commands report unavailable.
+- Unknown hooks, numeric/expressions/advanced sources: select engine ownership
+  before conversion; timeout/cancel leaves editable reading, never duplicates
+  a document commit. Remote-source replies cannot reorder visible candidates.
+- Resource limits: no file build, full mapping validation, network access,
+  unbounded candidate expansion or journal compaction in a key callback.
+- Rollout: S1 prototype -> private ordinary-conversion oracle -> okuri/modes
+  -> asynchronous learning/registration -> private TSF and real Emacs inline
+  latency/typing-ahead gates -> opt-in production setting -> user-approved live
+  deployment. LF1 does not create settings, deploy or register anything.
+
+* Parity and performance acceptance
+Future tests below are named specifications, not tests added or run by LF1:
+| Proposed test | Oracle/coverage |
+|---------------+-----------------|
+| local-first-stock-candidate-order | Stock Emacs DDSKK, same source plan, keys, annotations, duplicates, menus and lazy source frontier |
+| local-first-stock-okuri | Matching/missing blocks, strict/precedence combinations, KaKu/YoMu/KieRu, pending prefix, automatic conversion and cancel policy |
+| local-first-stock-numeric | Exact plus normalized keys; #0/1/2/3/4/5/8/9, floats, zeros, multiple runs, learning raw template |
+| local-first-stock-abbrev-katakana-rules | Abbrev ASCII, q modes, optional final katakana source, custom rule profiles, n/doubled consonants/z punctuation |
+| local-first-stock-learning-registration | Move-to-front, okuri rank, annotation identity, ignored shared words, restart/journal/compaction, nested registration and cancel |
+| local-first-generation-concurrency | Pinned views, replacement, truncation/corrupt checksum, duplicate ACK, concurrent client commits/purges, offline/restart |
+| local-first-tsf-typing-ahead | Space next previous commit then immediate next reading; no per-key provider replay, context loss and failed edit session |
+| local-first-inline-latency | Private real Emacs plus other app; same committed text/candidate state, listener failure, caret, end-to-end timing |
+
+Stock oracle compares full candidate order, selected identity, display word,
+annotation, okuri, mode, cursor/ranges and post-commit user dictionary, not
+only the first visible kanji. Keep a current-engine compatibility oracle too
+so intentional stock corrections are distinguishable from regressions.
+Fixed corpus starts at conversion-corpus.json: Kana/Kanji/Nihon/Ka/KaKu/YoMu;
+extend with the above boundary cases and SKK-JISYO fixtures.
+
+Existing regression gates to reuse (not all run in LF1):
+engine/test-replay-equivalence.el, test-okuri-input.el, test-okuri-reload.el,
+test-q-reading.el, test-input-rules.el, test-ddskk-registration.el,
+test-candidate-hygiene.el; windows/test-host/test-okuri-handoff.ps1,
+test-ddskk-behavior.ps1, test-q-katakana.ps1, test-candidate-hygiene.ps1,
+test-harness-settle.ps1, test-context-switch.ps1, test-inline-preedit.py
+(emacs, emacs-accept-queue and disconnect cases). Retain negative controls.
+Run stateline/conformance and lattice ERT even though this change is DDSKK-only.
+
+* S1.1 measurements: unchanged path
+Measured once on this Windows x64 machine, CPU identifier Intel64 Family 6
+Model 186 Stepping 2. All hosts use private registry keys/pipes and private
+jisyos; no network dictionary server. Runtime is passed as a parameter.
+Runtime SHA256: 3FB43697A8BF01E10BC993C468365489EF98A30D5ACBE05206F9E9FAEFDDE3DB.
+Full dictionary readable at Notes-root assets/ddskk/SKK-JISYO.L.utf8:
+6,156,364 bytes, SHA256 2119AA28A6EBA24AD3BB2F11CE9DE2AD7907636F7FBD1A9E3B68F359BD68B206.
+See windows/proto/README.org for commands and exact gate tails.
+
+** Reproduce before edits
+bench-conversion-tsf.ps1, 20 measured Kana conversions, 45 s cold sleep and
+private warm-up; existing DDSKK_PHASE_TRACE/HOST_DEBUG/HARNESS_DIAGNOSTICS.
+The script's quiet check retried twice then passed; post-run quiet check passed.
+Space-to-candidate n=20 p50=125 ms, p90=141 ms, max=360 ms. Exit 1:
+FAIL S3.1: p50 >100 ms or p90 >150 ms. Thresholds unchanged.
+
+TSF trace is build/w/tsf-conversion-8ee01609ee31477283e96fa7ee8e957a/tsf.log.
+Pair its 20 post-warm-up Kana request-done lines with SPACE-CANDIDATE in order:
+| Phase (ms) | n | p50 | p90 | max | aggregate |
+|------------+---+-----+-----+-----+-----------|
+| host request, including engine transaction | 20 | 110 | 125 | 344 | 2502 |
+| replay-begin -> replay-end | 20 | 46 | 47 | 47 | 811 |
+| checkpoint-begin -> checkpoint-end | 20 | 0 | 16 | 16 | 142 |
+| convert-begin -> convert-end | 20 | 47 | 63 | 266 | 1218 |
+| remaining host request interval | 20 | 16 | 16 | 32 | 331 |
+| Space-to-candidate minus host total | 20 | 15 | 16 | 16 | not a separate clock trace |
+The last row includes worker scheduling, pipe/client overhead and application
+of the response; current traces cannot split those subphases. It is not a
+measurement of TSF edit time alone. Host GetTickCount64 quantizes intervals
+around 16 ms; zero is below trace resolution, not zero cost. Phase percentiles
+are not additive. Cold private warm-up Ka was 687 ms host total, including
+422 ms conversion; excluded from the measured Kana series.
+
+** Six-reading detailed profile
+bench-conversion.ps1 -Profile -Iterations 3 -ColdLoadSleepSec 45:
+fresh hosts per kind, first conversion separately marked cold, no learning.
+This script measures the pipe CONVERT-KEYS barrier; it is not TSF presentation
+latency. It does not enforce quiet load here, and instrumentation adds overhead.
+All 20 responses were candidate states (18 warm plus two cold).
+| Reading | warm n | wall median ms | minimum | maximum |
+|---------+--------+----------------+---------+---------|
+| Kana | 3 | 121.944 | 121.373 | 125.309 |
+| Kanji | 3 | 138.424 | 137.772 | 155.471 |
+| Nihon | 3 | 123.931 | 123.591 | 293.189 |
+| Ka | 3 | 203.902 | 201.188 | 218.931 |
+| KaKu | 3 | 157.832 | 154.466 | 172.120 |
+| YoMu | 3 | 141.153 | 124.673 | 155.569 |
+Plain combined n=12 wall p50=137.772/p90=218.931/max=293.189 ms;
+engine CPU p50=125/p90=187.5/max=281.25 ms.
+Okuri combined n=6 wall p50=154.467/p90=172.120/max=172.120 ms;
+CPU p50=125/p90=156.25/max=156.25 ms.
+Cold plain 368.4812 ms wall/343.75 CPU; cold okuri 404.4598/375.
+
+Existing summarize-conversion-profile.ps1 reports adjacent boundary intervals,
+inclusive nested totals and self totals. Aggregates include cold samples:
+| Function | plain calls/self/inclusive ms | okuri calls/self/inclusive ms |
+|----------+-------------------------------+-------------------------------|
+| skk-ime-session-feed-string | 13 / 436 / 687 | 7 / 125 / 1140 |
+| skk-henkan | 13 / 358 / 1078 | 7 / 298 / 672 |
+| skk-henkan-1 | 13 / 188 / 720 | 7 / 172 / 374 |
+| skk-search | 13 / 62 / 532 | 7 / 31 / 202 |
+| ddskk-user-jisyo-search | 13 / 0 / 0 | 7 / 0 / 0 |
+| ddskk-engine--server-request | 13 / 172 / 172 | 7 / 110 / 110 |
+| ddskk-engine--parse-server-reply | 13 / 282 / 282 | 7 / 61 / 61 |
+| skk-ime-session-checkpoint | 14 / 31 / 94 | 1 / 0 / 0 |
+| skk-ime-session-snapshot | 27 / 47 / 47 | 8 / 16 / 16 |
+| ddskk-engine--raw-state-line | 13 / 46 / 46 | 7 / 15 / 15 |
+No separate real Emacs inline rendering timing was collected in LF1. The
+private TSF document path was measured; inline consumer timing remains a
+specific S2.3 gate and must not be inferred from lookup time.
+Raw profile directory is recorded in build/w/phases.json.traceDir; summaries
+are build/w/plain-profile-summary.log and okuri-profile-summary.log.
+
+* S1.2 prototype results and limits
+Full dictionary plus a copied synthetic four-entry user jisyo
+(windows/proto/user-copy.jisyo; avoids reading any live user dictionary).
+User-copy SHA256: E3735871D2133B8FB6DB298F18D927264351832F6C11252CEA50EA991E26DE89.
+Build includes parsing, sorting, payload creation and file write/close; no
+FlushFileBuffers or cold disk guarantee. Separate benchmark process reopens
+the index; validation scans every record before lookup. Warm-cache one-pass
+warm-up, seeded shuffled queries, steady_clock per operation. Timer overhead
+included; nearest-rank percentiles. checksum prevents result elimination.
+
+| Metric | Result |
+|--------+--------|
+| entries | 175774 |
+| mapped file bytes | 14239252 (13.58 MiB) |
+| build wall time | 133.454 ms |
+| build peak working set | 54763520 bytes (52.23 MiB) |
+| post-build private bytes / working set | 3018752 / 5369856 |
+| reopen full validation | 6.1065 ms fixed corpus; 6.3359 ms broad corpus |
+| fixed 10-key lookup views, n=100000 | p50 0.1 us; p99 0.2 us; max 135.6 us |
+| fixed 10-key lookup + plain candidates | p50 0.7 us; p99 14.5 us; max 98.1 us |
+| all 175774 readings, 100000 random lookups | p50 0.5 us; p99 1.3 us; max 64.4 us |
+| all readings, lookup + plain candidates | p50 0.8 us; p99 2.3 us; max 63.7 us |
+| fixed-corpus lookup working set / private | 20402176 / 2347008 bytes |
+| broad-corpus lookup working set / private | 29536256 / 12705792 bytes |
+The broad process includes 175774 std::string corpus entries, order and timing
+vectors; its private bytes are benchmark overhead as well as the library.
+Immediately after broad open: WS 18735104, private 745472 bytes. Mapped bytes
+are address-space size, not per-client private memory; OS residency not measured.
+The fixed corpus includes plain, okuri and numeric-template keys plus misses;
+70112/100000 hits. Broad corpus 100000/100000 hits. No fixture fallback for L.
+Compare broad lookup+plain p99 0.0023 ms with measured Space-to-candidate
+p50 125 ms on the same machine, but do not divide these to claim an end-to-end
+speedup: lookup excludes frontend, okuri/numeric expansion, candidate UI and
+document/inline edits. Cold page faults, multi-process sharing, publication,
+learning and stock-oracle parity still need measurement/implementation.
+
+* Verification and cleanup
+Unchanged production CTest 9/9; stateline/conformance ERT 31/31; lattice ERT
+14/14. Prototype CTest 1/1, with six positive checks and three corrupt-index
+negative controls (truncation, payload bounds, unsupported schema).
+No production code changes, live setting changes, registration or deployment.
+Private TSF host 30256, engine host 45884 and runtime 16744 exited. Profile
+runtimes 42936 and 57960 also verified absent after their hosts shut down.
+All engine processes were owned by the invoked harness/private host job.
+No process started by LF1 remains running. Nothing committed or staged.
