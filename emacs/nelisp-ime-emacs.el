@@ -320,7 +320,9 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
     (overlay-put nelisp-ime-emacs--inline-overlay 'after-string display)
     (nelisp-ime-emacs--inline-move)))
 
-;;; Pair requests are scoped to the selected buffer and expire after one second.
+;;; Pair requests are scoped to the selected buffer and expire after two seconds.
+(defconst nelisp-ime-emacs--inline-pair-window 2.0
+  "Maximum pairing request and insertion age in seconds.")
 (defvar nelisp-ime-emacs--inline-pair nil)
 (defvar-local nelisp-ime-emacs--inline-insertion nil)
 
@@ -355,7 +357,8 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
              ((or buffer-read-only
                   (and (minibufferp) (not (eq window (active-minibuffer-window)))))
               (nelisp-ime-emacs--inline-pair-clear))
-             ((and recent (> (- (float-time) (nth 2 recent)) 1))
+             ((and recent (> (- (float-time) (nth 2 recent))
+                             nelisp-ime-emacs--inline-pair-window))
               (nelisp-ime-emacs--inline-pair-clear))
              ((and recent (= (nth 3 recent) (buffer-chars-modified-tick)))
               ;; A request received before insertion anchors at its beginning;
@@ -387,21 +390,25 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
                 (nelisp-ime-emacs--inline-pair-clear))))))))))
 
 (defun nelisp-ime-emacs--inline-pair-receive (opener closer)
-  "Queue the effective input-rule OPENER and CLOSER supplied by the core."
+  "Queue the core's OPENER and CLOSER for up to two seconds.
+An opener already inserted at point may also be up to two seconds old."
   (nelisp-ime-emacs--inline-pair-clear)
   (let ((window (selected-window)))
     (with-current-buffer (window-buffer window)
       ;; Prior typing is not the insertion awaited by a new request. Keep
       ;; it only if it could be the opener that raced ahead of PAIR.
       (let ((recent nelisp-ime-emacs--inline-insertion))
-        (unless (and recent (< (- (float-time) (nth 2 recent)) 1)
+        (unless (and recent
+                     (<= (- (float-time) (nth 2 recent))
+                         nelisp-ime-emacs--inline-pair-window)
                      (= (nth 1 recent) (window-point window))
                      (= (nth 3 recent) (buffer-chars-modified-tick))
                      (equal opener (buffer-substring-no-properties
                                     (car recent) (nth 1 recent))))
           (setq nelisp-ime-emacs--inline-insertion nil)))
       (setq nelisp-ime-emacs--inline-pair
-            (list closer (copy-marker (window-point window)) (+ (float-time) 1) opener)))
+            (list closer (copy-marker (window-point window))
+                  (+ (float-time) nelisp-ime-emacs--inline-pair-window) opener)))
     (nelisp-ime-emacs--inline-pair-apply)))
 
 
