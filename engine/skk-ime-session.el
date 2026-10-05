@@ -225,7 +225,15 @@ instead of kana."
     ;; dispatched.
     (unless preserve-point (goto-char (point-max)))
     (let ((previous (skk-ime-session-last-command session)))
-      (if (and (equal skk-prefix "")
+      (cond
+       ;; The native okuri shadow retains Backspace in its replay history.
+       ;; Replay the same control semantics, rather than inserting DEL.
+       ((= key 127)
+        (if (not (equal skk-prefix ""))
+            (setq skk-prefix "" skk-current-rule-tree nil)
+          (when (> (point) (point-min))
+            (delete-region (1- (point)) (point)))))
+       ((and (equal skk-prefix "")
                (not (and (fboundp 'skk-input-rules-prefix-p)
                          (skk-input-rules-prefix-p key)))
                (or (and (>= key ?0) (<= key ?9))
@@ -242,8 +250,8 @@ instead of kana."
             (setq last-command previous
                   last-command-event key
                   this-command 'self-insert-command)
-            (insert (string key)))
-        (let* ((map (skk-ime-session--active-keymap))
+            (insert (string key))))
+       (t (let* ((map (skk-ime-session--active-keymap))
                (command (and map (lookup-key map (string key)))))
           (unless (or (and (symbolp command) (fboundp command))
                       (functionp command))
@@ -251,7 +259,7 @@ instead of kana."
           (setq last-command previous
                 last-command-event key
                 this-command command)
-          (skk-ime-session--call-command command)))
+          (skk-ime-session--call-command command))))
       (setf (skk-ime-session-last-command session) this-command)))
 
 (defun skk-ime-session-feed-string (session string)

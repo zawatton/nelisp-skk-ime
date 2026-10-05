@@ -122,6 +122,11 @@ std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record) {
   const char lower = static_cast<char>(std::tolower(static_cast<unsigned char>(key)));
 
   if (record) raw_keys_.push_back(static_cast<char32_t>(key));
+  if (key == 127 && preedit_ && okuri_started_) {
+    if (!pending_.empty()) pending_.clear();
+    else if (!text_.empty() && text_.back() != L'*') text_.pop_back();
+    return Snapshot();
+  }
   const bool mode_command = InputRuleAllowsModeCommand(rules_, key);
   if (mode_command && !continuous_preedit_ && !preedit_ && pending_.empty() && key == 'L') {
     wide_latin_ = true;

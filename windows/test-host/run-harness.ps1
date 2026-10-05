@@ -42,6 +42,9 @@
 .PARAMETER ColdLoadSleepSec
   Extra sleep after the pipe appears, to clear the engine's cold load.
 
+.PARAMETER SkipEngineWarmup
+  Skip the private conversion/RESET warm-up for cold-start reproductions.
+
 .PARAMETER PipeWaitTimeoutSec
   How long to wait for the engine host's named pipe to appear.
 
@@ -83,6 +86,7 @@ param(
   # to ~12s (loaded machine); a 6s default let the first scripted keys race
   # the load and get swallowed, which read as false engine regressions.
   [int]$ColdLoadSleepSec = 12,
+  [switch]$SkipEngineWarmup,
 
   [int]$PipeWaitTimeoutSec = 30,
 
@@ -288,6 +292,25 @@ if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repositor
 
   Write-Host "run-harness: pipe up; sleeping ${ColdLoadSleepSec}s for engine cold load..."
   Start-Sleep -Seconds $ColdLoadSleepSec
+  if (-not $SkipEngineWarmup) {
+    # Prime the private engine before measuring keys. Lowercase ai + Space
+    # is direct input in DDSKK and cannot warm its dictionary conversion.
+    foreach ($request in @('CONTROL CONVERT-KEYS 75,97', 'RESET')) {
+      $warmPipe = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeShortName,
+        [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous)
+      try {
+        $warmPipe.Connect(30000)
+        $bytes = [Text.Encoding]::ASCII.GetBytes($request + "`n")
+        $warmPipe.Write($bytes, 0, $bytes.Length)
+        $buffer = New-Object byte[] 65536
+        $reply = $warmPipe.ReadAsync($buffer, 0, $buffer.Length)
+        if (-not $reply.Wait(30000)) { throw 'Private engine warm-up timed out' }
+        $response = [Text.Encoding]::UTF8.GetString($buffer, 0, $reply.Result).Trim()
+        if ($response -notlike 'STATE *') { throw "Engine warm-up failed: $response" }
+        Write-Host "ENGINE_WARMUP request=$request reply=$response"
+      } finally { $warmPipe.Dispose() }
+    }
+  }
   $startedChildren = @([NativeImeHarnessChildren]::Find($hostProcess.Id, [IO.Path]::GetFileName($engineExecutable)) |
     ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
   foreach ($child in $startedChildren) { Write-Host "HARNESS_CHILD pid=$($child.Id) parent=$($hostProcess.Id)" }
