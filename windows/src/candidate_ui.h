@@ -51,6 +51,7 @@ class CandidateUI final : public ITfCandidateListUIElementBehavior {
   HRESULT STDMETHODCALLTYPE SetSelection(UINT index) override;
   HRESULT STDMETHODCALLTYPE Finalize() override;
   HRESULT STDMETHODCALLTYPE Abort() override;
+  void DetachHandler() { handler_ = nullptr; }
   void Update(const ddskk::EngineState& state, ITfDocumentMgr* document);
 
  private:

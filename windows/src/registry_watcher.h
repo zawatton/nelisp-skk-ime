@@ -7,7 +7,7 @@
 
 // Clients is telemetry, never a settings reload. All hashing runs on the
 // watcher thread, not in a TSF key callback.
-inline uint64_t NativeImeSettingsFingerprint(HKEY key, bool root = true) {
+inline uint64_t NativeImeSettingsFingerprint(HKEY key, bool root = true, bool include_core = true) {
   uint64_t hash = 14695981039346656037ULL;
   const auto mix = [&hash](const void* data, size_t size) {
     const auto* bytes = static_cast<const unsigned char*>(data);
@@ -22,6 +22,7 @@ inline uint64_t NativeImeSettingsFingerprint(HKEY key, bool root = true) {
     DWORD length = static_cast<DWORD>(name.size()), size = static_cast<DWORD>(data.size()), type = 0;
     if (RegEnumValueW(key, i, name.data(), &length, nullptr, &type,
                      data.data(), &size) != ERROR_SUCCESS) break;
+    if (root && !include_core && _wcsicmp(name.data(), L"CoreDll") == 0) continue;
     mix(name.data(), length * sizeof(wchar_t)); mix(&type, sizeof(type)); mix(data.data(), size);
   }
   for (DWORD i = 0;; ++i) {
@@ -32,7 +33,7 @@ inline uint64_t NativeImeSettingsFingerprint(HKEY key, bool root = true) {
     mix(name.data(), length * sizeof(wchar_t));
     HKEY child = nullptr;
     if (RegOpenKeyExW(key, name.data(), 0, KEY_READ, &child) == ERROR_SUCCESS) {
-      const uint64_t child_hash = NativeImeSettingsFingerprint(child, false);
+      const uint64_t child_hash = NativeImeSettingsFingerprint(child, false, include_core);
       mix(&child_hash, sizeof(child_hash)); RegCloseKey(child);
     }
   }
@@ -43,6 +44,7 @@ inline uint64_t NativeImeSettingsFingerprint(HKEY key, bool root = true) {
 // at an idle key/focus boundary. Stop joins before the service is destroyed.
 class RegistryWatcher {
  public:
+  explicit RegistryWatcher(bool include_core = true) : include_core_(include_core) {}
   ~RegistryWatcher() { Stop(); }
   void Start() {
     Stop();
@@ -64,12 +66,12 @@ class RegistryWatcher {
     dirty.store(true);
     try {
       worker_ = std::thread([this, key, changed] {
-        uint64_t fingerprint = NativeImeSettingsFingerprint(key);
+        uint64_t fingerprint = NativeImeSettingsFingerprint(key, true, include_core_);
         HANDLE waits[] = {stop_, changed};
         while (WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0 + 1) {
           const LSTATUS status = RegNotifyChangeKeyValue(key, TRUE,
               REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_CHANGE_NAME, changed, TRUE);
-          const uint64_t next = NativeImeSettingsFingerprint(key);
+          const uint64_t next = NativeImeSettingsFingerprint(key, true, include_core_);
           if (next != fingerprint) dirty.store(true, std::memory_order_release);
           fingerprint = next;
           if (status != ERROR_SUCCESS) break;
@@ -91,6 +93,7 @@ class RegistryWatcher {
   }
   std::atomic<bool> dirty{false};
  private:
+  bool include_core_;
   HANDLE stop_ = nullptr;
   std::thread worker_;
 };

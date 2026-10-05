@@ -69,6 +69,7 @@ class LangBarButton final : public ITfLangBarItemButton, public ITfSource {
   LangBarButton(LangBarButtonHandler* handler, REFGUID item_guid,
                DWORD style, std::wstring display_name, Kind kind);
 
+  void DetachHandler() { handler_ = nullptr; }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override;
   ULONG STDMETHODCALLTYPE AddRef() override;
   ULONG STDMETHODCALLTYPE Release() override;

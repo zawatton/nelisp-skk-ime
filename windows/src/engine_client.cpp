@@ -32,6 +32,7 @@ std::wstring PipeName() {
 EngineClient::EngineClient() {
   static std::atomic<uint64_t> next_session{1};
   session_id_ = std::to_string(GetCurrentProcessId()) + "-" +
+                std::to_string(reinterpret_cast<uintptr_t>(&next_session)) + "-" +
                 std::to_string(next_session.fetch_add(1));
 }
 
@@ -77,6 +78,26 @@ void EngineClient::CancelPendingIo() {
 }
 
 void EngineClient::MarkNeedsResync() { needs_resync_ = true; }
+
+HRESULT EngineClient::ExportCorePipe(HANDLE* duplicate) const {
+  *duplicate = INVALID_HANDLE_VALUE;
+  const HANDLE pipe = pipe_.load(std::memory_order_acquire);
+  if (pipe == INVALID_HANDLE_VALUE) return S_OK;
+  return DuplicateHandle(GetCurrentProcess(), pipe, GetCurrentProcess(), duplicate,
+      0, FALSE, DUPLICATE_SAME_ACCESS) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+}
+HRESULT EngineClient::RestoreCoreSession(const char* session, bool resync, HANDLE borrowed_pipe) {
+  std::string id(session);
+  HANDLE duplicate = INVALID_HANDLE_VALUE;
+  if (borrowed_pipe != INVALID_HANDLE_VALUE && !DuplicateHandle(GetCurrentProcess(),
+      borrowed_pipe, GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
+    return HRESULT_FROM_WIN32(GetLastError());
+  Disconnect();
+  session_id_ = std::move(id); needs_resync_ = resync;
+  pipe_.store(duplicate, std::memory_order_release);
+  return S_OK;
+}
+
 
 std::optional<std::string> EngineClient::Transact(const std::string& request,
                                                   DWORD timeout_ms) {

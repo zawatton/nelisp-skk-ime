@@ -57,6 +57,9 @@ param(
 
   [string]$TsfHostExe = "",
   [string]$DllPath = "",
+  [string]$CoreDllPath = "",
+  [string]$CoreTestDirectory = "",
+  [string]$ArtifactDirectory = "",
 
   # Required build-under-test paths; no installed registry defaults.
   [string]$EngineHostPath = "",
@@ -205,7 +208,7 @@ $tempJisyo = Join-Path $env:TEMP "ddskk-test-jisyo-$runId.jisyo"
 # its own E2E test already rely on (see host/main.cpp PipeName()).
 $savedEnvironment = @{}
 foreach ($name in @('DDSKK_PIPE_NAME','DDSKK_USER_JISYO','NATIVEIME_REGISTRY_KEY',
-    'LOCALAPPDATA','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH')) {
+    'LOCALAPPDATA','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH','NATIVEIME_TEST_CORE_DIRECTORY','NATIVEIME_TEST_CORE_ACTION_SCRIPT')) {
   $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 $hostProcess = $null
@@ -213,7 +216,9 @@ $startedChildren = @()
 $exitCode = 1
 $savedDisableHostSpawn = $env:NELISP_IME_DISABLE_HOST_SPAWN
 try {
+$env:NATIVEIME_TEST_CORE_ACTION_SCRIPT = Join-Path $PSScriptRoot 'core-test-action.ps1'
 $env:DDSKK_HARNESS_DLL_PATH = $DllPath
+if ($CoreTestDirectory) { $env:NATIVEIME_TEST_CORE_DIRECTORY = [IO.Path]::GetFullPath($CoreTestDirectory) }
 $env:DDSKK_PIPE_NAME = $pipeFullName
 $env:DDSKK_USER_JISYO = $tempJisyo
 $env:NATIVEIME_REGISTRY_KEY = $registryKey
@@ -228,6 +233,9 @@ foreach ($entry in @{
 }.GetEnumerator()) {
   New-ItemProperty -Path $regPath -Name $entry.Key -Value $entry.Value -PropertyType String -Force | Out-Null
 }
+if ($CoreDllPath) {
+  New-ItemProperty -Path $regPath -Name CoreDll -Value ([IO.Path]::GetFullPath($CoreDllPath)) -PropertyType String -Force | Out-Null
+}
 New-ItemProperty -Path $regPath -Name SkkServEnable -Value 0 -PropertyType DWord -Force | Out-Null
 New-ItemProperty -Path $regPath -Name InitialKanaMode -Value 1 -PropertyType DWord -Force | Out-Null
 if ($PublishState -or $OpenMode -ne 'restore') {
@@ -237,7 +245,9 @@ if ($PublishState -or $OpenMode -ne 'restore') {
   New-ItemProperty -Path $appPath -Name PublishState -Value ([int][bool]$PublishState) -PropertyType DWord -Force | Out-Null
 }
 # Logs and user data must also stay out of the installed IME's directory.
-$env:LOCALAPPDATA = Join-Path ([IO.Path]::GetDirectoryName($TsfHostExe)) "harness-$runId"
+if (-not $ArtifactDirectory) { $ArtifactDirectory = $env:NATIVEIME_HARNESS_ARTIFACT_DIRECTORY }
+$artifactRoot = if ($ArtifactDirectory) { [IO.Path]::GetFullPath($ArtifactDirectory) } else { [IO.Path]::GetDirectoryName($TsfHostExe) }
+$env:LOCALAPPDATA = Join-Path $artifactRoot "harness-$runId"
 New-Item -ItemType Directory -Path $env:LOCALAPPDATA -Force | Out-Null
 $hostOutput = Join-Path $env:LOCALAPPDATA 'host.stdout.log'
 $hostError = Join-Path $env:LOCALAPPDATA 'host.stderr.log'
@@ -255,6 +265,7 @@ if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repositor
 
   $hostProcess = Start-Process -FilePath $engineHost -ArgumentList $hostArgs `
     -WindowStyle Hidden -PassThru -RedirectStandardOutput $hostOutput -RedirectStandardError $hostError
+  Write-Host "HARNESS_HOST pid=$($hostProcess.Id)"
   $env:NATIVEIME_TEST_HOST_PID = [string]$hostProcess.Id
   $env:NATIVEIME_TEST_ENGINE_NAME = [IO.Path]::GetFileName($engineExecutable)
 
@@ -320,6 +331,7 @@ if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repositor
     -NoNewWindow -PassThru -RedirectStandardOutput $tsfOutput -RedirectStandardError $tsfError
   # Cache the handle before exit. Windows PowerShell's Wait-Process can
   # otherwise leave Start-Process's ExitCode null, silently skipping checks.
+  Write-Host "HARNESS_TSF pid=$($tsfProcess.Id)"
   $tsfHandle = $tsfProcess.Handle
   try {
     if (-not $tsfProcess.WaitForExit($TsfHostTimeoutSec * 1000)) { throw 'TSF host timeout' }
@@ -356,6 +368,8 @@ if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repositor
       Write-Host "run-harness: force-killing host pid=$($hostProcess.Id)."
       Stop-Process -Id $hostProcess.Id -Force -ErrorAction SilentlyContinue
     }
+    [void]$hostProcess.WaitForExit(5000)
+    Write-Host "HARNESS_HOST_EXITED pid=$($hostProcess.Id) exited=$($hostProcess.HasExited)"
   }
   foreach ($child in $startedChildren) {
     try {

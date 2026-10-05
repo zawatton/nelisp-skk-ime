@@ -58,3 +58,19 @@ emacs -Q --batch -L emacs -l emacs/nelisp-ime-emacs-test.el -f ert-run-tests-bat
 Native harness: =windows/test-host/test-emacs-integration.ps1=, with explicit
 =-DllPath=, =-TsfHostExe=, =-EngineHostPath=, =-EngineExecutablePath= and
 =-ColdLoadSleepSec 45=. It uses only disposable registry/pipe settings.
+
+* Updating the Windows core without restarting applications
+The registered =ddskk-ime.dll= is a stable TSF shim. Install it with its
+adjacent =ddskk-ime-core.dll= and restart applications once. Later builds
+can use =windows/scripts/deploy-live.ps1 -Core -BuildDirectory <Release-dir>=:
+the script copies the core into an immutable versioned directory and sets
+=CoreDll= under the settings key (including =NATIVEIME_REGISTRY_KEY= overrides).
+Running clients swap on their TSF thread once composition, candidate UI,
+provider requests and key dispatch are idle. Input mode, open/close state,
+settings and the engine session survive. ABI/load/initialisation failures
+keep the previous core and are logged to =DDSKK/dll-debug.log=.
+Use =rollback-live.ps1 -Manifest <core-directory>/rollback.json= to restore
+the previous pointer without restarting a process. Validated modules retain
+reference-counted process-lifetime leases because TSF may retain callbacks;
+repeated version updates therefore consume additional DLL address space.
+Changes to the shim itself still require one application restart.

@@ -38,11 +38,23 @@ constexpr UINT kProviderResultMessage = WM_APP + 0x4e1;
 constexpr wchar_t kProviderWindowClass[] = L"NeLispImeProviderResultWindow";
 constexpr UINT kPublishStateMessage = WM_APP + 91;
 constexpr UINT kModeIndicatorMessage = WM_APP + 92;
+void DelayTestProvider() {
+#ifdef NATIVEIME_CORE_PROVIDER_DELAY_MS
+  Sleep(NATIVEIME_CORE_PROVIDER_DELAY_MS);
+#endif
+}
 std::atomic<DWORD> process_publication_sequence{0};
 std::atomic<unsigned> process_publishers{0};
 // Writers serialize outside key callbacks. Queuing never acquires this mutex.
 std::mutex process_publication_writer;
 DWORD process_flushed_sequence = 0;
+struct PublicationLock {
+  const NativeImeCallbacks& callbacks;
+  explicit PublicationLock(const NativeImeCallbacks& cb) : callbacks(cb) {
+    if (callbacks.publication_lock) callbacks.publication_lock(callbacks.owner, TRUE);
+  }
+  ~PublicationLock() { if (callbacks.publication_lock) callbacks.publication_lock(callbacks.owner, FALSE); }
+};
 
 bool ControlDown() {
   // Some TSF hosts update the thread-local keyboard state after dispatching
@@ -242,6 +254,7 @@ TextService::TextService() {
 }
 
 TextService::~TextService() {
+  if (candidate_ui_) candidate_ui_->DetachHandler();
   RemovePublishedState();
   settings_watcher_.Stop();
   if (provider_window_ != nullptr) DestroyWindow(provider_window_);
@@ -320,6 +333,7 @@ bool TextService::BeginProviderConversion(const std::u32string& keys) {
   AddRef();
   try {
     std::thread([this, keys, sequence, destination] {
+      DelayTestProvider();
       DebugLog(L"Provider convert begin seq=%llu keys=%zu",
                static_cast<unsigned long long>(sequence), keys.size());
       std::optional<ddskk::EngineState> state;
@@ -369,6 +383,7 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
   AddRef();
   try {
     std::thread([this, control, sequence, destination, apply_state] {
+      DelayTestProvider();
       std::optional<ddskk::EngineState> state;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
@@ -416,6 +431,7 @@ bool TextService::BeginProviderKey(char32_t key) {
   AddRef();
   try {
     std::thread([this, key, sequence, destination] {
+      DelayTestProvider();
       std::optional<ddskk::EngineState> state;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
@@ -449,6 +465,7 @@ bool TextService::BeginProviderKeys(const std::u32string& keys, bool sync) {
   AddRef();
   try {
     std::thread([this, keys, sync, sequence, destination] {
+      DelayTestProvider();
       std::optional<ddskk::EngineState> state;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
@@ -767,7 +784,9 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
   thread_manager_->AddRef();
   client_id_ = client_id;
   if (!CreateProviderWindow()) {
-    DebugLog(L"Activate provider-window failed error=%u", GetLastError());
+    const DWORD error = GetLastError();
+    DebugLog(L"Activate provider-window failed error=%u", error);
+    return error ? HRESULT_FROM_WIN32(error) : E_FAIL;
   }
   EnsureEngineHost();
   LoadSettings();
@@ -783,18 +802,34 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
   // UI-thread-only.
   // Read-only warm-up: a captured selection could arrive after a registry
   // switch and switch the shared host back to a stale engine.
-  std::thread([] {
-    ddskk::EngineClient warm_up_client;
-    const ULONGLONG deadline = GetTickCount64() + 20000;
-    while (GetTickCount64() < deadline) {
-      if (warm_up_client.Connect(2000)) {
-        warm_up_client.CurrentEngine(1000);
-        return;
-      }
-      Sleep(250);
-    }
-  }).detach();
+  // The warm-up owns a module lease, not a service reference. Keeping a
+  // service alive here could run its window destructor on this worker.
+  InterlockedIncrement(&g_object_count);
+  try {
+    std::thread([] {
+      struct WarmupLease {
+        ~WarmupLease() { InterlockedDecrement(&g_object_count); }
+      } lease;
+      try {
+        ddskk::EngineClient warm_up_client;
+        const ULONGLONG deadline = GetTickCount64() + 20000;
+        while (GetTickCount64() < deadline) {
+          if (warm_up_client.Connect(2000)) {
+            warm_up_client.CurrentEngine(1000);
+            return;
+          }
+          Sleep(250);
+        }
+      } catch (...) { /* Warm-up is optional; key requests report failures. */ }
+    }).detach();
+  } catch (...) { InterlockedDecrement(&g_object_count); }
 
+  if (shim_.query_service) {
+    keyboard_open_ = ReadKeyboardOpen(true);
+    QueuePublishedState(nullptr);
+    engine_.MarkNeedsResync();
+    return S_OK;
+  }
   ITfKeystrokeMgr* keystroke_manager = nullptr;
   const HRESULT query = thread_manager_->QueryInterface(
       IID_ITfKeystrokeMgr, reinterpret_cast<void**>(&keystroke_manager));
@@ -937,7 +972,7 @@ void TextService::UnadviseKeySink() {
     if (SUCCEEDED(thread_manager_->QueryInterface(
             IID_ITfKeystrokeMgr,
             reinterpret_cast<void**>(&keystroke_manager)))) {
-      keystroke_manager->UnadviseKeyEventSink(client_id_);
+      if (!shim_.query_service) keystroke_manager->UnadviseKeyEventSink(client_id_);
       keystroke_manager->Release();
     }
     thread_manager_->Release();
@@ -1459,7 +1494,8 @@ void TextService::LoadApplicationSettings() {
   if (publish_state_ && !enabled) RemovePublishedState();
   publish_state_ = enabled;
   if (enabled && thread_manager_ != nullptr && !publication_registered_) {
-    ++process_publishers;
+    if (shim_.publisher_delta) shim_.publisher_delta(shim_.owner, 1);
+    else ++process_publishers;
     publication_registered_ = true;
     publication_active_ = true;
   }
@@ -1478,7 +1514,7 @@ void TextService::QueuePublishedState(const ddskk::EngineState* state) {
   next.composing = keyboard_open_ ? published_composing_ : 0;
   if (next.mode == last_publication_.mode && next.open == last_publication_.open &&
       next.composing == last_publication_.composing) return;
-  next.sequence = ++process_publication_sequence;
+  next.sequence = shim_.publication_sequence ? shim_.publication_sequence(shim_.owner) : ++process_publication_sequence;
   last_publication_ = next;
   publications_.push_back(std::move(next));
   // This callback only queues snapshots. Registry I/O runs after TSF returns
@@ -1491,13 +1527,15 @@ void TextService::FlushPublishedState() {
   publication_queued_ = false;
   if (!publication_active_ || !publish_state_) return;
   std::lock_guard<std::mutex> writer(process_publication_writer);
+  PublicationLock shared_writer(shim_);
   const std::wstring path = NativeImeRegistryKey() + L"\\Clients\\" +
       std::to_wstring(GetCurrentProcessId());
   HKEY key = nullptr;
   if (RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, nullptr, 0,
       KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS) return;
   for (const auto& state : publications_) {
-    if (state.sequence <= process_flushed_sequence) continue;
+    const DWORD flushed = shim_.publication_flushed ? shim_.publication_flushed(shim_.owner, 0) : process_flushed_sequence;
+    if (state.sequence <= flushed) continue;
     const auto write = [key](const wchar_t* name, DWORD value) {
       return RegSetValueExW(key, name, 0, REG_DWORD,
           reinterpret_cast<const BYTE*>(&value), sizeof(value));
@@ -1512,7 +1550,8 @@ void TextService::FlushPublishedState() {
     write(L"composing", state.composing);
     write(L"sequence", state.sequence);
     write(L"revision", state.sequence * 2);
-    process_flushed_sequence = state.sequence;
+    if (shim_.publication_flushed) shim_.publication_flushed(shim_.owner, state.sequence);
+    else process_flushed_sequence = state.sequence;
   }
   RegCloseKey(key);
   publications_.clear();
@@ -1524,10 +1563,11 @@ void TextService::RemovePublishedState() {
   publication_queued_ = false;
   if (!publication_registered_) return;
   publication_registered_ = false;
-  --process_publishers;
+  const unsigned publishers = shim_.publisher_delta ? shim_.publisher_delta(shim_.owner, -1) : --process_publishers;
   last_publication_ = {};
   std::lock_guard<std::mutex> writer(process_publication_writer);
-  if (process_publishers.load() != 0) return;
+  PublicationLock shared_writer(shim_);
+  if (publishers != 0) return;
   const std::wstring path = NativeImeRegistryKey() + L"\\Clients\\" +
       std::to_wstring(GetCurrentProcessId());
   RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str());
@@ -2559,6 +2599,9 @@ bool SameComIdentity(IUnknown* left, IUnknown* right) {
 }  // namespace
 
 void TextService::TrackEndingComposition(ITfComposition* composition) {
+  if (shim_.track_ending_composition) {
+    shim_.track_ending_composition(shim_.owner, composition, TRUE); return;
+  }
   if (composition == nullptr) return;
   for (ITfComposition* existing : ending_compositions_) {
     if (SameComIdentity(existing, composition)) return;
@@ -2568,6 +2611,9 @@ void TextService::TrackEndingComposition(ITfComposition* composition) {
 }
 
 void TextService::UntrackEndingComposition(ITfComposition* composition) {
+  if (shim_.track_ending_composition) {
+    shim_.track_ending_composition(shim_.owner, composition, FALSE); return;
+  }
   for (auto it = ending_compositions_.begin(); it != ending_compositions_.end();
        ++it) {
     if (!SameComIdentity(*it, composition)) continue;
@@ -2873,6 +2919,8 @@ std::optional<char32_t> TextService::TranslateKey(WPARAM wparam,
 HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
                                       ITfContext* context,
                                       const ddskk::EngineState& state) {
+  // A TSF edit session may retain this core after its shim deactivated.
+  if (thread_manager_ == nullptr) return S_FALSE;
   wchar_t diagnostics[2]{};
   if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", diagnostics, 2) > 0) {
     std::printf("ENGINE_APPLY mode=%ls text_units=%zu segments=%zu active=%d\n",
@@ -2951,9 +2999,13 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       // composition on its own; without it composition_ silently went
       // stale and its rendered text stayed committed in the document,
       // consistent with the "kかnな" leak.
+      ITfCompositionSink* stable_sink = nullptr;
+      if (shim_.query_service) shim_.query_service(shim_.owner,
+          &IID_ITfCompositionSink, reinterpret_cast<void**>(&stable_sink));
       result = composition_context->StartComposition(
-          edit_cookie, range, static_cast<ITfCompositionSink*>(this),
+          edit_cookie, range, stable_sink ? stable_sink : static_cast<ITfCompositionSink*>(this),
           &composition_);
+      if (stable_sink) stable_sink->Release();
       composition_context->Release();
       DebugLog(L"ApplyEngineState start_composition hr=%X",
                static_cast<unsigned>(result));
@@ -3100,6 +3152,7 @@ void TextService::MaybeShowModeIndicator(ITfContext* context,
 void TextService::FlushModeIndicator() {
   indicator_update_queued_ = false;
   if (thread_manager_ == nullptr) return;
+  if (shim_.notify_mode) shim_.notify_mode(shim_.owner);
 
   // Independent of mode_indicator_enabled_ below: the taskbar icon and the
   // transient popup are two separate UI surfaces, and TSF should still
@@ -3130,4 +3183,54 @@ HRESULT TextService::ApplyDisplayAttribute(TfEditCookie edit_cookie,
     property->Release();
   }
   return result;
+}
+
+
+bool TextService::CoreQuiescent() const {
+  const LONG refs = InterlockedCompareExchange(const_cast<LONG*>(&ref_count_), 0, 0);
+  const uint64_t flags = (composition_ ? 1 : 0) | (engine_pending_ ? 2 : 0) |
+      (registration_mode_ ? 4 : 0) | (provider_pending_.load() ? 8 : 0) |
+      (provider_composition_active_ ? 16 : 0) | (provider_cleanup_pending_ ? 32 : 0) |
+      (!deferred_provider_keys_.empty() ? 64 : 0) |
+      (realtime_frontend_.composing() ? 128 : 0) |
+      (candidate_ui_id_ != TF_INVALID_UIELEMENTID ? 256 : 0) |
+      (!ending_compositions_.empty() ? 512 : 0) |
+      (static_cast<uint64_t>(refs) << 16);
+  wchar_t diagnostics[2]{};
+  if (flags != quiescence_trace_ && GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", diagnostics, 2)) {
+    std::printf("CORE_QUIESCENCE flags=%llu refs=%ld\n", static_cast<unsigned long long>(flags & 65535), refs);
+    std::fflush(stdout); quiescence_trace_ = flags;
+  }
+  return flags == (uint64_t{1} << 16);
+}
+HRESULT TextService::ExportCoreState(NativeImeSnapshot* state) {
+  if (!state || state->size != sizeof(*state) || state->version != NATIVEIME_CORE_ABI)
+    return E_INVALIDARG;
+  if (!CoreQuiescent()) return E_PENDING;
+  state->open = keyboard_open_; state->kana = kana_mode_;
+  state->closed_kana = mode_before_close_kana_;
+  state->needs_resync = engine_.CoreNeedsResync();
+  wcscpy_s(state->mode, last_engine_mode_.c_str());
+  wcscpy_s(state->closed_mode, engine_mode_before_close_.c_str());
+  strcpy_s(state->session, engine_.CoreSession().c_str());
+  HANDLE duplicate = INVALID_HANDLE_VALUE;
+  const HRESULT result = engine_.ExportCorePipe(&duplicate);
+  state->engine_pipe = reinterpret_cast<uintptr_t>(duplicate);
+  return result;
+}
+HRESULT TextService::ImportCoreState(const NativeImeSnapshot* state) {
+  if (!state || state->size != sizeof(*state) || state->version != NATIVEIME_CORE_ABI ||
+      !memchr(state->session, 0, sizeof(state->session)) ||
+      !wmemchr(state->mode, 0, 32) || !wmemchr(state->closed_mode, 0, 32))
+    return E_INVALIDARG;
+  keyboard_open_ = state->open != 0; kana_mode_ = state->kana != 0;
+  mode_before_close_kana_ = state->closed_kana != 0;
+  last_engine_mode_ = state->mode; engine_mode_before_close_ = state->closed_mode;
+  realtime_frontend_.SetInputMode(last_engine_mode_);
+  const HRESULT restored = engine_.RestoreCoreSession(state->session, state->needs_resync != 0, reinterpret_cast<HANDLE>(state->engine_pipe));
+  if (FAILED(restored)) return restored;
+  last_mode_label_ = CurrentModeLabel();
+  publications_.clear(); last_publication_ = {}; published_composing_ = 0;
+  QueuePublishedState(nullptr);
+  return S_OK;
 }

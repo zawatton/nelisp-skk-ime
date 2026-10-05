@@ -4,12 +4,14 @@ param(
   [Parameter(Mandatory)][string]$TsfHostExe,
   [Parameter(Mandatory)][string]$EngineHostPath,
   [Parameter(Mandatory)][string]$EngineExecutablePath,
+  [string]$RepositoryPath = "",
   [int]$ColdLoadSleepSec = 45,
   [ValidateSet('latin','hiragana','katakana','restore','abrupt')]
   [string[]]$Modes = @('latin','hiragana','katakana','restore','abrupt')
 )
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+if ($RepositoryPath) { $root = [IO.Path]::GetFullPath($RepositoryPath) }
 $harness = Join-Path $PSScriptRoot 'run-harness.ps1'
 $assertions = 0
 foreach ($mode in $Modes) {

@@ -1051,6 +1051,51 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
       std::printf("CLIENT_ABRUPT_EXIT pid=%lu\n", GetCurrentProcessId());
       std::fflush(stdout);
       ExitProcess(0); // Deliberately skips COM/TIP teardown for dead-PID cleanup.
+    } else if (token.starts_with(L"CORE:")) {
+      wchar_t root[1024]{}, directory[32768]{};
+      GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", root, _countof(root));
+      GetEnvironmentVariableW(L"NATIVEIME_TEST_CORE_DIRECTORY", directory, _countof(directory));
+      if (!std::wstring(root).starts_with(L"Software\\NativeIME-test-") || !directory[0]) std::exit(1);
+      const std::wstring variant = token.substr(5);
+      if (variant == L"DEPLOY" || variant == L"ROLLBACK") {
+        wchar_t action_script[32768]{};
+        GetEnvironmentVariableW(L"NATIVEIME_TEST_CORE_ACTION_SCRIPT", action_script, _countof(action_script));
+        if (!action_script[0]) std::exit(1);
+        const std::wstring action = variant == L"DEPLOY" ? L"deploy" : L"rollback";
+        std::wstring command = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" +
+            std::wstring(action_script) + L"\" -Action " + action + L" -CoreSource \"" +
+            directory + L"\\ddskk-ime-core-B.dll\"";
+        STARTUPINFOW startup{}; startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
+            CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) std::exit(1);
+        const DWORD wait = WaitForSingleObject(process.hProcess, 15000);
+        DWORD exit_code = 1;
+        if (wait != WAIT_OBJECT_0) { TerminateProcess(process.hProcess, 1); WaitForSingleObject(process.hProcess, 5000); }
+        else GetExitCodeProcess(process.hProcess, &exit_code);
+        std::printf("CORE_ACTION action=%s helper_pid=%lu exit=%lu pid=%lu\n",
+            Utf8FromWide(action).c_str(), process.dwProcessId, exit_code, GetCurrentProcessId());
+        CloseHandle(process.hThread); CloseHandle(process.hProcess); std::fflush(stdout);
+        if (exit_code != 0) std::exit(1);
+        PumpMessages(700);
+        PrintAfterLine(token, stores[active]);
+        continue;
+      }
+      if (variant != L"production" && variant != L"B" && variant != L"bad-abi" &&
+          variant != L"bad-init" && variant != L"missing") std::exit(1);
+      const std::wstring file = std::wstring(directory) + L"\\ddskk-ime-core" +
+          (variant == L"production" ? L"" : L"-" + variant) + L".dll";
+      HKEY key = nullptr;
+      LONG status = RegOpenKeyExW(HKEY_CURRENT_USER, root, 0, KEY_SET_VALUE, &key);
+      if (status == ERROR_SUCCESS) {
+        status = RegSetValueExW(key, L"CoreDll", 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(file.c_str()), static_cast<DWORD>((file.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+      }
+      std::printf("CORE_REQUEST version=%s status=%ld pid=%lu\n",
+          Utf8FromWide(variant).c_str(), status, GetCurrentProcessId()); std::fflush(stdout);
+      if (status != ERROR_SUCCESS) std::exit(1);
     } else if (token == L"CLIENT") {
       PumpMessages(30);
       wchar_t root[1024]{};
