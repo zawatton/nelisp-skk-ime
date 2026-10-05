@@ -36,10 +36,25 @@
          (delete-directory directory t)))))
 
 (defun nelisp-ime-emacs-inline-test--wait (predicate)
-  (let ((deadline (+ (float-time) 3)))
-    (while (and (not (funcall predicate)) (< (float-time) deadline))
+  "Pump events until PREDICATE holds, with a bounded polling budget.
+Allow 300 attempts of up to 0.01 seconds each, as before, but do not
+charge scheduling stalls or time spent in filters against that budget."
+  (let ((attempts 300))
+    (while (and (not (funcall predicate)) (> attempts 0))
+      (setq attempts (1- attempts))
       (accept-process-output nil 0.01))
     (should (funcall predicate))))
+
+(ert-deftest nelisp-ime-emacs-inline-wait-observes-state-without-wall-clock ()
+  (let ((events 0))
+    (cl-letf (((symbol-function 'float-time)
+               (lambda (&rest _) (error "Wall clock must not govern event delivery")))
+              ((symbol-function 'accept-process-output)
+               (lambda (&rest _) (cl-incf events))))
+      (nelisp-ime-emacs-inline-test--wait (lambda () (>= events 4)))
+      ;; A missing state must still fail, rather than hang or pass silently.
+      (should-error (nelisp-ime-emacs-inline-test--wait (lambda () nil))
+                    :type 'ert-test-failed))))
 
 (defun nelisp-ime-emacs-inline-test--client ()
   (make-network-process
@@ -265,7 +280,9 @@
       (set-process-coding-system client 'utf-8-unix 'binary)
       (let ((bytes (encode-coding-string "PREEDIT 4 1 ▽😀\n" 'utf-8-unix)))
         (process-send-string client (substring bytes 0 13))
-        (accept-process-output nil 0.02)
+        (nelisp-ime-emacs-inline-test--wait
+         (lambda () (equal (process-get nelisp-ime-emacs--inline-client 'pending)
+                           "PREEDIT 4 1 ")))
         (process-send-string client (substring bytes 13)))
       (nelisp-ime-emacs-inline-test--sequence 4)
       (should (equal (substring-no-properties (nelisp-ime-emacs-inline-test--display)) "▽😀")))))
@@ -372,7 +389,7 @@
       (should-not (memq #'nelisp-ime-emacs--inline-stop kill-emacs-hook))
       (should-not nelisp-ime-emacs--inline-connections))))
 
-(ert-deftest nelisp-ime-emacs-inline-s21-filter-errors-contained-once ()
+(ert-deftest nelisp-ime-emacs-inline-s21-filter-errors-disconnect-silently ()
   (nelisp-ime-emacs-inline-test--with-server
     (let ((warnings 0))
       (cl-letf (((symbol-function 'display-warning) (lambda (&rest _) (cl-incf warnings)))
@@ -384,7 +401,7 @@
             (nelisp-ime-emacs-inline-test--hello client)
             (process-send-string client "PREEDIT 1 0 a\n")
             (nelisp-ime-emacs-inline-test--wait (lambda () (not (process-live-p client))))))
-        (should (= warnings 1))))))
+        (should (= warnings 0))))))
 
 (ert-deftest nelisp-ime-emacs-inline-s21-startup-failure-cleans-discovery ()
   (nelisp-ime-emacs-inline-test--with-server
@@ -463,7 +480,7 @@
         (should (eq (cadar calls) (minibuffer-window)))
         (should (eq (nth 2 (car calls)) (selected-frame)))))))
 
-(ert-deftest nelisp-ime-emacs-inline-s22-hook-errors-contained-once ()
+(ert-deftest nelisp-ime-emacs-inline-s22-hook-errors-contained-silently ()
   (nelisp-ime-emacs-inline-test--with-server
     (let ((client (nelisp-ime-emacs-inline-test--client)) (warnings 0))
       (push client test-clients)
@@ -474,7 +491,7 @@
         (run-hooks 'post-command-hook)
         (run-hook-with-args 'window-selection-change-functions (selected-frame))
         (funcall after-focus-change-function)
-        (should (= warnings 1))
+        (should (= warnings 0))
         (should (process-live-p nelisp-ime-emacs--inline-client))))))
 
 (ert-deftest nelisp-ime-emacs-inline-s22-caret-current-buffer-context ()
@@ -800,5 +817,76 @@
         (let ((inhibit-message t)) (undo 1))
         (should (equal (buffer-string)
                        (concat "prefix" (car pair) (cdr pair) "suffix")))))))
+
+
+(ert-deftest nelisp-ime-emacs-inline-closed-peer-write-and-reconnect ()
+  (nelisp-ime-emacs-inline-test--with-server
+    (let ((peer (nelisp-ime-emacs-inline-test--client)) (warnings 0))
+      (push peer test-clients)
+      (nelisp-ime-emacs-inline-test--hello peer)
+      (process-send-string peer "PREEDIT 1 0 old\n")
+      (nelisp-ime-emacs-inline-test--sequence 1)
+      (let* ((client nelisp-ime-emacs--inline-client)
+             (live-p (symbol-function 'process-live-p)))
+        (nelisp-ime-emacs--inline-pair-receive "(" ")")
+        (should nelisp-ime-emacs--inline-pair)
+        ;; Delay the sentinel to reproduce a failed write before disconnect
+        ;; notification.  The real TCP peer closes; the real send must fail.
+        (set-process-sentinel client #'ignore)
+        (delete-process peer)
+        (nelisp-ime-emacs-inline-test--wait
+         (lambda () (not (process-live-p client))))
+        (cl-letf (((symbol-function 'display-warning)
+                   (lambda (&rest _) (cl-incf warnings)))
+                  ((symbol-function 'process-live-p)
+                   (lambda (process) (or (eq process client) (funcall live-p process))))
+                  ((symbol-function 'window-absolute-pixel-position)
+                   (lambda (&rest _) '(23 . 45)))
+                  ((symbol-function 'line-pixel-height) (lambda () 17)))
+          (nelisp-ime-emacs--inline-update))
+        (should (= warnings 0))
+        (should-not nelisp-ime-emacs--inline-client)
+        (should-not nelisp-ime-emacs--inline-overlay)
+        (should-not nelisp-ime-emacs--inline-pair)
+        (should-not (memq client nelisp-ime-emacs--inline-connections))
+        (let ((replacement (nelisp-ime-emacs-inline-test--client)))
+          (push replacement test-clients)
+          (nelisp-ime-emacs-inline-test--hello replacement)
+          (process-send-string replacement "PREEDIT 0 0 new\n")
+          (nelisp-ime-emacs-inline-test--sequence 0)
+          (let ((current nelisp-ime-emacs--inline-client))
+            (cl-letf (((symbol-function 'display-warning)
+                       (lambda (&rest _) (cl-incf warnings))))
+              (should-not (nelisp-ime-emacs--inline-send client "CARET 0 0 1\n")))
+            (should (= warnings 0))
+            (should (eq current nelisp-ime-emacs--inline-client))
+            (should (process-live-p current)))
+          (should (equal (substring-no-properties
+                          (nelisp-ime-emacs-inline-test--display)) "new")))))))
+
+(ert-deftest nelisp-ime-emacs-inline-handshake-write-failure-disconnects ()
+  (nelisp-ime-emacs-inline-test--with-server
+    (let ((peer (nelisp-ime-emacs-inline-test--client))
+          (send (symbol-function 'process-send-string)) (warnings 0) failed)
+      (push peer test-clients)
+      ;; Fail the server's first write after HELLO, using a real send to a
+      ;; closed process and delaying its sentinel as in the caret race.
+      (cl-letf (((symbol-function 'display-warning)
+                 (lambda (&rest _) (cl-incf warnings)))
+                ((symbol-function 'process-send-string)
+                 (lambda (client text)
+                   (when (equal text "OK 1 pair\n")
+                     (setq failed client)
+                     (set-process-sentinel client #'ignore)
+                     (delete-process peer)
+                     (delete-process client))
+                   (funcall send client text))))
+        (process-send-string peer
+                             (format "HELLO 1 %s 4242\n" nelisp-ime-emacs--inline-token))
+        (nelisp-ime-emacs-inline-test--wait (lambda () failed)))
+      (should (= warnings 0))
+      (should-not (process-live-p failed))
+      (should-not nelisp-ime-emacs--inline-client)
+      (should-not nelisp-ime-emacs--inline-connections))))
 
 ;;; nelisp-ime-emacs-inline-test.el ends here
