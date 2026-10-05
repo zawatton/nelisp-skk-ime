@@ -1,4 +1,5 @@
-/* UTF-8 config editing. Only top-block option values are owned by this UI. */
+/* Win32 file/path/shell primitives and independent text-file selftests.
+ * Parsing, comment-preserving merge policy and settings actions: text-logic.el. */
 #include "text-settings.h"
 #include "settings.h"
 #include <shlobj.h>
@@ -8,7 +9,7 @@
 #include <wchar.h>
 #include "text-templates.inc"
 
-static gboolean config_path(gboolean rules, wchar_t *path) {
+gboolean config_path(gboolean rules, wchar_t *path) {
   DWORD n = GetEnvironmentVariableW(rules ? L"NELISP_IME_INPUT_RULES" : L"NELISP_IME_KEYMAP_FILE", path, 32768);
   if (n) return n < 32768;
   if (!rules) {
@@ -22,64 +23,20 @@ static gboolean config_path(gboolean rules, wchar_t *path) {
   CoTaskMemFree(folder);
   return TRUE;
 }
-static char *read_text(const wchar_t *path) {
+char *read_text(const wchar_t *path) {
   char *name = g_utf16_to_utf8((const gunichar2 *)path, -1, NULL, NULL, NULL), *data = NULL;
   g_file_get_contents(name, &data, NULL, NULL); g_free(name); return data;
 }
 /* Locate the value token without normalizing any other bytes, including BOM,
  * CRLF, trailing whitespace and inline comments. Sections terminate options. */
-static gboolean option_span(const char *data, const char *key, size_t *start, size_t *end, size_t *insert) {
-  const char *p = data;
-  if (g_str_has_prefix(p, "\xef\xbb\xbf")) p += 3;
-  *insert = strlen(data);
-  while (*p) {
-    const char *line_end = strchr(p, '\n'); if (!line_end) line_end = p + strlen(p);
-    const char *q = p; while (q < line_end && (*q == ' ' || *q == '\t')) q++;
-    if (*q == '[') { *insert = p - data; return FALSE; }
-    size_t len = strlen(key);
-    if ((size_t)(line_end-q) >= len && !strncmp(q, key, len)) {
-      q += len; while (q < line_end && (*q == ' ' || *q == '\t')) q++;
-      if (q < line_end && *q == '=') {
-        q++; while (q < line_end && (*q == ' ' || *q == '\t')) q++;
-        *start = q - data;
-        while (q < line_end && *q != '#' && *q != '\r' && *q != ' ' && *q != '\t') q++;
-        *end = q - data; return TRUE;
-      }
-    }
-    p = *line_end ? line_end + 1 : line_end;
-  }
-  return FALSE;
-}
-static char *patch(char *data, const char *key, const char *value) {
-  size_t a, b, insertion;
-  gboolean found = option_span(data, key, &a, &b, &insertion);
-  GString *out = g_string_new(NULL);
-  if (found) {
-    g_string_append_len(out, data, a); g_string_append(out, value); g_string_append(out, data+b);
-  } else {
-    const char *nl = strstr(data, "\r\n") ? "\r\n" : "\n";
-    g_string_append_len(out, data, insertion);
-    if (insertion && data[insertion-1] != '\n' && !(insertion == 3 && g_str_has_prefix(data, "\xef\xbb\xbf"))) g_string_append(out, nl);
-    g_string_append_printf(out, "%s = %s%s", key, value, nl); g_string_append(out, data+insertion);
-  }
-  g_free(data); return g_string_free(out, FALSE);
-}
-static int read_option(const char *data, const char *key, const char *const *values, int fallback) {
-  size_t a,b,i;
-  if (data && option_span(data,key,&a,&b,&i))
-    for (int v=0; values[v]; v++) if (strlen(values[v]) == b-a && !strncmp(data+a,values[v],b-a)) return v;
-  return fallback;
-}
+gboolean option_span(const char *data, const char *key, size_t *start, size_t *end, size_t *insert);
+char *patch(char *data, const char *key, const char *value);
+int read_option(const char *data, const char *key, const char *const *values, int fallback);
 static const char *const widths[] = {"hankaku","zenkaku",NULL};
 static const char *const bools[] = {"no","yes",NULL};
 static const char *const layouts[] = {"os","US","JIS",NULL};
-void text_settings_load(TextSettings *s) {
-  wchar_t path[32768]; char *data = config_path(TRUE,path) ? read_text(path) : NULL;
-  s->width=read_option(data,"width",widths,0); s->auto_pair=read_option(data,"auto-pair",bools,1); g_free(data);
-  data=config_path(FALSE,path) ? read_text(path) : NULL;
-  s->enabled=read_option(data,"enabled",bools,0); s->layout=read_option(data,"layout",layouts,0); g_free(data);
-}
-static gboolean atomic_write(const wchar_t *path, const char *data) {
+void text_settings_load(TextSettings *s);
+gboolean atomic_write(const wchar_t *path, const char *data) {
   wchar_t dir[32768], temp[32768]; lstrcpyW(dir,path);
   wchar_t *slash=wcsrchr(dir,L'\\'), *forward=wcsrchr(dir,L'/');
   if (!slash || (forward && forward>slash)) slash=forward;
@@ -97,49 +54,10 @@ static gboolean atomic_write(const wchar_t *path, const char *data) {
   if (!ok) DeleteFileW(temp);
   return ok;
 }
-static gboolean save_file(gboolean rules, gboolean change_a, gboolean change_b, int a, int b) {
-  wchar_t path[32768]; if (!config_path(rules,path)) return FALSE;
-  char *data=read_text(path);
-  gboolean missing=data==NULL;
-  if (data && !change_a && !change_b) { g_free(data); return TRUE; }
-  if (!data) {
-    DWORD attrs=GetFileAttributesW(path);
-    if (attrs!=INVALID_FILE_ATTRIBUTES || (GetLastError()!=ERROR_FILE_NOT_FOUND && GetLastError()!=ERROR_PATH_NOT_FOUND)) return FALSE;
-    data=g_strdup(rules ? rules_template : keymap_template);
-  }
-  char *original=g_strdup(data);
-  if (change_a) data=patch(data,rules ? "width" : "enabled",rules ? widths[a] : bools[a]);
-  if (change_b) data=patch(data,rules ? "auto-pair" : "layout",rules ? bools[b] : layouts[b]);
-  gboolean ok=(!missing && !strcmp(original,data)) || atomic_write(path,data);
-  g_free(original); g_free(data); return ok;
-}
-gboolean text_settings_save(const TextSettings *s, TextSettings *baseline) {
-  gboolean r=save_file(TRUE,s->width!=baseline->width,s->auto_pair!=baseline->auto_pair,s->width,s->auto_pair);
-  gboolean k=save_file(FALSE,s->enabled!=baseline->enabled,s->layout!=baseline->layout,s->enabled,s->layout);
-  if (r) { baseline->width=s->width; baseline->auto_pair=s->auto_pair; }
-  if (k) { baseline->enabled=s->enabled; baseline->layout=s->layout; }
-  return r && k;
-}
-gboolean text_settings_open(gboolean rules, gboolean editor) {
-  wchar_t path[32768];
-  if (editor) {
-    wchar_t key[1024]; settings_registry_path(key,1000); wcscat(key,L"\\Keymap"); DWORD bytes=sizeof(path);
-    if (RegGetValueW(HKEY_CURRENT_USER,key,L"Executable",RRF_RT_REG_SZ,NULL,path,&bytes)!=ERROR_SUCCESS || !*path) return FALSE;
-  } else {
-    if (!config_path(rules,path)) return FALSE;
-    if (GetFileAttributesW(path)==INVALID_FILE_ATTRIBUTES && !atomic_write(path,rules ? rules_template : keymap_template)) return FALSE;
-  }
-  return (INT_PTR)ShellExecuteW(NULL,L"open",path,editor ? (rules ? L"--rules" : L"--editor") : NULL,NULL,SW_SHOWNORMAL)>32;
-}
-char *text_settings_status(void) {
-  wchar_t key[1024], status[1024]=L"", errors[8192]={0}; settings_registry_path(key,1000); wcscat(key,L"\\Keymap");
-  DWORD bytes=sizeof(status); RegGetValueW(HKEY_CURRENT_USER,key,L"Status",RRF_RT_REG_SZ,NULL,status,&bytes);
-  bytes=sizeof(errors); RegGetValueW(HKEY_CURRENT_USER,key,L"Errors",RRF_RT_REG_MULTI_SZ,NULL,errors,&bytes);
-  errors[8190]=errors[8191]=0;
-  for (size_t i=0; i<8190; i++) { if (!errors[i]) { if (!errors[i+1]) break; errors[i]=L'\n'; } }
-  char *s=g_utf16_to_utf8((gunichar2 *)status,-1,NULL,NULL,NULL), *e=g_utf16_to_utf8((gunichar2 *)errors,-1,NULL,NULL,NULL);
-  char *result=g_strdup_printf("Status: %s\nErrors: %s",s ? s : "",e ? e : ""); g_free(s);g_free(e);return result;
-}
+gboolean save_file(gboolean rules, gboolean change_a, gboolean change_b, int a, int b);
+gboolean text_settings_save(const TextSettings *s, TextSettings *baseline);
+gboolean text_settings_open(gboolean rules, gboolean editor);
+char *text_settings_status(void);
 
 static int test_failures, test_count;
 static void check(gboolean ok, const char *name) {
@@ -217,3 +135,6 @@ int text_settings_selftest(void) {
   printf("TEXT-SELFTEST-%s (%d checks, %d failures)\n",test_failures ? "FAIL" : "PASS",test_count,test_failures);
   fflush(stdout); return test_failures ? 1 : 0;
 }
+
+const char *const *skkui_text_values(int64_t index) { return index == 0 ? widths : index == 1 ? bools : layouts; }
+const char *skkui_text_template(int64_t rules) { return rules ? rules_template : keymap_template; }
