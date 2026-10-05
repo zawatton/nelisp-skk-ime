@@ -303,6 +303,23 @@ struct Runner {
 };
 Runner* runner = nullptr;
 LRESULT CALLBACK proc(HWND window, UINT msg, WPARAM wp, LPARAM lp) {
+  // Read-only decision query for inspectors/test hosts. COPYDATA marshals the
+  // request across processes; the resident's published PID scopes discovery.
+  // Local scratch state cannot emit input or alter held-key ownership.
+  if (msg == WM_COPYDATA && lp) {
+    const auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lp);
+    if (data->dwData == 0x534b5131 && data->cbData == 3 * sizeof(DWORD) &&
+        data->lpData && current.load()) {
+      const auto* fields = static_cast<const DWORD*>(data->lpData);
+      if (fields[0] > 255 || fields[1] > 255 || fields[2] > 1) return 0;
+      State probe;
+      Event event{normalize({static_cast<uint16_t>(fields[0]),
+                             static_cast<uint16_t>(fields[1]), fields[2] != 0})};
+      auto result = decide(event, probe, *current.load(), context);
+      return 0x10000000 | (result.swallow ? 0x01000000 : 0) |
+             (result.count << 16) | (result.count ? result.events[0].key.vk : 0);
+    }
+  }
   if (msg == kCaptureReleaseMessage) {
     if (callbackDepth) return 0;
     auto editor = reinterpret_cast<HWND>(lp);

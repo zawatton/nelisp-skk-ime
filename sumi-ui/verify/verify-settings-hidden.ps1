@@ -29,10 +29,10 @@ try {
   if ($proc.ExitCode -ne 0 -or -not ($lines -contains 'PASS hidden-settings-six-tabs-and-file-controls')) { throw 'hidden settings controls failed' }
   if (-not ($lines -contains 'Status: error') -or -not ($lines -contains 'Errors: line 3: unknown option') -or -not ($lines -contains 'line 4: invalid key')) { throw 'read-only remapper status failed' }
   Write-Host 'PASS read-only-status-and-multisz-errors'
-  foreach ($check in @('rules-page-button','initial-widget-values','engine-page-switch','apply-all-tabs-and-range-validation','apply-failure-status','close-during-restart')) {
+  foreach ($check in @('keymap-page-button','rules-page-button','initial-widget-values','engine-page-switch','apply-all-tabs-and-range-validation','apply-failure-status','close-during-restart')) {
     if (-not ($lines -contains "PASS hidden-settings-$check")) { throw "hidden settings $check failed" }
   }
-  Write-Host 'verify-settings-hidden: 8 PASS, 0 FAIL; exit 0'
+  Write-Host 'verify-settings-hidden: 9 PASS, 0 FAIL; exit 0'
 } finally {
   if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
   if (Test-Path -LiteralPath $reg) { Remove-Item -LiteralPath $reg -Recurse -Force }
