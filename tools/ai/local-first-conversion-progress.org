@@ -9,7 +9,7 @@ Six-reading profile: 18 warm + 2 cold candidate states. Source-derived feature
 split, generation/learning consistency and named parity tests documented in
 docs/design/local-first-conversion.org. Real Emacs inline rendering timing
 remains unmeasured; explicitly reserved for S2.3. No stock-parity claim.
-evidence: docs/design/local-first-conversion.org sha256=f7480369be9283d365710ee649d1551a65bbfa61f160d0e82990dbc11d8f2cf1
+evidence: docs/design/local-first-conversion.org sha256=0fd936a78ae2ba3b5b60dc9033a8a25ee680819a38c8b0d5f54edeeaf5f6715d
 ** S1.2 Prototype measurement: a memory-mapped dictionary index built from SKK-JISYO.L plus the user jisyo answers candidate lookups in the core process (p50/p99 per lookup, build time, memory), compared with today's Space-to-candidate time on the same machine
 LF1 standalone prototype completed; deliberately not wired into the core.
 Full L + private synthetic user jisyo copy: 175774 entries, 14239252 mapped
