@@ -1132,6 +1132,22 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   while (stream >> token) {
     if (token == L"CONTEXTALIAS") {
       alias_next = true;
+    } else if (token == L"SETTINGS") {
+      // Exercise the real toolbar item and its core callback, without
+      // posting clicks to any live taskbar or launching an engine.
+      ITfLangBarItemMgr* manager = nullptr;
+      ITfLangBarItem* item = nullptr;
+      ITfLangBarItemButton* button = nullptr;
+      HRESULT hr = thread_mgr->QueryInterface(IID_ITfLangBarItemMgr,
+          reinterpret_cast<void**>(&manager));
+      if (SUCCEEDED(hr)) hr = manager->GetItem(GUID_DdskkSettingsButton, &item);
+      if (SUCCEEDED(hr)) hr = item->QueryInterface(IID_ITfLangBarItemButton,
+          reinterpret_cast<void**>(&button));
+      if (SUCCEEDED(hr)) hr = button->OnMenuSelect(3);
+      PrintHr("ToolbarSettings", hr);
+      if (button) button->Release();
+      if (item) item->Release();
+      if (manager) manager->Release();
     } else if (token == L"EXITNOW") {
       wchar_t root[1024]{};
       GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", root, _countof(root));

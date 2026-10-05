@@ -16,23 +16,10 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
- * Hand-authored GTK4/Cairo/Win32 glue for docs/design/sumi-indicator-
- * settings.md's Phase 2 "indicator MVP" and Phase 3 "settings tabs".
- * This is the "acceptable MVP simplification" the Phase 2 design brief
- * offered: a real GTK4 C program, built with the same MSYS2 toolchain
- * dev/sumi and dev/nelisp-sumi use, rather than authoring the whole
- * window in the frame-v1 restricted dialect (see sumi-ui/README.md for
- * the full rationale). All *decision logic* -- mode-to-color, mode-to-
- * label, whether/what the mode-switch menu sends -- still lives in the
- * Sumi/NeLisp AOT pattern: indicator/mode-logic.el compiles with the
- * same `nelisp-aot-compile-to-object' (:format 'coff) build-live.el and
- * build.el use, and links directly into this executable (see build.el).
- * This file owns I/O and rendering primitives (the named-pipe protocol,
- * registry settings I/O via settings.c, GTK/Cairo/Pango widgets) --
- * never a mode/color/label decision; Phase 3 extends that boundary to
- * cover *which* colors are available (read from the registry via
- * settings.c) without moving the *choice* among them out of NeLisp --
- * see mode-logic.el's header comment for the COLORS_PTR contract.
+ * GTK/Cairo/Win32 primitives and resident indicator surfaces.
+ * Settings pages, callbacks, engine selection, Apply and load/save policy
+ * are NeLisp AOT modules: settings-window.el, settings-logic.el,
+ * text-logic.el. Native layout contracts are checked in settings-abi.inc.
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -54,8 +41,6 @@
 #include "pipe-client.h"
 #include "settings.h"
 #include "text-settings.h"
-
-
 
 /* ------------------------------------------------------------------ */
 /* Decision logic, compiled from indicator/mode-logic.el by build.el's
@@ -153,7 +138,7 @@ static const char *marker_glyph(int64_t marker_code) {
  * GtkEditable's text is always UTF-8). Cast wchar_t* <-> gunichar2* is
  * safe on Windows: both are 16-bit UTF-16 code units there. */
 
-static void utf8_to_wide(const char *utf8, wchar_t *out, size_t out_cap) {
+void utf8_to_wide(const char *utf8, wchar_t *out, size_t out_cap) {
   glong written = 0;
   gunichar2 *wide = g_utf8_to_utf16(utf8, -1, NULL, &written, NULL);
   if (wide) {
@@ -166,7 +151,7 @@ static void utf8_to_wide(const char *utf8, wchar_t *out, size_t out_cap) {
   }
 }
 
-static char *wide_to_utf8_alloc(const wchar_t *wide) {
+char *wide_to_utf8_alloc(const wchar_t *wide) {
   char *utf8 = g_utf16_to_utf8((const gunichar2 *)wide, -1, NULL, NULL, NULL);
   return utf8 ? utf8 : g_strdup("");
 }
@@ -739,6 +724,32 @@ typedef struct {
   GtkWidget *radio_half, *check_pair, *check_remap, *drop_layout, *remap_status;
   GtkWidget *status_label;
 } SettingsWindow;
+/* Settings orchestration is compiled from settings-window.el. */
+guint engine_choice_index(const wchar_t *id);
+void engine_visible_init(SettingsWindow *sw);
+guint engine_visible_position(const SettingsWindow *sw, guint choice);
+void on_engine_changed(GObject *dropdown, GParamSpec *pspec, gpointer user_data);
+GtkWidget *build_engine_pages(SettingsWindow *sw);
+GtkWidget *build_tab_behavior(SettingsWindow *sw);
+GtkWidget *build_tab_display(SettingsWindow *sw);
+void on_jisyo_chosen(GObject *source, GAsyncResult *result, gpointer user_data);
+void on_jisyo_browse_clicked(GtkButton *button, gpointer user_data);
+GtkWidget *build_ddskk_dictionary_page(SettingsWindow *sw);
+GtkWidget *build_tab_dictionary(SettingsWindow *sw);
+GtkWidget *build_tab_maintenance(SettingsWindow *sw);
+void on_text_open(GtkButton *button, gpointer user_data);
+void on_text_status(GtkButton *button, gpointer user_data);
+GtkWidget *text_button(SettingsWindow *sw, const char *label, int action);
+GtkWidget *build_tab_text(SettingsWindow *sw, gboolean rules);
+void settings_read_from_widgets(SettingsWindow *sw, Settings *out);
+gboolean skkui_restart_poll(gpointer user_data);
+void skkui_restart_engine_and_wait(SettingsWindow *sw);
+void on_apply_clicked(GtkButton *button, gpointer user_data);
+void on_restart_engine_clicked(GtkButton *button, gpointer user_data);
+void close_settings_window(App *app);
+void on_close_clicked(GtkButton *button, gpointer user_data);
+gboolean on_settings_close_request(GtkWindow *window, gpointer user_data);
+void open_settings_window(App *app);
 
 /* The stored form is a Win32 COLORREF -- 0x00BBGGRR, blue in the high
  * byte -- because TextService::LoadSettings() hands the value straight to
@@ -750,7 +761,7 @@ static void packed_to_rgba(int64_t packed, GdkRGBA *out) {
   out->alpha = 1.0;
 }
 
-static int64_t rgba_to_packed(GtkColorDialogButton *btn) {
+int64_t rgba_to_packed(GtkColorDialogButton *btn) {
   const GdkRGBA *rgba = gtk_color_dialog_button_get_rgba(btn);
   const int r = (int)(rgba->red * 255.0 + 0.5);
   const int g = (int)(rgba->green * 255.0 + 0.5);
@@ -758,7 +769,7 @@ static int64_t rgba_to_packed(GtkColorDialogButton *btn) {
   return ((int64_t)b << 16) | ((int64_t)g << 8) | (int64_t)r;
 }
 
-static GtkWidget *make_color_button(int64_t packed) {
+GtkWidget *make_color_button(int64_t packed) {
   GdkRGBA rgba;
   packed_to_rgba(packed, &rgba);
   GtkWidget *btn = gtk_color_dialog_button_new(gtk_color_dialog_new());
@@ -766,16 +777,7 @@ static GtkWidget *make_color_button(int64_t packed) {
   return btn;
 }
 
-/* Appends a label + control row to GRID at ROW. Used for every setting
- * except the three standalone checkboxes (ModeIndicator/SkkServEnable/
- * DllDebug), whose own label text is the checkbox's own label. */
-/* Implemented in indicator/widgets.el (NeLisp, AOT object mode) -- the
- * first slice of this file's GTK layer to move, chosen because it is the
- * only GTK helper here that touches no application state and so needs no
- * struct offsets.  Its `xalign' argument is why the build now requires a
- * NeLisp with `(:f32 LIT)' support. */
-void grid_add_row(GtkGrid *grid, int row, const char *label_text,
-                  GtkWidget *control);
+void grid_add_row(GtkGrid *grid, int row, const char *label_text, GtkWidget *control);
 
 /* The engines the settings window offers.  The id is the wire name the
  * engine process answers to `ENGINE LIST' and the text service sends
@@ -811,395 +813,31 @@ static const EngineChoice kEngineChoices[] = {
      "変換せずアプリへ渡します。", FALSE},
 };
 
+/* Addresses/data exposed to the AOT settings module; no policy here. */
+const EngineChoice *skkui_engine_choices(void) { return kEngineChoices; }
+FILE *skkui_stdout(void) { return stdout; }
+void skkui_clear_error(GError **error) { g_clear_error(error); }
+void skkui_set_settings_title(GtkWidget *window) {
+  gtk_window_set_title(GTK_WINDOW(window), "NeLisp IME \xe8\xa8\xad\xe5\xae\x9a");
+}
+void *skkui_callback_address(int64_t index) {
+  switch (index) {
+    case 0: return (void *)on_engine_changed;
+    case 1: return (void *)on_jisyo_chosen;
+    case 2: return (void *)on_jisyo_browse_clicked;
+    case 3: return (void *)on_text_open;
+    case 4: return (void *)on_text_status;
+    case 5: return (void *)skkui_restart_poll;
+    case 6: return (void *)g_free;
+    case 7: return (void *)on_settings_close_request;
+    case 8: return (void *)on_restart_engine_clicked;
+    case 9: return (void *)on_apply_clicked;
+    case 10: return (void *)on_close_clicked;
+    default: return NULL;
+  }
+}
+
 #define ENGINE_CHOICE_COUNT (sizeof(kEngineChoices) / sizeof(kEngineChoices[0]))
-
-static guint engine_choice_index(const wchar_t *id) {
-  for (guint i = 0; i < ENGINE_CHOICE_COUNT; i++) {
-    if (wcscmp(kEngineChoices[i].id, id) == 0) return i;
-  }
-  return 0; /* an id this build does not know falls back to the first */
-}
-
-/* Fill sw->engine_visible with the choices to offer.  An engine already
- * selected in the registry stays visible even when experimental, so the
- * window never silently misreports which engine is configured. */
-static void engine_visible_init(SettingsWindow *sw) {
-  const gboolean experimental = settings_experimental_engines();
-  const guint current = engine_choice_index(sw->app->settings.engine);
-  sw->engine_visible_count = 0;
-  for (guint i = 0; i < ENGINE_CHOICE_COUNT; i++) {
-    if (kEngineChoices[i].experimental && !experimental && i != current) continue;
-    sw->engine_visible[sw->engine_visible_count++] = i;
-  }
-}
-
-/* Dropdown position of the choice with kEngineChoices index CHOICE. */
-static guint engine_visible_position(const SettingsWindow *sw, guint choice) {
-  for (guint i = 0; i < sw->engine_visible_count; i++) {
-    if (sw->engine_visible[i] == choice) return i;
-  }
-  return 0;
-}
-
-/* Show the page belonging to the engine now selected, and reload that
- * engine's stored values into it.  Reloading matters because each
- * engine keeps its settings in its own subkey: without it the page would
- * show whatever the previously selected engine had. */
-static void on_engine_changed(GObject *dropdown, GParamSpec *pspec, gpointer user_data) {
-  (void)pspec;
-  SettingsWindow *sw = (SettingsWindow *)user_data;
-  const guint selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(dropdown));
-  if (selected >= sw->engine_visible_count) return;
-  const guint index = sw->engine_visible[selected];
-  const EngineChoice *choice = &kEngineChoices[index];
-
-  wcsncpy(sw->app->settings.engine, choice->id, SETTINGS_STR_LEN - 1);
-  sw->app->settings.engine[SETTINGS_STR_LEN - 1] = L'\0';
-  settings_load_engine_scope(&sw->app->settings, choice->id);
-
-  if (sw->check_okuri_auto) {
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_okuri_auto),
-                                sw->app->settings.engine_okuri_auto != 0);
-  }
-  if (sw->spin_candidate_limit) {
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_candidate_limit),
-                              sw->app->settings.engine_candidate_limit);
-  }
-  if (sw->check_lattice_learning) {
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_lattice_learning),
-                                sw->app->settings.engine_learning != 0);
-  }
-  if (sw->engine_stack) {
-    /* Pages are named by kEngineChoices index, not dropdown position:
-     * the two differ as soon as an engine is hidden. */
-    char name[32];
-    g_snprintf(name, sizeof(name), "%u", index);
-    gtk_stack_set_visible_child_name(GTK_STACK(sw->engine_stack), name);
-  }
-  if (sw->dictionary_stack) {
-    char name[32];
-    g_snprintf(name, sizeof(name), "%u", index);
-    gtk_stack_set_visible_child_name(GTK_STACK(sw->dictionary_stack), name);
-  }
-}
-
-/* One page per engine: its description plus whatever settings only that
- * engine honors. */
-static GtkWidget *build_engine_pages(SettingsWindow *sw) {
-  GtkWidget *stack = gtk_stack_new();
-  for (guint i = 0; i < ENGINE_CHOICE_COUNT; i++) {
-    GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    GtkWidget *note = gtk_label_new(kEngineChoices[i].note);
-    gtk_label_set_xalign(GTK_LABEL(note), 0.0);
-    gtk_label_set_wrap(GTK_LABEL(note), TRUE);
-    gtk_box_append(GTK_BOX(page), note);
-
-    if (wcscmp(kEngineChoices[i].id, L"ddskk") == 0) {
-      sw->check_okuri_strictly = gtk_check_button_new_with_label(
-          "\xe9\x80\x81\xe3\x82\x8a\xe4\xbb\xae\xe5\x90\x8d\xe3\x81\x8c\xe4\xb8\x80\xe8\x87\xb4\xe3\x81\x97\xe3\x81\x9f\xe5\x80\x99\xe8\xa3\x9c\xe3\x82\x92\xe5\x84\xaa\xe5\x85\x88\xe3\x81\x99\xe3\x82\x8b");
-      gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_okuri_strictly),
-                                  sw->app->settings.behavior_okuri_strictly != 0);
-      gtk_box_append(GTK_BOX(page), sw->check_okuri_strictly);
-
-      sw->check_delete_okuri_on_cancel = gtk_check_button_new_with_label(
-          "\xe5\x8f\x96\xe6\xb6\x88\xe3\x81\xae\xe3\x81\xa8\xe3\x81\x8d\xe9\x80\x81\xe3\x82\x8a\xe4\xbb\xae\xe5\x90\x8d\xe3\x82\x92\xe5\x89\x8a\xe9\x99\xa4\xe3\x81\x99\xe3\x82\x8b");
-      gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_delete_okuri_on_cancel),
-                                  sw->app->settings.behavior_delete_okuri_on_cancel != 0);
-      gtk_box_append(GTK_BOX(page), sw->check_delete_okuri_on_cancel);
-
-      sw->check_add_katakana_cand = gtk_check_button_new_with_label(
-          "\xe5\x80\x99\xe8\xa3\x9c\xe3\x81\xab\xe7\x89\x87\xe4\xbb\xae\xe5\x90\x8d\xe5\xa4\x89\xe6\x8f\x9b\xe3\x82\x92\xe8\xbf\xbd\xe5\x8a\xa0\xe3\x81\x99\xe3\x82\x8b");
-      gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_add_katakana_cand),
-                                  sw->app->settings.behavior_add_katakana_cand != 0);
-      gtk_box_append(GTK_BOX(page), sw->check_add_katakana_cand);
-
-      sw->check_learn_disabled = gtk_check_button_new_with_label(
-          "\xe5\xad\xa6\xe7\xbf\x92\xe3\x81\x97\xe3\x81\xaa\xe3\x81\x84\xef\xbc\x88\xe3\x83\x97\xe3\x83\xa9\xe3\x82\xa4\xe3\x83\x99\xe3\x83\xbc\xe3\x83\x88\xe3\x83\xa2\xe3\x83\xbc\xe3\x83\x89\xef\xbc\x89");
-      gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_learn_disabled),
-                                  sw->app->settings.behavior_learn_disabled != 0);
-      gtk_box_append(GTK_BOX(page), sw->check_learn_disabled);
-    } else {
-      GtkWidget *none = gtk_label_new(
-          "\xe3\x81\x93\xe3\x81\xae\xe5\x87\xa6\xe7\x90\x86\xe7\xb3\xbb\xe3\x81\xab\xe8\xbf\xbd\xe5\x8a\xa0\xe3\x81\xae\xe8\xa8\xad\xe5\xae\x9a\xe3\x81\xaf\xe3\x81\x82\xe3\x82\x8a\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93\xe3\x80\x82" /* この処理系に追加の設定はありません。 */);
-      gtk_label_set_xalign(GTK_LABEL(none), 0.0);
-      gtk_box_append(GTK_BOX(page), none);
-    }
-
-    char name[32];
-    g_snprintf(name, sizeof(name), "%u", i);
-    gtk_stack_add_named(GTK_STACK(stack), page, name);
-  }
-  return stack;
-}
-
-static GtkWidget *build_tab_behavior(SettingsWindow *sw) {
-  GtkWidget *grid = gtk_grid_new();
-  gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
-  gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
-  gtk_widget_set_margin_top(grid, 12);
-  gtk_widget_set_margin_bottom(grid, 12);
-  gtk_widget_set_margin_start(grid, 12);
-  gtk_widget_set_margin_end(grid, 12);
-
-  engine_visible_init(sw);
-  const char *engine_labels[ENGINE_CHOICE_COUNT + 1];
-  for (guint i = 0; i < sw->engine_visible_count; i++) {
-    engine_labels[i] = kEngineChoices[sw->engine_visible[i]].label;
-  }
-  engine_labels[sw->engine_visible_count] = NULL;
-  sw->engine_dropdown = gtk_drop_down_new_from_strings(engine_labels);
-  gtk_drop_down_set_selected(
-      GTK_DROP_DOWN(sw->engine_dropdown),
-      engine_visible_position(sw, engine_choice_index(sw->app->settings.engine)));
-  g_signal_connect(sw->engine_dropdown, "notify::selected",
-                   G_CALLBACK(on_engine_changed), sw);
-  grid_add_row(GTK_GRID(grid), 0, "エンジン" /* エンジン */, sw->engine_dropdown);
-
-  GtkWidget *radio_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-  sw->radio_hiragana = gtk_check_button_new_with_label("\xe3\x81\x8b\xe3\x81\xaa" /* かな */);
-  sw->radio_latin = gtk_check_button_new_with_label("\xe8\x8b\xb1\xe6\x95\xb0" /* 英数 */);
-  gtk_check_button_set_group(GTK_CHECK_BUTTON(sw->radio_latin), GTK_CHECK_BUTTON(sw->radio_hiragana));
-  gtk_check_button_set_active(
-      GTK_CHECK_BUTTON(sw->app->settings.initial_kana_mode ? sw->radio_hiragana : sw->radio_latin), TRUE);
-  gtk_box_append(GTK_BOX(radio_box), sw->radio_hiragana);
-  gtk_box_append(GTK_BOX(radio_box), sw->radio_latin);
-  grid_add_row(GTK_GRID(grid), 1, "\xe5\x88\x9d\xe6\x9c\x9f\xe5\x85\xa5\xe5\x8a\x9b\xe3\x83\xa2\xe3\x83\xbc\xe3\x83\x89" /* 初期入力モード */, radio_box);
-
-  int row = 2;
-  /* Engine-specific settings live on their own page, swapped by the
-   * dropdown above, so an engine's options never show under another. */
-  sw->engine_stack = build_engine_pages(sw);
-  {
-    char name[32];
-    g_snprintf(name, sizeof(name), "%u",
-               engine_choice_index(sw->app->settings.engine));
-    gtk_stack_set_visible_child_name(GTK_STACK(sw->engine_stack), name);
-  }
-  gtk_grid_attach(GTK_GRID(grid), sw->engine_stack, 0, row++, 2, 1);
-
-  return grid;
-}
-
-static GtkWidget *build_tab_display(SettingsWindow *sw) {
-  GtkWidget *grid = gtk_grid_new();
-  gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
-  gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
-  gtk_widget_set_margin_top(grid, 12);
-  gtk_widget_set_margin_bottom(grid, 12);
-  gtk_widget_set_margin_start(grid, 12);
-  gtk_widget_set_margin_end(grid, 12);
-  int row = 0;
-
-  sw->check_mode_indicator = gtk_check_button_new_with_label(
-      "\xe5\x85\xa5\xe5\x8a\x9b\xe3\x83\xa2\xe3\x83\xbc\xe3\x83\x89\xe3\x82\x92\xe8\xa1\xa8\xe7\xa4\xba\xe3\x81\x99\xe3\x82\x8b" /* 入力モードを表示する */);
-  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_mode_indicator), sw->app->settings.mode_indicator != 0);
-  gtk_grid_attach(GTK_GRID(grid), sw->check_mode_indicator, 0, row, 2, 1);
-  row++;
-
-  sw->spin_indicator_ms = gtk_spin_button_new_with_range(1, 60000, 100);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_indicator_ms), sw->app->settings.mode_indicator_ms);
-  grid_add_row(GTK_GRID(grid), row++, "\xe8\xa1\xa8\xe7\xa4\xba\xe6\x99\x82\xe9\x96\x93 (ms)" /* 表示時間 (ms) */, sw->spin_indicator_ms);
-
-  sw->spin_indicator_scale = gtk_spin_button_new_with_range(50, 300, 5);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_indicator_scale), sw->app->settings.mode_indicator_scale);
-  grid_add_row(GTK_GRID(grid), row++, "\xe8\xa1\xa8\xe7\xa4\xba\xe5\x80\x8d\xe7\x8e\x87 (%)" /* 表示倍率 (%) */, sw->spin_indicator_scale);
-
-  sw->color_kana = make_color_button(sw->app->settings.color_kana);
-  grid_add_row(GTK_GRID(grid), row++, "\xe3\x81\x8b\xe3\x81\xaa\xe8\x89\xb2" /* かな色 */, sw->color_kana);
-
-  sw->color_katakana = make_color_button(sw->app->settings.color_katakana);
-  grid_add_row(GTK_GRID(grid), row++, "\xe3\x82\xab\xe3\x83\x8a\xe8\x89\xb2" /* カナ色 */, sw->color_katakana);
-
-  sw->color_wide_latin = make_color_button(sw->app->settings.color_wide_latin);
-  grid_add_row(GTK_GRID(grid), row++, "\xe5\x85\xa8\xe8\x8b\xb1\xe8\x89\xb2" /* 全英色 */, sw->color_wide_latin);
-
-  sw->color_latin = make_color_button(sw->app->settings.color_latin);
-  grid_add_row(GTK_GRID(grid), row++, "\xe8\x8b\xb1\xe6\x95\xb0\xe8\x89\xb2" /* 英数色 */, sw->color_latin);
-
-  sw->color_abbrev = make_color_button(sw->app->settings.color_abbrev);
-  grid_add_row(GTK_GRID(grid), row++, "Abbrev\xe8\x89\xb2" /* Abbrev色 */, sw->color_abbrev);
-
-  return grid;
-}
-
-static void on_jisyo_chosen(GObject *source, GAsyncResult *result, gpointer user_data) {
-  GtkEntry *entry = GTK_ENTRY(user_data);
-  GError *error = NULL;
-  GFile *file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, &error);
-  if (file) {
-    char *path = g_file_get_path(file);
-    if (path) {
-      gtk_editable_set_text(GTK_EDITABLE(entry), path);
-      g_free(path);
-    }
-    g_object_unref(file);
-  }
-  g_clear_error(&error);
-}
-
-static void on_jisyo_browse_clicked(GtkButton *button, gpointer user_data) {
-  GtkEntry *entry = GTK_ENTRY(user_data);
-  GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(button));
-  GtkFileDialog *dialog = gtk_file_dialog_new();
-  gtk_file_dialog_set_title(dialog,
-      "\xe3\x83\xa6\xe3\x83\xbc\xe3\x82\xb6\xe3\x83\xbc\xe8\xbe\x9e\xe6\x9b\xb8\xe3\x83\x95\xe3\x82\xa1\xe3\x82\xa4\xe3\x83\xab\xe3\x82\x92\xe9\x81\xb8\xe6\x8a\x9e" /* ユーザー辞書ファイルを選択 */);
-  gtk_file_dialog_open(dialog, GTK_WINDOW(root), NULL, on_jisyo_chosen, entry);
-  g_object_unref(dialog);
-}
-
-static GtkWidget *build_ddskk_dictionary_page(SettingsWindow *sw) {
-  GtkWidget *grid = gtk_grid_new();
-  gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
-  gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
-  gtk_widget_set_margin_top(grid, 12);
-  gtk_widget_set_margin_bottom(grid, 12);
-  gtk_widget_set_margin_start(grid, 12);
-  gtk_widget_set_margin_end(grid, 12);
-  int row = 0;
-
-  sw->check_skkserv_enable = gtk_check_button_new_with_label(
-      "\xe8\xbe\x9e\xe6\x9b\xb8\xe3\x82\xb5\xe3\x83\xbc\xe3\x83\x90\xe3\x82\x92\xe4\xbd\xbf\xe7\x94\xa8\xe3\x81\x99\xe3\x82\x8b" /* 辞書サーバを使用する */);
-  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_skkserv_enable), sw->app->settings.skkserv_enable != 0);
-  gtk_grid_attach(GTK_GRID(grid), sw->check_skkserv_enable, 0, row, 2, 1);
-  row++;
-
-  sw->entry_skkserv_host = gtk_entry_new();
-  {
-    char *host_utf8 = wide_to_utf8_alloc(sw->app->settings.skkserv_host);
-    gtk_editable_set_text(GTK_EDITABLE(sw->entry_skkserv_host), host_utf8);
-    g_free(host_utf8);
-  }
-  grid_add_row(GTK_GRID(grid), row++, "\xe3\x83\x9b\xe3\x82\xb9\xe3\x83\x88" /* ホスト */, sw->entry_skkserv_host);
-
-  sw->spin_skkserv_port = gtk_spin_button_new_with_range(1, 65535, 1);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_skkserv_port), sw->app->settings.skkserv_port);
-  grid_add_row(GTK_GRID(grid), row++, "\xe3\x83\x9d\xe3\x83\xbc\xe3\x83\x88" /* ポート */, sw->spin_skkserv_port);
-
-  GtkWidget *jisyo_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-  sw->entry_jisyo_path = gtk_entry_new();
-  gtk_widget_set_hexpand(sw->entry_jisyo_path, TRUE);
-  {
-    char *path_utf8 = wide_to_utf8_alloc(sw->app->settings.user_jisyo_path);
-    gtk_editable_set_text(GTK_EDITABLE(sw->entry_jisyo_path), path_utf8);
-    g_free(path_utf8);
-  }
-  GtkWidget *browse_button = gtk_button_new_with_label("\xe5\x8f\x82\xe7\x85\xa7" /* 参照 */);
-  g_signal_connect(browse_button, "clicked", G_CALLBACK(on_jisyo_browse_clicked), sw->entry_jisyo_path);
-  gtk_box_append(GTK_BOX(jisyo_box), sw->entry_jisyo_path);
-  gtk_box_append(GTK_BOX(jisyo_box), browse_button);
-  grid_add_row(GTK_GRID(grid), row++, "\xe3\x83\xa6\xe3\x83\xbc\xe3\x82\xb6\xe3\x83\xbc\xe8\xbe\x9e\xe6\x9b\xb8\xe3\x83\x91\xe3\x82\xb9" /* ユーザー辞書パス */, jisyo_box);
-
-  sw->spin_jisyo_batch = gtk_spin_button_new_with_range(1, 100, 1);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_jisyo_batch), sw->app->settings.user_jisyo_batch);
-  grid_add_row(GTK_GRID(grid), row++, "\xe4\xbf\x9d\xe5\xad\x98\xe9\x96\x93\xe9\x9a\x94 (\xe7\xa2\xba\xe5\xae\x9a\xe6\x95\xb0)" /* 保存間隔 (確定数) */, sw->spin_jisyo_batch);
-
-  return grid;
-}
-
-static GtkWidget *build_tab_dictionary(SettingsWindow *sw) {
-  sw->dictionary_stack = gtk_stack_new();
-  for (guint i = 0; i < ENGINE_CHOICE_COUNT; i++) {
-    GtkWidget *page = NULL;
-    if (wcscmp(kEngineChoices[i].id, L"ddskk") == 0) {
-      page = build_ddskk_dictionary_page(sw);
-    } else {
-      page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-      gtk_widget_set_margin_top(page, 12);
-      gtk_widget_set_margin_bottom(page, 12);
-      gtk_widget_set_margin_start(page, 12);
-      gtk_widget_set_margin_end(page, 12);
-      const char *message = wcscmp(kEngineChoices[i].id, L"passthrough") == 0
-          ? "パススルーは辞書を使用しません。"
-          : "この処理系の辞書設定は、まだ設定画面から変更できません。";
-      GtkWidget *label = gtk_label_new(message);
-      gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-      gtk_label_set_wrap(GTK_LABEL(label), TRUE);
-      gtk_box_append(GTK_BOX(page), label);
-    }
-    char name[32];
-    g_snprintf(name, sizeof(name), "%u", i);
-    gtk_stack_add_named(GTK_STACK(sw->dictionary_stack), page, name);
-  }
-  char current[32];
-  g_snprintf(current, sizeof(current), "%u",
-             engine_choice_index(sw->app->settings.engine));
-  gtk_stack_set_visible_child_name(GTK_STACK(sw->dictionary_stack), current);
-  return sw->dictionary_stack;
-}
-
-static GtkWidget *build_tab_maintenance(SettingsWindow *sw) {
-  GtkWidget *grid = gtk_grid_new();
-  gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
-  gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
-  gtk_widget_set_margin_top(grid, 12);
-  gtk_widget_set_margin_bottom(grid, 12);
-  gtk_widget_set_margin_start(grid, 12);
-  gtk_widget_set_margin_end(grid, 12);
-  int row = 0;
-
-  sw->spin_idle_gc_ms = gtk_spin_button_new_with_range(100, 60000, 100);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_idle_gc_ms), sw->app->settings.idle_gc_ms);
-  grid_add_row(GTK_GRID(grid), row++, "\xe3\x82\xa2\xe3\x82\xa4\xe3\x83\x89\xe3\x83\xabGC\xe9\x96\x93\xe9\x9a\x94 (ms)" /* アイドルGC間隔 (ms) */, sw->spin_idle_gc_ms);
-
-  sw->check_dll_debug = gtk_check_button_new_with_label("\xe3\x83\x87\xe3\x83\x90\xe3\x83\x83\xe3\x82\xb0\xe3\x83\xad\xe3\x82\xb0" /* デバッグログ */);
-  gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_dll_debug), sw->app->settings.dll_debug != 0);
-  gtk_grid_attach(GTK_GRID(grid), sw->check_dll_debug, 0, row, 2, 1);
-
-  return grid;
-}
-
-#include "text-tabs.inc"
-
-static void settings_read_from_widgets(SettingsWindow *sw, Settings *out) {
-  *out = sw->app->settings;
-
-  /* The engine and its own settings.  `engine' is a control now, so it is
-   * read back like everything else rather than carried over untouched. */
-  const guint selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(sw->engine_dropdown));
-  if (selected < sw->engine_visible_count) {
-    wcsncpy(out->engine, kEngineChoices[sw->engine_visible[selected]].id,
-            SETTINGS_STR_LEN - 1);
-    out->engine[SETTINGS_STR_LEN - 1] = 0;
-  }
-  if (sw->check_okuri_auto) {
-    out->engine_okuri_auto =
-        gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_okuri_auto)) ? 1 : 0;
-  }
-  if (sw->spin_candidate_limit) {
-    out->engine_candidate_limit =
-        gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_candidate_limit));
-  }
-  if (sw->check_lattice_learning) {
-    out->engine_learning =
-        gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_lattice_learning)) ? 1 : 0;
-  }
-
-  out->initial_kana_mode = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->radio_hiragana)) ? 1 : 0;
-  out->behavior_okuri_strictly = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_okuri_strictly)) ? 1 : 0;
-  out->behavior_delete_okuri_on_cancel =
-      gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_delete_okuri_on_cancel)) ? 1 : 0;
-  out->behavior_add_katakana_cand =
-      gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_add_katakana_cand)) ? 1 : 0;
-  out->behavior_learn_disabled = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_learn_disabled)) ? 1 : 0;
-
-  out->mode_indicator = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_mode_indicator)) ? 1 : 0;
-  out->mode_indicator_ms = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_indicator_ms));
-  out->mode_indicator_scale = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_indicator_scale));
-  out->color_kana = rgba_to_packed(GTK_COLOR_DIALOG_BUTTON(sw->color_kana));
-  out->color_katakana = rgba_to_packed(GTK_COLOR_DIALOG_BUTTON(sw->color_katakana));
-  out->color_wide_latin = rgba_to_packed(GTK_COLOR_DIALOG_BUTTON(sw->color_wide_latin));
-  out->color_latin = rgba_to_packed(GTK_COLOR_DIALOG_BUTTON(sw->color_latin));
-  out->color_abbrev = rgba_to_packed(GTK_COLOR_DIALOG_BUTTON(sw->color_abbrev));
-
-  out->skkserv_enable = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_skkserv_enable)) ? 1 : 0;
-  utf8_to_wide(gtk_editable_get_text(GTK_EDITABLE(sw->entry_skkserv_host)), out->skkserv_host, SETTINGS_STR_LEN);
-  out->skkserv_port = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_skkserv_port));
-  utf8_to_wide(gtk_editable_get_text(GTK_EDITABLE(sw->entry_jisyo_path)), out->user_jisyo_path, SETTINGS_STR_LEN);
-  out->user_jisyo_batch = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_jisyo_batch));
-
-  out->idle_gc_ms = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(sw->spin_idle_gc_ms));
-  out->dll_debug = gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_dll_debug)) ? 1 : 0;
-}
 
 /* The native TSF mode notification owns the short-lived cursor-adjacent
  * "かな / カナ / SKK / 全英" display.  Sumi remains resident only for
@@ -1207,7 +845,7 @@ static void settings_read_from_widgets(SettingsWindow *sw, Settings *out) {
  * pill duplicated that notification and must stay hidden.  Do not change
  * ModeIndicator here: the DLL uses that same registry value to control
  * the native short-lived notification that we still want. */
-static void app_sync_pill_visibility(App *app) {
+void app_sync_pill_visibility(App *app) {
   if (!app->window) return;
   gtk_widget_set_visible(app->window, FALSE);
 }
@@ -1236,28 +874,7 @@ static void app_sync_pill_visibility(App *app) {
  * Polled on a GTK timeout rather than a blocking loop, so the window
  * keeps painting while it waits. */
 
-static void skkui_spawn_engine_host(void) {
-  HKEY key = NULL;
-  wchar_t key_path[512];
-  settings_registry_path(key_path, 512);
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, key_path, 0, KEY_READ,
-                    &key) != ERROR_SUCCESS)
-    return;
-  wchar_t host[32768], exe[32768], repo[32768];
-  DWORD n;
-  host[0] = exe[0] = repo[0] = L'\0';
-  n = sizeof(host);
-  if (RegQueryValueExW(key, L"EngineHost", NULL, NULL, (BYTE *)host, &n)
-      != ERROR_SUCCESS) host[0] = L'\0';
-  n = sizeof(exe);
-  if (RegQueryValueExW(key, L"EngineExecutable", NULL, NULL, (BYTE *)exe, &n)
-      != ERROR_SUCCESS) exe[0] = L'\0';
-  n = sizeof(repo);
-  if (RegQueryValueExW(key, L"Repository", NULL, NULL, (BYTE *)repo, &n)
-      != ERROR_SUCCESS) repo[0] = L'\0';
-  RegCloseKey(key);
-  if (host[0] == L'\0' || exe[0] == L'\0') return;
-
+void skkui_create_host(const wchar_t *host, const wchar_t *exe, const wchar_t *repo) {
   wchar_t command[32768];
   if (repo[0] != L'\0')
     _snwprintf(command, 32768, L"\"%ls\" \"%ls\" \"%ls\"", host, exe, repo);
@@ -1287,85 +904,9 @@ static void skkui_spawn_engine_host(void) {
 typedef struct {
   SettingsWindow *sw;
   int waited_ms;
+  GtkWidget *window; /* ref held by an outstanding restart poll */
 } RestartPoll;
-
-static gboolean skkui_restart_poll(gpointer user_data) {
-  RestartPoll *rp = (RestartPoll *)user_data;
-  char response[8192];
-  if (pipe_client_transact(&rp->sw->app->pipe, "STATUS\n", response,
-                           sizeof(response))) {
-    gtk_label_set_text(GTK_LABEL(rp->sw->status_label), SKKUI_MSG_ENGINE_READY);
-    g_free(rp);
-    return G_SOURCE_REMOVE;
-  }
-  rp->waited_ms += SKKUI_RESTART_POLL_MS;
-  if (rp->waited_ms >= SKKUI_RESTART_BUDGET_MS) {
-    gtk_label_set_text(GTK_LABEL(rp->sw->status_label), SKKUI_MSG_ENGINE_STUCK);
-    g_free(rp);
-    return G_SOURCE_REMOVE;
-  }
-  return G_SOURCE_CONTINUE;
-}
-
-static void skkui_restart_engine_and_wait(SettingsWindow *sw) {
-  char response[64];
-  pipe_client_transact(&sw->app->pipe, "SHUTDOWN\n", response, sizeof(response));
-  skkui_spawn_engine_host();
-  gtk_label_set_text(GTK_LABEL(sw->status_label), SKKUI_MSG_ENGINE_STARTING);
-  RestartPoll *rp = g_new0(RestartPoll, 1);
-  rp->sw = sw;
-  g_timeout_add(SKKUI_RESTART_POLL_MS, skkui_restart_poll, rp);
-}
-
-static void on_apply_clicked(GtkButton *button, gpointer user_data) {
-  (void)button;
-  SettingsWindow *sw = user_data;
-  Settings s;
-  settings_read_from_widgets(sw, &s);
-  /* Read before the app's copy is overwritten below. */
-  const gboolean engine_changed =
-      wcscmp(sw->app->settings.engine, s.engine) != 0;
-  TextSettings text = {
-    !gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->radio_half)),
-    gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_pair)),
-    gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_remap)),
-    (int)gtk_drop_down_get_selected(GTK_DROP_DOWN(sw->drop_layout))
-  };
-  const gboolean files_ok = text_settings_save(&text, &sw->text_baseline);
-  const gboolean ok = settings_save(&s) && files_ok;
-  on_text_status(NULL, sw);
-  /* Reflect the just-applied values in the running app (pill color/
-   * visibility, poll cadence) regardless of whether persistence fully
-   * succeeded, so what the user just set is what they see immediately;
-   * the status label is honest about persistence separately. */
-  sw->app->settings = s;
-  app_sync_pill_visibility(sw->app);
-  if (sw->app->drawing_area) gtk_widget_queue_draw(sw->app->drawing_area);
-  /* Every other value here degrades honestly to "applies next time":
-   * until the restart the engine behaves as it did before, which is what
-   * the user was already living with.  A changed engine does not degrade
-   * that way.  The host resolves which runner to launch once, at startup
-   * (`ConfiguredEngineId' in windows/host/main.cpp), so a host that is
-   * already up keeps serving the old engine while this window reports
-   * the new one -- the user types, gets the previous engine's behaviour,
-   * and reads it as the setting having done nothing.  It cost a session
-   * to diagnose from the outside, so the engine restarts itself here
-   * rather than being advertised in a label that is easy to pass over. */
-  if (engine_changed) skkui_restart_engine_and_wait(sw);
-  /* The engine path owns the label from here: it says "starting", then
-   * reports the outcome of its own poll.  Overwriting it would claim
-   * success while the engine is still coming up -- the original bug. */
-  if (engine_changed && ok) return;
-  gtk_label_set_text(
-      GTK_LABEL(sw->status_label),
-      !ok ? "\xe4\xb8\x80\xe9\x83\xa8\xe3\x81\xae\xe8\xa8\xad\xe5\xae\x9a\xe3\x81\xae\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\xab\xe5\xa4\xb1\xe6\x95\x97\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x97\xe3\x81\x9f"
-            /* 一部の設定の保存に失敗しました */
-      : engine_changed
-          ? "\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe3\x82\x92\xe5\x88\x87\xe6\x9b\xbf\xe3\x81\x88\xe3\x81\xa6\xe5\x86\x8d\xe8\xb5\xb7\xe5\x8b\x95\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x97\xe3\x81\x9f\xe3\x80\x82\xe6\xac\xa1\xe3\x81\xae\xe5\x85\xa5\xe5\x8a\x9b\xe3\x81\x8b\xe3\x82\x89\xe6\x9c\x89\xe5\x8a\xb9\xe3\x81\xa7\xe3\x81\x99"
-            /* エンジンを切替えて再起動しました。次の入力から有効です */
-          : "\xe5\x8f\x8d\xe6\x98\xa0\xe3\x81\xab\xe3\x81\xaf IME \xe3\x81\xae\xe5\x88\x87\xe6\x9b\xbf\xef\xbc\x88\xe3\x81\xbe\xe3\x81\x9f\xe3\x81\xaf\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe5\x86\x8d\xe8\xb5\xb7\xe5\x8b\x95\xef\xbc\x89\xe3\x81\x8c\xe5\xbf\x85\xe8\xa6\x81\xe3\x81\xa7\xe3\x81\x99"
-            /* 反映には IME の切替（またはエンジン再起動）が必要です */);
-}
+#include "settings-abi.inc"
 
 /* windows/host/main.cpp's ServeClient() accepts a literal "SHUTDOWN"
  * request (trailing \n/\r are stripped before the comparison) from any
@@ -1375,102 +916,8 @@ static void on_apply_clicked(GtkButton *button, gpointer user_data) {
  * values -- see docs/design/sumi-indicator-settings.md's Architecture
  * section. This app does not need to orchestrate that respawn itself,
  * only request the shutdown. */
-static void on_restart_engine_clicked(GtkButton *button, gpointer user_data) {
-  (void)button;
-  SettingsWindow *sw = user_data;
-  char response[64];
-  pipe_client_transact(&sw->app->pipe, "SHUTDOWN\n", response, sizeof(response));
-  gtk_label_set_text(GTK_LABEL(sw->status_label),
-                     "\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe3\x81\xab\xe5\x86\x8d\xe8\xb5\xb7\xe5\x8b\x95\xe3\x82\x92\xe8\xa6\x81\xe6\xb1\x82\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x97\xe3\x81\x9f"
-                     /* エンジンに再起動を要求しました */);
-}
 
-static void close_settings_window(App *app) {
-  if (!app->settings_window) return;
-  const gboolean settings_only = app->settings_only;
-  GtkWidget *window = app->settings_window;
-  app->settings_window = NULL; /* clear before destroy: destroy may re-enter via close-request */
-  gtk_window_destroy(GTK_WINDOW(window));
-  if (settings_only && app->gtk_app) g_application_quit(G_APPLICATION(app->gtk_app));
-}
-
-static void on_close_clicked(GtkButton *button, gpointer user_data) {
-  (void)button;
-  SettingsWindow *sw = user_data;
-  close_settings_window(sw->app);
-}
-
-static gboolean on_settings_close_request(GtkWindow *window, gpointer user_data) {
-  (void)window;
-  SettingsWindow *sw = user_data;
-  close_settings_window(sw->app);
-  return TRUE; /* handled: suppress the default close/destroy */
-}
-
-static void open_settings_window(App *app) {
-  if (app->settings_window) {
-    gtk_window_present(GTK_WINDOW(app->settings_window));
-    return;
-  }
-
-  SettingsWindow *sw = g_new0(SettingsWindow, 1);
-  sw->app = app;
-  text_settings_load(&sw->text_baseline);
-
-  GtkWidget *window = app->settings_only && app->gtk_app
-                          ? gtk_application_window_new(app->gtk_app)
-                          : gtk_window_new();
-  sw->window = window;
-  app->settings_window = window;
-  gtk_window_set_title(GTK_WINDOW(window), "NeLisp IME \xe8\xa8\xad\xe5\xae\x9a" /* NeLisp IME 設定 */);
-  gtk_window_set_default_size(GTK_WINDOW(window), 480, 360);
-  g_object_set_data_full(G_OBJECT(window), "sw", sw, g_free);
-  g_signal_connect(window, "close-request", G_CALLBACK(on_settings_close_request), sw);
-
-  GtkWidget *root_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-  gtk_window_set_child(GTK_WINDOW(window), root_box);
-
-  GtkWidget *notebook = gtk_notebook_new();
-  gtk_widget_set_vexpand(notebook, TRUE);
-  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_behavior(sw),
-                           gtk_label_new("\xe5\x8b\x95\xe4\xbd\x9c" /* 動作 */));
-  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_display(sw),
-                           gtk_label_new("\xe8\xa1\xa8\xe7\xa4\xba" /* 表示 */));
-  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_dictionary(sw),
-                           gtk_label_new("\xe8\xbe\x9e\xe6\x9b\xb8" /* 辞書 */));
-  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_maintenance(sw),
-                           gtk_label_new("\xe8\xaa\xbf\xe6\x95\xb4" /* 調整 */));
-  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_text(sw, TRUE), gtk_label_new("入力規則"));
-  gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_tab_text(sw, FALSE), gtk_label_new("キー置き換え"));
-  gtk_box_append(GTK_BOX(root_box), notebook);
-
-  sw->status_label = gtk_label_new("");
-  gtk_widget_set_margin_start(sw->status_label, 12);
-  gtk_widget_set_margin_end(sw->status_label, 12);
-  gtk_label_set_wrap(GTK_LABEL(sw->status_label), TRUE);
-  gtk_box_append(GTK_BOX(root_box), sw->status_label);
-
-  GtkWidget *button_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-  gtk_widget_set_halign(button_box, GTK_ALIGN_END);
-  gtk_widget_set_margin_top(button_box, 6);
-  gtk_widget_set_margin_bottom(button_box, 12);
-  gtk_widget_set_margin_start(button_box, 12);
-  gtk_widget_set_margin_end(button_box, 12);
-
-  GtkWidget *restart_button = gtk_button_new_with_label(
-      "\xe3\x82\xa8\xe3\x83\xb3\xe3\x82\xb8\xe3\x83\xb3\xe5\x86\x8d\xe8\xb5\xb7\xe5\x8b\x95" /* エンジン再起動 */);
-  g_signal_connect(restart_button, "clicked", G_CALLBACK(on_restart_engine_clicked), sw);
-  GtkWidget *apply_button = gtk_button_new_with_label("\xe9\x81\xa9\xe7\x94\xa8" /* 適用 */);
-  g_signal_connect(apply_button, "clicked", G_CALLBACK(on_apply_clicked), sw);
-  GtkWidget *close_button = gtk_button_new_with_label("\xe9\x96\x89\xe3\x81\x98\xe3\x82\x8b" /* 閉じる */);
-  g_signal_connect(close_button, "clicked", G_CALLBACK(on_close_clicked), sw);
-
-  gtk_box_append(GTK_BOX(button_box), restart_button);
-  gtk_box_append(GTK_BOX(button_box), apply_button);
-  gtk_box_append(GTK_BOX(button_box), close_button);
-  gtk_box_append(GTK_BOX(root_box), button_box);
-
-  if (app->settings_smoke) {
+void skkui_window_selftest(App *app, SettingsWindow *sw, GtkWidget *notebook) {
     const gboolean ok = gtk_notebook_get_n_pages(GTK_NOTEBOOK(notebook)) == 6 &&
         gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->radio_half)) == !sw->text_baseline.width &&
         gtk_check_button_get_active(GTK_CHECK_BUTTON(sw->check_pair)) == sw->text_baseline.auto_pair &&
@@ -1480,8 +927,85 @@ static void open_settings_window(App *app) {
     printf("%s\n", gtk_label_get_text(GTK_LABEL(sw->remap_status)));
     fflush(stdout);
     app->settings_smoke_failed = !ok;
+    Settings read;
+    settings_read_from_widgets(sw, &read);
+    gboolean initial_ok = settings_equal(&read, &app->settings);
+    printf("%s hidden-settings-initial-widget-values\n", initial_ok ? "PASS" : "FAIL");
+    app->settings_smoke_failed |= !initial_ok;
+
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(sw->engine_dropdown),
+        engine_visible_position(sw, engine_choice_index(L"lattice")));
+    gboolean pages_ok = strcmp(gtk_stack_get_visible_child_name(GTK_STACK(sw->engine_stack)), "1") == 0 &&
+        strcmp(gtk_stack_get_visible_child_name(GTK_STACK(sw->dictionary_stack)), "1") == 0;
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(sw->engine_dropdown),
+        engine_visible_position(sw, engine_choice_index(L"ddskk")));
+    pages_ok &= strcmp(gtk_stack_get_visible_child_name(GTK_STACK(sw->engine_stack)), "0") == 0;
+    printf("%s hidden-settings-engine-page-switch\n", pages_ok ? "PASS" : "FAIL");
+    app->settings_smoke_failed |= !pages_ok;
+
+    Settings expected = app->settings;
+    expected.initial_kana_mode = 0;
+    expected.behavior_okuri_strictly = expected.behavior_delete_okuri_on_cancel = 1;
+    expected.behavior_add_katakana_cand = expected.behavior_learn_disabled = 1;
+    expected.mode_indicator = 0; expected.mode_indicator_ms = 60000;
+    expected.mode_indicator_scale = 125; expected.skkserv_enable = 0;
+    wcscpy(expected.skkserv_host, L"127.0.0.2"); expected.skkserv_port = 999;
+    wcscpy(expected.user_jisyo_path, L"private-test-jisyo"); expected.user_jisyo_batch = 25;
+    expected.idle_gc_ms = 1234; expected.dll_debug = 1;
+    expected.color_kana = 0x123456;
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->radio_latin), TRUE);
+    GtkWidget *checks[] = {sw->check_okuri_strictly, sw->check_delete_okuri_on_cancel,
+        sw->check_add_katakana_cand, sw->check_learn_disabled, sw->check_dll_debug};
+    for (size_t i = 0; i < G_N_ELEMENTS(checks); ++i)
+      gtk_check_button_set_active(GTK_CHECK_BUTTON(checks[i]), TRUE);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_mode_indicator), FALSE);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_skkserv_enable), FALSE);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_indicator_ms), 1000000);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_indicator_scale), 125);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_skkserv_port), 999);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_jisyo_batch), 25);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(sw->spin_idle_gc_ms), 1234);
+    gtk_editable_set_text(GTK_EDITABLE(sw->entry_skkserv_host), "127.0.0.2");
+    gtk_editable_set_text(GTK_EDITABLE(sw->entry_jisyo_path), "private-test-jisyo");
+    GdkRGBA color; packed_to_rgba(expected.color_kana, &color);
+    gtk_color_dialog_button_set_rgba(GTK_COLOR_DIALOG_BUTTON(sw->color_kana), &color);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->radio_half), TRUE);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_pair), TRUE);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->check_remap), FALSE);
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(sw->drop_layout), 2);
+    on_apply_clicked(NULL, sw);
+    settings_load(&read);
+    TextSettings text; text_settings_load(&text);
+    gboolean apply_ok = settings_equal(&read, &expected) && text.width == 0 &&
+        text.auto_pair == 1 && text.enabled == 0 && text.layout == 2;
+    printf("%s hidden-settings-apply-all-tabs-and-range-validation\n", apply_ok ? "PASS" : "FAIL");
+    app->settings_smoke_failed |= !apply_ok;
+
+    wchar_t private_rules[32768];
+    GetEnvironmentVariableW(L"NELISP_IME_INPUT_RULES", private_rules, 32768);
+    HANDLE locked = CreateFileW(private_rules, GENERIC_READ, FILE_SHARE_READ,
+        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(sw->radio_half), FALSE);
+    on_apply_clicked(NULL, sw);
+    gboolean failure_ok = locked != INVALID_HANDLE_VALUE &&
+        strstr(gtk_label_get_text(GTK_LABEL(sw->status_label)), "\xe4\xbf\x9d\xe5\xad\x98") != NULL;
+    if (locked != INVALID_HANDLE_VALUE) CloseHandle(locked);
+    printf("%s hidden-settings-apply-failure-status\n", failure_ok ? "PASS" : "FAIL");
+    app->settings_smoke_failed |= !failure_ok;
+
+    /* Closing during an asynchronous restart must release its window ref
+     * before the next poll, without dereferencing a destroyed child widget. */
+    gpointer alive = sw->window;
+    g_object_add_weak_pointer(G_OBJECT(sw->window), &alive);
+    skkui_restart_engine_and_wait(sw);
     close_settings_window(app);
-  } else gtk_window_present(GTK_WINDOW(window));
+    g_usleep(450000);
+    while (g_main_context_iteration(NULL, FALSE)) {}
+    gboolean close_ok = alive == NULL;
+    if (alive) g_object_remove_weak_pointer(G_OBJECT(alive), &alive);
+    printf("%s hidden-settings-close-during-restart\n", close_ok ? "PASS" : "FAIL");
+    app->settings_smoke_failed |= !close_ok;
+    fflush(stdout);
 }
 
 static void on_right_click_released(GtkGestureClick *gesture, int n_press, double x,
@@ -1491,6 +1015,46 @@ static void on_right_click_released(GtkGestureClick *gesture, int n_press, doubl
   App *app = (App *)user_data;
   gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
   open_settings_window(app);
+}
+
+/* Win32 transport primitive. Queue GTK work on its main context rather
+ * than reentering widget construction inside a synchronous SendMessage. */
+static HWND settings_endpoint;
+static UINT settings_request;
+static gboolean resident_open_queued;
+static gboolean resident_open_idle(gpointer data) {
+  resident_open_queued = FALSE;
+  open_settings_window(data);
+  return G_SOURCE_REMOVE;
+}
+static LRESULT CALLBACK settings_endpoint_proc(HWND hwnd, UINT message,
+                                               WPARAM wp, LPARAM lp) {
+  if (message == settings_request && settings_request != 0) {
+    App *app = (App *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    if (!app) return 0;
+    if (!resident_open_queued) {
+      resident_open_queued = TRUE;
+      g_idle_add(resident_open_idle, app);
+    }
+    return 1;
+  }
+  return DefWindowProcW(hwnd, message, wp, lp);
+}
+static void resident_settings_start(App *app) {
+  const wchar_t *cls = L"NeLispSumiSettingsV1";
+  WNDCLASSW wc = {0};
+  wc.lpfnWndProc = settings_endpoint_proc;
+  wc.hInstance = GetModuleHandleW(NULL);
+  wc.lpszClassName = cls;
+  if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return;
+  wchar_t identity[512];
+  settings_registry_path(identity, 512);
+  settings_request = RegisterWindowMessageW(L"NativeIME.Sumi.ShowSettings.v1");
+  if (!settings_request) return;
+  settings_endpoint = CreateWindowExW(0, cls, identity, 0, 0, 0, 0, 0,
+                                      HWND_MESSAGE, NULL, wc.hInstance, NULL);
+  if (settings_endpoint)
+    SetWindowLongPtrW(settings_endpoint, GWLP_USERDATA, (LONG_PTR)app);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1645,6 +1209,7 @@ static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
   app->gtk_app = gtk_app;
 
   settings_load(&app->settings);
+  resident_settings_start(app);
 
   if (app->settings_only) {
     /* --settings: a short-lived launcher for a future Start-menu
@@ -1727,7 +1292,10 @@ int main(int argc, char **argv) {
    * verify/verify.ps1 sets this so it can test a freshly built exe
    * without disturbing whatever pill/settings instances a developer
    * already has open. */
-  const gboolean allow_multiple = getenv("DDSKK_ALLOW_MULTIPLE_INSTANCES") != NULL;
+  wchar_t identity[512];
+  settings_registry_path(identity, 512);
+  const gboolean allow_multiple = getenv("DDSKK_ALLOW_MULTIPLE_INSTANCES") != NULL ||
+      wcscmp(identity, L"Software\\NativeIME") != 0;
   GtkApplication *gtk_app = gtk_application_new(
       "dev.nelisp-skk-ime.sumi-ui",
       (settings_only || allow_multiple) ? G_APPLICATION_NON_UNIQUE : G_APPLICATION_DEFAULT_FLAGS);
@@ -1736,6 +1304,7 @@ int main(int argc, char **argv) {
    * line itself and aborts on options it does not know ("--settings は
    * 不明なオプションです"). Everything we accept was consumed above. */
   const int status = g_application_run(G_APPLICATION(gtk_app), 1, argv);
+  if (settings_endpoint) DestroyWindow(settings_endpoint);
   g_object_unref(gtk_app);
   pango_font_description_free(app.label_font);
   pipe_client_disconnect(&app.pipe);

@@ -1654,6 +1654,19 @@ static const wchar_t kSettingsWindowTitle[] = L"NeLisp IME 設定";
 static const wchar_t kGtkToplevelClass[] = L"gdkSurfaceToplevel";
 
 void TextService::ShowSettings() {
+  // A message-only endpoint belongs to the resident GTK main thread.
+  // Its title is the registry identity, so private hosts cannot activate
+  // the live UI. Only an acknowledged request suppresses the fallback.
+  const std::wstring identity = NativeImeRegistryKey();
+  const UINT request = RegisterWindowMessageW(L"NativeIME.Sumi.ShowSettings.v1");
+  if (request != 0) {
+    HWND resident = FindWindowExW(HWND_MESSAGE, nullptr,
+                                 L"NeLispSumiSettingsV1", identity.c_str());
+    DWORD_PTR acknowledged = 0;
+    if (resident && SendMessageTimeoutW(resident, request, 0, 0,
+        SMTO_ABORTIFHUNG | SMTO_BLOCK, 500, &acknowledged) && acknowledged == 1)
+      return;
+  }
   // Focus the settings window if one is already open, rather than
   // starting another process.
   //
@@ -1665,7 +1678,10 @@ void TextService::ShowSettings() {
   // the delay -- which is the same cause, since each click paid a fresh
   // process start plus GTK4's eleven DLLs (measured at 1.6-1.9s warm, and
   // the user sees up to ~10s cold).
-  if (HWND existing = FindWindowW(kGtkToplevelClass, kSettingsWindowTitle)) {
+  // Legacy standalone windows have no private identity. Looking them up
+  // is safe only for the default production identity.
+  if (HWND existing = identity == L"Software\\NativeIME"
+          ? FindWindowW(kGtkToplevelClass, kSettingsWindowTitle) : nullptr) {
     // A minimised window has to be restored before it can take focus.
     if (IsIconic(existing)) ShowWindow(existing, SW_RESTORE);
     SetForegroundWindow(existing);

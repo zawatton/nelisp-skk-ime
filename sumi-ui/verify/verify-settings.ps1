@@ -59,7 +59,12 @@ if (-not (Test-Path -LiteralPath $IndicatorExe)) {
   exit 1
 }
 
+if (-not $SettingsKey.StartsWith('Software\NativeIME-', [StringComparison]::OrdinalIgnoreCase)) {
+  throw 'SettingsKey must be a disposable Software\NativeIME-* identity'
+}
 $regPath = "HKCU:\$SettingsKey"
+$savedNativeKey = $env:NATIVEIME_REGISTRY_KEY
+$savedSettingsKey = $env:DDSKK_SETTINGS_KEY
 
 function Remove-DisposableKey {
   if (Test-Path -LiteralPath $regPath) {
@@ -78,6 +83,7 @@ $stderrLog = Join-Path $env:TEMP "sumi-skk-ui-selftest-$runId.err.log"
 try {
   Write-Host "verify-settings: DDSKK_SETTINGS_KEY=$SettingsKey"
   $env:DDSKK_SETTINGS_KEY = $SettingsKey
+  $env:NATIVEIME_REGISTRY_KEY = $SettingsKey
 
   # sumi-skk-ui.exe is linked -mwindows (no console subsystem, see
   # build.el's sumi-ui-link docstring) so its CRT stdio only goes
@@ -121,7 +127,8 @@ try {
     Write-Host "verify-settings: disposable key $regPath confirmed absent after selftest."
   }
 } finally {
-  Remove-Item Env:\DDSKK_SETTINGS_KEY -ErrorAction SilentlyContinue
+  $env:DDSKK_SETTINGS_KEY = $savedSettingsKey
+  $env:NATIVEIME_REGISTRY_KEY = $savedNativeKey
   # Cleanup, independent of whether the selftest itself already removed
   # the key (see script-level comment above) and independent of pass/fail.
   Remove-DisposableKey

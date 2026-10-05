@@ -1,39 +1,11 @@
 ;;; build.el --- Build sumi-skk-ui.exe -*- lexical-binding: t; -*-
 ;;
-;; Orchestrates the build described in sumi-ui/README.md:
-;;
-;;   1. indicator/mode-logic.el (NeLisp restricted-dialect decision
-;;      logic) -> mode-logic.o, via `nelisp-aot-compile-to-object'
-;;      (:format 'coff) -- the exact call
-;;      dev/sumi/backends/cairo-elisp/build-live.el's
-;;      `sumi-build-compile-to-object' makes, and the exact object-mode
-;;      contract dev/nelisp-sumi/build.el's own helper modules
-;;      (src/nelisp-sumi-move.el etc.) are written against.
-;;   2. indicator/pipe-client.c, indicator/settings.c, indicator/main.c
-;;      (hand-authored GTK4/Cairo/Pango/Win32 glue, split across three
-;;      translation units since Phase 3 -- pipe-client.c/settings.c
-;;      have no GTK dependency and are directly reusable/testable, see
-;;      settings.h's docstring) -> one .o each, via plain `gcc -c'.
-;;
-;; All four objects are then linked together with `gcc' into one
-;; sumi-skk-ui.exe -- the same "AOT object + gcc link" step
-;; build-live.el and dev/nelisp-sumi/build.el use, just with three more,
-;; ordinarily-compiled objects added to the link line. See
-;; sumi-ui/README.md for why this project does not compile main.c's
-;; window/GTK/pipe logic through the NeLisp AOT compiler itself the way
-;; dev/nelisp-sumi/build.el compiles its whole program that way.
-;;
-;; Usage (same invocation convention as dev/sumi and dev/nelisp-sumi):
-;;   emacs -Q --batch -l build.el
-;;
-;; Env var overrides (all optional; mirrors
-;; dev/sumi/backends/cairo-elisp/build-live.el's `sumi-build-env-or'):
-;;   NELISP_ROOT       path to the dev/nelisp checkout providing
-;;                      `nelisp-aot-compiler' (default: ../../nelisp,
-;;                      i.e. sibling of this repo -- matches
-;;                      dev/nelisp-skk-ime's own layout under dev/).
-;;   MINGW_BIN          MSYS2 mingw64 bin dir (default: C:/msys64/mingw64/bin).
-;;   PKG_CONFIG_PATH     (default: /c/msys64/mingw64/lib/pkgconfig).
+;; Links NeLisp COFF modules with the GTK/Win32 primitive objects.
+;; Settings orchestration lives in settings-window/settings-logic/text-logic;
+;; indicator/settings-abi.inc checks their C field-offset contracts.
+;; Requires NELISP_ROOT with feat/aot-f32-literal-args and the MSYS2 GTK4
+;; toolchain (MINGW_BIN / PKG_CONFIG_PATH overrides are supported).
+;; Usage: emacs -Q --batch -l sumi-ui/build.el
 
 (require 'cl-lib)
 
@@ -108,12 +80,9 @@ is exactly how a fully-working toolchain still failed to find glib.h."
 (defun sumi-ui-compile-nelisp (name obj)
   "Compile indicator/NAME.el to COFF object OBJ.
 
-Shared by every NeLisp module linked into the executable: `mode-logic'
-(pure decision logic) and `registry' (settings.c's advapi32 layer).
-Both are object-mode AOT sources, so both are subject to the same
-`:object-mode-no-strings' rule -- neither may reference a string
-literal, which is why registry.el takes its key paths as pointers from
-settings.c rather than building them."
+Shared by indicator decisions, GTK helpers and settings modules.
+String constants use explicit relocatable data-blob/data-addr forms;
+ordinary string expressions are not supported in object mode."
   (add-to-list 'load-path (expand-file-name "lisp" sumi-ui-nelisp-root))
   (add-to-list 'load-path (expand-file-name "src" sumi-ui-nelisp-root))
   (require 'nelisp-aot-compiler)
@@ -221,6 +190,9 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
          (registry-obj (expand-file-name "registry.o" sumi-ui-target-dir))
          (widgets-obj (expand-file-name "widgets.o" sumi-ui-target-dir))
          (colors-obj (expand-file-name "colors.o" sumi-ui-target-dir))
+         (window-obj (expand-file-name "settings-window.o" sumi-ui-target-dir))
+         (logic-obj (expand-file-name "settings-logic.o" sumi-ui-target-dir))
+         (text-logic-obj (expand-file-name "text-logic.o" sumi-ui-target-dir))
          (pipe-client-obj (expand-file-name "pipe-client.o" sumi-ui-target-dir))
          (settings-obj (expand-file-name "settings.o" sumi-ui-target-dir))
          (main-obj (expand-file-name "main.o" sumi-ui-target-dir))
@@ -235,6 +207,9 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
     (sumi-ui-compile-nelisp "registry" registry-obj)
     (sumi-ui-compile-nelisp "widgets" widgets-obj)
     (sumi-ui-compile-nelisp "colors" colors-obj)
+    (sumi-ui-compile-nelisp "settings-window" window-obj)
+    (sumi-ui-compile-nelisp "settings-logic" logic-obj)
+    (sumi-ui-compile-nelisp "text-logic" text-logic-obj)
     ;; pipe-client.c/settings.c only need glib.h (for `gboolean') plus
     ;; plain <windows.h> -- gtk4's own cflags already cover glib's
     ;; include path, so reuse ALL-CFLAGS rather than pkg-config'ing glib
@@ -259,7 +234,7 @@ fallback, not a genuine link error (missing symbol, bad flag, etc.)."
     (sumi-ui-compile-c "main" main-obj all-cflags)
     (let ((linked (sumi-ui-link
                    (list main-obj mode-logic-obj registry-obj widgets-obj
-                         colors-obj pipe-client-obj settings-obj text-obj)
+                         colors-obj window-obj logic-obj text-logic-obj pipe-client-obj settings-obj text-obj)
                    exe
                    ;; advapi32 for settings.c's RegGetValueW/RegSetKeyValueW/
                    ;; RegDeleteTreeW (Phase 3) -- not pulled in transitively
