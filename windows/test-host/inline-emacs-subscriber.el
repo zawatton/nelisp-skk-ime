@@ -5,6 +5,9 @@
        (directory (getenv "NELISP_IME_INLINE_DIR"))
        (stopfile (expand-file-name "stop" directory))
        (logfile (getenv "INLINE_TEST_LOG"))
+       ;; All writes, including process-filter advice, use the log protocol's
+       ;; encoding regardless of Windows locale or Emacs coding defaults.
+       (coding-system-for-write 'utf-8-unix)
        (pairing (equal (getenv "INLINE_TEST_PAIR") "1"))
        (imported nil)
        (deadline (+ (float-time) 150)))
