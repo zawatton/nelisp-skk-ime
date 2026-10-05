@@ -19,3 +19,274 @@ pending
 pending
 ** S3.3 Live: deployed without application restarts and the user confirms in Emacs and another application
 pending
+
+* Worker IR1 investigation notes (2026-10-05)
+- Unchanged-tree reproduction, before source edits:
+  =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L vendor/ddskk --eval '(progn (require (quote skk)) (let ((rule (assoc "." skk-rom-kana-rule-list))) (princ (format "BASELINE period override=%S expected=\". \"\n" rule)) (unless (equal (nth 2 rule) ". ") (kill-emacs 1))))'=
+  Verbatim final output: =BASELINE period override=nil expected=". "=.
+  Emacs exited 1; one assertion failed. This checks the missing default
+  override, not end-to-end DLL behavior. Vendor lexical-binding warnings
+  preceded the final output.
+- Scope blocker: =windows/host/main.cpp= owns
+  =ApplyEngineEnvFromRegistry= and invokes it before child creation
+  (line 434). Existing bridges include UserJisyoPath and DWORD behavior
+  options, but not InputRulesFile. ENGINE RELOAD queues a replacement
+  (lines 1757-1761), whose environment is assembled by this launch path.
+  The existing registry-to-environment bridge needs an env-first
+  InputRulesFile -> NELISP_IME_INPUT_RULES addition for the requested
+  registry override to reach engine startup and subsequent replacements.
+  This file is explicitly forbidden to IR1; stopped before implementation
+  under the instruction to stop when a fix needs an out-of-scope file.
+  Coordinator integration or an expanded file scope is required.
+- No source changes, builds, CTest, TSF, IMM32, parity, editor, latency,
+  integration, hot-swap, or live deployment checks performed. All criteria
+  remain pending. No background processes started; the batch Emacs process
+  exited. No processes remain from this investigation.
+
+* IR1 implementation evidence (2026-10-05)
+These notes supplement the historical investigation above. The coordinator
+resolved that blocker: InputRulesFile registry support is dropped. The
+engine resolves NELISP_IME_INPUT_RULES, otherwise inherited APPDATA. No
+windows/host/main.cpp edit, live deployment, registration, commit or staging
+was performed. The fixed criteria above are intentionally unchanged.
+
+** Change locations
+| File and line | Change |
+| engine/skk-input-rules.el:1 | New parser, exact width defaults, line errors, environment path, idempotent rule installation and pair/options/error export. |
+| engine/skk-input-rules.el:14 | Wire export cache invalidated by tree, configuration and punctuation settings. |
+| engine/skk-input-rules.el:34 | Persistent path rebuilding shares unchanged DDSKK branches. |
+| engine/skk-input-rules.el:155 | Configured-prefix guard preserves kana rule dispatch. |
+| engine/skk-input-rules.el:179 | Rule installation restores mode bindings before applying active prefixes. |
+| engine/ddskk-engine.el:122 | Minimal startup load/apply. |
+| engine/ddskk-engine.el:311 | Prefer the effective input-rules tree. |
+| engine/ddskk-engine.el:629 | Existing RULES export calls the new cached exporter. |
+| engine/test-input-rules.el:1 | 13 ERT tests, including export invalidation, session dispatch precedence and comparison with the complete DDSKK compiler. |
+| engine/skk-ime-session.el:217 | Minimal guard lets configured kana prefixes precede the Shift+digit literal fallback; Latin/unconfigured keys retain that fallback. |
+| windows/src/auto_pair.h:1 | New core pair helper interface. |
+| windows/src/auto_pair.cpp:1 | Exported pair installation, kana/terminal-state guards and TSF selection between opener/closer. |
+| windows/src/input_rule_mode.h:1 | New helper lets literal user rules override hardcoded l/L/q/Q mode commands. |
+| windows/src/engine_protocol.h:51 | Closer field in existing internal rule metadata. |
+| windows/src/engine_protocol.cpp:73 | Parse the sixth field only for reserved pair metadata. |
+| windows/src/realtime_frontend.cpp:5 | Include mode helper; exclude reserved metadata from matcher at line 86; mode guards at lines 125, 132 and 147. |
+| windows/src/text_service.h:21 | Include helper and member at line 207. |
+| windows/src/text_service.cpp:1834 | Install pairs alongside the existing exported rules. |
+| windows/src/text_service.cpp:2942 | Pair an opener produced by resolving a pending normal-rule prefix. |
+| windows/src/text_service.cpp:2973 | Minimal terminal commit hook; composition caret offset at line 3061. |
+| windows/CMakeLists.txt:7 | Add only the new auto_pair.cpp core source. |
+| windows/keymap/input-rules.conf:1 | Commented UTF-8 template; quoted spaces and complete default tables. |
+| windows/keymap/rules.h:1 | New document, file path, reload and watcher interfaces. |
+| windows/keymap/rules.cpp:1 | Parser and comment-preserving document edits; runtime path at line 156, reload at 164, debounced watcher at 189. |
+| windows/keymap/rules_editor.cpp:1 | Japanese rules window/page, row editing, atomic save, external conflict/reload and 27 hidden UI checks. |
+| windows/keymap/editor.cpp:4 | Rules include; page button at line 385 and click handler at 472. |
+| windows/keymap/runner.cpp:14 | Rules include; watcher member/timer and --rules entry point. |
+| windows/keymap/CMakeLists.txt:4 | Generate template include, add rules sources and rules-editor-self-test. |
+| windows/keymap/test-rules-self.ps1:1 | Private settings/file hidden GUI gate and cleanup. |
+| windows/keymap/New-RulesShortcut.ps1:1 | Explicit operator shortcut helper targeting --rules. |
+| windows/test-host/input-rules/CMakeLists.txt:1 | Separate real-TSF fixture generated from the unchanged shared host. |
+| windows/test-host/input-rules/actions.h:1 | Application-owned text editing, private resident lifecycle, file edits/reload and optional generic provider warm-up. |
+| windows/test-host/input-rules/probe.cpp:1 | Engine-export versus production DLL matcher oracle, both kana modes, pair guards and literal mode-key overrides. |
+| windows/test-host/input-rules/imm32_host.cpp:1 | Real legacy EDIT/CUAS probe without SendInput or system TIP registration. |
+| windows/test-host/input-rules/test-input-rules.ps1:1 | Private TSF, width reload, file edit, pair-off and both-width parity gate. |
+| windows/test-host/input-rules/check-modes.ps1:1 | Exact preedit/candidate BUF, SEL and COMP assertions. |
+| README.org:123 | Format, editor, runtime file resolution, unsupported registry override, reload and explicit IMM32/region limitations. |
+| tools/ai/input-rules-progress.org:23 | Historical red reproduction and appended implementation evidence only. |
+
+** Gate commands and recorded results
+All runtime commands pass the external runtime through an invocation
+parameter. Below, =$Runtime= denotes that supplied executable, =$Root=
+the current worktree, =$Core= =build/w/Release=, =$Rules=
+=build/input-rules/Release=, and =$Keymap=
+=build/keymap/Release/nelisp-ime-keymap.exe=. These notation substitutions
+avoid embedding machine-specific executable paths in repository files.
+Logs under ignored build/ preserve the full output.
+
+- Core configure/build:
+  =cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64 -DNELISP_EXECUTABLE=$Runtime=
+  and =cmake --build build/w --config Release=; exit 0.
+  Evidence: build/config.log, build/build.log.
+- Keymap configure/build:
+  =cmake -S windows/keymap -B build/keymap -G "Visual Studio 17 2022" -A x64=
+  and =cmake --build build/keymap --config Release=; exit 0.
+  Evidence: build/keymap-config.log, build/keymap-build.log.
+- Extra fixture configure/build:
+  =cmake -S windows/test-host/input-rules -B build/input-rules -G "Visual Studio 17 2022" -A x64=
+  and =cmake --build build/input-rules --config Release=; exit 0.
+  Final target (output path abbreviated):
+  =input-rules-probe.vcxproj -> ...\build\input-rules\Release\input-rules-probe.exe=.
+  Evidence: build/input-rules-config.log, build/input-rules-build.log.
+- Input ERT:
+  =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L vendor/ddskk -L engine -l engine/test-input-rules.el -f ert-run-tests-batch-and-exit=
+  exit 0. Verbatim tail:
+  =Ran 13 tests, 13 results as expected, 0 unexpected (2026-10-05 15:20:12+0900, 0.629607 sec)=.
+  Earlier revisions passed 11 and 12 tests; current output is build/ert-input-rules.log.
+- Framework ERT:
+  =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit=
+  exit 0. Verbatim tail:
+  =Ran 31 tests, 31 results as expected, 0 unexpected (2026-10-05 12:15:37+0900, 0.056107 sec)=.
+  Evidence: build/ert-framework.log.
+- Lattice ERT:
+  =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit=
+  exit 0. Verbatim tail:
+  =Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-05 12:15:37+0900, 0.032266 sec)=.
+  Evidence: build/ert-lattice.log.
+- Core CTest: =ctest --test-dir build/w -C Release --output-on-failure=.
+  Last recorded exit 0, verbatim tail:
+  =100% tests passed, 0 tests failed out of 9=
+  =Total Test time (real) = 112.91 sec=.
+  NELISP_EXECUTABLE was configured; ddskk-engine-e2e-test passed in 104.92 sec
+  against its unchanged 120-second timeout. Earlier runs passed all 9
+  in 60.67 and 36.82 seconds. Evidence: build/ctest-final.log.
+- Keymap CTest:
+  =ctest --test-dir build/keymap -C Release --output-on-failure -E private-install=,
+  exit 0. Verbatim tail:
+  =100% tests passed, 0 tests failed out of 7=
+  =Total Test time (real) = 20.70 sec=.
+  Details: =rules hidden self-test: PASS checks=27 failures=0 hooks=0 SendInput=0=;
+  =S2.1 events=1000000 p50_us=8 p99_us=17.7 outputs=2000000=.
+  The eighth test, private-install, invokes install scripts and was excluded
+  to obey the explicit prohibition. Evidence: build/keymap-final.log and
+  build/keymap/Testing/Temporary/LastTest.log.
+- Shortcut helper, private destination only:
+  =powershell -NoProfile -ExecutionPolicy Bypass -File windows/keymap/New-RulesShortcut.ps1 -Executable $Keymap -Directory build/private-shortcuts=,
+  followed by COM target/argument inspection; exit 0, verbatim tail
+  =PASS private shortcut assertions=2=. Evidence: build/shortcut.log.
+- TSF preedit/candidate: =windows/test-host/run-harness.ps1 -Script 'K a PAREN BRACKET CTRLG CTRLG APPCLEAR K a SPACE WAIT3000 BRACKET WAIT500' -RepositoryPath $Root -DllPath $Core/ddskk-ime.dll -EngineHostPath $Core/ddskk-engine-host.exe -EngineExecutablePath $Runtime -TsfHostExe $Rules/input-rules-host.exe -ColdLoadSleepSec 45=,
+  private missing rules file and NELISP_TEST_PROVIDER_WARMUP=1; harness exit 0.
+  =powershell -NoProfile -File windows/test-host/input-rules/check-modes.ps1 -LogPath build/pair-modes.log=
+  exit 0, tail =PASS input rules preedit/candidate assertions=4=.
+  Corrupting the expected candidate glyph produced exit 1:
+  =Pair mode mismatch: AFTER WAIT3000 BUF=\[\u25bc\u868a\] SEL=2,2 COMP=0,2=.
+  Evidence: build/pair-modes-check.log, build/pair-modes-negative.log.
+- IMM32: same private run-harness parameters, -TsfHostExe
+  =$Rules/input-rules-imm32.exe= and -Script PAREN; exit 1.
+  Verbatim probe tail:
+  =IMM32 himc=1 textstore=CUAS SendInput=0=
+  =HR IMM32_CUAS=80004002=
+  =IMM32 pair caret: FAIL=.
+  No focused CUAS document/context was available before key dispatch.
+  This does not establish caret behavior in Emacs. No injected-key fallback
+  was added without a validating application path. Evidence: build/imm32.log.
+
+** Retained failures and limits
+- The full feature command is =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/input-rules/test-input-rules.ps1 -BuildDirectory $Core -RulesBuildDirectory $Rules -KeymapExe $Keymap -EngineExecutablePath $Runtime -ColdLoadSleepSec 45=.
+  Historical logs retain the missing-file native reader failure, the two
+  zenkaku exclamation parity failures, watcher reload failures and pair-off
+  publication failure. Fixes are the native syscall reader, kana-prefix
+  binding installation, path/export caching, and separating watcher/direct
+  triggers in the fixture. No existing test threshold was changed.
+  build/input-rules-suite.log: hankaku =INPUT_PARITY checks=520 symbols=7 failures=0=;
+  zenkaku =INPUT_PARITY checks=520 symbols=7 failures=2= before the binding fix.
+  build/input-rules-optimized.log: =Input rules assertion: watcher width reload=.
+  build/input-rules-cached.log: =Input rules pair-off final buffer: AFTER PAREN BUF=[(. {｛。EDIT ()｝}」)] SEL=12,12 COMP=-=.
+- Prior parity negative control replaced STATE hiragana with STATE latin in
+  a private oracle, then ran =$Rules/input-rules-probe.exe <bad-oracle>=:
+  exit 1, tail =INPUT_PARITY checks=520 symbols=7 failures=263=.
+  Evidence: build/parity-negative.log.
+- Live acceptance S3.3 was not attempted: this lane explicitly forbids live
+  settings, deployment, registration and processes belonging to others.
+  Active-region wrapping is omitted as authorized. IMM32 S2.2 remains open.
+
+** Final serialized regression commands
+These invocations follow the feature runs without another IR1 engine suite
+running concurrently. The private missing file override is used for Emacs
+integration, hot-swap and CTest. DDSKK behavior uses a private two-line file
+=width = hankaku= / =auto-pair = no= because its existing expected buffers
+pre-date pairing; enabled pairing has separate exact BUF/SEL coverage.
+The extended TSF fixture optionally performs the generic throwaway =ai=
+conversion/registration warm-up authorized in the brief, never a fixture
+candidate or tested buffer. All existing assertions/waits/thresholds remain.
+
+- =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-emacs-integration.ps1 -DllPath $Core/ddskk-ime.dll -TsfHostExe $Rules/input-rules-host.exe -EngineHostPath $Core/ddskk-engine-host.exe -EngineExecutablePath $Runtime -RepositoryPath $Root -ColdLoadSleepSec 45=,
+  NELISP_TEST_PROVIDER_WARMUP=1; exit 0. Verbatim tail:
+  =DEADPID PASS assertions=1=
+  =PASS emacs integration assertions=33 cases=5=.
+  Evidence: build/emacs-integration-serialized-final.log. An earlier run also
+  passed 33; concurrent/previous final attempts failed =Reading / candidate /
+  committed states not published= (build/emacs-integration-concurrent.log).
+- =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-core-hot-swap.ps1 -BuildDirectory $Core -EngineExecutablePath $Runtime -RepositoryPath $Root -ColdLoadSleepSec 45=;
+  exit 0. Verbatim tail:
+  =PASS core hot swap assertions=19 processes=1 ordinary_max_us=7527=.
+  Evidence: build/core-hot-swap-serialized-final.log. Earlier pass was
+  19 assertions / 8134 us; the concurrent attempt failed =Keys were lost or
+  reordered= (build/core-hot-swap-concurrent.log). Private CORE actions call
+  the core-deployment functions; no deploy-live/rollback-live script was run.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-ddskk-behavior.ps1 -DllPath $Core/ddskk-ime.dll -TsfHostExe $Rules/input-rules-host.exe -EngineHostPath $Core/ddskk-engine-host.exe -EngineExecutablePath $Runtime -RepositoryPath $Root -ColdLoadSleepSec 45=.
+  An earlier warmed run exited 0, verbatim table:
+  =Result CtrlGMaxMs Assertions=
+  =PASS        0.925         45= (build/behavior-warmed.log).
+  Raw and pair-off-only attempts failed registration/initial conversion;
+  subsequent concurrent and one serialized attempt failed
+  =DDSKK behavior failed: candidate traversal beyond four=
+  (build/behavior-concurrent.log, build/behavior-serialized.log).
+  Failure outputs do not print the completed assertion count.
+- The post-session-guard feature run retained exit 1:
+  =Input rules assertion: external custom symbol after ENGINE RELOAD=
+  (build/input-rules-session-guard.log). Width publication succeeded;
+  the custom replacement took 58.5 seconds and was superseded by the next
+  edit. The 45-second waits were not lengthened. An earlier complete TSF
+  portion passed the exact final pair-off BUF/SEL check, but its subsequent
+  zenkaku parity found the session-level Shift+digit bypass fixed at
+  engine/skk-ime-session.el:217. Current native parity is still to be recorded.
+- Current matcher negative control: replace STATE hiragana with STATE latin
+  in the private hankaku oracle and invoke =$Rules/input-rules-probe.exe
+  build/input-rules-results/oracle-bad-current.txt=; exit 1 as required.
+  Verbatim tail: =INPUT_PARITY checks=525 symbols=7 failures=263=.
+  Evidence: build/parity-negative-current.log.
+- Final DDSKK behavior invocation above exited 0. Verbatim table:
+  =Result CtrlGMaxMs Assertions=
+  =------ ---------- ----------=
+  =PASS        0.746         45=.
+  Evidence: build/behavior-serialized-final.log.
+- Final =ctest --test-dir build/w -C Release --output-on-failure= exited 0:
+  =9/9 Test #9: ddskk-engine-e2e-test ..............   Passed   19.91 sec=
+  =100% tests passed, 0 tests failed out of 9=
+  =Total Test time (real) =  23.71 sec=.
+  Evidence: build/ctest-serialized-final.log. The configured external runtime
+  and unchanged 120-second e2e timeout were used. The four sequential gates
+  together ended =GATES failures=0 gates=4= (build/gates-final.log).
+
+** Final feature result and artifact hashes
+- The unchanged full feature command above, after the session guard, exited
+  0. Verbatim tail (build/input-rules-verified.log):
+  =INPUT_PARITY checks=525 symbols=7 failures=0=
+  =INPUT_PARITY checks=525 symbols=7 failures=0=
+  =PASS input rules assertions=17 widths=2 hooks=0 SendInput=0=.
+  Both widths include every configured default symbol key in hiragana and
+  katakana. The extra checks cover mode exclusions and literal l/L/q/Q
+  matcher overrides. The same TSF application survives width, external-file
+  and auto-pair changes. Its exact final snapshot is
+  =AFTER PAREN BUF=[(. {｛。EDIT (｝}」)] SEL=12,12 COMP=-=.
+  No 45-second reload wait, existing latency threshold or assertion was
+  weakened. Earlier timing failures are preserved rather than overwritten.
+- Remaining acceptance gaps: IMM32 caret placement S2.2 is not demonstrated;
+  the CUAS probe fails before obtaining a context. No injected fallback is
+  implemented. Live S3.3 is coordinator/user work because lane instructions
+  forbid touching live settings/deployment/processes. The private-install
+  keymap gate is excluded because it invokes prohibited install scripts.
+- =git -c safe.directory=<current-worktree> diff --check= exited 0, no
+  whitespace errors. The diff contains no windows/host/main.cpp, shim or
+  exported ABI change. New/untracked implementation files remain unstaged.
+- SHA256 evidence (relative paths, hashes from Get-FileHash):
+  | Artifact | SHA256 |
+  | build/ert-input-rules.log | 2102BF6C3E3D29407B7433D14B2C88C49459D856C00702C784049B72AE79E014 |
+  | build/input-rules-verified.log | 6E1D3E56C903AE0D1F5D2CD7643CA4B754CEFE7093436A7C9C7D8CD03A1084B6 |
+  | build/input-rules-results/tsf.log | 1E0F604109C05CDA9D9FB1B4B5E599A5A0BAA06CD5AA5550AB80BD07E9DADBD8 |
+  | build/input-rules-results/oracle-hankaku.txt | 68F35E30F3123511BF3E932A57943F92108C2129E9AE497C0D8499C6DC2ABA71 |
+  | build/input-rules-results/oracle-zenkaku.txt | 44AC9A1F95B5C2924228D42FDAE1E3D284AFAA11940149EC77453A955BBFFEC3 |
+  | build/gates-final.log | D023B425F5189C67DCE99EE320B57D02770C52D79AAED01E056C38B8489AB306 |
+  | build/keymap-final.log | FE91024D2869274A35716C635CC12A8E868D9CA1C9C5B4E3D0A2CF1309A65777 |
+  | build/imm32.log | ED9694A77AF3EA768CB5B6E351001690C8F75FC58DB4C420CB892BF8E0257F20 |
+- Final owned-process audit extracted HARNESS_HOST/CHILD/TSF, warming child
+  and INPUT_WATCH IDs from this lane's build logs. It compared current
+  executable names and creation times against the last completed feature
+  run to reject reused PIDs. Exit 0, verbatim tail:
+  =PASS tracked IR1 process cleanup ids=146 host_runtime_resident_alive=0=
+  =Reused IDs excluded=2= (build/process-cleanup.log).
+  No tracked IR1 host/runtime/resident remains. The earlier matching IDs
+  45256 and 55996 had explicit child-exit records and were subsequently
+  reused by shell/console processes; another briefly matching host ID
+  started after IR1's final test. None was stopped. The live host/keymap and
+  other worker hosts were left untouched. A Win32_Process command-line
+  query was denied; unrecorded protected runtime IDs were not assumed to
+  belong to IR1 and were not killed. CTest's e2e fixture also uses its own
+  kill-on-close job for its host/descendants.

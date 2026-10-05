@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <windows.h>
 #include "editor.h"
+#include "rules.h"
 
 #include <commctrl.h>
 #include <shellapi.h>
@@ -28,7 +29,8 @@ enum Id {
   Open,
   Details,
   Status,
-  PassInjected
+  PassInjected,
+  InputRules
 };
 constexpr UINT Captured = WM_APP + 10;
 struct Editor {
@@ -380,6 +382,7 @@ LRESULT CALLBACK editorProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
   }
   if (!e) return DefWindowProcW(w, msg, wp, lp);
   if (msg == WM_CREATE) {
+    control(w, L"BUTTON", L"入力規則", BS_PUSHBUTTON, 635, 550, 90, 28, InputRules);
     control(w, L"BUTTON", L"キー置き換えを有効にする", BS_AUTOCHECKBOX, 16, 12,
             240, 24, Enabled);
     auto combo = control(w, L"COMBOBOX", L"", CBS_DROPDOWNLIST, 270, 12, 145,
@@ -466,6 +469,7 @@ LRESULT CALLBACK editorProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       }
       if (id == Inspect) begin(*e, false);
       if (id == Remap) begin(*e, true);
+      if (id == InputRules && !e->self) rulesEditor(false, w);
       if (id == Open && !e->self)
         ShellExecuteW(w, L"open", e->path.c_str(), nullptr, nullptr,
                       SW_SHOWNORMAL);

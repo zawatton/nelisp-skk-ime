@@ -48,6 +48,7 @@ struct RomajiRule {
   std::wstring hiragana;
   std::wstring katakana;
   std::wstring command;
+  std::wstring closer;  // RULES 1 input-pair metadata; empty on typing rules.
   bool operator==(const RomajiRule&) const = default;
 };
 std::optional<std::vector<RomajiRule>> ParseRomajiRules(const std::string& line);

@@ -2,6 +2,7 @@
 // GPL-3.0-or-later
 
 #include "realtime_frontend.h"
+#include "input_rule_mode.h"
 
 #include <array>
 #include <cctype>
@@ -82,6 +83,7 @@ void RealtimeFrontend::SetRules(const std::vector<RomajiRule>& rules) {
   rules_.clear();
   prefixes_.clear();
   for (const auto& rule : rules) {
+    if (!rule.key.empty() && rule.key[0] == 1) continue;
     rules_[rule.key] = rule;
     for (size_t length = 1; length <= rule.key.size(); ++length)
       prefixes_.emplace(rule.key.substr(0, length));
@@ -120,13 +122,14 @@ std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record) {
   const char lower = static_cast<char>(std::tolower(static_cast<unsigned char>(key)));
 
   if (record) raw_keys_.push_back(static_cast<char32_t>(key));
-  if (!continuous_preedit_ && !preedit_ && pending_.empty() && key == 'L') {
+  const bool mode_command = InputRuleAllowsModeCommand(rules_, key);
+  if (mode_command && !continuous_preedit_ && !preedit_ && pending_.empty() && key == 'L') {
     wide_latin_ = true;
     latin_ = false;
     raw_keys_.clear();
     return Snapshot();
   }
-  if (!continuous_preedit_ && !preedit_ && pending_.empty() && key == 'l') {
+  if (mode_command && !continuous_preedit_ && !preedit_ && pending_.empty() && key == 'l') {
     latin_ = true;
     wide_latin_ = false;
     raw_keys_.clear();
@@ -141,7 +144,7 @@ std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record) {
     raw_keys_.clear();
     return state;
   }
-  if (!continuous_preedit_ && !preedit_ && pending_.empty() &&
+  if (mode_command && !continuous_preedit_ && !preedit_ && pending_.empty() &&
       (key == 'q' || key == 'Q')) {
     katakana_ = !katakana_;
     if (record) raw_keys_.clear();

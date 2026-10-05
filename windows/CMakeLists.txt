@@ -5,7 +5,7 @@ set(NATIVEIME_CORE_SOURCES
   src/core_entry.cpp src/text_service.cpp src/candidate_ui.cpp
   src/display_attribute.cpp src/langbar_button.cpp src/mode_indicator.cpp
   src/realtime_frontend.cpp src/engine_client.cpp src/engine_protocol.cpp
-  src/inline_preedit.cpp)
+  src/inline_preedit.cpp src/auto_pair.cpp)
 function(nativeime_dll target)
   target_compile_features(${target} PRIVATE cxx_std_20)
   target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

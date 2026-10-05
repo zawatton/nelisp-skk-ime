@@ -70,12 +70,16 @@ std::optional<std::vector<RomajiRule>> ParseRomajiRules(const std::string& line)
       if (end == std::string::npos) break;
       start = end + 1;
     }
-    if (fields.size() != 5 || fields[0].empty()) return std::nullopt;
+    if ((fields.size() != 5 && fields.size() != 6) || fields[0].empty()) return std::nullopt;
+    if (fields.size() == 6 &&
+        (fields[0][0] != 1 || fields[4] != L"input-pair" || fields[5].empty()))
+      return std::nullopt;
     for (size_t i = 0; i < 2; ++i)
       for (const auto ch : fields[i]) if (ch > 127) return std::nullopt;
     rules.push_back({std::string(fields[0].begin(), fields[0].end()),
                      std::string(fields[1].begin(), fields[1].end()),
-                     fields[2], fields[3], fields[4]});
+                     fields[2], fields[3], fields[4],
+                     fields.size() == 6 ? fields[5] : std::wstring{}});
   }
   return rules.empty() ? std::nullopt : std::optional{std::move(rules)};
 }
