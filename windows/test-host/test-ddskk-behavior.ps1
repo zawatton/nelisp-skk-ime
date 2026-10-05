@@ -23,24 +23,27 @@ if ([string]::IsNullOrWhiteSpace($DllPath)) {
   $DllPath = Join-Path $root 'windows\build\Release\ddskk-ime.dll'
 }
 
+# All old waits guarded engine completion, including WAIT1700 after SPACE.
+# SETTLE labels retain the existing assertions verbatim; no real-time delay
+# is needed for in-session learning once the commit request has completed.
 $script = @(
   # One-character conversion and okuri-ari conversion.
-  'K a SPACE WAIT1700 ENTER WAIT500'
-  'K i e R u SPACE WAIT1700 ENTER WAIT500'
+  'K a SPACE SETTLE30000:WAIT1700 ENTER SETTLE30000:WAIT500'
+  'K i e R u SPACE SETTLE30000:WAIT1700 ENTER SETTLE30000:WAIT500'
   # Stock Q confirms hiragana and starts another preedit; confirm that empty
   # preedit, then independently assert lowercase q's katakana commit.
-  'K a n a Q WAIT3000 ENTER WAIT500 K a n a q WAIT5000'
+  'K a n a Q SETTLE30000:WAIT3000 ENTER SETTLE30000:WAIT500 K a n a q SETTLE30000:WAIT5000'
   # Candidate 5, learning, then local two-step Ctrl+G.
-  'K a n a SPACE WAIT1700 SPACE SPACE SPACE SPACE ENTER WAIT500'
-  'K a n a SPACE WAIT1700 CTRLG CTRLG'
+  'K a n a SPACE SETTLE30000:WAIT1700 SPACE SETTLE30000 SPACE SETTLE30000 SPACE SETTLE30000 SPACE SETTLE30000 ENTER SETTLE30000:WAIT500'
+  'K a n a SPACE SETTLE30000:WAIT1700 CTRLG CTRLG SETTLE30000'
   # Digits/symbols plus application-owned navigation and Ctrl shortcuts.
   '0 1 2 3 4 5 6 7 8 9 S1 S2 S3 S4 S5 S6 S7 S8 S9'
   'LEFT RIGHT CTRLC CTRLZ CTRLW CTRLS CTRLA'
   # Missing candidate -> registration; confirm exactly once.
-  'P a p a p a SPACE WAIT1700 t e s u t o ENTER WAIT500'
+  'P a p a p a SPACE SETTLE30000:WAIT1700 t e s u t o ENTER SETTLE30000:WAIT500'
   # Cancel registration back to its reading, then dismiss the reading before
   # starting the next episode (DDSKK's ordinary two-step Ctrl+G semantics).
-  'P a p a p i SPACE WAIT1700 t e CTRLG CTRLG WAIT500 k a ENTER WAIT500'
+  'P a p a p i SPACE SETTLE30000:WAIT1700 t e CTRLG CTRLG SETTLE30000:WAIT500 k a ENTER SETTLE30000:WAIT500'
   # Direct katakana, wide Latin, F7/F6 and direct Latin modes.
   'q k a q L a S1 SPACE CTRLJ K a n a F7 F6 CTRLG l a CTRLJ'
 ) -join ' '

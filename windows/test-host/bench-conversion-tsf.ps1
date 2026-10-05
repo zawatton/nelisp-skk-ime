@@ -38,8 +38,8 @@ try {
   $env:DDSKK_HARNESS_DIAGNOSTICS='1'; $env:DDSKK_HOST_DEBUG='1'; $env:DDSKK_PHASE_TRACE='1'
   $env:NELISP_IME_ENGINE='ddskk'
   # First episode warms the provider. Keep the instructed lattice warm-up.
-  $script='a i SPACE WAIT3000 ENTER WAIT500 ' + ((1..($Iterations+1) | ForEach-Object {
-    'K a n a SPACE WAIT3000 ENTER WAIT500'
+  $script='a i SPACE SETTLE30000 ENTER SETTLE30000 ' + ((1..($Iterations+1) | ForEach-Object {
+    'K a n a SPACE SETTLE30000 ENTER SETTLE30000'
   }) -join ' ')
   $log=Join-Path $run 'tsf.log'
   & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'run-harness.ps1') `

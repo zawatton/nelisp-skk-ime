@@ -27,7 +27,9 @@
 
 .PARAMETER Script
   The space-separated tsf-host.exe key script (see tsf_host.cpp for the
-  token grammar). Omit to just smoke-test host+engine bring-up.
+  token grammar). SETTLE30000 waits for provider idle and 100 ms of document
+  quiet, with a 30 s timeout; SETTLE30000:label preserves an AFTER label.
+  WAIT remains a real-time observation window. Omit to smoke-test bring-up.
 
 .PARAMETER TsfHostExe
   Path to tsf-host.exe. Defaults to the Release build next to this
@@ -211,7 +213,7 @@ $tempJisyo = Join-Path $env:TEMP "ddskk-test-jisyo-$runId.jisyo"
 # its own E2E test already rely on (see host/main.cpp PipeName()).
 $savedEnvironment = @{}
 foreach ($name in @('DDSKK_PIPE_NAME','DDSKK_USER_JISYO','NATIVEIME_REGISTRY_KEY',
-    'LOCALAPPDATA','NELISP_IME_INLINE_DIR','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH','NATIVEIME_TEST_CORE_DIRECTORY','NATIVEIME_TEST_CORE_ACTION_SCRIPT')) {
+    'LOCALAPPDATA','NELISP_IME_INLINE_DIR','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH','NATIVEIME_TEST_CORE_DIRECTORY','NATIVEIME_TEST_CORE_ACTION_SCRIPT','NATIVEIME_HARNESS_TSF_OUTPUT')) {
   $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 $hostProcess = $null
@@ -258,6 +260,8 @@ $hostOutput = Join-Path $env:LOCALAPPDATA 'host.stdout.log'
 $hostError = Join-Path $env:LOCALAPPDATA 'host.stderr.log'
 $tsfOutput = Join-Path $env:LOCALAPPDATA 'tsf.stdout.log'
 $tsfError = Join-Path $env:LOCALAPPDATA 'tsf.stderr.log'
+# SETTLE reads only this run's redirected diagnostics, never a live IME.
+$env:NATIVEIME_HARNESS_TSF_OUTPUT = $tsfOutput
 # The registry is authoritative for live-switch tests, so do not pin the DLL.
 Remove-Item Env:NELISP_IME_ENGINE -ErrorAction SilentlyContinue
 Remove-Item Env:NELISP_IME_DISABLE_HOST_SPAWN -ErrorAction SilentlyContinue

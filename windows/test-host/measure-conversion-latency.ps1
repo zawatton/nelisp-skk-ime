@@ -23,10 +23,11 @@ $hostExe = Join-Path $root 'windows\build\Release\ddskk-engine-host.exe'
 $fixture = Join-Path $PSScriptRoot 'data\behavior-jisyo.utf8'
 if (-not $DllPath) { $DllPath = Join-Path $root 'windows\build\Release\ddskk-ime.dll' }
 
+# Keep the real-time candidate deadline; only commit completion is a settle.
 $episode = if ($Engine -eq 'ddskk') {
-  "K a SPACE WAIT$CandidateDeadlineMs ENTER WAIT500"
+  "K a SPACE WAIT$CandidateDeadlineMs ENTER SETTLE30000"
 } else {
-  "k a n a SPACE WAIT$CandidateDeadlineMs ENTER WAIT500"
+  "k a n a SPACE WAIT$CandidateDeadlineMs ENTER SETTLE30000"
 }
 $inputScript = ((1..$Iterations | ForEach-Object { $episode }) -join ' ')
 

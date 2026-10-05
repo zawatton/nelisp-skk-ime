@@ -16,7 +16,7 @@ $harness = Join-Path $PSScriptRoot 'run-harness.ps1'
 $assertions = 0
 foreach ($mode in $Modes) {
   # Each CLIENT pumps the real DLL publication queue and reads our private key.
-  $script = 'IMEOFF CLIENT IMEON CLIENT CLIENT CTRLJ q CLIENT q CLIENT K a CLIENT SPACE WAIT3000 CLIENT ENTER WAIT500 CLIENT'
+  $script = 'IMEOFF CLIENT IMEON CLIENT CLIENT CTRLJ q CLIENT q CLIENT K a CLIENT SPACE SETTLE30000 CLIENT ENTER SETTLE30000 CLIENT'
   $openMode = $mode
   if ($mode -eq 'abrupt') { $openMode = 'latin'; $script = 'IMEOFF CLIENT IMEON CLIENT EXITNOW' }
   $lines = @(& powershell -ExecutionPolicy Bypass -File $harness -Script $script `
