@@ -51,14 +51,15 @@
 
   -DryRun prints every action this script would take -- file copies,
   registry reads/writes, process stop/start, and live-pipe round trips --
-  and performs NONE of them. It never touches the registry or stops
+  without changing settings. It reads registry pointers but never writes them or stops
   processes, and never opens a named pipe. It reads process executable
   paths to list the exact live host PIDs and selection reasons.
   This is what makes it safe to run anywhere and is this script's own
   test vehicle; see README.md.
 
   Immediately before changing registry pointers, a rollback.json manifest
-  records all previous paths. Pass it to rollback-live.ps1 to restore the
+  records only selected components with their old and deployed values.
+  Pass it to rollback-live.ps1 to restore the
   older runtime without copying over either version.
 
 .PARAMETER Dll
@@ -128,6 +129,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'live-host-processes.ps1')
+. (Join-Path $PSScriptRoot 'core-deployment.ps1')
 
 # Core-only mode has its own narrow path: never reads COM registration,
 # starts/stops a process, or opens the engine pipe.
@@ -135,7 +137,6 @@ if ($Core) {
   if ($Dll -or $HostExe -or $Engine -or $Indicator) { throw '-Core is core-only; use a separate deployment for other components.' }
   if (-not $BuildDirectory) { $BuildDirectory = Join-Path $RepoRoot 'windows\build\Release' }
   $settingsKey = if ($env:NATIVEIME_REGISTRY_KEY) { 'HKCU:\' + $env:NATIVEIME_REGISTRY_KEY } else { 'HKCU:\Software\NativeIME' }
-  . (Join-Path $PSScriptRoot 'core-deployment.ps1')
   Publish-NativeImeCore -Source (Join-Path $BuildDirectory 'ddskk-ime-core.dll') `
     -DestinationRoot (Join-Path $env:LOCALAPPDATA 'DDSKK') -RegistryKey $settingsKey -DryRun:$DryRun
   exit 0
@@ -241,18 +242,9 @@ function Set-NativeImeValue {
 function Set-ClsidDefault {
   param([Parameter(Mandatory = $true)][string]$Value)
   if ($DryRun) { Write-Step "would set $ClsidKey (default) = $Value"; return }
-  $old = (Get-ItemProperty -Path $ClsidKey -ErrorAction SilentlyContinue).'(default)'
+  $old = Get-NativeImePointer -Path $ClsidKey -Name '(default)'
   Set-ItemProperty -Path $ClsidKey -Name '(default)' -Value $Value
   Write-Host "REG   : $ClsidKey (default): $old -> $Value"
-}
-
-function Get-RegistryValueOrNull {
-  param([string]$Path, [string]$Name)
-  $item = Get-ItemProperty -Path $Path -ErrorAction SilentlyContinue
-  if ($null -eq $item) { return $null }
-  $property = $item.PSObject.Properties[$Name]
-  if ($null -eq $property) { return $null }
-  return $property.Value
 }
 
 function Stop-LiveHost {
@@ -441,8 +433,16 @@ if ($Engine) {
 #    inside this deployment's immutable directory.
 $manifestDir = if ($Dll -or $HostExe -or $Indicator) { $BinDir } else { $SnapshotRoot }
 $manifestPath = Join-Path $manifestDir 'rollback.json'
+$coreDest = if ($dllDest) { Join-Path $BinDir 'ddskk-ime-core.dll' } else { $null }
+$components = @(New-NativeImeDeploymentComponents -RegistryKey $NativeImeKey `
+  -ClsidKey $ClsidKey -RunKey $UserRunKey -RunName $SumiRunValue `
+  -Dll $dllDest -CoreDll $coreDest -EngineHost $hostDest `
+  -Repository $snapshotDir -Indicator $indicatorDest)
 if ($DryRun) {
-  Write-Step "would save previous DLL/host/repository/Sumi registry pointers to $manifestPath"
+  Write-Step "would save components $($components.component -join ', ') to $manifestPath"
+  foreach ($entry in $components) {
+    Write-Step "would set $($entry.path)\$($entry.name) from $(Format-NativeImePointer $entry.old) to [$($entry.new)]"
+  }
 } else {
   New-Item -ItemType Directory -Force $manifestDir | Out-Null
   $manifest = [ordered]@{
@@ -450,14 +450,7 @@ if ($DryRun) {
     created_at = (Get-Date).ToString('o')
     deployed_bin = if ($Dll -or $HostExe -or $Indicator) { $BinDir } else { $null }
     deployed_snapshot = if ($Engine) { $SnapshotRoot } else { $null }
-    previous = [ordered]@{
-      core = Get-RegistryValueOrNull -Path $NativeImeKey -Name 'CoreDll'
-      dll = Get-RegistryValueOrNull -Path $ClsidKey -Name '(default)'
-      engine_host = Get-RegistryValueOrNull -Path $NativeImeKey -Name 'EngineHost'
-      repository = Get-RegistryValueOrNull -Path $NativeImeKey -Name 'Repository'
-      settings_exe = Get-RegistryValueOrNull -Path $NativeImeKey -Name 'SettingsExe'
-      sumi_run = Get-RegistryValueOrNull -Path $UserRunKey -Name $SumiRunValue
-    }
+    components = $components
   }
   $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
   Write-Host "ROLLBK: $manifestPath"

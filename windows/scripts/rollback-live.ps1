@@ -1,76 +1,65 @@
 <#
 .SYNOPSIS
-  Restores the exact NeLisp IME runtime pointers saved by deploy-live.ps1.
+  Restores only the NeLisp IME runtime pointers changed by a deployment.
 
 .DESCRIPTION
   No deployed directory is overwritten or deleted. Registry pointers are
-  restored from rollback.json, the prior engine host is restarted and checked
-  over the live pipe, and the prior Sumi executable is relaunched.
+  restored from rollback.json if still equal to the deployment's new value.
+  -Force overrides that check. Host and Sumi restarts occur only when their
+  pointers are restored. Legacy manifests warn and retain unguarded restoration.
 #>
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][string]$Manifest,
   [switch]$DryRun,
+  [switch]$Force,
   [int]$WarmTimeoutSeconds = 60
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'live-host-processes.ps1')
+. (Join-Path $PSScriptRoot 'core-deployment.ps1')
 $Manifest = [IO.Path]::GetFullPath($Manifest)
 if (-not (Test-Path -LiteralPath $Manifest)) { throw "manifest not found: $Manifest" }
 $record = Get-Content -LiteralPath $Manifest -Raw | ConvertFrom-Json
 if ($record.schema -eq 2) {
-  . (Join-Path $PSScriptRoot 'core-deployment.ps1')
-  Restore-NativeImeCore -Record $record -DryRun:$DryRun
+  Restore-NativeImeCore -Record $record -DryRun:$DryRun -Force:$Force
   exit 0
 }
 
-if ($record.schema -ne 1 -or $null -eq $record.previous) {
+if ($record.schema -ne 1 -or
+    (-not $record.PSObject.Properties['components'] -and -not $record.PSObject.Properties['previous'])) {
   throw "unsupported rollback manifest: $Manifest"
 }
 
 $nativeImeKey = 'HKCU:\Software\NativeIME'
-$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-$runName = 'NeLisp IME Sumi'
-$clsidKey = 'HKCU:\Software\Classes\CLSID\{80B44B14-B866-4EF4-A394-4FF1D87D5185}\InprocServer32'
-
-function Show-Or-Set {
-  param([string]$Path, [string]$Name, $Value)
-  $label = if ($Name -eq '(default)') { "$Path (default)" } else { "$Path\$Name" }
-  if ($DryRun) { Write-Host "[DRYRUN] would restore $label = $Value"; return }
-  if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
-    Remove-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
-  } else {
-    Set-ItemProperty -Path $Path -Name $Name -Value ([string]$Value)
-  }
-  Write-Host "RESTORE: $label = $Value"
-}
-
-if ($record.previous.PSObject.Properties['core']) { Show-Or-Set $nativeImeKey 'CoreDll' $record.previous.core }
-Show-Or-Set $clsidKey '(default)' $record.previous.dll
-Show-Or-Set $nativeImeKey 'EngineHost' $record.previous.engine_host
-Show-Or-Set $nativeImeKey 'Repository' $record.previous.repository
-Show-Or-Set $nativeImeKey 'SettingsExe' $record.previous.settings_exe
-Show-Or-Set $runKey $runName $record.previous.sumi_run
-
-Stop-DdskkLiveHost -LiveRoot (Join-Path $env:LOCALAPPDATA 'DDSKK') -DryRun:$DryRun
+$components = @(Get-NativeImeRollbackComponents -Record $record)
+$restored = @(Restore-NativeImeComponents -Components $components -DryRun:$DryRun -Force:$Force)
+$restartHost = @($restored | Where-Object { $_.component -in @('EngineHost', 'Repository') }).Count -gt 0
+$restartIndicator = @($restored | Where-Object { $_.component -eq 'Indicator' }).Count -gt 0
 if ($DryRun) {
-  Write-Host '[DRYRUN] would start restored live host and restart sumi-skk-ui.exe'
-  Write-Host '[DRYRUN] would verify STATUS on \\.\pipe\ddskk-ime-v1'
+  if ($restartHost) {
+    Stop-DdskkLiveHost -LiveRoot (Join-Path $env:LOCALAPPDATA 'DDSKK') -DryRun
+    Write-Host '[DRYRUN] would start host using the resulting EngineHost/Repository and verify STATUS on \\.\pipe\ddskk-ime-v1'
+  }
+  if ($restartIndicator) { Write-Host '[DRYRUN] would restart sumi-skk-ui.exe using the resulting SettingsExe' }
   exit 0
 }
 
+if ($restartHost) {
+Stop-DdskkLiveHost -LiveRoot (Join-Path $env:LOCALAPPDATA 'DDSKK')
 foreach ($name in 'DDSKK_PIPE_NAME','DDSKK_USER_JISYO',
                   'DDSKK_USER_JISYO_SAVE_BATCH_SIZE','DDSKK_ENGINE_IDLE_GC_MS') {
   Remove-Item "Env:\$name" -ErrorAction SilentlyContinue
 }
 
 $nelispExe = (Get-ItemProperty -Path $nativeImeKey).EngineExecutable
+$liveSettings = Get-ItemProperty -Path $nativeImeKey
 $psi = [Diagnostics.ProcessStartInfo]::new()
-$psi.FileName = [string]$record.previous.engine_host
-$psi.Arguments = '"{0}" "{1}"' -f $nelispExe, [string]$record.previous.repository
-$psi.WorkingDirectory = [string]$record.previous.repository
+$psi.FileName = [string]$liveSettings.EngineHost
+$psi.Arguments = '"{0}" "{1}"' -f $nelispExe, [string]$liveSettings.Repository
+$psi.WorkingDirectory = [string]$liveSettings.Repository
 $psi.UseShellExecute = $false
 $hostProcess = [Diagnostics.Process]::Start($psi)
 Write-Host "START : host pid=$($hostProcess.Id)"
@@ -97,17 +86,20 @@ try {
   if (-not $reply.StartsWith('STATE ')) { throw "unexpected STATUS reply: $reply" }
   Write-Host "VERIFY: $reply"
 } finally { $pipe.Dispose() }
+}
 
+if ($restartIndicator) {
 Get-Process -Name 'sumi-skk-ui' -ErrorAction SilentlyContinue | Stop-Process -Force
-if ($record.previous.settings_exe -and
-    (Test-Path -LiteralPath ([string]$record.previous.settings_exe))) {
+$settingsExe = Get-NativeImePointer $nativeImeKey 'SettingsExe'
+if ($settingsExe -and (Test-Path -LiteralPath $settingsExe)) {
   $sumiPsi = [Diagnostics.ProcessStartInfo]::new()
-  $sumiPsi.FileName = [string]$record.previous.settings_exe
-  $sumiPsi.WorkingDirectory = Split-Path -Parent ([string]$record.previous.settings_exe)
+  $sumiPsi.FileName = $settingsExe
+  $sumiPsi.WorkingDirectory = Split-Path -Parent $settingsExe
   $sumiPsi.UseShellExecute = $false
   $sumiPsi.EnvironmentVariables['DDSKK_ALLOW_MULTIPLE_INSTANCES'] = '1'
   $sumi = [Diagnostics.Process]::Start($sumiPsi)
   Write-Host "START : Sumi pid=$($sumi.Id)"
+}
 }
 
 Write-Host 'ROLLBACK: PASS'
