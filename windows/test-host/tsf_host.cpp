@@ -49,6 +49,9 @@
 //   F6..F10       character-class conversion
 //   IMEOFF/IMEON  set TSF keyboard open/close compartment
 //   WAIT500       sleep 500 ms (no key event)
+//   SETTLE30000   pump until provider idle and document quiet for 100 ms;
+//                 fail after 30000 ms. SETTLE30000:label retains an AFTER
+//                 observation label (e.g. WAIT500) for existing log consumers.
 //
 // After every token the program prints one UTF-8 line to stdout:
 //   AFTER <token> BUF=[<buffer>] SEL=<start>,<end> COMP=<span-or-dash>
@@ -553,6 +556,7 @@ class DocumentStore final : public ITextStoreACP,
   // --- ITfContextOwnerCompositionSink ----------------------------------
   HRESULT STDMETHODCALLTYPE OnStartComposition(ITfCompositionView* pComposition,
                                                BOOL* pfOk) override {
+    ++revision_;
     if (pfOk != nullptr) *pfOk = TRUE;
     composition_active_ = true;
     UpdateCompositionSpan(pComposition);
@@ -562,6 +566,7 @@ class DocumentStore final : public ITextStoreACP,
   }
   HRESULT STDMETHODCALLTYPE OnUpdateComposition(ITfCompositionView* pComposition,
                                                 ITfRange* /*pRangeNew*/) override {
+    ++revision_;
     UpdateCompositionSpan(pComposition);
     std::printf("COMPOSITION UPDATE range=%ld,%ld\n",
                 static_cast<long>(comp_start_), static_cast<long>(comp_end_));
@@ -569,6 +574,7 @@ class DocumentStore final : public ITextStoreACP,
   }
   HRESULT STDMETHODCALLTYPE OnEndComposition(
       ITfCompositionView* pComposition) override {
+    ++revision_;
     UpdateCompositionSpan(pComposition);
     std::printf("COMPOSITION END range=%ld,%ld\n",
                 static_cast<long>(comp_start_), static_cast<long>(comp_end_));
@@ -585,6 +591,7 @@ class DocumentStore final : public ITextStoreACP,
   bool CompositionActive() const { return composition_active_; }
   LONG CompositionStart() const { return comp_start_; }
   LONG CompositionEnd() const { return comp_end_; }
+  uint64_t Revision() const { return revision_; }
 
  private:
   static constexpr TsViewCookie kViewCookie = 1;
@@ -594,12 +601,14 @@ class DocumentStore final : public ITextStoreACP,
   }
 
   void NotifyTextChange(LONG start, LONG old_end, LONG new_end) {
+    ++revision_;
     if (sink_ != nullptr && (sink_mask_ & TS_AS_TEXT_CHANGE)) {
       TS_TEXTCHANGE change{start, old_end, new_end};
       sink_->OnTextChange(0, &change);
     }
   }
   void NotifySelectionChange() {
+    ++revision_;
     if (sink_ != nullptr && (sink_mask_ & TS_AS_SEL_CHANGE)) {
       sink_->OnSelectionChange();
     }
@@ -643,6 +652,7 @@ class DocumentStore final : public ITextStoreACP,
   bool composition_active_ = false;
   LONG comp_start_ = 0;
   LONG comp_end_ = 0;
+  uint64_t revision_ = 0;
 };
 
 // ---------------------------------------------------------------------
@@ -969,6 +979,75 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   SetKeyboardState(state_before);
 }
 
+// Observe the existing KEYBRANCH diagnostic in this private host's own log.
+// F24 is unclaimed in every input mode, including registration; call only the
+// TIP callback, never forward a key to the application or the engine. An open
+// frontend preedit/candidate is allowed: idle means no outstanding request,
+// not absence of a composition. This also works with pre-core-split DLLs.
+void Settle(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
+            ITfContext* context, DocumentStore* store, DWORD max_ms,
+            const std::wstring& token) {
+  wchar_t path[32768]{};
+  GetEnvironmentVariableW(L"NATIVEIME_HARNESS_TSF_OUTPUT", path, _countof(path));
+  HANDLE log = CreateFileW(path, GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (log == INVALID_HANDLE_VALUE) {
+    std::printf("SETTLE FAIL token=%s cannot observe private TSF log error=%lu\n",
+                Utf8FromWide(token).c_str(), GetLastError());
+    std::fflush(stdout); std::exit(1);
+  }
+  wchar_t diagnostics[32768]{};
+  const DWORD saved = GetEnvironmentVariableW(
+      L"DDSKK_HARNESS_DIAGNOSTICS", diagnostics, _countof(diagnostics));
+  SetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", L"1");
+  const ULONGLONG started = GetTickCount64();
+  ULONGLONG quiet_since = started;
+  uint64_t revision = store->Revision();
+  bool idle = false, observed = false, success = false;
+  HRESULT probe_hr = S_OK;
+  for (;;) {
+    PumpMessages(0);
+    std::fflush(stdout);
+    LARGE_INTEGER offset{};
+    const bool positioned = GetFileSizeEx(log, &offset) &&
+        SetFilePointerEx(log, offset, nullptr, FILE_BEGIN);
+    BOOL eaten = FALSE;
+    probe_hr = key_sink
+        ? key_sink->OnKeyDown(context, VK_F24, 0, &eaten)
+        : keystroke_mgr->KeyDown(VK_F24, 0, &eaten);
+    std::fflush(stdout);
+    char bytes[16384]{};
+    DWORD count = 0;
+    const bool read = ReadFile(log, bytes, sizeof(bytes) - 1, &count, nullptr);
+    const std::string trace(bytes, count);
+    const size_t marker = trace.rfind("KEYBRANCH vk=87 branch=passthrough ");
+    const size_t end = trace.find('\n', marker);
+    const std::string branch = marker == std::string::npos ? ""
+        : trace.substr(marker, end - marker);
+    observed = positioned && read && SUCCEEDED(probe_hr) && !eaten &&
+        branch.find("provider_pending=") != std::string::npos;
+    idle = observed && branch.find("provider_pending=0 ") != std::string::npos;
+    const ULONGLONG now = GetTickCount64();
+    if (!idle || revision != store->Revision()) quiet_since = now;
+    revision = store->Revision();
+    if (now - started >= max_ms) break;
+    if (idle && now - quiet_since >= 100) { success = true; break; }
+    PumpMessages(10);
+  }
+  CloseHandle(log);
+  SetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS",
+                           saved ? diagnostics : nullptr);
+  std::printf("SETTLE %s token=%s elapsed_ms=%llu max_ms=%lu quiet_ms=100 "
+              "observed=%d provider_idle=%d probe_hr=%08lX revision=%llu\n",
+      success ? "OK" : "TIMEOUT", Utf8FromWide(token).c_str(),
+      GetTickCount64() - started, max_ms, observed, idle,
+      static_cast<unsigned long>(probe_hr),
+      static_cast<unsigned long long>(revision));
+  std::fflush(stdout);
+  if (!success) std::exit(1);
+}
+
 void PrintAfterLine(const std::wstring& token, const DocumentStore* store) {
   const std::wstring buf = store->BufferSnapshot();
   const bool compact = CompactHarnessMode();
@@ -1169,6 +1248,20 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
       const size_t observed = token == L"CHECK1" ? 0 : 1;
       PrintAfterLine(token, stores[observed]);
       continue;
+    } else if (token.starts_with(L"SETTLE")) {
+      wchar_t* end = nullptr;
+      const unsigned long milliseconds = wcstoul(token.c_str() + 6, &end, 10);
+      if (end == token.c_str() + 6 || milliseconds == 0 || milliseconds > 60000 ||
+          (*end != L'\0' && (*end != L':' || end[1] == L'\0'))) {
+        PrintHrStr("InvalidSettle:" + Utf8FromWide(token), E_INVALIDARG);
+        std::exit(1);
+      }
+      Settle(key_sink, keystroke_mgr, contexts[active], stores[active],
+             static_cast<DWORD>(milliseconds), token);
+      if (*end == L':') {
+        PrintAfterLine(end + 1, stores[active]);
+        continue;
+      }
     } else if (token.size() > 4 && token.starts_with(L"WAIT")) {
       // Provider conversion completes through the TSF thread's message
       // queue. Sleeping here starves that queue and cannot test async IME
