@@ -39,6 +39,8 @@ class RealtimeFrontend {
   std::optional<EngineState> ToKatakana();
   // DDSKK q in ▽ mode toggles the region and immediately confirms it.
   std::optional<EngineState> CommitKatakana();
+  // Only completed hiragana readings have a locally determined DDSKK q result.
+  bool CanCommitKatakanaReading() const;
   EngineState ToHiragana();
 
   void Reset();

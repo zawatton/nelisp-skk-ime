@@ -28,6 +28,8 @@ def main():
     p.add_argument('--repository', default=None)
     p.add_argument('--cycle-regression', action='store_true',
                    help='Cycle to candidate five, lose its commit reply, then settle')
+    p.add_argument('--q-regression', action='store_true',
+                   help='Check immediate local q commit and the following reading')
     args = p.parse_args()
     root = Path(args.repository).resolve() if args.repository else Path(__file__).resolve().parents[2]
     artifacts = Path(args.artifacts).resolve()
@@ -134,6 +136,10 @@ def main():
                   'SPACE SETTLE30000:second SPACE SETTLE30000:third '
                   'SPACE SETTLE30000:fourth SPACE SETTLE30000:fifth '
                   'ENTER SETTLE30000:commit WAIT500')
+    if args.q_regression:
+        assert args.case == 'emacs' and not args.cycle_regression
+        script = ('WAIT2500 K a n a q SETTLE30000:q '
+                  'K a ENTER SETTLE30000:next')
     if pairing:
         script = 'WAIT2500 a i SPACE WAIT3000 ENTER WAIT500 APPCLEAR BRACKET WAIT100 WAIT500'
         if args.case == 'emacs-nested-pair':
@@ -231,6 +237,17 @@ def main():
         assert '▼蚊' in rendered and emacs.returncode == 0, rendered
         assert 'COMPOSITION START' not in host_text, 'Inline created a TSF composition'
         print('PASS inline accept-and-queue final=あい蚊ぬ selection_unavailable=' + str(args.selection_unavailable))
+    if args.q_regression:
+        assert 'branch=q-katakana-local state=1' in host_text
+        assert 'AFTER q BUF=[カナ] SEL=2,2 COMP=-' in host_text
+        assert 'AFTER next BUF=[カナか] SEL=3,3 COMP=-' in host_text
+        assert 'COMPOSITION START' not in host_text
+        settle = re.search(r'SETTLE OK token=SETTLE30000:q elapsed_ms=(\d+)', host_text)
+        assert settle and int(settle[1]) <= 200, 'q exceeded local settle budget'
+        rendered = (directory / 'emacs.log').read_text(encoding='utf-8')
+        assert '▽かな' in rendered and 'BUFFER_UNCHANGED=t' in rendered
+        assert emacs.returncode == 0
+        print(f'PASS local-q inline assertions=8 settle_ms={settle[1]} cleanup=confirmed')
         return
     if args.cycle_regression:
         assert 'CANDIDATE_TEST lost-reply' in host_text, 'Fault injection did not run'

@@ -22,7 +22,54 @@ std::wstring Decode(const std::string& hex) {
   return result;
 }
 
+std::optional<std::vector<ddskk::RomajiRule>> ReadRules(std::istream& input) {
+  std::string line;
+  if (!std::getline(input, line) || !line.starts_with("RULES 1 ")) return std::nullopt;
+  std::vector<ddskk::RomajiRule> rules;
+  std::istringstream records(line.substr(8));
+  for (std::string record; records >> record;) {
+    std::vector<std::wstring> fields;
+    size_t start = 0;
+    for (;;) {
+      const size_t end = record.find(':', start);
+      fields.push_back(Decode(record.substr(start, end - start)));
+      if (end == std::string::npos) break;
+      start = end + 1;
+    }
+    if (fields.size() != 5 && fields.size() != 6) return std::nullopt;
+    rules.push_back({std::string(fields[0].begin(), fields[0].end()),
+                     std::string(fields[1].begin(), fields[1].end()),
+                     fields[2], fields[3], fields[4],
+                     fields.size() == 6 ? fields[5] : std::wstring{}});
+  }
+  return rules;
+}
+
 int main(int argc, char** argv) {
+  if (argc == 4 && std::string(argv[2]) == "--q-oracle") {
+    std::ifstream fixture(argv[1]);
+    CHECK(fixture.good());
+    std::ifstream rules_file(argv[3]);
+    const auto rules = ReadRules(rules_file);
+    CHECK(rules && !rules->empty());
+    std::string keys, mode, expected;
+    size_t tested = 0;
+    while (fixture >> keys >> mode >> expected) {
+      ddskk::RealtimeFrontend converter;
+      converter.SetRules(*rules);
+      for (char key : keys) CHECK(converter.Feed(key));
+      CHECK(converter.CanCommitKatakanaReading());
+      const auto state = converter.CommitKatakana();
+      CHECK(state && state->text == Decode(expected) &&
+            state->mode == std::wstring(mode.begin(), mode.end()) &&
+            state->composition_start == -1 && state->pending_romaji.empty());
+      CHECK(!converter.composing() && converter.raw_keys().empty());
+      ++tested;
+    }
+    CHECK(fixture.eof() && tested == 8);
+    std::printf("Q STOCK PARITY PASS readings=%zu\n", tested);
+    return 0;
+  }
   if (argc >= 2) {
     const bool fallback = argc == 3 && std::string(argv[2]) == "--fallback";
     std::ifstream fixture(argv[1]);
@@ -121,9 +168,24 @@ int main(int argc, char** argv) {
   ddskk::RealtimeFrontend q_conversion;
   q_conversion.Feed(U'K');
   q_conversion.Feed(U'a');
+  CHECK(q_conversion.CanCommitKatakanaReading());
   state = q_conversion.CommitKatakana();
   CHECK(state && state->text == L"カ" && state->composition_start == -1);
   CHECK(!q_conversion.composing() && !q_conversion.katakana());
+
+  for (const auto& keys : {"K", "Kan", "KaT", "qKana", "Kanaq", "Ka1"}) {
+    ddskk::RealtimeFrontend unresolved;
+    for (char key : std::string(keys)) unresolved.Feed(key);
+    CHECK(!unresolved.CanCommitKatakanaReading());
+  }
+  ddskk::RealtimeFrontend custom_q;
+  custom_q.SetRules({{"ka", "", L"か", L"カ", L""},
+                     {"q", "", L"く", L"ク", L""}});
+  custom_q.Feed(U'K'); custom_q.Feed(U'a');
+  CHECK(!custom_q.CanCommitKatakanaReading());
+  custom_q.SetRules({{"ka", "", L"か", L"カ", L""},
+                     {"q", "", L"", L"", L"custom-command"}});
+  CHECK(!custom_q.CanCommitKatakanaReading());
 
   frontend.Feed(U'n');
   state = frontend.Commit();
@@ -166,6 +228,7 @@ int main(int argc, char** argv) {
         state->pending_romaji == L"k");
   state = continuous.Feed(U'a');
   CHECK(state && state->text == L"▽か" && continuous.composing());
+  CHECK(!continuous.CanCommitKatakanaReading());
   state = continuous.Feed(U'q');
   CHECK(state && state->text == L"▽かq" && state->pending_romaji.empty() &&
         !continuous.katakana());
