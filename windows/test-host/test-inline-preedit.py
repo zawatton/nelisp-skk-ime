@@ -21,8 +21,9 @@ def main():
         p.add_argument('--' + name, required=True)
     p.add_argument('--case', choices=('inline', 'missing', 'wrong', 'drop', 'emacs', 'pair', 'pair-legacy', 'pair-down', 'emacs-pair'), default='inline')
     p.add_argument('--cold-load', type=int, default=45)
+    p.add_argument('--repository', default=None)
     args = p.parse_args()
-    root = Path(__file__).resolve().parents[2]
+    root = Path(args.repository).resolve() if args.repository else Path(__file__).resolve().parents[2]
     artifacts = Path(args.artifacts).resolve()
     artifacts.mkdir(parents=True, exist_ok=True)
     directory = artifacts / ('inline-' + args.case)
@@ -105,9 +106,12 @@ def main():
 
     thread = threading.Thread(target=serve)
     thread.start()
-    script = ('WAIT2500 a i SPACE WAIT3000 ENTER WAIT500 '
+    # The private harness warms the engine separately; direct DDSKK Space
+    # would insert a literal space into the measured document.
+    script = ('WAIT2500 a i ENTER WAIT500 '
               'K WAIT100 a WAIT100 SPACE WAIT3000 ENTER WAIT500 '
-              'K WAIT100 i WAIT100 e WAIT100 R WAIT100 u WAIT100 SPACE WAIT3000 ENTER WAIT500 '
+              # DDSKK starts okuri conversion at u; SPACE advances it.
+              'K WAIT100 i WAIT100 e WAIT100 R WAIT100 u WAIT100 WAIT3000 ENTER WAIT500 '
               'K WAIT100 a WAIT100 n WAIT100 a WAIT100 SPACE WAIT3000 CTRLG WAIT100 CTRLG WAIT100 '
               'K WAIT100 a WAIT100 n WAIT100 a WAIT100 q WAIT3000 '
               'K WAIT100 a WAIT100 n WAIT100 a WAIT100 SPACE WAIT3000 '

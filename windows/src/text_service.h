@@ -200,6 +200,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   void ApplyProviderResult(ProviderResult* result);
   void ReplayDeferredProviderKeys();
   void ShowProviderBusy(ITfContext* context);
+  void RenderLocalOkuri(ITfContext* context);
 
   struct DeferredProviderKey {
     WPARAM virtual_key = 0;
@@ -224,6 +225,12 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   bool provider_conversion_active_ = false;
   ULONGLONG provider_conversion_started_ = 0;
   bool provider_cleanup_pending_ = false;
+  bool okuri_test_failure_used_ = false;
+  bool okuri_handoff_active_ = false;
+  bool okuri_handoff_retry_ = false;
+  bool okuri_handoff_failed_ = false;
+  size_t okuri_mirrored_keys_ = 0;
+  std::u32string okuri_handoff_keys_;
   std::deque<DeferredProviderKey> deferred_provider_keys_;
   ITfComposition* composition_ = nullptr;
   // AddRef'd identities of compositions ended by this TIP. Some hosts delay

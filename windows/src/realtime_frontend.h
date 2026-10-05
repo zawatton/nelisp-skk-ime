@@ -30,6 +30,8 @@ class RealtimeFrontend {
   }
   std::optional<EngineState> Feed(char32_t key);
   std::optional<EngineState> Backspace();
+  // DDSKK clears a pending okuri prefix without removing its marker.
+  std::optional<EngineState> BackspaceOkuri() { return FeedAscii(127, true); }
   std::optional<EngineState> Commit();
   std::optional<EngineState> Quit();
   // Re-render the original reading after a provider candidate replaces it.

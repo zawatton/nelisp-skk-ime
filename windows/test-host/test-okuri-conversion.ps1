@@ -24,10 +24,26 @@ try {
   $env:OKURI_DICTIONARY = [IO.Path]::GetFullPath($DictionaryPath)
   $env:OKURI_ARTIFACT_DIRECTORY = $artifacts
   $env:HOME=[Environment]::GetFolderPath('UserProfile');
-  & emacs -Q --batch -L (Join-Path $root 'vendor/ddskk') -L (Join-Path $root 'engine') `
-    -l (Join-Path $root 'engine/test-okuri-input.el') -f ert-run-tests-batch-and-exit `
-    *> (Join-Path $artifacts 'oracle.log')
-  if ($LASTEXITCODE -ne 0) { throw 'Stock DDSKK oracle failed; see oracle.log' }
+  # Windows PowerShell treats native stderr as an error record under Stop.
+  # Emacs warnings are diagnostics; its exit code determines oracle success.
+  $oracle = Start-Process -FilePath (Get-Command emacs).Source -WindowStyle Hidden -PassThru `
+    -ArgumentList @('-Q', '--batch', '-L', ('"' + (Join-Path $root 'vendor/ddskk') + '"'),
+      '-L', ('"' + (Join-Path $root 'engine') + '"'),
+      '-l', ('"' + (Join-Path $root 'engine/test-okuri-input.el') + '"'),
+      '-f', 'ert-run-tests-batch-and-exit') `
+    -RedirectStandardOutput (Join-Path $artifacts 'oracle.stdout.log') `
+    -RedirectStandardError (Join-Path $artifacts 'oracle.stderr.log')
+  try {
+    $oracleHandle = $oracle.Handle
+    if (-not $oracle.WaitForExit(30000)) {
+      Stop-Process -Id $oracle.Id -Force
+      $oracle.WaitForExit()
+      throw 'Stock DDSKK oracle timed out'
+    }
+    Get-Content (Join-Path $artifacts 'oracle.stdout.log'), (Join-Path $artifacts 'oracle.stderr.log') |
+      Set-Content (Join-Path $artifacts 'oracle.log') -Encoding UTF8
+    if ($oracle.ExitCode -ne 0) { throw 'Stock DDSKK oracle failed; see oracle.log' }
+  } finally { $oracle.Dispose() }
   $env:DDSKK_DICTIONARY_FILES = $env:OKURI_DICTIONARY
   $env:DDSKK_HARNESS_DIAGNOSTICS = '1'
   # Warm up in the other TSF context so oracle checkpoints start empty.

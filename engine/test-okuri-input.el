@@ -5,6 +5,37 @@
 (remove-hook 'kill-emacs-hook #'skk-save-jisyo)
 (remove-hook 'kill-emacs-hook #'skk-record-jisyo-data)
 
+(ert-deftest okuri-backspace-history-matches-control ()
+  "A recovered handoff replays Backspace exactly like the native control."
+  (let* ((skk-jisyo (make-temp-file "okuri-history-"))
+         (skk-jisyo-code 'utf-8) (skk-backup-jisyo nil)
+         (skk-server-host nil)
+         (skk-search-prog-list '((skk-search-jisyo-file skk-jisyo 0 t)))
+         control replay)
+    (unwind-protect
+        (progn
+          (with-temp-file skk-jisyo
+            (insert ";; okuri-ari entries.\nかk /書/掛/\n;; okuri-nasi entries.\n"))
+          (setq control (skk-ime-session-create)
+                replay (skk-ime-session-create))
+          (dolist (session (list control replay))
+            (skk-ime-session--with-buffer session
+              (setq-local skk-search-prog-list
+                          '((skk-search-jisyo-file skk-jisyo 0 t)))
+              (setq-local skk-current-search-prog-list nil)))
+          (skk-ime-session-feed-string control "KaK")
+          (skk-ime-session-control control 'backspace)
+          (let ((expected (skk-ime-session-feed-string control "Ku"))
+                (actual (skk-ime-session-feed-string replay
+                         (concat "KaK" (string 127) "Ku"))))
+            (should (eq (plist-get actual :mode) 'candidate))
+            (should (equal (plist-get actual :text) "▼書く"))
+            (should (equal actual expected))
+            (message "BACKSPACE replay=control candidate=25bc66f8304f")))
+      (when control (skk-ime-session-destroy control))
+      (when replay (skk-ime-session-destroy replay))
+      (delete-file skk-jisyo))))
+
 (ert-deftest okuri-input-stock-oracle ()
   "Record stock DDSKK at every TSF checkpoint, including intermediate rules."
   (let* ((source (getenv "OKURI_DICTIONARY"))
