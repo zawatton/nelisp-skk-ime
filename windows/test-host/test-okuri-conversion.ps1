@@ -1,10 +1,11 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [Parameter(Mandatory)][string]$BuildDirectory,
   [Parameter(Mandatory)][string]$EngineExecutablePath,
   [string]$RepositoryPath = '',
   [string]$DictionaryPath = '',
   [string]$ArtifactDirectory = '',
+  [ValidateRange(0,1)][int]$LocalConversion = 0,
   [int]$ColdLoadSleepSec = 45
 )
 $ErrorActionPreference = 'Stop'
@@ -64,9 +65,10 @@ try {
     -CoreDllPath (Join-Path $build 'ddskk-ime-core.dll') `
     -EngineHostPath (Join-Path $build 'ddskk-engine-host.exe') `
     -TsfHostExe (Join-Path $build 'tsf-host.exe') -EngineExecutablePath $EngineExecutablePath `
-    -ColdLoadSleepSec $ColdLoadSleepSec -TsfHostTimeoutSec 240 2>&1)
+    -LocalConversion $LocalConversion -ColdLoadSleepSec $ColdLoadSleepSec -TsfHostTimeoutSec 240 2>&1)
   $lines | Set-Content (Join-Path $artifacts 'harness.log') -Encoding UTF8
   if ($LASTEXITCODE -ne 0) { throw 'Okuri harness failed; see harness.log' }
+  if ($LocalConversion -eq 1 -and (($lines -join "`n") -notmatch 'branch=local-okuri-convert')) {throw 'No local okuri ownership'}
   $assertions = 0
   foreach ($record in (Get-Content (Join-Path $artifacts 'oracle.tsv'))) {
     $label, $mode, $expected = $record.Split("`t")

@@ -32,7 +32,7 @@ class Index {
   ~Index();
   Index(const Index&) = delete;
   Index& operator=(const Index&) = delete;
-  Entry Lookup(std::wstring_view reading) const;
+  Entry Lookup(std::wstring_view reading, std::wstring_view okuri = {}) const;
   std::string_view Rules() const;
   const std::vector<RomajiRule>& ParsedRules() const { return rules_; }
   const Header& header() const { return header_; }

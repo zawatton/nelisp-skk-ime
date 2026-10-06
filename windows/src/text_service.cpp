@@ -316,6 +316,19 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
     service->FlushModeIndicator();
     return 0;
   }
+  if (message == WM_TIMER && wparam == 2 && service != nullptr) {
+    // Failed core replacement has no ABI resume notification. Resume only
+    // after the shim stops requesting quiescence; never compete with its swap.
+    if (service->local_store_.started() && GetTickCount64() - service->local_handoff_requested_ > 500)
+      service->local_store_.Start();
+    return 0;
+  }
+  if (message == WM_TIMER && wparam == 1 && service != nullptr) {
+    if (service->local_enabled_ && service->provider_pending_.load() &&
+        service->provider_deadline_ && GetTickCount64() >= service->provider_deadline_)
+      service->ResolveLocalFallback();
+    return 0;
+  }
   if (message == kProviderResultMessage) {
     std::unique_ptr<ProviderResult> result(
         reinterpret_cast<ProviderResult*>(lparam));
@@ -358,6 +371,10 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
   const uint64_t sequence =
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   provider_pending_.store(true, std::memory_order_release);
+  if (local_enabled_) {
+    provider_deadline_ = GetTickCount64() + 5000;
+    SetTimer(provider_window_, 1, 50, nullptr);
+  }
   const HWND destination = provider_window_;
   const bool retry_okuri = okuri_handoff_active_ && okuri_handoff_retry_;
   AddRef();
@@ -428,11 +445,16 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
   const uint64_t sequence =
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   provider_pending_.store(true, std::memory_order_release);
+  if (local_enabled_) {
+    provider_deadline_ = GetTickCount64() + 5000;
+    SetTimer(provider_window_, 1, 50, nullptr);
+  }
   const HWND destination = provider_window_;
+  const bool bounded_recovery = local_enabled_;
   AddRef();
   try {
     std::thread([this, control, sequence, destination, apply_state, test_failure_delay,
-                 candidate, reading] {
+                 candidate, reading, bounded_recovery] {
       const ULONGLONG started = GetTickCount64();
       DelayTestProvider();
       std::optional<ddskk::EngineState> state;
@@ -466,7 +488,11 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
               control != ddskk::EngineControl::kCommit;
           const auto& wanted = candidate->candidates[
               select_only ? target : candidate->candidate_index];
-          while (!state && sequence == provider_sequence_.load(std::memory_order_acquire)) {
+          // Local opt-in may fall back to this provider. Engine loss must
+          // resolve that episode rather than park all subsequent keys forever.
+          const ULONGLONG recovery_deadline = GetTickCount64() + 3000;
+          while (!state && sequence == provider_sequence_.load(std::memory_order_acquire) &&
+                 (!bounded_recovery || GetTickCount64() < recovery_deadline)) {
             if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
               std::printf("PROVIDER retry seq=%llu control=%d raw=%.160s\n",
                           static_cast<unsigned long long>(sequence), static_cast<int>(control),
@@ -550,6 +576,10 @@ bool TextService::BeginProviderKey(char32_t key, bool may_convert) {
   const uint64_t sequence =
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   provider_pending_.store(true, std::memory_order_release);
+  if (local_enabled_) {
+    provider_deadline_ = GetTickCount64() + 5000;
+    SetTimer(provider_window_, 1, 50, nullptr);
+  }
   const HWND destination = provider_window_;
   AddRef();
   try {
@@ -607,6 +637,10 @@ bool TextService::BeginProviderKeys(const std::u32string& keys, bool sync) {
   const uint64_t sequence =
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   provider_pending_.store(true, std::memory_order_release);
+  if (local_enabled_) {
+    provider_deadline_ = GetTickCount64() + 5000;
+    SetTimer(provider_window_, 1, 50, nullptr);
+  }
   const HWND destination = provider_window_;
   AddRef();
   try {
@@ -646,7 +680,30 @@ bool TextService::BeginProviderKeys(const std::u32string& keys, bool sync) {
   return true;
 }
 
+void TextService::ResolveLocalFallback() {
+  // Keep semantic keys, invalidate replies, and return ownership to the native
+  // reading. No engine transaction or worker lock belongs to this callback.
+  auto queued = std::move(deferred_provider_keys_);
+  CancelPendingProvider();
+  provider_composition_active_ = false;
+  provider_candidate_state_.reset();
+  local_conversion_.Reset();
+  local_okuri_snapshot_ = {};
+  registration_mode_ = false;
+  registration_commit_pending_ = false;
+  if (registration_range_) { registration_range_->Release(); registration_range_ = nullptr; }
+  CloseCandidateUi();
+  ApplyLocalState(active_context_, realtime_frontend_.RestorePreedit());
+  engine_roundtrip_failed_ = true;
+  deferred_provider_keys_ = std::move(queued);
+  std::printf("LOCAL_FALLBACK resolved=reading pending=0\n");
+  ReplayDeferredProviderKeys();
+}
+
 void TextService::CancelPendingProvider() {
+  provider_deadline_ = 0;
+  okuri_conversion_started_qpc_ = 0;
+  if (provider_window_) KillTimer(provider_window_, 1);
   okuri_handoff_active_ = false;
   okuri_handoff_failed_ = false;
   okuri_mirrored_keys_ = 0;
@@ -674,6 +731,16 @@ void TextService::ReleaseEngineConversion() {
   BeginProviderControl(ddskk::EngineControl::kCancel, false);
 }
 
+void TextService::TraceOkuriCandidate(bool local) {
+  if (!okuri_conversion_started_qpc_) return;
+  LARGE_INTEGER now{}, frequency{}; QueryPerformanceCounter(&now); QueryPerformanceFrequency(&frequency);
+  if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
+    std::printf("OKURI-CANDIDATE us=%llu seq=%llu path=%s\n",
+        static_cast<unsigned long long>((now.QuadPart - okuri_conversion_started_qpc_) * 1000000 / frequency.QuadPart),
+        static_cast<unsigned long long>(++okuri_conversion_sequence_), local ? "local" : "engine");
+  okuri_conversion_started_qpc_ = 0;
+}
+
 void TextService::ApplyProviderResult(ProviderResult* result) {
   DebugLog(L"Provider apply seq=%llu current=%llu state=%d",
            static_cast<unsigned long long>(result ? result->sequence : 0),
@@ -684,6 +751,8 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
       result->sequence != provider_sequence_.load(std::memory_order_acquire))
     return;
   provider_pending_.store(false, std::memory_order_release);
+  provider_deadline_ = 0;
+  if (provider_window_) KillTimer(provider_window_, 1);
   if (okuri_handoff_active_ && result->apply_state) {
     // Leading keys are already in the shadow; controls and following keys
     // remain queued in arrival order until the engine takes ownership.
@@ -695,7 +764,7 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
     if (realtime_frontend_.katakana()) keys.insert(keys.begin(), U'q');
     if (result->state && okuri_handoff_keys_ != realtime_frontend_.raw_keys()) {
       if (BeginProviderKeys(keys, true)) return;
-    } else if (!result->state) {
+    } else if (!result->state && !local_enabled_) {
       okuri_handoff_retry_ = true;
       const auto local = realtime_frontend_.RestorePreedit();
       // A complete okuri uses the existing conversion barrier; incomplete
@@ -710,6 +779,7 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
       okuri_handoff_failed_ = false;
     }
     if (okuri_handoff_active_) {
+      if (local_enabled_) { ResolveLocalFallback(); return; }
       // Failure to schedule keeps the reading and every semantic key.
       // Never let Enter commit markers or raw romaji.
       okuri_handoff_active_ = false;
@@ -728,6 +798,7 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   if (!result->state) {
     engine_roundtrip_failed_ = true;
     CloseCandidateUi();
+    if (local_enabled_) ResolveLocalFallback();
     return;
   }
   provider_conversion_active_ = false;
@@ -785,7 +856,8 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   if (result->state->mode != L"candidate" &&
       result->state->mode != L"registration" &&
       result->state->composition_start < 0) {
-    realtime_frontend_.Reset();
+    local_okuri_snapshot_ = {};
+  realtime_frontend_.Reset();
     realtime_frontend_.AdoptMode(*result->state);
   }
   engine_roundtrip_failed_ = false;
@@ -850,8 +922,13 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   // synced DDSKK ▽ still belongs to the provider even without candidates.
   provider_composition_active_ = !registration_mode_ &&
       result->state->composition_start >= 0;
-  if (SUCCEEDED(request) && SUCCEEDED(edit_result))
+  if (SUCCEEDED(request) && SUCCEEDED(edit_result)) {
+    if (result->state->mode == L"candidate") TraceOkuriCandidate(false);
     ReplayDeferredProviderKeys();
+  } else if (local_enabled_) {
+    ResolveLocalFallback();
+    return;
+  }
   if (result->state->mode == L"candidate" && provider_conversion_started_ &&
       GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
     std::printf("SPACE-CANDIDATE ms=%llu seq=%llu\n",
@@ -1308,7 +1385,12 @@ void TextService::ApplyKeyboardOpenChange() {
   // Closing an IME while text is composing must also remove that transient
   // text from the document.  An idle close deliberately does not reset the
   // shared engine session: this compartment is per TSF thread/application.
-  if (!open &&
+  if (!open && local_enabled_) {
+    ForceCancelComposition(active_context_);
+    local_conversion_.Reset();
+    local_okuri_snapshot_ = {};
+  realtime_frontend_.Reset();
+  } else if (!open &&
       (engine_pending_ || registration_mode_ || composition_ != nullptr)) {
     const auto state = engine_.Reset(kInteractiveTimeoutMs);
     CloseCandidateUi();
@@ -1342,6 +1424,7 @@ void TextService::ApplyKeyboardOpenChange() {
       // The native frontend is authoritative for ordinary keys. Reset both
       // checkpoints at this explicit application boundary, never in a key callback.
       CancelPendingProvider();
+      if (!local_enabled_) {
       std::lock_guard<std::mutex> lock(provider_engine_mutex_);
       engine_.MarkNeedsResync();
       auto state = engine_.SendControl(ddskk::EngineControl::kCancel, 1000);
@@ -1350,6 +1433,9 @@ void TextService::ApplyKeyboardOpenChange() {
         state = engine_.SendKey(U'l', 1000);
       } else if (application_open_mode_ == L"katakana") {
         state = engine_.SendKey(U'q', 1000);
+      }
+      } else {
+        realtime_frontend_.SetInputMode(application_open_mode_);
       }
       kana_mode_ = application_open_mode_ != L"latin";
       last_engine_mode_ = application_open_mode_;
@@ -1914,7 +2000,7 @@ void TextService::LoadSettings() {
   local_enabled_ = engine_id_ == "ddskk" &&
       (application_local_conversion_ >= 0 ? application_local_conversion_ == 1 : local == 1);
   if (local_enabled_) {
-    try { local_store_.Start(); } catch (...) { local_enabled_ = false; }
+    try { local_store_.Start(); SetTimer(provider_window_, 2, 50, nullptr); } catch (...) { local_enabled_ = false; }
   }
   ddskk_engine_ = engine_id_ != "passthrough";
   realtime_frontend_.SetContinuousPreedit(engine_id_ != "ddskk");
@@ -1954,7 +2040,10 @@ void TextService::FollowSettings() {
       provider_pending_.load() || provider_composition_active_ ||
       realtime_frontend_.preedit()) return;
   if (!settings_watcher_.dirty.exchange(false)) return;
-  std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+  std::unique_lock<std::mutex> lock(provider_engine_mutex_, std::defer_lock);
+  if (local_enabled_) {
+    if (!lock.try_lock()) { settings_watcher_.dirty = true; return; }
+  } else lock.lock();
   LoadSettings();
   engine_.MarkNeedsResync();
   MaybeShowModeIndicator(nullptr, nullptr);
@@ -2125,6 +2214,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   // Refresh even during local preedit: publication can replace an engine
   // before a locally composed reading has entered its session. SetRules
   // rebuilds that reading only when the effective table actually changed.
+  if (!realtime_frontend_.okuri_started()) local_okuri_snapshot_ = {};
   const auto local_index = local_enabled_ ? local_store_.Current() : nullptr;
   if (local_index) {
     // The worker parsed and validated this rule export. Pin the table
@@ -2156,41 +2246,62 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     debug_exit(FALSE);
     return S_OK;
   }
+  if (local_store_.started()) {
+    local_handoff_requested_ = 0;
+    local_store_.Start();
+  }
+  auto record_okuri = [&] {
+    if (!GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) return;
+    const auto state = realtime_frontend_.RestorePreedit();
+    if (!okuri_conversion_started_qpc_ && realtime_frontend_.okuri_started() &&
+        state.pending_romaji.empty() && !realtime_frontend_.okuri_text().empty()) {
+      LARGE_INTEGER now{}; QueryPerformanceCounter(&now); okuri_conversion_started_qpc_ = now.QuadPart;
+    }
+  };
   bool cancelled_provider = false;
   if (local_conversion_.active()) {
+    const auto saved_conversion = local_conversion_;
+    const auto saved_frontend = realtime_frontend_;
+    auto apply = [&](const ddskk::EngineState& next) {
+      const HRESULT hr = ApplyLocalState(context, next);
+      if (FAILED(hr)) { local_conversion_ = saved_conversion; realtime_frontend_ = saved_frontend; }
+      return hr;
+    };
     *eaten = TRUE;
     branch = L"local-candidate";
     if (katakana_q || wparam == VK_F6 || wparam == VK_F7) {
+      if (realtime_frontend_.okuri_started()) realtime_frontend_.CancelOkuri();
       state = katakana_q ? realtime_frontend_.CommitKatakana()
           : wparam == VK_F6 ? std::optional<ddskk::EngineState>(realtime_frontend_.ToHiragana())
                             : realtime_frontend_.ToKatakana();
-      if (state) { local_conversion_.Reset(); ApplyLocalState(context, *state); }
+      if (state) { local_conversion_.Reset(); apply(*state); }
       debug_exit(*eaten); return S_OK;
     }
     if (ctrl_g || wparam == VK_ESCAPE || wparam == VK_BACK) {
-      state = realtime_frontend_.RestorePreedit();
+      state = realtime_frontend_.okuri_started() ? realtime_frontend_.CancelOkuri() : realtime_frontend_.RestorePreedit();
       local_conversion_.Reset();
-      ApplyLocalState(context, *state);
+      apply(*state);
       debug_exit(*eaten); return S_OK;
     }
     const auto key = !control_down ? TranslateKey(wparam, lparam) : std::optional<char32_t>{};
     if (wparam == VK_SPACE || wparam == VK_RIGHT) {
       if (local_conversion_.Next()) {
         state = local_conversion_.State();
-        ApplyLocalState(context, *state);
+        apply(*state);
       } else {
         // Registration is an explicit provider barrier. Ordinary local
         // keys never enter a provider queue or an engine shadow stream.
         local_conversion_.Reset();
         provider_composition_active_ = false;
-        BeginProviderConversion(realtime_frontend_.raw_keys(), true);
+        if (!BeginProviderConversion(realtime_frontend_.raw_keys(), true))
+          local_conversion_ = saved_conversion;
       }
       debug_exit(*eaten); return S_OK;
     }
     if (wparam == VK_LEFT || (key && *key == U'x')) {
       if (local_conversion_.Previous()) state = local_conversion_.State();
-      else { state = realtime_frontend_.RestorePreedit(); local_conversion_.Reset(); }
-      ApplyLocalState(context, *state);
+      else { state = realtime_frontend_.okuri_started() ? realtime_frontend_.CancelOkuri() : realtime_frontend_.RestorePreedit(); local_conversion_.Reset(); }
+      apply(*state);
       debug_exit(*eaten); return S_OK;
     }
     if (wparam == VK_RETURN || ctrl_j) {
@@ -2203,6 +2314,21 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       // Continue this callback through the native frontend. No provider
       // response or one-key replay is involved in implicit confirmation.
     } else { debug_exit(*eaten); return S_OK; }
+  }
+  if (local_enabled_ && realtime_frontend_.okuri_started() &&
+      !provider_composition_active_ && !provider_pending_.load() &&
+      (wparam == VK_RETURN || wparam == VK_SPACE || ctrl_j) &&
+      (!realtime_frontend_.RestorePreedit().pending_romaji.empty() ||
+       realtime_frontend_.okuri_text().empty())) {
+    // No conversion has started. Prefix confirmation/explicit Space uses
+    // DDSKK's incomplete-okuri semantics rather than committing a '*' marker.
+    local_okuri_snapshot_ = {};
+    if (BeginProviderKeys(realtime_frontend_.raw_keys(), true)) {
+      deferred_provider_keys_.push_back({wparam, 0, false, ShiftDown(), ctrl_j});
+      *eaten = TRUE; branch = L"okuri-prefix-provider";
+      debug_exit(*eaten); return S_OK;
+    }
+    *eaten = TRUE; debug_exit(*eaten); return S_OK;
   }
   const bool cancelled_conversion =
       (ctrl_g || wparam == VK_ESCAPE) && provider_conversion_active_;
@@ -2236,7 +2362,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       if ((okuri_handoff_active_ || okuri_handoff_failed_) &&
           (codepoint || wparam == VK_BACK) &&
           deferred_provider_keys_.size() == okuri_mirrored_keys_) {
-        if (codepoint) realtime_frontend_.Feed(*codepoint);
+        if (codepoint) { realtime_frontend_.Feed(*codepoint); record_okuri(); }
         else realtime_frontend_.BackspaceOkuri();
         ++okuri_mirrored_keys_;
         RenderLocalOkuri(context);
@@ -2333,6 +2459,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       if (engine_id_ == "ddskk" && last_engine_mode_ == L"preedit" &&
           realtime_frontend_.okuri_started()) {
         realtime_frontend_.Feed(*codepoint);
+        record_okuri();
         RenderLocalOkuri(context);
       }
       if (engine_id_ == "ddskk" && last_engine_mode_ == L"preedit" &&
@@ -2500,7 +2627,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     }
     if (realtime_frontend_.composing() && !provider_composition_active_ &&
         last_engine_mode_ != L"candidate")
-      state = realtime_frontend_.Backspace();
+      state = local_okuri_snapshot_.index ? realtime_frontend_.BackspaceOkuri() : realtime_frontend_.Backspace();
     else
       state = engine_.SendControl(ddskk::EngineControl::kBackspace,
                                   kInteractiveTimeoutMs);
@@ -2519,12 +2646,22 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
           last_engine_mode_ != L"candidate") {
         const auto started = GetTickCount64();
         const auto local_reading = realtime_frontend_.preview_reading();
-        if (local_enabled_ && local_store_.Available() && local_index && local_rule_snapshot_ &&
-            local_index->Rules() == local_rule_snapshot_->Rules() &&
-            local_conversion_.Begin(local_index, local_reading, local_store_.Pending(local_reading))) {
+        const auto captured = local_store_.Capture();
+        std::vector<std::wstring> pending;
+        for (const auto& item : captured.pending) if (item.key == local_reading) {
+          pending.erase(std::remove(pending.begin(), pending.end(), item.candidate), pending.end());
+          pending.insert(pending.begin(), item.candidate);
+        }
+        if (local_enabled_ && captured.available && captured.index && local_rule_snapshot_ &&
+            captured.index->Rules() == local_rule_snapshot_->Rules() &&
+            local_conversion_.Begin(captured.index, local_reading, pending)) {
+          // Cleanup replies have no ownership over this new local episode.
+          if (provider_cleanup_pending_) CancelPendingProvider();
+          provider_candidate_state_.reset();
           branch = L"local-convert";
           state = local_conversion_.State();
           const HRESULT hr = ApplyLocalState(context, *state);
+          if (FAILED(hr)) local_conversion_.Reset();
           *eaten = TRUE;
           if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
             std::printf("SPACE-CANDIDATE ms=%llu seq=%llu path=local\n",
@@ -2534,7 +2671,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
         branch = L"provider-convert";
         std::optional<std::vector<std::wstring>> preview;
         const std::wstring reading = realtime_frontend_.preview_reading();
-        if (!reading.empty()) preview = engine_.PreviewCandidates(reading, 8);
+        if (!local_enabled_ && !reading.empty()) preview = engine_.PreviewCandidates(reading, 8);
         if (BeginProviderConversion(realtime_frontend_.raw_keys())) {
           if (preview && !preview->empty()) {
             ddskk::EngineState preview_state;
@@ -2736,11 +2873,53 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     const bool realtime_path = !provider_composition_active_ &&
         last_engine_mode_ != L"candidate" && !registration_mode_;
     if (realtime_path) {
+      std::optional<ddskk::RealtimeFrontend> frontend_before;
+      ddskk::local::Selection okuri_before;
+      if (local_enabled_) { frontend_before = realtime_frontend_; okuri_before = local_okuri_snapshot_; }
       state = realtime_frontend_.Feed(*codepoint);
+      record_okuri();
       // Hand off at the marker, including uppercase vowels that complete
       // okuri immediately. Subsequent keys stay ordered on the provider
       // worker; DDSKK decides when n/sokuon rules start conversion.
       if (engine_id_ == "ddskk" && realtime_frontend_.okuri_started()) {
+        const auto reading = realtime_frontend_.okuri_key();
+        if (local_enabled_ && !local_okuri_snapshot_.index) {
+          auto captured = local_store_.Capture();
+          if (captured.available && captured.index && local_rule_snapshot_ &&
+              captured.index->Rules() == local_rule_snapshot_->Rules()) {
+            const auto entry = captured.index->Lookup(reading, L"あ");
+            if (entry.supported && (!entry.user.empty() || !entry.shared.empty()))
+              local_okuri_snapshot_ = std::move(captured);
+          }
+        }
+        if (local_okuri_snapshot_.index && state) {
+          branch = L"local-okuri-preedit";
+          if (state->pending_romaji.empty() && !realtime_frontend_.okuri_text().empty()) {
+            std::vector<std::wstring> pending;
+            for (const auto& item : local_okuri_snapshot_.pending) if (item.key == reading) {
+              pending.erase(std::remove(pending.begin(), pending.end(), item.candidate), pending.end());
+              pending.insert(pending.begin(), item.candidate);
+            }
+            if (local_conversion_.Begin(local_okuri_snapshot_.index, reading, pending, realtime_frontend_.okuri_text())) {
+              if (provider_cleanup_pending_) CancelPendingProvider();
+              provider_candidate_state_.reset();
+              branch = L"local-okuri-convert";
+              state = local_conversion_.State();
+            } else local_okuri_snapshot_ = {};
+          }
+          if (local_okuri_snapshot_.index) {
+            const HRESULT hr = ApplyLocalState(context, *state);
+            if (FAILED(hr)) {
+              local_conversion_.Reset();
+              realtime_frontend_ = *frontend_before;
+              local_okuri_snapshot_ = okuri_before;
+              okuri_conversion_started_qpc_ = 0;
+            } else if (local_conversion_.active()) TraceOkuriCandidate(true);
+            *eaten = TRUE; debug_exit(*eaten, hr, hr); return S_OK;
+          }
+        }
+
+        local_okuri_snapshot_ = {};
         RenderLocalOkuri(context);
         auto keys = realtime_frontend_.raw_keys();
         if (realtime_frontend_.katakana()) keys.insert(keys.begin(), U'q');
@@ -2823,7 +3002,8 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   if (!registration_mode_) last_engine_mode_ = state->mode;
   if ((was_candidate || was_registration || was_provider_composition) &&
       state->mode != L"candidate" && state->composition_start < 0) {
-    realtime_frontend_.Reset();
+    local_okuri_snapshot_ = {};
+  realtime_frontend_.Reset();
   }
   if (registration_mode_) {
     last_engine_mode_ = state->mode;
@@ -2889,6 +3069,7 @@ void TextService::ResetAbandonedComposition() {
   // next transacts, when it actually owns input again.
   CancelPendingProvider();
   engine_.MarkNeedsResync();
+  local_okuri_snapshot_ = {};
   realtime_frontend_.Reset();
   if (composition_ != nullptr) {
     composition_->Release();
@@ -2919,6 +3100,7 @@ void TextService::ForceCancelComposition(ITfContext* context) {
   CancelPendingProvider();
   engine_.Disconnect();
   engine_.MarkNeedsResync();
+  local_okuri_snapshot_ = {};
   realtime_frontend_.Reset();
   CloseCandidateUi();
   registration_mode_ = false;
@@ -2974,8 +3156,9 @@ void TextService::ForceCancelComposition(ITfContext* context) {
 }
 
 void TextService::SettleContextComposition(ITfContext* context) {
-  if (local_conversion_.active()) CommitLocal(context);
-  if (inline_epoch_ && context) {
+  const bool local_committed = local_conversion_.active() && SUCCEEDED(CommitLocal(context));
+  local_conversion_.Reset();
+  if (!local_committed && inline_epoch_ && context) {
     // Match the ordinary focus-settle path: confirm the visible reading,
     // excluding only the SKK marker, in its original document.
     auto settled = inline_state_;
@@ -2995,6 +3178,7 @@ void TextService::SettleContextComposition(ITfContext* context) {
   CancelPendingProvider();
   engine_.Disconnect();
   engine_.MarkNeedsResync();
+  local_okuri_snapshot_ = {};
   realtime_frontend_.Reset();
   CloseCandidateUi();
 
@@ -3164,8 +3348,11 @@ void TextService::UpdateCandidateUI(ITfContext* context,
 
 HRESULT TextService::SelectCandidate(UINT index) {
   if (local_conversion_.active()) {
+    const auto saved = local_conversion_;
     if (!local_conversion_.Select(index)) return E_INVALIDARG;
-    return ApplyLocalState(candidate_context_, local_conversion_.State());
+    const HRESULT hr = ApplyLocalState(candidate_context_, local_conversion_.State());
+    if (FAILED(hr)) local_conversion_ = saved;
+    return hr;
   }
   if (provider_pending_.load(std::memory_order_acquire)) return E_PENDING;
   if (candidate_context_ == nullptr || candidate_index_ < 0 ||
@@ -3199,8 +3386,13 @@ HRESULT TextService::FinalizeCandidate() {
 
 HRESULT TextService::AbortCandidate() {
   if (local_conversion_.active()) {
+    const auto saved = local_conversion_;
+    const auto frontend = realtime_frontend_;
     local_conversion_.Reset();
-    return ApplyLocalState(candidate_context_, realtime_frontend_.RestorePreedit());
+    const auto state = realtime_frontend_.okuri_started() ? realtime_frontend_.CancelOkuri() : realtime_frontend_.RestorePreedit();
+    const HRESULT hr = ApplyLocalState(candidate_context_, state);
+    if (FAILED(hr)) { local_conversion_ = saved; realtime_frontend_ = frontend; }
+    return hr;
   }
   if (provider_pending_.load(std::memory_order_acquire)) return E_PENDING;
   if (candidate_context_ == nullptr) return E_UNEXPECTED;
@@ -3216,7 +3408,11 @@ HRESULT TextService::ApplyLocalState(ITfContext* context, const ddskk::EngineSta
   const HRESULT request = context->RequestEditSession(client_id_, edit,
       TF_ES_SYNC | TF_ES_READWRITE, &result);
   edit->Release();
-  if (FAILED(request) || FAILED(result)) return FAILED(request) ? request : result;
+  if (FAILED(request) || FAILED(result)) {
+    if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
+      std::printf("LOCAL_EDIT denied=1 retry=reading pending=0 request=%08lx edit=%08lx\n", request, result);
+    return FAILED(request) ? request : result;
+  }
   engine_pending_ = state.composition_start >= 0 || !state.pending_romaji.empty();
   provider_composition_active_ = false;
   last_engine_mode_ = state.mode;
@@ -3230,11 +3426,13 @@ HRESULT TextService::CommitLocal(ITfContext* context) {
   const auto saved = local_conversion_;
   const auto key = local_conversion_.reading();
   const auto word = local_conversion_.selected();
+  const auto okuri = local_conversion_.okuri();
   const auto state = local_conversion_.Commit();
   const HRESULT result = ApplyLocalState(context, state);
   if (FAILED(result)) { local_conversion_ = saved; return result; }
+  local_okuri_snapshot_ = {};
   realtime_frontend_.Reset();
-  const bool queued = local_store_.Learn(key, word);
+  const bool queued = local_store_.Learn(key, word, okuri);
   if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
     std::printf("LOCAL_LEARNING queued=%d pending=%zu\n", queued ? 1 : 0, local_store_.Unsaved());
   return S_OK;
@@ -3840,13 +4038,19 @@ bool TextService::CoreQuiescent() const {
       (realtime_frontend_.composing() ? 128 : 0) |
       (candidate_ui_id_ != TF_INVALID_UIELEMENTID ? 256 : 0) |
       (!ending_compositions_.empty() ? 512 : 0) |
+      (local_conversion_.active() ? 1024 : 0) |
       (static_cast<uint64_t>(refs) << 16);
   wchar_t diagnostics[2]{};
   if (flags != quiescence_trace_ && GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", diagnostics, 2)) {
     std::printf("CORE_QUIESCENCE flags=%llu refs=%ld\n", static_cast<unsigned long long>(flags & 65535), refs);
     std::fflush(stdout); quiescence_trace_ = flags;
   }
-  return flags == (uint64_t{1} << 16);
+  if (flags != (uint64_t{1} << 16)) return false;
+  // Core swaps may run on the key thread. Drain durable learning on its
+  // worker, and defer the swap until the OS thread is already terminated.
+  // A formerly opted-in service may still have learning after opt-out.
+  local_handoff_requested_ = GetTickCount64();
+  return local_store_.PrepareHandoff();
 }
 HRESULT TextService::ExportCoreState(NativeImeSnapshot* state) {
   if (!state || state->size != sizeof(*state) || state->version != NATIVEIME_CORE_ABI)

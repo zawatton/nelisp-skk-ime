@@ -41,6 +41,15 @@
        (not (and (boundp 'skk-search-hook) skk-search-hook))
        (not (and (boundp 'skk-kakutei-hook) skk-kakutei-hook))))
 
+(defun ddskk-local-okuri-capability ()
+  "Certify complete-kana okuri; advanced okuri options stay on the provider."
+  (and (ddskk-local-capability)
+       (not (and (boundp 'skk-process-okuri-early) skk-process-okuri-early))
+       (not (and (boundp 'skk-auto-okuri-process) skk-auto-okuri-process))
+       (not (and (boundp 'skk-henkan-okuri-strictly) skk-henkan-okuri-strictly))
+       (not (and (boundp 'skk-henkan-strict-okuri-precedence) skk-henkan-strict-okuri-precedence))
+       (not (and (boundp 'skk-delete-okuri-when-quit) skk-delete-okuri-when-quit))))
+
 (defun ddskk-local-save ()
   "Verify a separate checkpoint, then ask the host to flush and replace it.
 The runtime's rename-file is not usable on Windows. No ACK is issued
@@ -70,14 +79,16 @@ the configured personal dictionary. The engine still owns its contents."
              (operation (and (nth 1 identity) (string-to-number (nth 1 identity))))
              (key (ddskk-engine--unhex (nth 3 fields)))
              (word (ddskk-engine--unhex (nth 4 fields)))
+             (okuri (and (nth 5 fields) (ddskk-engine--unhex (nth 5 fields))))
              (path (ddskk-user-jisyo-path)))
         (ddskk-local-load-operations)
         (cond
-         ((or (/= (length fields) 5) (not id) (> (length id) 96)
+         ((or (not (memq (length fields) '(5 6))) (not id) (> (length id) 96)
               (/= (length identity) 2) (/= (length client) 32)
               (not operation) (<= operation 0)
               (string-match "[^a-zA-Z0-9.-]" id) (not key) (not word)
-              (not (ddskk-local-capability))) "ERR LOCAL LEARN")
+              (not (ddskk-local-capability))
+              (and (nth 5 fields) (or (not okuri) (not (ddskk-local-okuri-capability))))) "ERR LOCAL LEARN")
          ((and (gethash client ddskk-local-operations)
                (<= operation (car (gethash client ddskk-local-operations))))
           (concat "ACK " id " " (number-to-string (cdr (gethash client ddskk-local-operations)))))
@@ -85,7 +96,8 @@ the configured personal dictionary. The engine still owns its contents."
                               (>= (hash-table-count ddskk-local-operations) 4096)))
           "ERR LOCAL STORAGE")
          (t
-          (let ((skk-henkan-key key)) (ddskk-user-jisyo--update word))
+          (let ((skk-henkan-key key) (skk-henkan-okurigana okuri))
+            (ddskk-user-jisyo--update word))
           ;; Candidate order and idempotency identity share one checkpoint.
           ;; Verification remains off the typing path; ACKs cannot change
           ;; an editing session, visible selection or committed text.
@@ -102,7 +114,8 @@ the configured personal dictionary. The engine still owns its contents."
   (cond
    ((equal line "LOCAL STATUS")
     (ddskk-local-load-operations)
-    (concat "LOCAL " (if (ddskk-local-capability) "1 " "0 ")
+    (concat "LOCAL " (cond ((ddskk-local-okuri-capability) "3 ")
+                          ((ddskk-local-capability) "1 ") (t "0 "))
             (number-to-string ddskk-user-jisyo-local-revision)))
    ((equal line "LOCAL SNAPSHOT")
     (concat "OVERLAY " (ddskk-engine--hex (ddskk-user-jisyo--serialize))))

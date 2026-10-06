@@ -85,14 +85,10 @@
 ;;     ;; okuri-nasi entries.
 ;;     かんじ /漢字/幹事/感じ/
 ;;
-;; v1 LIMITATION (deliberate): the `[okurigana/candidates.../]' ranking
-;; blocks inside an okuri-ari entry are read (so they don't corrupt
-;; parsing) and then DISCARDED -- only the plain candidate list ahead
-;; of the first `[' is kept.  This engine never reproduces those bracket
-;; blocks when writing either; every entry this module writes is a
-;; flat plain-candidate list, which remains valid SKK-JISYO (any SKK
-;; tool that doesn't understand the bracket refinement already falls
-;; back to exactly this plain list).
+;; Okuri ranking blocks are preserved independently of the plain search
+;; frontier, and updated by the same engine-only learning writer.
+;; Local conversion certifies the ordinary okuri options; other options
+;; remain engine-owned.
 ;;
 ;; Runtime facts this file was written against (probed empirically on
 ;; the actual `nelisp.exe' / `nelisp-markerfix2.exe' standalone build
@@ -221,6 +217,33 @@
   "MIDASI (string) -> ordered list of candidate strings.
 The first element is the most recently confirmed candidate for that
 midasi; the list never contains a duplicate (per `equal').")
+
+(defvar ddskk-user-jisyo--okuri-blocks (make-hash-table :test 'equal)
+  "MIDASI -> ordered (OKURI . CANDIDATES) blocks in DDSKK file order.")
+
+(defun ddskk-user-jisyo--blocks (fields)
+  "Extract the non-nested DDSKK okuri records from FIELDS."
+  (let (blocks current words)
+    (dolist (field fields)
+      (cond
+       ((equal field "]")
+        (when current (push (cons current (nreverse words)) blocks))
+        (setq current nil words nil))
+       ((and (> (length field) 0) (= (aref field 0) ?\[))
+        (setq current (substring field 1) words nil))
+       (current (push field words))))
+    (nreverse blocks)))
+
+(defun ddskk-user-jisyo--record-okuri (key word okuri)
+  "Update the matching block in place; append new okuri after old blocks."
+  (when (and (stringp okuri) (> (length okuri) 0)
+             (ddskk-user-jisyo--okuri-ari-p key))
+    (let* ((blocks (gethash key ddskk-user-jisyo--okuri-blocks))
+           (found (assoc okuri blocks)))
+      (if found
+          (setcdr found (cons word (delete word (cdr found))))
+        (setq blocks (append blocks (list (cons okuri (list word))))))
+      (puthash key blocks ddskk-user-jisyo--okuri-blocks))))
 
 (defvar ddskk-user-jisyo--last-save-error nil
   "The error signalled by the most recent `ddskk-user-jisyo-save', or nil.
@@ -415,9 +438,8 @@ scan (mirroring `ddskk-engine--parse-server-reply's style in
   "Return FIELDS with every `[...]' okurigana-ranking block dropped.
 Each such block starts with a field beginning with `[' and ends with
 the literal field `]'.  SKK-JISYO's okuri-ari ranking blocks are not
-nested, so one skip flag is enough.  This is the v1 simplification
-documented at the top of this file: only the plain candidate list
-ahead of the first `[' survives."
+nested, so one skip flag is enough. Ranking blocks are retained separately
+in `ddskk-user-jisyo--okuri-blocks' for serialization and learning."
   (let (out (skipping nil))
     (dolist (field fields)
       (cond
@@ -440,8 +462,9 @@ malformed file."
               (rest (substring line (1+ space))))
           (when (and (> (length rest) 0) (= (aref rest 0) ?/))
             (when (string-match "//" rest) (setq ddskk-user-jisyo--load-dirty t))
-            (let ((candidates (ddskk-user-jisyo--plain-candidates
-                                (ddskk-user-jisyo--split-fields rest))))
+            (let* ((fields (ddskk-user-jisyo--split-fields rest))
+                   (candidates (ddskk-user-jisyo--plain-candidates fields)))
+              (puthash midasi (ddskk-user-jisyo--blocks fields) ddskk-user-jisyo--okuri-blocks)
               (cons midasi candidates))))))))
 
 (defun ddskk-user-jisyo--parse-into-table (text table)
@@ -502,6 +525,7 @@ journal') over the base file afterwards, so any confirmation recorded
 since the last compaction is not lost across a restart -- see the
 \"v2 (current)\" architecture note at the top of this file."
   (clrhash ddskk-user-jisyo--table)
+  (clrhash ddskk-user-jisyo--okuri-blocks)
   (setq ddskk-user-jisyo--load-dirty nil)
   (let ((path (ddskk-user-jisyo-path)))
     (when (stringp path)
@@ -530,6 +554,10 @@ only, no per-item closures."
       (dolist (candidate (cdr entry))
         (push candidate chunks)
         (push "/" chunks))
+      (dolist (block (gethash (car entry) ddskk-user-jisyo--okuri-blocks))
+        (push "[" chunks) (push (car block) chunks) (push "/" chunks)
+        (dolist (word (cdr block)) (push word chunks) (push "/" chunks))
+        (push "]/" chunks))
       (push "\n" chunks))
     (apply #'concat (nreverse chunks))))
 
@@ -779,6 +807,8 @@ dictionary, so gating it here is sufficient on its own."
             (ddskk-user-jisyo-purge skk-henkan-key word)
             (ddskk-user-jisyo-flush))
         (ddskk-user-jisyo-record skk-henkan-key word)
+        (when (boundp 'skk-henkan-okurigana)
+          (ddskk-user-jisyo--record-okuri skk-henkan-key word skk-henkan-okurigana))
         (ddskk-user-jisyo--journal-append skk-henkan-key)
         (setq ddskk-user-jisyo--journal-pending
               (1+ ddskk-user-jisyo--journal-pending))))))

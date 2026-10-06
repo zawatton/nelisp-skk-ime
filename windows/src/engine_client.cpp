@@ -300,9 +300,9 @@ std::optional<std::vector<RomajiRule>> EngineClient::RomajiRules(DWORD timeout_m
 }
 
 std::optional<uint64_t> EngineClient::LearnLocal(const std::string& id, const std::string& key,
-                              const std::string& candidate, DWORD timeout_ms) {
+                              const std::string& candidate, DWORD timeout_ms, const std::string& okuri) {
   if (!Connect(timeout_ms)) return std::nullopt;
-  const auto response = RawTransact("LOCAL LEARN " + id + " " + key + " " + candidate + "\n", timeout_ms);
+  const auto response = RawTransact("LOCAL LEARN " + id + " " + key + " " + candidate + (okuri.empty() ? "" : " " + okuri) + "\n", timeout_ms);
   last_response_ = response ? *response : "";
   if (!response || !response->starts_with("ACK " + id + " ")) return std::nullopt;
   try { return std::stoull(response->substr(id.size() + 5)); } catch (...) { return std::nullopt; }

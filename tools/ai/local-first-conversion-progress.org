@@ -61,3 +61,13 @@ are recorded in docs/design/local-first-conversion.org, LF2 sections.
 S2 check lines stay pending: this does not ship local okuri or complete the
 broader parity corpus. Persistent user-facing unsaved status and extended
 crash/storage stress verification remain follow-up work. No S3 claim.
+
+* LF3 worker note (2026-10-06; check lines remain pending)
+Certified complete-kana okuri implemented in the core. Priority instability
+work reproduces a denied-edit ownership mismatch for synthetic ていこうち,
+and fixes bounded fallback, mapping/learning publication and open-generation
+consistency. Synthetic unsorted two-source fixtures cover six duplicate keys,
+annotations, shared candidate identities and both chi/ti spellings; no live
+personal dictionary was read. Detailed red/green evidence, gate commands,
+verbatim tails, changed-file locations and limits are recorded in
+tools/ai/local-first-conversion-notes.org. No live change, ABI change or commit.

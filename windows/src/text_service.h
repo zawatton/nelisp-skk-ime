@@ -192,6 +192,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   static LRESULT CALLBACK ProviderWindowProc(HWND window, UINT message,
                                               WPARAM wparam, LPARAM lparam);
   bool CreateProviderWindow();
+  void ResolveLocalFallback();
+  ULONGLONG provider_deadline_ = 0;
   bool BeginProviderConversion(const std::u32string& keys, bool registration = false);
   bool BeginProviderControl(ddskk::EngineControl control, bool apply_state = true);
   bool BeginProviderKey(char32_t key, bool may_convert = false);
@@ -204,8 +206,10 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   void RenderLocalOkuri(ITfContext* context);
   HRESULT ApplyLocalState(ITfContext* context, const ddskk::EngineState& state);
   HRESULT CommitLocal(ITfContext* context);
-  ddskk::local::Store local_store_;
+  mutable ddskk::local::Store local_store_;
+  mutable ULONGLONG local_handoff_requested_ = 0;
   ddskk::local::Conversion local_conversion_;
+  ddskk::local::Selection local_okuri_snapshot_;
   bool local_enabled_ = false;
   int application_local_conversion_ = -1;
   uint64_t local_rule_generation_ = 0;
@@ -233,6 +237,9 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // Retain a failed lookup's identity until cancellation or a new request,
   // so Ctrl+G restores its reading even after the worker has timed out.
   bool provider_conversion_active_ = false;
+  void TraceOkuriCandidate(bool local);
+  LONGLONG okuri_conversion_started_qpc_ = 0;
+  uint64_t okuri_conversion_sequence_ = 0;
   ULONGLONG provider_conversion_started_ = 0;
   bool provider_cleanup_pending_ = false;
   bool okuri_test_failure_used_ = false;

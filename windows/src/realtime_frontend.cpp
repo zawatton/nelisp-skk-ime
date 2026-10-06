@@ -117,7 +117,10 @@ std::optional<EngineState> RealtimeFrontend::Feed(char32_t key) {
   return FeedAscii(static_cast<char>(key), true);
 }
 
-std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record) {
+std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record, unsigned steps) {
+  // A custom carry rule can re-enter the same prefix without consuming input.
+  // Yield to the provider instead of recursing forever on the TSF thread.
+  if (steps == 32) return std::nullopt;
   const bool upper = key >= 'A' && key <= 'Z';
   const char lower = static_cast<char>(std::tolower(static_cast<unsigned char>(key)));
 
@@ -165,6 +168,7 @@ std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record) {
              !okuri_started_ && !text_.empty()) {
     text_ += L'*';
     okuri_started_ = true;
+    okuri_letter_ = lower;
   }
 
   if (!rules_.empty()) {
@@ -194,7 +198,7 @@ std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record) {
         text_.append(pending_.begin(), pending_.end());
         pending_.clear();
       }
-      return FeedAscii(key, false);
+      return FeedAscii(key, false, steps + 1);
     } else {
       text_.push_back(static_cast<wchar_t>(static_cast<unsigned char>(key)));
       pending_.clear();
@@ -230,7 +234,7 @@ std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record) {
     } else if (next.size() > 1 && next[0] == 'n') {
       text_ += katakana_ ? L"ン" : L"ん";
       pending_.clear();
-      return FeedAscii(lower, false);
+      return FeedAscii(lower, false, steps + 1);
     } else {
       text_.push_back(static_cast<wchar_t>(static_cast<unsigned char>(next[0])));
       pending_ = next.substr(1);
@@ -249,6 +253,7 @@ void RealtimeFrontend::RebuildPreedit() {
   const std::u32string keys = raw_keys_;
   preedit_ = false;
   okuri_started_ = false;
+  okuri_letter_ = 0;
   text_.clear();
   pending_.clear();
   raw_keys_.clear();
@@ -287,6 +292,14 @@ std::optional<EngineState> RealtimeFrontend::Quit() {
 }
 
 EngineState RealtimeFrontend::RestorePreedit() const { return Snapshot(); }
+EngineState RealtimeFrontend::CancelOkuri() {
+  const auto marker = text_.find(L'*');
+  if (marker != text_.npos) text_.erase(marker, 1);
+  okuri_started_ = false; okuri_letter_ = 0;
+  for (size_t n = 1; n < raw_keys_.size(); ++n)
+    if (raw_keys_[n] >= U'A' && raw_keys_[n] <= U'Z') raw_keys_[n] += U'a' - U'A';
+  return Snapshot();
+}
 
 std::optional<EngineState> RealtimeFrontend::ToKatakana() {
   if (!preedit_) return std::nullopt;
@@ -337,6 +350,7 @@ EngineState RealtimeFrontend::ToHiragana() {
 void RealtimeFrontend::Reset() {
   preedit_ = false;
   okuri_started_ = false;
+  okuri_letter_ = 0;
   text_.clear();
   pending_.clear();
   raw_keys_.clear();

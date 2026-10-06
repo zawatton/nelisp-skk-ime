@@ -236,5 +236,9 @@ int main(int argc, char** argv) {
   CHECK(state && state->text == L"▽か" && state->pending_romaji.empty());
   state = continuous.Commit();
   CHECK(state && state->text == L"か" && state->composition_start == -1);
+  ddskk::RealtimeFrontend cyclic;
+  cyclic.SetRules({ddskk::RomajiRule{"a", "a", L"あ", L"ア", L""}});
+  CHECK(cyclic.Feed(U'a').has_value());
+  CHECK(!cyclic.Feed(U'b').has_value());
   return 0;
 }

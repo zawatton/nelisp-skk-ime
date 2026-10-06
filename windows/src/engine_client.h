@@ -72,7 +72,7 @@ class EngineClient {
   std::optional<std::vector<RomajiRule>> RomajiRules(DWORD timeout_ms = 8);
   // Metadata/learning uses a separate client, never an editing session.
   std::optional<uint64_t> LearnLocal(const std::string& id, const std::string& key,
-                  const std::string& candidate, DWORD timeout_ms = 1500);
+                  const std::string& candidate, DWORD timeout_ms = 1500, const std::string& okuri = {});
   std::optional<EngineState> RegisterLocal(const std::u32string& keys, DWORD timeout_ms = 5000);
   std::optional<EngineState> SyncKeys(const std::u32string& keys,
                                      DWORD timeout_ms = 1500);
@@ -96,7 +96,9 @@ class EngineClient {
   // Set whenever a transaction is abandoned mid-flight, or when this
   // client abandons a document composition. RESET is sent for this client's
   // scoped engine checkpoint only when it next becomes active and transacts.
-  bool needs_resync_ = false;
+  // Focus/cancellation callbacks can mark the session while its cancelled
+  // provider transaction is still unwinding on the worker.
+  std::atomic<bool> needs_resync_{false};
   std::function<void()> connection_failure_;
   // Raw reply retained for diagnostics when a version/protocol mismatch
   // makes ParseStateResponse fail. Never used to drive behavior.

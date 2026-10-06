@@ -1948,6 +1948,7 @@ bool LocalConversionRequested() {
 
 void LocalPublicationLoop() {
   std::string previous;
+  bool test_stalled = false;
   while (!g_stopping.load()) {
     try {
       if (LocalConversionRequested()) {
@@ -1980,8 +1981,22 @@ void LocalPublicationLoop() {
             start = end + 1;
           }
           const auto overlay = ddskk::local::Utf8(ddskk::local::Unhex(snapshot.substr(8)));
-          const uint64_t capabilities = status.starts_with("LOCAL 1 ") && config.enabled == 0 ? 1 : 0;
-          const auto revision = std::stoull(status.substr(8));
+          std::istringstream metadata(status);
+          std::string label; uint64_t flags = 0, revision = 0;
+          if (!(metadata >> label >> flags >> revision) || label != "LOCAL" || flags > 3)
+            throw std::runtime_error("local capability metadata");
+          const uint64_t capabilities = config.enabled == 0 ? flags : 0;
+          wchar_t registry[128]{}, delay[16]{};
+          if (!test_stalled && !previous.empty() &&
+              GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0) &&
+              GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", registry, 128) &&
+              std::wstring(registry).starts_with(L"Software\\NativeIME-test-") &&
+              GetEnvironmentVariableW(L"NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS", delay, 16)) {
+            test_stalled = true;
+            const DWORD ms = std::min<DWORD>(10000, wcstoul(delay, nullptr, 10));
+            std::fprintf(stderr, "LOCAL_PUBLICATION stalled_ms=%lu\n", ms);
+            Sleep(ms); // Snapshot obtained above; engine mutex is released.
+          }
           ddskk::local::Publish(ddskk::local::Directory(), files, overlay, rules, capabilities, revision);
           previous = status + rules + ddskk::local::Utf8(config.dictionary_files) + std::to_string(config.enabled);
           std::fprintf(stderr, "LOCAL publication status=%s capabilities=%llu\n", status.c_str(), capabilities);
