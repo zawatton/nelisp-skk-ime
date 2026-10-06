@@ -14,6 +14,7 @@
 namespace ddskk::local {
 namespace {
 constexpr uint64_t kMagic = 0x32495844464c4b53ULL;
+constexpr uint64_t kSchema = 3;
 constexpr uint64_t kLimit = 256ULL * 1024 * 1024;
 using Digest = std::array<unsigned char, 32>;
 std::vector<unsigned char> User() {
@@ -92,52 +93,12 @@ void Write(const std::filesystem::path& path, std::string_view bytes) {
   CloseHandle(file);
   if (!ok) throw std::runtime_error("generation flush failed");
 }
-std::vector<std::wstring> Plain(std::string_view raw, bool* supported, bool okuri = false) {
-  std::vector<std::wstring> result;
-  if (raw.size() > 65536) { *supported = false; return result; }
-  bool block = false;
-  size_t start = 0;
-  for (size_t end = 0; end < raw.size(); ++end) {
-    if (raw[end] != '/') continue;
-    const auto field = raw.substr(start, end - start); start = end + 1;
-    if (field.empty()) continue;
-    if (field.front() == '[') { block = true; if (!okuri || field.size() == 1) *supported = false; continue; }
-    if (block) { if (field == "]") block = false; continue; }
-    const auto word = field.substr(0, field.find(';'));
-    if (word.empty() || word.front() == '(' || word.find('#') != word.npos ||
-        word.find_first_of("\t\n\r") != word.npos) *supported = false;
-    auto candidate = Wide(field);
-    // Scalar-hex learning must fit the host's existing 8 KiB request.
-    // A larger source entry belongs to the provider before conversion.
-    if (candidate.size() > 1024) *supported = false;
-    result.push_back(std::move(candidate));
-    if (result.size() > 1024) { *supported = false; return {}; }
-  }
-  if (block) *supported = false;
-  return result;
-}
-using Table = std::map<std::string, std::string, std::less<>>;
-Table Parse(std::string_view bytes, uint64_t& bad) {
-  (void)Wide(bytes); // Reject invalid UTF-8 before parsing any entries.
-  if (bytes.starts_with("\xef\xbb\xbf")) bytes.remove_prefix(3);
-  Table table;
-  while (!bytes.empty()) {
-    const auto end = bytes.find('\n');
-    auto line = bytes.substr(0, end);
-    bytes = end == bytes.npos ? std::string_view{} : bytes.substr(end + 1);
-    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
-    if (line.empty() || line.front() == ';') continue;
-    const auto space = line.find(' ');
-    if (!space || space == line.npos || space + 1 >= line.size() ||
-        line[space + 1] != '/' || line.back() != '/') { ++bad; continue; }
-    table[std::string(line.substr(0, space))] = std::string(line.substr(space + 1));
-  }
-  return table;
-}
-std::string Raw(const std::vector<std::wstring>& fields) {
-  std::string out = "/";
-  for (const auto& field : fields) { out += Utf8(field); out += '/'; }
-  return fields.empty() ? "" : out;
+using Table = DictionaryTable;
+Table Parse(std::string_view bytes, uint64_t& bad, bool first_key_wins = false, bool overlay = false) {
+  auto parsed = overlay ? ParseOverlay(bytes, first_key_wins) : ParseDictionary(bytes, first_key_wins);
+  if (!parsed.valid_utf8) throw std::runtime_error("invalid UTF8");
+  bad += parsed.bad_lines;
+  return std::move(parsed.entries);
 }
 }
 std::string Utf8(std::wstring_view value) {
@@ -206,15 +167,6 @@ std::filesystem::path Directory() {
   }
   return std::filesystem::path(path);
 }
-void Union(std::vector<std::wstring>& into, const std::vector<std::wstring>& from) {
-  for (const auto& y : from) {
-    const bool found = std::any_of(into.begin(), into.end(), [&](const auto& x) {
-      const auto semicolon = x.find(L';');
-      return x == y || (semicolon != x.npos && x.substr(0, semicolon) == y.substr(0, y.find(L';')));
-    });
-    if (!found) into.push_back(y);
-  }
-}
 void Index::Close() {
   if (base_) UnmapViewOfFile(base_);
   if (mapping_) CloseHandle(mapping_);
@@ -244,8 +196,8 @@ Index::Index(const std::filesystem::path& path) {
     base_ = static_cast<const char*>(MapViewOfFile(mapping_, FILE_MAP_READ, 0, 0, 0));
     if (!base_) throw std::runtime_error("index view");
     std::memcpy(&header_, base_, sizeof(header_));
-    if (header_.magic != kMagic || header_.schema != 2 || header_.bytes != static_cast<uint64_t>(size.QuadPart) ||
-        header_.count > (header_.bytes - sizeof(Header)) / sizeof(Record) || header_.capabilities > 3)
+    if (header_.magic != kMagic || header_.schema != kSchema || header_.bytes != static_cast<uint64_t>(size.QuadPart) ||
+        header_.count > (header_.bytes - sizeof(Header)) / sizeof(Record) || header_.capabilities > 7)
       throw std::runtime_error("index header");
     Header copy = header_; copy.checksum = {};
     std::string checked(base_, static_cast<size_t>(header_.bytes));
@@ -273,33 +225,32 @@ Index::Index(const std::filesystem::path& path) {
 std::string_view Index::Rules() const { return View(header_.rules_offset, header_.rules_bytes); }
 Entry Index::Lookup(std::wstring_view reading, std::wstring_view okuri) const {
   Entry entry;
-  if (!(header_.capabilities & 1) || reading.empty() || reading.size() > 256) return entry;
-  // Completed kana and certified stem+okuri are local. Abbrev, numeric and
-  // unsupported commands choose the provider before constructing candidates.
-  auto stem = reading;
-  if (!okuri.empty()) {
-    if (okuri.size() > 32) return entry;
-    if (!(header_.capabilities & 2) || reading.back() < L'a' || reading.back() > L'z') return entry;
-    stem.remove_suffix(1);
-    for (auto c : okuri) if ((c < 0x3041 || c > 0x3096) && c != L'ー') return entry;
-  }
-  for (auto c : stem) if ((c < 0x3041 || c > 0x3096) && c != L'ー') return entry;
+  if (!(header_.capabilities & 1) || reading.empty() || Utf16Units(reading) > 256) return entry;
   const auto key = Utf8(reading);
-  uint64_t low = 0, high = header_.count;
-  while (low < high) {
-    const auto mid = low + (high - low) / 2; const auto r = At(mid);
-    const auto found = View(r.key, r.key_bytes);
-    if (found < key) low = mid + 1;
-    else if (key < found) high = mid;
-    else {
-      entry.supported = true;
-      entry.user = Plain(View(r.user, r.user_bytes), &entry.supported, !okuri.empty());
-      entry.shared = Plain(View(r.shared, r.shared_bytes), &entry.supported, !okuri.empty());
-      for (const auto* tier : {&entry.user, &entry.shared})
-        for (const auto& word : *tier)
-          if ((word.size() + reading.size() + okuri.size()) * 6 + 128 > 8192) entry.supported = false;
-      return entry;
+  auto locate = [&](char section) -> std::optional<Record> {
+    const auto variant = VariantKey(key, section);
+    uint64_t low = 0, high = header_.count;
+    while (low < high) {
+      const auto mid = low + (high - low) / 2; const auto r = At(mid);
+      const auto found = View(r.key, r.key_bytes);
+      if (found < variant) low = mid + 1;
+      else if (variant < found) high = mid;
+      else return r;
     }
+    return std::nullopt;
+  };
+  auto record = locate(okuri.empty() ? 'N' : 'A');
+  if (!record) record = locate('U');
+  if (record) {
+      const auto r = *record;
+      const auto user_raw = View(r.user, r.user_bytes);
+      const auto shared_raw = View(r.shared, r.shared_bytes);
+      entry.supported = CertifyEntry(reading, okuri, user_raw, shared_raw, header_.capabilities);
+      auto user = ParsePlain(user_raw, !okuri.empty(), (header_.capabilities & 4) != 0);
+      auto shared = ParsePlain(shared_raw, !okuri.empty(), (header_.capabilities & 4) != 0);
+      entry.user = std::move(user.candidates);
+      entry.shared = std::move(shared.candidates);
+      return entry;
   }
   // A miss is routed to the engine's registration editor in this slice.
   return entry;
@@ -310,33 +261,21 @@ void Publish(const std::filesystem::path& directory, const std::vector<std::file
   std::filesystem::create_directories(directory);
   Secure(directory);
   uint64_t bad = 0;
-  auto user = Parse(overlay, bad);
-  std::map<std::string, std::vector<std::wstring>, std::less<>> merged;
-  std::map<std::string, std::string, std::less<>> unsupported;
-  std::string config = std::to_string(capabilities) + std::string(rules);
+  auto user = Parse(overlay, bad, false, true);
+  const auto published_capabilities = PublishedCapabilities(capabilities, overlay);
+  std::vector<DictionaryTable> sources;
+  std::string config = std::to_string(published_capabilities) + std::string(rules);
   for (const auto& file : files) {
     const auto bytes = Read(file);
     config += Utf8(file.wstring());
     const auto digest = Hash(bytes); config.append(reinterpret_cast<const char*>(digest.data()), digest.size());
-    const auto source = Parse(bytes, bad);
-    for (const auto& [key, raw] : source) {
-      bool supported = true;
-      const auto values = Plain(raw, &supported, (capabilities & 2) && !key.empty() && key.back() >= 'a' && key.back() <= 'z');
-      auto& into = merged[key];
-      for (const auto& candidate : values) {
-        const auto word = candidate.substr(0, candidate.find(L';'));
-        if (std::none_of(into.begin(), into.end(), [&](const auto& x) { return x.substr(0, x.find(L';')) == word; }))
-          into.push_back(candidate);
-      }
-      // Preserve uncertified expressions/options as opaque source bytes.
-      // Their presence selects the engine before conversion starts.
-      if (!supported) unsupported[key] += raw;
-    }
+    sources.push_back(Parse(bytes, bad, true));
   }
+  const auto merged = CompileSources(sources, published_capabilities);
   std::map<std::string, std::pair<std::string, std::string>, std::less<>> entries;
-  for (const auto& [key, raw] : user) entries[key].first = raw;
-  for (const auto& [key, values] : merged)
-    entries[key].second = unsupported.contains(key) ? unsupported[key] : Raw(values);
+  for (const auto& [key, raw] : user) entries[key].first = raw.raw;
+  for (const auto& [key, value] : merged)
+    entries[key].second = value.supported ? SerializeCandidates(value.candidates) : "/(concat \"lfd1-unsupported\")/";
   const uint64_t beginning = sizeof(Header) + entries.size() * sizeof(Record);
   std::vector<Record> records;
   std::string payload;
@@ -355,8 +294,8 @@ void Publish(const std::filesystem::path& directory, const std::vector<std::file
   uint64_t generation;
   do { generation = std::max(now, previous_generation + 1); }
   while (!last_generation.compare_exchange_weak(previous_generation, generation));
-  Header header{kMagic, 2, beginning + payload.size() + rules.size(), records.size(), generation,
-                capabilities, bad, overlay_sequence, beginning + payload.size(), rules.size(), Hash(config), {}};
+  Header header{kMagic, kSchema, beginning + payload.size() + rules.size(), records.size(), generation,
+                published_capabilities, bad, overlay_sequence, beginning + payload.size(), rules.size(), Hash(config), {}};
   if (header.bytes > kLimit) throw std::runtime_error("generation limit");
   std::string bytes(reinterpret_cast<const char*>(&header), sizeof(header));
   bytes.append(reinterpret_cast<const char*>(records.data()), records.size() * sizeof(Record));

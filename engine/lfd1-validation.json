@@ -1,0 +1,62 @@
+{
+  "engine": {
+    "command": "bash engine/run-local-conversion-tests.sh",
+    "exit_code": 0,
+    "tests": 14,
+    "expected": 14,
+    "unexpected": 0,
+    "tail": "   passed  10/14  local-learning-restart-watermark (0.001079 sec)\n   passed  11/14  local-literal-annotation-binding-change-uses-provider (0.000608 sec)\n   passed  12/14  local-literal-annotation-profile-is-transient (0.000602 sec)\n   passed  13/14  local-okuri-learning-block-order-and-restart (0.001662 sec)\n   passed  14/14  local-okuri-unsupported-options-select-provider (0.000512 sec)\n\nRan 14 tests, 14 results as expected, 0 unexpected (2026-10-06 11:04:52+0900, 0.040673 sec)\n\n"
+  },
+  "engine_negative_control": {
+    "command": "bash engine/run-local-conversion-tests.sh --baseline",
+    "exit_code": 0,
+    "baseline_engine": "28e9882",
+    "tests": 2,
+    "expected": 0,
+    "unexpected": 2,
+    "rejected_regressions": 2,
+    "tail": "\nRan 2 tests, 0 results as expected, 2 unexpected (2026-10-06 11:05:36+0900, 0.255445 sec)\n\n2 unexpected results:\n   FAILED  local-base-duplicate-first-journal-duplicate-last\n   FAILED  local-candidate-customizations-use-provider\n\nPASS engine baseline negative control: 2 regressions rejected\n",
+    "baseline_user_jisyo": "28e9882"
+  },
+  "portable": {
+    "command": "bash windows/test/run-local-index-portable.sh",
+    "exit_code": 0,
+    "checks": 28,
+    "tail": "PASS local-index-portable checks=28\n"
+  },
+  "oracle": {
+    "command": "bash engine/run-local-conversion-oracle.sh",
+    "exit_code": 0,
+    "tests": 9,
+    "expected": 9,
+    "unexpected": 0,
+    "rows": [
+      "PASS stock literal profile: 21 guarded rows, 24 markerless/forged/expression negatives",
+      "PASS stock dynamic oracle: 8 provider-owned rows",
+      "PASS headerless source order: 2 stock-normalized fixture rows",
+      "PASS loaded duplicate overlay: 5 stock rows, 6 distinct duplicate entries, nasi brackets and okuri suffix",
+      "PASS lowercase abbrev learning: 2 stock rows",
+      "PASS stock overlay oracle: 2 rows before/after engine learning",
+      "PASS overlay-only source: 1 stock row",
+      "PASS stock source isolation: 1 malformed rejection, 2 distinct section rows",
+      "PASS stock two-source oracle: 18 rows, order/annotations/commit"
+    ],
+    "tail": "PASS overlay-only source: 1 stock row\n   passed  7/9  lfd1-stock-overlay-only-reading (0.002705 sec)\nPASS stock source isolation: 1 malformed rejection, 2 distinct section rows\n   passed  8/9  lfd1-stock-source-rejection-is-sticky (0.007561 sec)\nPASS stock two-source oracle: 18 rows, order/annotations/commit\n   passed  9/9  lfd1-stock-two-source-plain-order-and-annotations (0.044523 sec)\n\nRan 9 tests, 9 results as expected, 0 unexpected (2026-10-06 11:04:22+0900, 0.209875 sec)\n\n"
+  },
+  "static": {
+    "command": "git diff --check; bash -n engine/run-local-conversion-tests.sh engine/run-local-conversion-oracle.sh engine/run-local-conversion-classification.sh windows/test/run-local-index-portable.sh",
+    "exit_code": 0,
+    "tail": ""
+  },
+  "windows": {
+    "status": "unverified"
+  },
+  "audit": {
+    "model": "gpt-6-astra",
+    "reasoning_effort": "ultra",
+    "blocking_defects": 0,
+    "independent_portable_checks": 28,
+    "independent_oracle_tests": 9,
+    "independent_engine_tests": 14
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "source_name": "SKK-JISYO.L.utf8",
+  "source_sha256": "2119aa28a6eba24ad3bb2f11ce9de2ad7907636f7fbd1a9e3b68f359bd68b206",
+  "source_bytes": 6156364,
+  "source_lines": 175836,
+  "entries": 175774,
+  "duplicates": 0,
+  "malformed_lines": 0,
+  "engine_capabilities": 3,
+  "annotation_profile": true,
+  "okuri_probe": "あ for ari entries; no okuri for nasi entries",
+  "before_policy": "28e9882 reading/Plain checks, last observed failing candidate reason",
+  "after_policy": "production source compilation and entry certification; numeric reading takes reader priority",
+  "counts": {
+    "before": {
+      "supported": 147485,
+      "non-kana-reading": 27540,
+      "numeric-reading": 746,
+      "candidate-lisp-prefix": 3
+    },
+    "after": {
+      "supported": 175019,
+      "numeric-reading": 746,
+      "expression": 9
+    }
+  },
+  "examples": {
+    "before": {
+      "supported": [
+        "をs /惜/",
+        "ゐr /居/",
+        "われらg /我等/"
+      ],
+      "non-kana-reading": [
+        ">わたs /渡/",
+        ">わすr /忘/",
+        ">わk /分/"
+      ],
+      "numeric-reading": [
+        "# /#1/#3/#2/＃;number/#0/#8/#4/#5/",
+        "#% /#1％/",
+        "#) /#1）/"
+      ],
+      "candidate-lisp-prefix": [
+        "かぶ /株/下部/蕪/歌舞/(株)/（株）/",
+        "かぶしきがいしゃ /株式会社/株式會社;「会」旧字/(株)/",
+        "わらい /笑い/（笑）/笑/(笑)/"
+      ]
+    },
+    "after": {
+      "supported": [
+        "をs /惜/",
+        "ゐr /居/",
+        "われらg /我等/"
+      ],
+      "numeric-reading": [
+        "# /#1/#3/#2/＃;number/#0/#8/#4/#5/",
+        "#% /#1％/",
+        "#) /#1）/"
+      ],
+      "expression": [
+        "GPL /GNU General Public License;(concat \"http:\\057\\057www.gnu.org\\057licenses\\057gpl.ja.html\")/",
+        "OMG /the Object Management Group;CORBA策定のためのフレームワークを提供するために組織された。/(concat \"http:\\057\\057www.omg.org\\057\")/",
+        "ao /(concat \"and\\057or\")/"
+      ]
+    }
+  },
+  "reported_readings": {
+    "いどう": {
+      "before": "supported",
+      "after": "supported",
+      "source_line": "いどう /移動/異動;†「人事-」/異同;†difference.「諸写本の-」/医道/"
+    },
+    "おーむ": {
+      "before": "supported",
+      "after": "supported",
+      "source_line": "おーむ /Ω/王蟲/"
+    }
+  }
+}

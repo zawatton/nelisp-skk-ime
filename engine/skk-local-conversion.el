@@ -6,6 +6,34 @@
 (defvar ddskk-local-operations (make-hash-table :test 'equal))
 (defvar ddskk-local-operations-loaded nil)
 
+(defconst ddskk-local-literal-annotations
+  '("(-肉)" "(<galley)" "(<蘭語)" "(=すすg)「汚名を-ぐ」(cf.「雪辱」)"
+    "([中国史])" "([二十四節気]2.19頃)" "([二十四節気]4.5頃)"
+    "([二十四節気]9.8頃)" "([八卦]陽陰陽)" "([日本史]=年序)" "([部首]=貝偏)"
+    "(attract)" "(difficult)" "(enlarge)" "(feel)" "(generic)" "(most)"
+    "(order)" "(send)" "(sorrow)" "(worry)")
+  "Bounded public-L annotation vocabulary shared with the native parser.
+The snapshot certifies these exact components only while the actual
+DDSKK reader and engine function bindings establish that they are inert.
+Change the profile hash/version in both implementations when changing it.")
+(defconst ddskk-local-literal-profile-marker
+  ";; local-literal-profile 1 879b04a00ff3ffa629025a330ece9b65488fc9494e9b883d4dda104f0751edc8")
+
+(defun ddskk-local-literal-annotations-safe-p ()
+  "Check stock's expression predicate and current bindings without eval.
+Unexpected reader/predicate errors fail closed.  Stock's predicate itself
+returns nil for unreadable or partially consumed strings, which are literal."
+  (condition-case nil
+      (and (fboundp 'skk-lisp-prog-p)
+           (catch 'callable
+             (dolist (form ddskk-local-literal-annotations)
+               (when (skk-lisp-prog-p form)
+                 (let ((parsed (car (read-from-string form))))
+                   (when (and (listp parsed) (functionp (car parsed)))
+                     (throw 'callable nil)))))
+             t))
+    (error nil)))
+
 (defun ddskk-local-load-operations ()
   "Read durable operation identities before accepting a retry."
   (unless ddskk-local-operations-loaded
@@ -31,15 +59,32 @@
              ddskk-local-operations)
     (apply #'concat lines)))
 
+(defun ddskk-local-capability-reason ()
+  "Return the provider-only plan reason, or nil for ordinary lookup.
+This is a plan check, not a reading check.  The published index certifies
+each reading and its candidates separately.  Custom candidate/commit
+functions can change plain lookup results and must run in the provider."
+  (cond
+   ((not (equal skk-search-prog-list
+                '((ddskk-user-jisyo-search) (ddskk-engine-server-search))))
+    'search-plan)
+   ((not (eq skk-update-jisyo-function 'ddskk-user-jisyo--update)) 'update-function)
+   (ddskk-user-jisyo-learning-disabled 'learning-disabled)
+   ((and (boundp 'skk-search-end-function) skk-search-end-function) 'search-end-function)
+   ((and (boundp 'skk-search-hook) skk-search-hook) 'search-hook)
+   ((and (boundp 'skk-kakutei-hook) skk-kakutei-hook) 'kakutei-hook)
+   ((and (boundp 'skk-treat-candidate-appearance-function)
+         skk-treat-candidate-appearance-function) 'candidate-function)
+   ((and (boundp 'skk-insert-new-word-function) skk-insert-new-word-function) 'insert-function)
+   ((and (boundp 'skk-kakutei-end-function) skk-kakutei-end-function) 'commit-function)
+   ((and (boundp 'skk-search-excluding-word-pattern-function)
+         skk-search-excluding-word-pattern-function) 'learning-filter)
+   ((and (boundp 'skk-learn-combined-word) skk-learn-combined-word) 'combined-learning)
+   ((not (ddskk-local-literal-annotations-safe-p)) 'literal-annotation-profile)))
+
 (defun ddskk-local-capability ()
-  "Certify only the two-source ordinary plan implemented by the core."
-  (and (equal skk-search-prog-list
-              '((ddskk-user-jisyo-search) (ddskk-engine-server-search)))
-       (eq skk-update-jisyo-function 'ddskk-user-jisyo--update)
-       (not ddskk-user-jisyo-learning-disabled)
-       (not (and (boundp 'skk-search-end-function) skk-search-end-function))
-       (not (and (boundp 'skk-search-hook) skk-search-hook))
-       (not (and (boundp 'skk-kakutei-hook) skk-kakutei-hook))))
+  "Certify only the ordinary plan implemented by the core."
+  (not (ddskk-local-capability-reason)))
 
 (defun ddskk-local-okuri-capability ()
   "Certify complete-kana okuri; advanced okuri options stay on the provider."
@@ -118,7 +163,14 @@ the configured personal dictionary. The engine still owns its contents."
                           ((ddskk-local-capability) "1 ") (t "0 "))
             (number-to-string ddskk-user-jisyo-local-revision)))
    ((equal line "LOCAL SNAPSHOT")
-    (concat "OVERLAY " (ddskk-engine--hex (ddskk-user-jisyo--serialize))))
+    ;; This certification is transient metadata, never personal-jisyo data.
+    ;; Old engines emit no marker; a native reader then keeps Lisp-shaped
+    ;; annotations on the provider. The ordinary STATUS bits stay unchanged.
+    (concat "OVERLAY "
+            (ddskk-engine--hex
+             (concat (ddskk-user-jisyo--serialize)
+                     (if (ddskk-local-capability)
+                         (concat ddskk-local-literal-profile-marker "\n") "")))))
    ((and (> (length line) 12) (equal (substring line 0 12) "LOCAL LEARN "))
     (ddskk-local-learn line))
    (t "ERR LOCAL")))
