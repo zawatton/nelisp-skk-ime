@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
     auto overlap = OpenPublished(root);
     Check(overlap->Lookup(L"ていこうち").shared == std::vector<std::wstring>{L"抵抗値"}, "duplicate unsorted source merge");
     Check(overlap->Lookup(L"おーむ").shared == std::vector<std::wstring>{L"Ω", L"オーム", L"王蟲"}, "prolonged kana source order");
-    Check(overlap->Lookup(L"あたい").shared == std::vector<std::wstring>{L"値", L"価;price"}, "first source annotation identity");
+    Check(overlap->Lookup(L"あたい").shared == std::vector<std::wstring>{L"値", L"値;value. (字義:そのものの価値)", L"価;price"}, "directional stock annotation merge");
     Check(conversion.Begin(overlap, L"ていこうち"), "overlapping overlay begin");
     Check(!conversion.Next() && conversion.active(), "duplicate frontier exhausts without stuck state");
     Check(conversion.Commit().text == L"抵抗値", "single overlapping candidate commit");

@@ -678,3 +678,114 @@ Updated core and engine
 host are required together; no Sumi or exported core ABI change. LF4 red/green
 evidence, first-time-reading stress, commands and limitations are recorded in
  tools/ai/local-first-conversion-notes.org. Rollout criteria remain pending.
+* LFD1: plain lookup certification on Debian (2026-10-06)
+** Reading certification is separate from source-plan capability
+The L-only entries =おーむ /Ω/王蟲/= and
+=いどう /移動/異動;†「人事-」/異同;†difference.「諸写本の-」/医道/=
+already pass the LF3 candidate parser and kana/long-vowel reading gate.
+Their reported live delay is not proof of an entry-specific rejection.
+The personal dictionary was not opened in this investigation.
+
+The complete local path requires all of these checks:
+- Engine =ddskk-local-capability= accepts the exact ordinary search plan,
+  the engine learning writer, enabled learning and no custom search,
+  candidate insertion/appearance, commit or learning-exclusion functions,
+  and no combined-word learning side effects. The literal-annotation
+  profile must also pass stock's reader and current function-binding check.
+  LF4's menu restrictions remain: first four candidates, then seven per
+  page with the stock selection keys. The session transport's 1000000
+  menu threshold is accepted; other custom menu plans use the provider.
+  =ddskk-local-capability-reason= identifies a rejected plan. The existing
+  =LOCAL STATUS= protocol still exposes bits 1 (ordinary) and 2 (okuri).
+- Okuri also requires the advanced early/automatic/strict/preference/cancel
+  options to be off. An external server enabled in the host forces the
+  published capabilities to zero, even if engine plan checks pass.
+- A validated generation must be available. On SPACE, TSF additionally
+  requires local conversion enabled, a native preedit with no active
+  provider composition, an available pending-learning queue, and equal
+  current/pinned rule bytes. =Conversion::Begin= must find a certified
+  entry and a nonempty candidate frontier.
+- Index lookup rejects numeric readings, unsupported okuri shape/options,
+  expressions and invalid/oversized payloads. A miss goes to registration
+  through the provider. Capacity and wire limits remain enforced.
+
+The header configuration digest records capabilities, rules, configured
+paths and source-content hashes. It is not a comparison against live
+settings on every lookup. Reader checksum validation establishes generation
+integrity. The host's publication identity includes status, rules, paths
+and server-enabled state, but excludes changing source contents; an edit
+without a changed identity or host restart can leave a stale generation.
+Those publication and TSF conditions must be inspected on Windows before
+attributing a live delay to dictionary certification.
+
+** Stock lookup and merge contract
+Portable production helpers in =windows/src/local_index.h= implement the
+parser, reading checks, per-file key selection and directional union.
+The semantic schema changes to 3 while retaining the record layout. Old
+schema-2 generations have already removed candidates and must be rebuilt;
+they cannot establish stock parity under the new reader. Rebuild the host
+and core together and verify a fresh publication on Windows.
+Configured dictionaries use first matching key, as stock DDSKK linear
+lookup with limit 0 does for an unsorted file. Overlay snapshots retain
+last-record semantics required by engine journal replay. Engine base loading
+also selects the first duplicate (before updating okuri blocks), while its
+journal retains chronological last-record semantics. Explicit sections
+control literal bracket parsing and snapshot serialization; ordinary ari
+candidates end at the first block. Headerless ASCII abbreviations infer nasi.
+Section-tagged
+keys retain distinct okuri-ari/nasi records. Headerless rows are assigned
+their effective section before duplicate selection and source merge.
+Legacy engine snapshots put ASCII lowercase abbreviations in ari;
+=ParseOverlay= normalizes those block-free rows back into nasi.
+
+The first nonempty source contributes its entire candidate list, including
+duplicates. Each later source uses stock =skk-nunion=: exact copies are
+suppressed; a prior annotated candidate suppresses any later candidate
+with the same text before =;=; a prior unannotated candidate allows a later
+annotated copy. Annotations remain verbatim in the candidate vector.
+Displayed/committed text ends at the first =;=, with completed okuri appended.
+Ordinary parentheses, literal hashes, long vowels and nonnumeric dictionary
+keys, including slash keys and ASCII abbreviations, do not by themselves
+require the provider. This does not implement TSF abbrev-mode routing.
+Numeric transformations, Lisp forms and special search plans continue to
+require it. Each source is parsed independently; unsupported status is
+sticky across later sources, even if a merge would hide an expression or
+repair a malformed block.
+
+Some public-L annotations look like Lisp but stock DDSKK leaves them
+literal, for example =(most)= and =([中国史])=. A bounded, versioned
+21-component profile permits these exact annotations only. The engine
+checks =skk-lisp-prog-p=, =read-from-string= and =functionp= without eval;
+an unexpected reader error or a callable formerly inert head disables
+ordinary capability. A successful =LOCAL SNAPSHOT= appends the exact
+=local-literal-profile= marker transiently, never to the personal jisyo.
+The publisher derives internal header bit 4 from this overlay marker and
+ordinary capability; configured-source markers have no effect. The
+profile's ordered UTF-8 vocabulary hash is
+=879b04a00ff3ffa629025a330ece9b65488fc9494e9b883d4dda104f0751edc8=.
+Markerless/older engines remain conservative. Candidate-word expressions,
+unknown annotation expressions, nested lambdas and executable =concat=
+annotations remain on the provider, including notes beginning with =*=.
+
+There is a deliberate remaining provider difference: the Windows host
+merges configured files by symmetric text-before-annotation deduplication
+and selects the last duplicate key. Its files are outside this lane's scope.
+Local lookup now follows the requested stock dictionary contract. Provider
+fallback can therefore return a different frontier for those specific
+overlaps. Exhaustion already hands off explicit registration rather than
+replaying a candidate index. Windows must verify that handoff, annotation
+display and asynchronous learning with the corrected local source order.
+The existing engine overlay table is keyed by the bare reading: it cannot
+independently learn both ari and nasi occurrences of the same key.
+Configured-file section separation does not establish stock parity for
+that pre-existing dual-context learning case.
+
+Linux gate commands, whole-L reason counts, baseline controls and the
+remaining Windows checks are recorded in
+=tools/ai/local-first-conversion-notes.org=, LFD1 section. No Windows or live
+latency result is claimed by this Debian lane.
+With the ordinary/okuri plan and guarded profile, the public L generation
+certifies 175019 of 175774 entries; 746 numeric keys and 9 executable Lisp
+entries remain on the provider. Both reported readings pass before and
+after this change. These counts do not inspect the personal source or
+establish which path the live TSF session selected.

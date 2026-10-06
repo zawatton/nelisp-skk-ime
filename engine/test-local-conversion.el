@@ -2,6 +2,7 @@
 ;; GPL-3.0-or-later. Uses only a caller-provided private directory.
 (require 'ert)
 (require 'cl-lib)
+(require 'skk-macs)
 (require 'skk-user-jisyo)
 (defun nelisp--syscall-read-file (path)
   (when (file-readable-p path)
@@ -12,6 +13,8 @@
            (cl-loop for n from 0 below (length value) by 6
                     collect (string-to-number (substring value n (+ n 6)) 16)))))
 (defun ddskk-engine--error-token (prefix err) (concat prefix " " (prin1-to-string err)))
+(defun ddskk-engine--hex (value)
+  (mapconcat (lambda (c) (format "%06x" c)) value ""))
 (defvar skk-search-prog-list nil)
 (defvar skk-update-jisyo-function nil)
 (defvar skk-henkan-key "")
@@ -20,6 +23,14 @@
 (defvar skk-show-candidates-nth-henkan-char 5)
 (defvar skk-henkan-number-to-display-candidates 7)
 (defvar skk-henkan-show-candidates-keys '(97 115 100 102 106 107 108))
+(defvar skk-search-end-function nil)
+(defvar skk-search-hook nil)
+(defvar skk-kakutei-hook nil)
+(defvar skk-treat-candidate-appearance-function nil)
+(defvar skk-insert-new-word-function nil)
+(defvar skk-kakutei-end-function nil)
+(defvar skk-search-excluding-word-pattern-function nil)
+(defvar skk-learn-combined-word nil)
 (defun nelisp--write-stdout-bytes (_line) nil)
 (defun ddskk-engine-read-stdio-line ()
   (let ((path (ddskk-user-jisyo-path)))
@@ -32,6 +43,7 @@
           (path (make-temp-file (expand-file-name "local-test-" directory) nil ".jisyo"))
           (ddskk-user-jisyo--table (make-hash-table :test 'equal))
           (ddskk-user-jisyo--okuri-blocks (make-hash-table :test 'equal))
+          (ddskk-user-jisyo--sections (make-hash-table :test 'equal))
           (ddskk-local-operations (make-hash-table :test 'equal))
           (ddskk-local-operations-loaded t)
           (ddskk-user-jisyo-local-revision 0)
@@ -128,3 +140,83 @@
      (should (ddskk-local-capability)))
    (let ((skk-henkan-show-candidates-keys '(97 115 100 102 106 107 120)))
      (should-not (ddskk-local-capability)))))
+(ert-deftest local-capability-identifies-provider-plan ()
+  (local-test
+   (should-not (ddskk-local-capability-reason))
+   (let ((skk-search-prog-list '((skk-search-katakana-maybe))))
+     (should (eq (ddskk-local-capability-reason) 'search-plan)))
+   (let ((skk-update-jisyo-function 'ignore))
+     (should (eq (ddskk-local-capability-reason) 'update-function)))
+   (let ((ddskk-user-jisyo-learning-disabled t))
+     (should (eq (ddskk-local-capability-reason) 'learning-disabled)))
+   (dolist (pair '((skk-search-end-function . search-end-function)
+                   (skk-search-hook . search-hook)
+                   (skk-kakutei-hook . kakutei-hook)
+                   (skk-treat-candidate-appearance-function . candidate-function)
+                   (skk-insert-new-word-function . insert-function)
+                   (skk-kakutei-end-function . commit-function)
+                   (skk-search-excluding-word-pattern-function . learning-filter)
+                   (skk-learn-combined-word . combined-learning)))
+     (cl-progv (list (car pair)) '(ignore)
+       (should (eq (ddskk-local-capability-reason) (cdr pair)))
+       (should (equal (ddskk-local-dispatch "LOCAL STATUS") "LOCAL 0 0"))
+       (should (equal (ddskk-local-learn local-test-one) "ERR LOCAL LEARN"))))))
+
+(ert-deftest local-candidate-customizations-use-provider ()
+  (local-test
+   (dolist (variable '(skk-treat-candidate-appearance-function
+                       skk-insert-new-word-function skk-kakutei-end-function
+                       skk-search-excluding-word-pattern-function skk-learn-combined-word))
+     (cl-progv (list variable) '(ignore)
+       (should-not (ddskk-local-capability))
+       (should-not (ddskk-local-okuri-capability))))))
+
+(ert-deftest local-literal-annotation-profile-is-transient ()
+  (local-test
+   (should (ddskk-local-literal-annotations-safe-p))
+   (should (equal (secure-hash 'sha256
+                             (encode-coding-string
+                              (concat (mapconcat #'identity ddskk-local-literal-annotations "\n") "\n")
+                              'utf-8))
+                  "879b04a00ff3ffa629025a330ece9b65488fc9494e9b883d4dda104f0751edc8"))
+   (let ((snapshot (ddskk-engine--unhex (substring (ddskk-local-dispatch "LOCAL SNAPSHOT") 8))))
+     (should (string-match-p (regexp-quote ddskk-local-literal-profile-marker) snapshot))
+     (should-not (string-match-p "local-literal-profile" (ddskk-user-jisyo--serialize))))))
+
+(ert-deftest local-literal-annotation-binding-change-uses-provider ()
+  (local-test
+   (cl-letf (((symbol-function 'most) (lambda () "changed")))
+     (should-not (ddskk-local-literal-annotations-safe-p))
+     (should (eq (ddskk-local-capability-reason) 'literal-annotation-profile))
+     (should (equal (ddskk-local-dispatch "LOCAL STATUS") "LOCAL 0 0"))
+     (should-not (string-match-p "local-literal-profile"
+                                (ddskk-engine--unhex (substring (ddskk-local-dispatch "LOCAL SNAPSHOT") 8)))))))
+
+(ert-deftest local-base-duplicate-first-journal-duplicate-last ()
+  (local-test
+   (with-temp-file path
+     (insert ";; okuri-ari entries.\nかk /書/[く/書/]/余分/\nかk /後/[く/後/]/\nab /前/\n"
+             ";; okuri-nasi entries.\nおーむ /Ω/オーム/\nいどう /移動/異動;first/\n"
+             "おーむ /後発/\nいどう /井道/\nおーむ /最後/\nいどう /最後/\n"
+             "空 /\n空 /後/\nかっこ /[literal/]/後/\nskk /[literal/]/後/\n"))
+   (ddskk-user-jisyo-load)
+   (should (equal (gethash "おーむ" ddskk-user-jisyo--table) '("Ω" "オーム")))
+   (should (equal (gethash "いどう" ddskk-user-jisyo--table) '("移動" "異動;first")))
+   (should (equal (gethash "かk" ddskk-user-jisyo--okuri-blocks) '(("く" "書"))))
+   (should (equal (gethash "かk" ddskk-user-jisyo--table) '("書")))
+   (should-not (gethash "空" ddskk-user-jisyo--table))
+   (should (equal (gethash "かっこ" ddskk-user-jisyo--table) '("[literal" "]" "後")))
+   (should (equal (gethash "skk" ddskk-user-jisyo--table) '("[literal" "]" "後")))
+   (should (eq (gethash "ab" ddskk-user-jisyo--sections) 'ari))
+   (ddskk-user-jisyo--record-okuri "ab" "追加" "く")
+   (should (equal (gethash "ab" ddskk-user-jisyo--okuri-blocks) '(("く" "追加"))))
+   (with-temp-file (concat path ".journal")
+     (insert "おーむ /学習一/Ω/\nおーむ /学習二/学習一/Ω/\n"
+             "かk /学習/[く/学習/書/]/\n"))
+   (ddskk-user-jisyo-load)
+   (should (equal (gethash "おーむ" ddskk-user-jisyo--table) '("学習二" "学習一" "Ω")))
+   (should (equal (gethash "かk" ddskk-user-jisyo--okuri-blocks) '(("く" "学習" "書"))))
+   (should (ddskk-user-jisyo-flush))
+   (ddskk-user-jisyo-load)
+   (should (equal (gethash "おーむ" ddskk-user-jisyo--table) '("学習二" "学習一" "Ω")))
+   (should (equal (gethash "skk" ddskk-user-jisyo--table) '("[literal" "]" "後")))))

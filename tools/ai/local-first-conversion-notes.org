@@ -1505,3 +1505,363 @@ PIDs, zero owned processes alive; one verified exited host PID was reused by
 an unrelated node process and left untouched. No commit or live changes.
 Commands, verbatim tails, changed locations and the red reproduction are in
 [[file:../../build/hf1-review-report.txt][the HF1 review report]].
+* LFD1 Debian certification investigation (2026-10-06)
+** Acceptance ledger
+*** LFD1.1 Whole-L classification by production certification reason, with L-only examples
+PASS
+cmd: python3 -c 'import json; d=json.load(open("engine/lfd1-L-classification.json")); assert d["entries"] == 175774 and d["duplicates"] == 0 and d["malformed_lines"] == 0; assert d["counts"]["after"] == {"supported":175019,"numeric-reading":746,"expression":9}; assert d["source_sha256"] == "2119aa28a6eba24ad3bb2f11ce9de2ad7907636f7fbd1a9e3b68f359bd68b206"'
+evidence: engine/lfd1-L-classification.json sha256=8e4b0aa2be574ee1d9feed1991e5c4f203f5b6c95f305ee21a237a5cd05badbd
+#+NOTE: GNU Emacs certified the bounded literal profile in a private snapshot fixture; ordinary/okuri engine capabilities 3, internal mapped capabilities 7. Counts classify L alone, not the unread personal source or live generation.
+*** LFD1.2 Engine capability and learning ERT pass in a private HOME
+PASS
+cmd: python3 -c 'import json; d=json.load(open("engine/lfd1-validation.json")); e=d["engine"]; n=d["engine_negative_control"]; assert (e["exit_code"],e["tests"],e["expected"],e["unexpected"]) == (0,14,14,0); assert (n["exit_code"],n["tests"],n["expected"],n["unexpected"],n["rejected_regressions"]) == (0,2,0,2,2)'
+evidence: engine/lfd1-validation.json sha256=3ead6c2292bc588757bc9daa006e8ae23c4386655605d75e28a2b5bb366cdb77
+#+NOTE: The negative control loads the original 28e9882 engine and user-jisyo modules in a private directory and expects two failed customization/base-duplicate tests; wrapper exit 0 means the regression was rejected.
+*** LFD1.3 Portable production parser/merge tests and stock DDSKK two-source oracle pass
+PASS
+cmd: python3 -c 'import json; d=json.load(open("engine/lfd1-validation.json")); p=d["portable"]; o=d["oracle"]; assert (p["exit_code"],p["checks"]) == (0,28); assert (o["exit_code"],o["tests"],o["expected"],o["unexpected"]) == (0,9,9,0); assert len(o["rows"]) == 9 and o["rows"][-1] == "PASS stock two-source oracle: 18 rows, order/annotations/commit"'
+evidence: engine/lfd1-validation.json sha256=3ead6c2292bc588757bc9daa006e8ae23c4386655605d75e28a2b5bb366cdb77
+#+NOTE: Production Publish and Index share the tested portable helpers. GNU wchar_t has 32 bits; bounds count UTF-16 units explicitly for MSVC. This is not a Windows build result.
+*** LFD1.4 Windows TSF harness and live reading-path/latency verification
+pending
+#+NOTE: Windows verification belongs to the coordinator; Linux cannot satisfy LFD1.4.
+
+** Finding and exact path gates
+Both reported public-L readings were already accepted by the old kana and
+candidate gates: L:54519 is =おーむ /Ω/王蟲/=; L:49529 is
+=いどう /移動/異動;†「人事-」/異同;†difference.「諸写本の-」/医道/=.
+Neither annotations nor long-vowel =ー= alone explain the live delay.
+No personal dictionary or live settings were inspected. The reported
+personal =おーむ= candidates were reproduced only in synthetic fixtures.
+
+The path selection consists of separate checks, not a capability digest
+lookup of the reading:
+- =engine/skk-local-conversion.el:62= checks the exact search plan,
+  learning writer/enabled state, custom search/candidate/insert/commit
+  hooks/functions, combined learning, and the guarded annotation profile.
+  =ddskk-local-capability-reason= returns the first rejected plan reason.
+  =:89= also excludes advanced early/auto/strict/preferred/cancel okuri.
+- =windows/host/main.cpp:1965= builds a publication identity from status,
+  rules, configured paths and server-enabled state. =:1988= forces
+  capabilities 0 for enabled external-server search. These files were
+  read only and remain unchanged.
+- =windows/src/local_index.cpp:199= validates schema, bounds, checksum,
+  key order and rule export. =:226= selects the A/N record for the reading.
+  The header config digest hashes capabilities, rules, paths and source
+  bytes, but reader validation does not compare it with current live
+  settings. The host identity omits source-content hashes: unchanged
+  identity can leave a generation stale until republish/restart.
+- =windows/src/local_index.h:215= rejects a disabled ordinary capability,
+  missing/over-256-UTF-16-unit reading, digits/#/controls/whitespace,
+  incomplete/unsupported okuri, unsafe payloads and wire-size overflow.
+  Completed okuri requires bit 2, an ASCII lowercase suffix on the key,
+  up to 32 UTF-16 units of hiragana/long vowels. Raw payload/candidate/list
+  limits remain 65536 bytes/1024 UTF-16 units/1024 candidates; the existing
+  8192-byte learning request bound remains enforced.
+- =windows/src/text_service.cpp:2650= tries SPACE locally only with
+  enabled local conversion, a native preedit, no active provider
+  composition/candidate mode, queue capacity, a mapped generation and
+  equal current/pinned rules. =:2662= requires successful nonempty
+  =Conversion::Begin=. Okuri has its separate pinned-snapshot gate at
+  =:2891=. No TSF change was made in this lane.
+
+** Whole-L classification and L-only examples
+Input: =../../assets/ddskk/SKK-JISYO.L.utf8=, 6156364 bytes, 175836 lines,
+175774 entries; no duplicate keys or malformed lines. SHA256 is recorded
+in the ledger and JSON. The old column freezes the 28e9882 reading/parser
+policy; the new column calls compiled production helpers. A numeric key
+takes the mapped reader's reading-gate priority, including =bsd#=, even
+if its payload also contains Lisp. Exactly one reason is counted per key.
+Each ari entry is probed with completed okuri =あ= and each nasi with none.
+Counts assume the ordinary plan and guarded literal profile; advanced
+okuri/search plans and publication/TSF failures are global gates, not
+entry counts.
+
+| Policy | Supported | Non-kana key | Numeric key | Candidate '(' prefix | Executable Lisp |
+|--------+-----------+-------------+-------------+----------------------+-----------------|
+| 28e9882 reading/parser | 147485 | 27540 | 746 | 3 | not independently checked |
+| LFD1 with guarded profile | 175019 | 0 | 746 | 0 | 9 |
+
+Old top rejection examples, all from L:
+- Non-kana: =>わたs /渡/=, =>わすr /忘/=, =>わk /分/=.
+  This category also included ordinary ASCII abbreviations and punctuation
+  keys. Valid sectioned ari/nasi keys are now handled separately.
+- Numeric: =# /#1/#3/#2/＃;number/#0/#8/#4/#5/=, =#% /#1％/=,
+  =#) /#1）/=. Numeric transforms remain on the engine.
+- Parentheses: =かぶ /株/下部/蕪/歌舞/(株)/（株）/=,
+  =かぶしきがいしゃ /株式会社/株式會社;「会」旧字/(株)/=,
+  =わらい /笑い/（笑）/笑/(笑)/=. These literal labels are now plain.
+
+The nine remaining nonnumeric Lisp entries comprise five executable-word
+entries (=OMG=, =ao=, =dosv=, =io=, =ioport=) and four executable annotations
+(=GPL=, =あいみつもり=, =きばんごう=, =りっそく=), all using =concat=.
+L-only examples: =ao /(concat "and\057or")/= and
+=dosv /(concat "DOS\057V")/=; GPL's annotation is
+=(concat "http:\057\057www.gnu.org\057licenses\057gpl.ja.html")=.
+The old parser did not inspect annotations for executable components.
+
+Plain L annotations such as =(most)= and =([中国史])= are permitted by
+the exact 21-component versioned profile after engine reader/function
+binding checks without eval. Its hash is
+=879b04a00ff3ffa629025a330ece9b65488fc9494e9b883d4dda104f0751edc8=.
+The successful snapshot carries transient metadata only; it is never
+serialized into the personal dictionary. Internal header bit 4 requires
+that exact overlay marker plus ordinary capability. Configured-source
+markers and caller bit 4 alone cannot grant it. Unknown/nested/executable
+forms remain unsupported, including =*(concat ...)= annotation syntax.
+An unexpected reader error or callable formerly inert form disables
+ordinary capability instead of trusting the profile.
+
+** Stock semantics and implementation
+
+Base loading now selects the first duplicate before parse-line can overwrite
+okuri blocks, using a separate seen-key set even when the first candidate
+list is empty. Journal replay retains chronological last-record semantics;
+flush/reload is tested. Explicit section metadata controls block parsing and
+serialization, so nasi bracket words stay literal and ari ordinary candidates
+end at the first block. Headerless ASCII abbreviations infer nasi. Learning
+honors an explicit ari section even with an ASCII stem. The actual-overlay
+oracle loads the synthetic base, serializes it, and uses that overlay together
+with the original source paths; this catches priority changes hidden by
+source-only tests. No personal source was read to find or test these defects.
+
+=ParseDictionary= selects the first duplicate key in configured sources,
+preserves actual section headings, and normalizes headerless rows before
+merging. =ParseOverlay= keeps engine replay's last-record behavior and
+normalizes block-free lowercase ASCII abbreviations out of the serializer's
+legacy ari classification. =CompileSources= parses every source separately:
+an unsupported source cannot become certified by a later source masking
+its expression or completing its broken block.
+
+=Union= matches stock =skk-nunion=: an empty accumulated list adopts the
+source intact (including repeated candidates); thereafter equality is
+directional. Existing annotated text suppresses later same-base candidates;
+existing plain text permits a later annotated copy. Candidate vectors keep
+annotations verbatim; commit strips the first semicolon and appends okuri.
+An ari block is ignored when strict/preference options are off, matching
+stock plain lookup. In nasi, bracket text remains ordinary candidate text.
+Printable nonnumeric Unicode/punctuation/ASCII keys, literal candidate
+hashes, Japanese parentheses and long vowels are supported.
+
+Schema 3 retains the 144-byte header/48-byte record layout but tags keys by
+section and rejects already-lossy schema-2 generations. Rebuild host and
+core together, restart privately, and verify a fresh publication.
+The out-of-scope host fallback still uses last duplicate key and symmetric
+text-before-annotation deduplication, so fallback frontiers can differ from
+corrected local stock order. Explicit registration handoff already avoids
+replaying an exhausted candidate index. The existing engine overlay is
+keyed by bare reading and cannot independently learn both A and N variants
+of the same key. This lane verifies configured section separation and
+ordinary/okuri learning fixtures, not full dual-context overlay learning or
+new TSF abbrev-mode routing.
+
+** Linux gates, verbatim tails and counts
+Run every command from the repository root under bash. Runners create
+private HOME, TMPDIR, XDG cache, LOCALAPPDATA and dictionary fixtures under
+/tmp, use =emacs -Q= plus =vendor/ddskk=, and remove their own temporary
+directories. No real initialization or personal dictionary is loaded.
+Toolchains: GNU Emacs 31.1; g++ C++20 with -Wall -Wextra -Werror -pedantic.
+
+#+begin_src bash
+bash engine/run-local-conversion-tests.sh
+#+end_src
+#+begin_example
+   passed  10/14  local-learning-restart-watermark (0.001079 sec)
+   passed  11/14  local-literal-annotation-binding-change-uses-provider (0.000608 sec)
+   passed  12/14  local-literal-annotation-profile-is-transient (0.000602 sec)
+   passed  13/14  local-okuri-learning-block-order-and-restart (0.001662 sec)
+   passed  14/14  local-okuri-unsupported-options-select-provider (0.000512 sec)
+
+Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-06 11:04:52+0900, 0.040673 sec)
+
+#+end_example
+
+#+begin_src bash
+bash engine/run-local-conversion-tests.sh --baseline
+#+end_src
+#+begin_example
+
+Ran 2 tests, 0 results as expected, 2 unexpected (2026-10-06 11:05:36+0900, 0.255445 sec)
+
+2 unexpected results:
+   FAILED  local-base-duplicate-first-journal-duplicate-last
+   FAILED  local-candidate-customizations-use-provider
+
+PASS engine baseline negative control: 2 regressions rejected
+#+end_example
+
+#+begin_src bash
+bash windows/test/run-local-index-portable.sh
+#+end_src
+#+begin_example
+PASS local-index-portable checks=28
+#+end_example
+
+#+begin_src bash
+bash engine/run-local-conversion-oracle.sh
+#+end_src
+#+begin_example
+PASS overlay-only source: 1 stock row
+   passed  7/9  lfd1-stock-overlay-only-reading (0.002705 sec)
+PASS stock source isolation: 1 malformed rejection, 2 distinct section rows
+   passed  8/9  lfd1-stock-source-rejection-is-sticky (0.007561 sec)
+PASS stock two-source oracle: 18 rows, order/annotations/commit
+   passed  9/9  lfd1-stock-two-source-plain-order-and-annotations (0.044523 sec)
+
+Ran 9 tests, 9 results as expected, 0 unexpected (2026-10-06 11:04:22+0900, 0.209875 sec)
+
+#+end_example
+
+The baseline wrapper checks expected exit 1 and exact 2/0/2 ERT counts by
+value, confirming the customization and loaded-base tests catch both original defects.
+The 28 portable checks include negative cases for malformed UTF-8,
+expressions, annotation expressions/star prefixes, numeric keys, sticky
+bad sources, marker trust and the permanent unsupported publication sentinel.
+
+The nine oracle ERT tests cover 18 ordinary rows, 21 guarded annotations
+and 24 markerless/forged/expression negatives, 8 dynamic provider rows,
+2 headerless-source rows, 2 lowercase-abbrev learning rows, 2 before/after
+overlay-learning rows, 1 overlay-only row, 1 malformed-source rejection and
+2 distinct A/N context rows, plus 5 actual loaded-overlay rows with six
+different later duplicate entries, literal nasi brackets and ignored ari
+suffix text. The annotation test additionally checks
+star-prefixed and multiple-semicolon literal components. The stock calls
+are actual =skk-search-jisyo-file= with linear limit 0 and =skk-search=/
+=skk-nunion=, not a reimplementation. Stock learning uses its original
+writer against private fixture copies; engine snapshots use the actual
+engine serializer. Headerless stock comparison adds only standard headers
+to its private copy because stock requires section headers.
+
+#+begin_src bash
+bash engine/run-local-conversion-classification.sh ../../assets/ddskk/SKK-JISYO.L.utf8 engine/lfd1-L-classification.json
+#+end_src
+#+begin_example
+PASS whole-L classification entries=175774 duplicates=0 malformed=0
+before: supported=147485, non-kana-reading=27540, numeric-reading=746, candidate-lisp-prefix=3
+after: supported=175019, numeric-reading=746, expression=9
+いどう: before=supported after=supported
+おーむ: before=supported after=supported
+source_sha256=2119aa28a6eba24ad3bb2f11ce9de2ad7907636f7fbd1a9e3b68f359bd68b206
+#+end_example
+
+#+begin_src bash
+git diff --check
+bash -n engine/run-local-conversion-tests.sh engine/run-local-conversion-oracle.sh engine/run-local-conversion-classification.sh windows/test/run-local-index-portable.sh
+#+end_src
+Both exit 0; verbatim tail is empty (0 diagnostics). The ledger's three
+stored-result commands above also exit 0 with empty tails and assert
+positive counts by value. Evidence is stored in the two JSON files.
+
+Separate =gpt-6-astra= with =ultra= reasoning audited the final implementation
+and independently ran portable 28/28, engine 14/14, oracle 9/9 and diff whitespace checks.
+No blocking Linux defect remained. Static review caught a Windows-only
+table value-type mismatch during extraction; it was fixed before the final
+gates. GNU tests cannot prove MSVC/Win32 behavior.
+
+Earlier setup runs failed because the ambient TMPDIR was unwritable; all
+runners now supply private /tmp storage and cache paths. Oracle development
+also caught an unquoted stock source argument, lost lowercase-abbrev
+overlay priority, and base-overlay duplicate/bracket/suffix handling. All
+were corrected, then the unchanged positive order assertions passed. Vendor lexical-binding warnings remain informational.
+No threshold, ratchet or baseline was raised, and no test was weakened.
+
+** Windows verification still required
+1. Build the scoped changes with MSVC, host and core together. Run existing
+   local-conversion CTest, corrupt-index controls, stock ordinary/okuri
+   oracles and TSF local/fallback/state/registration/edit-recovery harnesses
+   with isolated settings and synthetic copies. None ran on Debian.
+2. Inspect actual NeLisp =LOCAL STATUS= (ordinary 1 / okuri 3 as applicable),
+   =ddskk-local-capability-reason=, stock reader/functionp behavior and the
+   exact transient profile marker. Confirm schema 3, expected source order,
+   nonzero mapped capabilities, internal bit 4 only with trusted metadata,
+   fresh generation/rules/checksum, and no stale schema-2 generation. A
+   runtime reader incompatibility safely disables capability and is a
+   rollout blocker until diagnosed.
+3. Trace SPACE on =おーむ= and =いどう=: enabled local flag, current/pinned
+   rules, native preedit, provider-composition state, queue availability,
+   record selection, candidate frontier and actual local/provider path.
+   Inspect publication identity and external-server flag if an already
+   certified reading goes to the provider. Editing a source with unchanged
+   identity may require an explicit private republish/restart.
+4. Verify directional annotated/unannotated overlaps, first duplicate key,
+   long vowels, Unicode/ASCII/punctuation keys, source-tier traversal,
+   annotation display/commit, Previous/Next/exhaustion, registration,
+   asynchronous learning/restart and pinned-generation swaps. Verify
+   documented host fallback differences and dual-context overlay limits.
+   LF4 navigation/stuck-conversion work was not applied; the referenced
+   ../lf4-wip.patch and ../lf4-untracked.tar were unavailable in this lane.
+5. Measure cold and warm live =おーむ= and =いどう= conversions and run the
+   existing quiet-machine latency gate with its unchanged limits. Record
+   actual path and p50/p90; this lane claims no live timing or LF4 completion.
+
+** Cleanup and changed-file locations
+All started compiler/Emacs/test processes finished; both delegated agents
+reported no remaining processes. Runner-owned temp directories/binaries
+were removed. The /tmp captured gate logs are inert evidence, not processes.
+Changes remain unstaged, with no commit/push; pre-existing .serena/ is left
+untouched. No linux/**, windows/host/**, other Windows production files,
+live setting, personal dictionary or other checkout was modified.
+Changed-file locations (tracked hunks and new files):
+- docs/design/local-first-conversion.org:667
+- engine/classify-local-conversion.py:1
+- engine/lfd1-L-classification.json:1
+- engine/lfd1-validation.json:1
+- engine/run-local-conversion-classification.sh:1
+- engine/run-local-conversion-oracle.sh:1
+- engine/run-local-conversion-tests.sh:1
+- engine/skk-local-conversion.el:9,62,86,166
+- engine/skk-user-jisyo.el:223,243,385,390,446,453,460,475,485,488,501,510,555,562,598
+- engine/test-local-conversion-oracle.el:1
+- engine/test-local-conversion.el:5,16,23,43,129
+- tools/ai/local-first-conversion-notes.org:624
+- windows/src/local_index.cpp:17,96,169,199,228,230,240,264,272,274,276,297
+- windows/src/local_index.h:4,6,15,369,397
+- windows/test/local_conversion_test.cpp:63
+- windows/test/local_index_portable_test.cpp:1
+- windows/test/run-local-index-portable.sh:1
+
+* INT1: Windows LF4/HF1 + LFD1 integration (2026-10-06)
+Working-tree conflict resolution retains the LF4 and HF1 evidence above and
+LFD1 certification/order. No index-writing command, commit, push or live
+change was made by INT1 in this LFD1 turn; the coordinator owns the merge commit.
+
+The engine's capability-reason retains LF4's first-four/seven-per-page menu
+and stock key checks alongside LFD1's custom-function and literal-profile
+checks. Both engine test sets remain. MSVC's portable helper build uses /WX;
+Utf16Units returns value.size() directly for Windows's UTF-16 wchar_t, without
+an unused loop variable. No threshold, assertion or existing test was weakened.
+
+Windows validation:
+- MSVC Release build and supplied-runtime CTest: 11/11, zero failures.
+- Native portable helpers: 28 checks; local engine ERT 15/15, stock oracle
+  9/9, stateline 31/31, lattice 14/14 and input-rules 13/13.
+- Native stock DDSKK ordinary/LF3/navigation oracles: 8/18/16 rows, 271 checks.
+- Local TSF matrix: 9 cases, 31 checks; navigation: 25 checkpoints, 8 mirrors,
+  169 callbacks, max 14356 us. Idle spool: zero writes in 5.031 seconds, 4 checks.
+- Recovery: all 5 cases; fallback: both missing/corrupt cases.
+- Public-L stress: 60/100 commits, 20/34 first-time readings, 15/25 candidate
+  checks, 461/774 callbacks, maxima 3135/6452 us; thresholds remain 25000 us.
+- DDSKK behavior: 45 assertions; core hot swap: 19 assertions; host hot swap:
+  reload/death/recovery/registry/shutdown plus five recorded child exits.
+- Emacs integration: 5 cases, 33 assertions; inline-preedit emacs case and
+  real Emacs local navigation (8 checkpoints, 48 callbacks) both pass.
+- New test-local-two-source.ps1: independent stock DDSKK oracle, 2 L-shaped
+  synthetic configured sources, 2 readings, 8 candidates, 12 checks. Both
+  full annotation vectors and all candidate positions match stock; exactly
+  two local conversion branches and no provider queue/conversion. No real
+  personal source. Reversed oracle-vector negative control is rejected.
+- Public-L classification: 175019 supported, 746 numeric, 9 expression of
+  175774 entries; source hash matches the Debian evidence. Both target
+  readings are supported. Baseline engine rejects both targeted regressions.
+
+Every gate command, verbatim tail, changed-file hunk, corrected runner failure
+and cleanup result is in [[file:../../build/w/int1-report.txt][the INT1 report]].
+Runtime paths were caller parameters/environment variables; cold-load harness
+waits were 45 seconds. These private gates do not establish live latency or
+remove the pre-existing provider merge/dual-context learning limitations.
+
+Generated Debian JSON evidence was moved under build/w. The coordinator must
+remove engine/lfd1-L-classification.json and engine/lfd1-validation.json from
+the merge index; neither is needed by a test. Keep the scripts. The fresh
+classification output is build/w/int1-L-classification.json. Historical Debian
+commands/paths above describe the earlier run, not the integrated artifact layout.

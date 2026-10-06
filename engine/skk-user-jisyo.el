@@ -220,6 +220,9 @@ midasi; the list never contains a duplicate (per `equal').")
 
 (defvar ddskk-user-jisyo--okuri-blocks (make-hash-table :test 'equal)
   "MIDASI -> ordered (OKURI . CANDIDATES) blocks in DDSKK file order.")
+(defvar ddskk-user-jisyo--sections (make-hash-table :test 'equal)
+  "MIDASI -> ari/nasi context retained while loading ordinary source files.
+The existing bare-key table still cannot represent both contexts at once.")
 
 (defun ddskk-user-jisyo--blocks (fields)
   "Extract the non-nested DDSKK okuri records from FIELDS."
@@ -237,7 +240,8 @@ midasi; the list never contains a duplicate (per `equal').")
 (defun ddskk-user-jisyo--record-okuri (key word okuri)
   "Update the matching block in place; append new okuri after old blocks."
   (when (and (stringp okuri) (> (length okuri) 0)
-             (ddskk-user-jisyo--okuri-ari-p key))
+             (eq (or (gethash key ddskk-user-jisyo--sections)
+                     (if (ddskk-user-jisyo--okuri-ari-p key) 'ari 'nasi)) 'ari))
     (let* ((blocks (gethash key ddskk-user-jisyo--okuri-blocks))
            (found (assoc okuri blocks)))
       (if found
@@ -378,13 +382,17 @@ after repeated confirmations of the same word."
 ;; --- Okuri-ari / okuri-nasi classification -----------------------------
 
 (defun ddskk-user-jisyo--okuri-ari-p (midasi)
-  "Return non-nil when MIDASI belongs in the okuri-ari section.
-Per the task spec: a midasi is okuri-ari exactly when its last
-character is an ASCII lowercase letter (e.g. \"かk\", \"たのs\");
-everything else (including the empty string) is okuri-nasi."
-  (and (> (length midasi) 0)
+  "Infer headerless okuri keys from a non-ASCII stem and lowercase suffix.
+Explicit source section headings take precedence during parsing/saving;
+ordinary ASCII abbreviations such as skk belong in okuri-nasi."
+  (and (> (length midasi) 1)
        (let ((c (aref midasi (1- (length midasi)))))
-         (and (>= c ?a) (<= c ?z)))))
+         (and (>= c ?a) (<= c ?z)
+              (let ((index 0) (non-ascii nil))
+                (while (< index (1- (length midasi)))
+                  (when (> (aref midasi index) 127) (setq non-ascii t))
+                  (setq index (1+ index)))
+                non-ascii)))))
 
 ;; --- Parsing (SKK-JISYO -> in-memory table) ------------------------------
 
@@ -435,20 +443,21 @@ scan (mirroring `ddskk-engine--parse-server-reply's style in
     (nreverse fields)))
 
 (defun ddskk-user-jisyo--plain-candidates (fields)
-  "Return FIELDS with every `[...]' okurigana-ranking block dropped.
-Each such block starts with a field beginning with `[' and ends with
-the literal field `]'.  SKK-JISYO's okuri-ari ranking blocks are not
-nested, so one skip flag is enough. Ranking blocks are retained separately
-in `ddskk-user-jisyo--okuri-blocks' for serialization and learning."
+  "Return the ordinary FIELDS prefix before the first okuri-ranking block.
+A block starts with a field beginning with `['; stock plain lookup ignores
+the remaining suffix. Ranking blocks are retained separately in
+`ddskk-user-jisyo--okuri-blocks' for serialization and learning."
   (let (out (skipping nil))
     (dolist (field fields)
       (cond
-       (skipping (when (equal field "]") (setq skipping nil)))
+       ;; Stock's ordinary list ends at the first block; even text after its
+       ;; closing bracket is not an ordinary candidate. Blocks are separate.
+       (skipping nil)
        ((and (> (length field) 0) (= (aref field 0) ?\[)) (setq skipping t))
        (t (push field out))))
     (ddskk-user-jisyo--clean-candidates (nreverse out))))
 
-(defun ddskk-user-jisyo--parse-line (line)
+(defun ddskk-user-jisyo--parse-line (line &optional section)
   "Parse one SKK-JISYO entry LINE into (MIDASI . CANDIDATES), or nil.
 Returns nil (\"skip, do not error\") for comment lines (leading `;'),
 blank lines, and any line that does not have the `MIDASI /CAND/.../'
@@ -463,15 +472,24 @@ malformed file."
           (when (and (> (length rest) 0) (= (aref rest 0) ?/))
             (when (string-match "//" rest) (setq ddskk-user-jisyo--load-dirty t))
             (let* ((fields (ddskk-user-jisyo--split-fields rest))
-                   (candidates (ddskk-user-jisyo--plain-candidates fields)))
-              (puthash midasi (ddskk-user-jisyo--blocks fields) ddskk-user-jisyo--okuri-blocks)
+                   (mode (or section (gethash midasi ddskk-user-jisyo--sections)
+                             (if (ddskk-user-jisyo--okuri-ari-p midasi) 'ari 'nasi)))
+                   (candidates (if (eq mode 'ari)
+                                   (ddskk-user-jisyo--plain-candidates fields)
+                                 (ddskk-user-jisyo--clean-candidates fields))))
+              (puthash midasi mode ddskk-user-jisyo--sections)
+              (puthash midasi (and (eq mode 'ari) (ddskk-user-jisyo--blocks fields))
+                       ddskk-user-jisyo--okuri-blocks)
               (cons midasi candidates))))))))
 
-(defun ddskk-user-jisyo--parse-into-table (text table)
+(defun ddskk-user-jisyo--parse-into-table (text table &optional first-key-wins)
   "Parse TEXT (whole SKK-JISYO file contents) and populate TABLE.
 TABLE maps MIDASI -> CANDIDATES, in file order (so a freshly loaded
-file already reflects whatever priority order it was last saved in)."
-  (let ((len (length text)) (pos 0))
+file already reflects whatever priority order it was last saved in).
+FIRST-KEY-WINS selects stock linear lookup's first matching base entry.
+The default keeps chronological last-record semantics for journal replay."
+  (let ((len (length text)) (pos 0) (section nil)
+        (seen (and first-key-wins (make-hash-table :test 'equal))))
     (when (string-match "\r" text) (setq ddskk-user-jisyo--load-dirty t))
     (while (< pos len)
       (let ((nl pos))
@@ -480,8 +498,16 @@ file already reflects whatever priority order it was last saved in)."
         (let ((end nl))
           (while (and (> end pos) (= (aref text (1- end)) ?\r))
             (setq end (1- end)))
-          (let ((parsed (ddskk-user-jisyo--parse-line (substring text pos end))))
+          (let* ((line (substring text pos end))
+                 (_ (cond ((equal line ";; okuri-ari entries.") (setq section 'ari))
+                          ((equal line ";; okuri-nasi entries.") (setq section 'nasi))))
+                 (space (and seen (ddskk-user-jisyo--index-of line ?\s)))
+                 (key (and space (substring line 0 space)))
+                 ;; Skip before parsing: parse-line also updates okuri blocks.
+                 (parsed (unless (and key (gethash key seen))
+                           (ddskk-user-jisyo--parse-line line section))))
             (when parsed
+              (when seen (puthash (car parsed) t seen))
               (if (cdr parsed)
                   (puthash (car parsed) (cdr parsed) table)
                 (remhash (car parsed) table)))))
@@ -526,13 +552,14 @@ since the last compaction is not lost across a restart -- see the
 \"v2 (current)\" architecture note at the top of this file."
   (clrhash ddskk-user-jisyo--table)
   (clrhash ddskk-user-jisyo--okuri-blocks)
+  (clrhash ddskk-user-jisyo--sections)
   (setq ddskk-user-jisyo--load-dirty nil)
   (let ((path (ddskk-user-jisyo-path)))
     (when (stringp path)
       (let ((text (ignore-errors (nelisp--syscall-read-file path))))
         (when (stringp text)
           (ignore-errors
-            (ddskk-user-jisyo--parse-into-table text ddskk-user-jisyo--table))))))
+            (ddskk-user-jisyo--parse-into-table text ddskk-user-jisyo--table t))))))
   (ddskk-user-jisyo--replay-journal)
   ;; Replay first: only a verified base save may discard the journal.
   (when ddskk-user-jisyo--load-dirty (ddskk-user-jisyo-flush))
@@ -568,7 +595,8 @@ so the file stays parseable (by this module and by other SKK-JISYO
 tools) regardless of which kind of word was learned first."
   (let (ari nasi)
     (maphash (lambda (midasi candidates)
-               (if (ddskk-user-jisyo--okuri-ari-p midasi)
+               (if (eq (or (gethash midasi ddskk-user-jisyo--sections)
+                           (if (ddskk-user-jisyo--okuri-ari-p midasi) 'ari 'nasi)) 'ari)
                    (push (cons midasi candidates) ari)
                  (push (cons midasi candidates) nasi)))
              ddskk-user-jisyo--table)
