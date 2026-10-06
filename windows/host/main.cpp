@@ -1,3 +1,4 @@
+#include "../src/state_mirror.h"
 // Copyright (C) 2026 nelisp-skk-ime contributors
 //
 // This program is free software: you can redistribute it and/or
@@ -96,12 +97,11 @@ constexpr wchar_t kStateMapName[] = L"Local\\ddskk-ime-state-v1";
 /* A read-only snapshot channel for the Sumi companion UI.  It deliberately
  * is not another request path: keyboard requests retain the engine mutex,
  * while Sumi can observe the newest STATE without queuing behind them. */
-struct SharedImeState {
-  volatile LONG sequence;
-  char line[8192];
-};
+using SharedImeState = NativeStateMirror;
 HANDLE g_state_map = nullptr;
 SharedImeState* g_state_view = nullptr;
+HANDLE g_state_owner_map = nullptr, g_state_writer = nullptr;
+NativeStateOwner* g_state_owner = nullptr;
 
 void InitializeStateMirror(const std::wstring& pipe_name) {
   std::wstring map_name = kStateMapName;
@@ -114,6 +114,7 @@ void InitializeStateMirror(const std::wstring& pipe_name) {
   }
   g_state_map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
                                    0, sizeof(SharedImeState), map_name.c_str());
+  const bool existing = GetLastError() == ERROR_ALREADY_EXISTS;
   if (g_state_map == nullptr) return;
   g_state_view = static_cast<SharedImeState*>(
       MapViewOfFile(g_state_map, FILE_MAP_WRITE, 0, 0, sizeof(SharedImeState)));
@@ -122,18 +123,43 @@ void InitializeStateMirror(const std::wstring& pipe_name) {
     g_state_map = nullptr;
     return;
   }
-  std::memset(g_state_view, 0, sizeof(*g_state_view));
+  if (!existing) std::memset(g_state_view, 0, sizeof(*g_state_view));
+  g_state_writer = CreateMutexW(nullptr, FALSE, (map_name + L"-writer").c_str());
+  g_state_owner_map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+      0, sizeof(NativeStateOwner), (map_name + L"-owner").c_str());
+  if (g_state_owner_map) g_state_owner = static_cast<NativeStateOwner*>(
+      MapViewOfFile(g_state_owner_map, FILE_MAP_WRITE, 0, 0, sizeof(NativeStateOwner)));
+  if (existing && (!g_state_owner || !g_state_owner->requested_owner)) {
+    LONG sequence = 0;
+    if (TryOwnStateMirror(g_state_view, &sequence, g_state_writer)) {
+      if (!g_state_owner || !g_state_owner->requested_owner) {
+        std::memset(g_state_view->line, 0, sizeof(g_state_view->line));
+        InterlockedExchange(&g_state_view->sequence, 0); // legacy STATUS bootstrap
+        ReleaseMutex(g_state_writer);
+      } else ReleaseStateMirror(g_state_view, sequence, g_state_writer);
+    }
+  }
 }
 
-void PublishStateMirror(const std::string& response) {
+void PublishStateMirror(const std::string& response, DWORD input_pid = 0, bool input = false) {
   if (g_state_view == nullptr || response.compare(0, 6, "STATE ") != 0) return;
-  InterlockedIncrement(&g_state_view->sequence);  // odd = writer owns it
+  LONG sequence = 0;
+  if (!TryOwnStateMirror(g_state_view, &sequence, g_state_writer)) return;
+  if (g_state_owner && g_state_owner->requested_owner && g_state_owner->local_owner > 0 && (!input || input_pid == static_cast<DWORD>(g_state_owner->local_owner))) {
+    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(g_state_owner->local_owner));
+    const bool alive = process && WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+    if (process) CloseHandle(process);
+    if (alive) { ReleaseStateMirror(g_state_view, sequence, g_state_writer); return; }
+  }
+  if (g_state_owner) {
+    g_state_owner->local_owner = 0;
+    if (input) InterlockedExchange(&g_state_owner->requested_owner, 0);
+  }
   const size_t capacity = sizeof(g_state_view->line) - 1;
   const size_t count = response.size() < capacity ? response.size() : capacity;
   std::memcpy(g_state_view->line, response.data(), count);
   g_state_view->line[count] = '\0';
-  MemoryBarrier();
-  InterlockedIncrement(&g_state_view->sequence);  // even = stable snapshot
+  ReleaseStateMirror(g_state_view, sequence, g_state_writer);
 }
 
 std::wstring PipeName() {
@@ -2149,7 +2175,8 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
           g_composing_sessions.erase(state_owner);
         g_session_composing.store(!g_composing_sessions.empty(),
                                   std::memory_order_release);
-        PublishStateMirror(response);
+        PublishStateMirror(response, scoped_id.empty() ? 0 : static_cast<DWORD>(std::strtoul(scoped_id.c_str(), nullptr, 10)),
+            engine_request.starts_with("KEY ") || engine_request.starts_with("CONTROL "));
       }
       if (scoped_session && request == "SESSION " + session_id + " CLOSE") {
         const auto owner = g_session_owners.find(session_id);

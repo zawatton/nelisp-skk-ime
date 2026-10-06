@@ -664,3 +664,17 @@ identity/annotation merge, ていこうち (chi/ti), おーむ and あたい.
 No live dictionary/settings, shim or exported ABI change. Criteria remain
 pending; see tools/ai/local-first-conversion-notes.org for exact scope,
 red/green evidence, callback audit, commands, tails, limits and cleanup.
+
+* LF4 implementation note (2026-10-06)
+Local candidate navigation follows the stock first-four then seven-per-page
+menu, including previous-page and return-to-reading behavior. First local
+edits denied by TSF retain the pinned generation and retry with a 50-ms timer,
+clearing within five seconds on expiry. Local candidates publish through the
+existing Sumi v1 observer mapping; ownership metadata is separate and mapping
+resources are opened off the callback. Zero-time writer acquisition and
+abandoned-writer recovery protect key/edit progress. A first observer claim
+survives late mapping publication and is cancelled by ownership handoff.
+Updated core and engine
+host are required together; no Sumi or exported core ABI change. LF4 red/green
+evidence, first-time-reading stress, commands and limitations are recorded in
+ tools/ai/local-first-conversion-notes.org. Rollout criteria remain pending.
