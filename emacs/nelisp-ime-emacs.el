@@ -70,6 +70,10 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
 (defvar nelisp-ime-emacs--label "")
 (defvar nelisp-ime-emacs--base-mode "hiragana")
 (defvar nelisp-ime-emacs--cursors (make-hash-table :test #'eq))
+(defvar nelisp-ime-emacs--ime-colors (make-hash-table :test #'eq)
+  "Active IME cursor color per frame, independent of transient labels.")
+(defvar nelisp-ime-emacs--closing-frames (make-hash-table :test #'eq)
+  "Frames with one confirmed closed snapshot; require a second to restore.")
 (defvar nelisp-ime-emacs--warned nil)
 (defvar nelisp-ime-emacs-mode nil)
 (defvar nelisp-ime-emacs--inline-server nil)
@@ -99,13 +103,43 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
   (cl-find-if (lambda (frame) (eq (frame-focus-state frame) t)) (frame-list)))
 
 (defun nelisp-ime-emacs--restore (frame)
+  (remhash frame nelisp-ime-emacs--closing-frames)
+  (remhash frame nelisp-ime-emacs--ime-colors)
   (when (frame-live-p frame)
     (with-selected-frame frame
-      (if (and (bound-and-true-p evil-local-mode)
-               (fboundp 'evil-refresh-cursor))
-          (evil-refresh-cursor)
-        (let ((color (gethash frame nelisp-ime-emacs--cursors)))
-          (when color (set-cursor-color color)))))))
+      (let ((color (gethash frame nelisp-ime-emacs--cursors)))
+        (when (and color (not (equal color (frame-parameter frame 'cursor-color))))
+          (set-cursor-color color))
+        (remhash frame nelisp-ime-emacs--cursors)
+        (when (and color (bound-and-true-p evil-local-mode)
+                   (fboundp 'evil-refresh-cursor))
+          (evil-refresh-cursor))))))
+
+(defun nelisp-ime-emacs--cursor-color (frame)
+  "Resolve the current script's DDSKK override or background palette."
+  (let ((variable (cdr (assoc nelisp-ime-emacs--base-mode
+                              '(("hiragana" . skk-cursor-hiragana-color)
+                                ("katakana" . skk-cursor-katakana-color)
+                                ("jisx0201" . skk-cursor-jisx0201-color)
+                                ("wide-latin" . skk-cursor-jisx0208-latin-color)
+                                ("latin" . skk-cursor-latin-color)
+                                ("abbrev" . skk-cursor-abbrev-color))))))
+    (if (and variable (boundp variable)) (symbol-value variable)
+      (cdr (assoc nelisp-ime-emacs--base-mode
+                  (if (eq (or frame-background-mode
+                              (frame-parameter frame 'background-mode)) 'dark)
+                      nelisp-ime-emacs-dark-colors nelisp-ime-emacs-light-colors))))))
+
+(defun nelisp-ime-emacs--evil-set-cursor-color (function color)
+  "Keep Evil's shape updates without resetting an active IME color."
+  (let ((ime-color (and nelisp-ime-emacs-mode
+                        (with-current-buffer (window-buffer (selected-window))
+                          (memq (nelisp-ime-emacs--state) nelisp-ime-emacs-open-states))
+                        (gethash (selected-frame) nelisp-ime-emacs--ime-colors))))
+    (if ime-color
+        (unless (equal ime-color (frame-parameter nil 'cursor-color))
+          (funcall function ime-color))
+      (funcall function color))))
 
 (defun nelisp-ime-emacs--state-entry ()
   "Follow an Evil state entry only in the selected window's buffer."
@@ -221,32 +255,45 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
           ;; Every side effect below forces a frame or mode-line redisplay,
           ;; which costs 10-30 ms in large buffers; at 10 Hz that is a
           ;; sizable share of a core, so apply only actual changes.
-          (let ((old-label nelisp-ime-emacs--label))
-            (if (or (not (equal open 1))
-                    (not (memq (nelisp-ime-emacs--state) nelisp-ime-emacs-open-states)))
+          (let* ((old-label nelisp-ime-emacs--label)
+                 (closed (and (equal open 0)
+                              ;; Native status may lag a focus/composition
+                              ;; publication.  Require agreement, then two
+                              ;; polls so a one-poll close cannot flash.
+                              (or (not (display-graphic-p frame))
+                                  (not (fboundp 'w32-get-ime-open-status))
+                                  (not (w32-get-ime-open-status)))))
+                 (confirmed (and closed (gethash frame nelisp-ime-emacs--closing-frames))))
+            (if closed (puthash frame t nelisp-ime-emacs--closing-frames)
+              (remhash frame nelisp-ime-emacs--closing-frames))
+            (cond
+             ((or (not (memq (nelisp-ime-emacs--state) nelisp-ime-emacs-open-states))
+                  confirmed)
                 (unless (equal old-label "")
                   (setq nelisp-ime-emacs--label "")
-                  (nelisp-ime-emacs--restore frame))
+                  (nelisp-ime-emacs--restore frame)))
+             ((equal open 1)
               ;; Preedit/candidate/registration are engine states, not scripts.
               ;; Retain the last input script for their cursor and label.
               (when (member mode '("hiragana" "katakana" "jisx0201" "wide-latin" "latin" "abbrev"))
                 (setq nelisp-ime-emacs--base-mode mode))
               (unless (gethash frame nelisp-ime-emacs--cursors)
                 (puthash frame (frame-parameter frame 'cursor-color) nelisp-ime-emacs--cursors))
-              (let ((color (cdr (assoc nelisp-ime-emacs--base-mode
-                                       (if (eq (frame-parameter frame 'background-mode) 'dark)
-                                           nelisp-ime-emacs-dark-colors nelisp-ime-emacs-light-colors)))))
-                (when (and color (not (equal color (frame-parameter frame 'cursor-color))))
-                  (set-cursor-color color)))
+              (let ((color (nelisp-ime-emacs--cursor-color frame)))
+                (unless (equal color (gethash frame nelisp-ime-emacs--ime-colors))
+                  (puthash frame color nelisp-ime-emacs--ime-colors)
+                  (when (and color (not (equal color (frame-parameter frame 'cursor-color))))
+                    (set-cursor-color color))))
               (setq nelisp-ime-emacs--label
                     (or (cdr (assoc nelisp-ime-emacs--base-mode
                                     '(("hiragana" . "[あ]") ("katakana" . "[ア]")
                                       ("jisx0201" . "[ｱ]") ("wide-latin" . "[Ａ]")
-                                      ("latin" . "[A]") ("abbrev" . "[aA]")))) "")))
+                                      ("latin" . "[A]") ("abbrev" . "[aA]")))) ""))))
             (unless (equal old-label nelisp-ime-emacs--label)
               (force-mode-line-update t))))))))
 
 (defun nelisp-ime-emacs--install-evil-hooks ()
+  (advice-add 'evil-set-cursor-color :around #'nelisp-ime-emacs--evil-set-cursor-color)
   (dolist (state '(normal insert replace visual motion operator emacs))
     (add-hook (intern (format "evil-%s-state-entry-hook" state))
               #'nelisp-ime-emacs--state-entry)))
@@ -627,6 +674,7 @@ An opener already inserted at point may also be up to two seconds old."
         (nelisp-ime-emacs--check-settings)
         (nelisp-ime-emacs--inline-start))
     (nelisp-ime-emacs--inline-stop)
+    (advice-remove 'evil-set-cursor-color #'nelisp-ime-emacs--evil-set-cursor-color)
     (remove-hook 'window-selection-change-functions #'nelisp-ime-emacs--selection-change)
     (remove-hook 'window-buffer-change-functions #'nelisp-ime-emacs--selection-change)
     (remove-function after-focus-change-function #'nelisp-ime-emacs--focus-change)
@@ -638,7 +686,8 @@ An opener already inserted at point may also be up to two seconds old."
     (dolist (state '(normal insert replace visual motion operator emacs))
       (remove-hook (intern (format "evil-%s-state-entry-hook" state)) #'nelisp-ime-emacs--state-entry))
     (maphash (lambda (frame _) (nelisp-ime-emacs--restore frame)) nelisp-ime-emacs--cursors)
-    (clrhash nelisp-ime-emacs--cursors))
+    (clrhash nelisp-ime-emacs--cursors)
+    (clrhash nelisp-ime-emacs--closing-frames))
   (force-mode-line-update t))
 
 (provide 'nelisp-ime-emacs)
