@@ -1865,3 +1865,69 @@ remove engine/lfd1-L-classification.json and engine/lfd1-validation.json from
 the merge index; neither is needed by a test. Keep the scripts. The fresh
 classification output is build/w/int1-L-classification.json. Historical Debian
 commands/paths above describe the earlier run, not the integrated artifact layout.
+
+* LF5 worker: split base and user publication (2026-10-07)
+Base: integration/lf4-lfd1 at 630b122. Changes are unstaged; no commit.
+Schema 4 publishes configured dictionaries/rules/capabilities once in a base
+and selects a separate immutable user overlay through current. Overlay
+references carry the base digest and durable learning sequence. Clients
+retain the verified base across overlay swaps; rule ownership pins the base.
+The host uses a first-dirty 200 ms window, independent durable ACKs and idle
+status discovery once per second. Periodic collection respects mapped-reader
+handles. Failed replacement opens keep the prior map and retry at most once
+per second, including repair with unchanged current timestamp. A focused
+four-check unit control covers this collection race. Exited-process queues
+are replayed idempotently before deletion;
+live queues and unreplayable records are retained. Empty retired per-client
+queues are deleted; released same-process leases still support core handoff.
+
+The unchanged-tree reproduction failed as required: three ACKs published
+four complete bases totaling 69054688 bytes, with no overlays. The initial
+base was 17263663 bytes, hence 51791025 replacement bytes / 3 words =
+17263675 index bytes/word. The raw runner printed 17263669 because Hashtable
+iteration chose an arbitrary baseline; the runner now sorts filenames.
+After the change, three ACKs produced one base and four overlays totaling
+1141 bytes (380.33 bytes/word). Twelve ACKs produced one base and three
+overlays totaling 908 bytes (75.67 bytes/word). These after figures include
+the initial overlay. The fixture has 150000 padding entries; these are index
+publication bytes, excluding checkpoint/spool/manifest writes and filesystem
+overhead. The burst gate exercises the existing 5000 ms publication stall;
+clock-unit checks separately verify first-dirty coalescing across polling
+boundaries, initial publication and source-change bypass.
+
+Completed gates:
+- MSVC Release build; supplied-runtime CTest 11/11, zero failures (35.57 s).
+- Local unit test 154 checks, including four corruption/source controls;
+  combined stock oracle run 309 checks, ordinary/okuri/navigation 8/18/16 rows.
+- Portable helpers: 28 checks with MSVC /W4 /WX; stock-source ERT 9/9;
+  learning ERT 15/15; stateline 31/31; lattice 14/14.
+- Local TSF matrix 9 cases, 31 checks; missing/corrupt fallback 2 cases,
+  15 callbacks each, final maxima 7713/8497 us. Threshold remains 25000 us.
+- Navigation retry: 25 checkpoints, 8 mirrors, 169 callbacks, max 20702 us.
+- All 5 edit-recovery cases passed across runs: denied/swap with the padding
+  fixture, provider-denied/registration-loss/focus-swap with repository M.
+- Idle spool 4 checks, zero writes; configured two-source parity 12 checks,
+  2 readings, 8 candidates; overlay publication 4 checks; burst 6 checks.
+- Cleanup 4 checks: 9 obsolete/dead files deleted, duplicate replay leaves
+  sequence 1, live queue preserved. Mapped-file collection is also unit-tested.
+- DDSKK behavior 45 assertions; Emacs integration 5 cases/33 assertions;
+  core hot swap 19 assertions; host hot swap/reload/death recovery/registry
+  notification/shutdown passed with 5 child exits.
+
+Remaining validation: the existing 60-episode stress gate failed with the
+padding fixture, then with repository M (final commit mismatch). Neither has
+the second =しn= candidate required by SPACE/x traversal. Full SKK-JISYO.L
+was unavailable in this workspace; network download was rejected by socket
+access policy and a read-only external path was requested. Full-L stress
+is not claimed. An earlier navigation attempt failed engine warm-up with
+ERR REQUEST; its isolated retry passed. Earlier mixed-binary runs after a
+failed build are discarded. No existing thresholds or tests were weakened.
+
+Every final gate command, verbatim tail, changed-file hunk location, invalid
+runner attempt and process audit is in
+[[file:../../build/w/lf5-report.txt][the LF5 worker report]]. Runtime paths are caller parameters; harnesses use
+private registry keys, pipes and LOCALAPPDATA under build/w, with cold waits
+of 45 seconds. No live settings, shim/ABI, personal dictionary or other
+checkout was modified. These private gates do not establish live latency.
+The final ownership audit checks logged harness PIDs, start times and host
+child relationships; no owned host, TSF host or runtime remains running.

@@ -367,22 +367,47 @@ std::wstring Unhex(std::string_view value);
 std::filesystem::path Directory();
 class Index {
  public:
-  explicit Index(const std::filesystem::path& path);
+  explicit Index(const std::filesystem::path& path, std::shared_ptr<const Index> base = {}, bool base_only = false);
   ~Index();
   Index(const Index&) = delete;
   Index& operator=(const Index&) = delete;
   Entry Lookup(std::wstring_view reading, std::wstring_view okuri = {}) const;
   std::string_view Rules() const;
-  const std::vector<RomajiRule>& ParsedRules() const { return rules_; }
+  const std::vector<RomajiRule>& ParsedRules() const { return base_index_ ? base_index_->ParsedRules() : rules_; }
   const Header& header() const { return header_; }
+  const std::shared_ptr<const Index>& Base() const { return base_index_; }
+  const std::filesystem::path& Path() const { return path_; }
  private:
   std::string_view View(uint64_t offset, uint64_t bytes) const;
   Record At(uint64_t n) const;
+  std::optional<Record> Find(std::string_view key, char section) const;
   void Close();
   HANDLE file_ = INVALID_HANDLE_VALUE, mapping_ = nullptr;
   const char* base_ = nullptr;
   Header header_{};
+  std::filesystem::path path_;
+  std::shared_ptr<const Index> base_index_;
   std::vector<RomajiRule> rules_;
+};
+// Host scheduling uses monotonic milliseconds. ACKs remain independent of
+// this bounded publication window; the latest overlay covers the entire burst.
+class PublicationWindow {
+ public:
+  void Changed(uint64_t now) { if (!pending_) { since_ = now; pending_ = true; } }
+  bool Ready(uint64_t now) const { return pending_ && now - since_ >= 200; }
+  bool Due(const std::string& identity, const std::string& base, uint64_t now) {
+    if (identity == published_) { pending_ = false; return false; }
+    if (published_.empty() || base != base_) return true;
+    Changed(now);
+    return Ready(now);
+  }
+  void Published(std::string identity, std::string base) {
+    published_ = std::move(identity); base_ = std::move(base); pending_ = false;
+  }
+ private:
+  std::string published_, base_;
+  uint64_t since_ = 0;
+  bool pending_ = false;
 };
 // Host only. Parse/flush/validate a new file, then replace the manifest.
 // A failed build leaves the last verified publication intact.
@@ -390,6 +415,8 @@ void Publish(const std::filesystem::path& directory,
              const std::vector<std::filesystem::path>& files,
              std::string_view overlay, std::string_view rules,
              uint64_t capabilities, uint64_t overlay_sequence = 0);
-std::shared_ptr<const Index> OpenPublished(const std::filesystem::path& directory);
+std::shared_ptr<const Index> OpenPublished(const std::filesystem::path& directory,
+                                           std::shared_ptr<const Index> previous = {});
+void Cleanup(const std::filesystem::path& directory, std::shared_ptr<const Index> current = {});
 }
 #endif

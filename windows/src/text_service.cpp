@@ -2257,12 +2257,15 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   if (local_index) {
     // The worker parsed and validated this rule export. Pin the table
     // through a reading/candidate episode, including offline input.
-    if (local_rule_generation_ != local_index->header().generation &&
+    const auto rule_index = local_index->Base() ? local_index->Base() : local_index;
+    if (local_rule_generation_ != rule_index->header().generation &&
         !realtime_frontend_.composing() && !local_conversion_.active()) {
-      realtime_frontend_.SetRules(local_index->ParsedRules());
-      auto_pair_.SetRules(local_index->ParsedRules());
-      local_rule_generation_ = local_index->header().generation;
-      local_rule_snapshot_ = local_index;
+      realtime_frontend_.SetRules(rule_index->ParsedRules());
+      auto_pair_.SetRules(rule_index->ParsedRules());
+      local_rule_generation_ = rule_index->header().generation;
+      // Learning swaps only the overlay. Rules pin the base, so an idle rule
+      // cache neither recopies the table nor retains superseded overlays.
+      local_rule_snapshot_ = rule_index;
     }
   } else if (!provider_pending_.load(std::memory_order_acquire)) {
     const auto rules = engine_.RomajiRules();
