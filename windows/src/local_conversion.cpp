@@ -201,6 +201,7 @@ void Store::Run() {
   std::filesystem::path directory, spool;
   std::optional<std::filesystem::file_time_type> manifest_time;
   std::chrono::steady_clock::time_point next_mapping_retry{};
+  bool mapping_retry = false;
   HANDLE lease = INVALID_HANDLE_VALUE;
   std::deque<Learning> queue = std::move(restart_pending_);
   std::shared_ptr<const Index> mapped;
@@ -213,23 +214,22 @@ void Store::Run() {
     lease = CreateFileW((spool.wstring() + L".lock").c_str(), GENERIC_READ | GENERIC_WRITE,
                         FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (lease == INVALID_HANDLE_VALUE) throw std::runtime_error("learning spool ownership");
-    // Recover spools only from exited processes. Concurrent live clients
-    // retain ownership; duplicate crash recovery is harmless at the engine.
+    // Recover exited processes and a released lease from this same process
+    // (core handoff). Other live processes retain ownership; replay is
+    // idempotent at the engine. The exclusive lease is the transfer barrier.
     for (const auto& entry : std::filesystem::directory_iterator(directory)) {
       auto name = entry.path().filename().string();
       if (!name.starts_with("pending-") || entry.path().extension() != ".queue") continue;
       const auto end = name.find('-', 8);
       DWORD pid = static_cast<DWORD>(std::stoul(name.substr(8, end - 8)));
+      HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid);
+      const bool exited = process ? WaitForSingleObject(process, 0) == WAIT_OBJECT_0 : GetLastError() == ERROR_INVALID_PARAMETER;
+      if (process) CloseHandle(process);
+      if (!exited && pid != GetCurrentProcessId()) continue;
       HANDLE claim = CreateFileW((entry.path().wstring() + L".lock").c_str(), GENERIC_READ | GENERIC_WRITE,
-                                 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
       Claim ownership{claim};
-      bool exited = claim != INVALID_HANDLE_VALUE;
-      if (!exited && GetLastError() == ERROR_FILE_NOT_FOUND) {
-        HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid);
-        exited = process ? WaitForSingleObject(process, 0) == WAIT_OBJECT_0 : GetLastError() == ERROR_INVALID_PARAMETER;
-        if (process) CloseHandle(process);
-      }
-      if (!exited) continue;
+      if (claim == INVALID_HANDLE_VALUE) continue;
       std::ifstream input(entry.path());
       std::deque<Learning> recovered;
       std::string line;
@@ -294,13 +294,15 @@ void Store::Run() {
     try {
       const auto time = std::filesystem::last_write_time(directory / "current");
       const auto now = std::chrono::steady_clock::now();
-      if (!manifest_time || time != *manifest_time || (!mapped && now >= next_mapping_retry)) {
-        // Keep successful unchanged mappings pinned. Without a mapping,
-        // retry failures at most once per second for an unchanged current.
+      if (!manifest_time || time != *manifest_time || ((!mapped || mapping_retry) && now >= next_mapping_retry)) {
+        // Keep successful unchanged mappings pinned. Retry failures at most
+        // once per second for an unchanged current,
+        // including a collection race while a prior mapping remains usable.
         manifest_time = time;
         next_mapping_retry = now + std::chrono::seconds(1);
         ++mapping_opens_;
-        mapped = OpenPublished(directory);
+        try { mapped = OpenPublished(directory, mapped); mapping_retry = false; }
+        catch (...) { mapping_retry = true; throw; }
       }
       // Retire even when an ACK arrives after its generation was mapped.
       while (mapped && !queue.empty() && queue.front().sequence && queue.front().sequence <= mapped->header().overlay_sequence) {
@@ -344,6 +346,12 @@ void Store::Run() {
     wake_.wait_for(lock, std::chrono::milliseconds(50), [this] { return stopping_.load() || written_.load() != consumed_.load(); });
   }
   if (lease != INVALID_HANDLE_VALUE) CloseHandle(lease);
+  // Pending queues survive unload/crash for idempotent replay. Retired empty
+  // queues have no recovery value and must not accumulate per core activation.
+  if (queue.empty() && !spool.empty()) {
+    DeleteFileW(spool.c_str());
+    DeleteFileW((spool.wstring() + L".lock").c_str());
+  }
 }
 bool Conversion::Begin(std::shared_ptr<const Index> index, const std::wstring& reading,
                        const std::vector<std::wstring>& pending, std::wstring okuri) {

@@ -18,6 +18,18 @@ void Reject(const std::filesystem::path& path, const char* label) {
 }
 int main(int argc, char** argv) {
   try {
+    PublicationWindow window;
+    Check(window.Due("revision0", "base1", 0), "initial publication immediate");
+    window.Published("revision0", "base1");
+    Check(!window.Due("revision0", "base1", 900), "unchanged publication idle");
+    Check(!window.Due("revision1", "base1", 999), "first ACK starts coalescing window");
+    Check(!window.Due("revision2", "base1", 1001), "ACK across old polling boundary coalesces");
+    Check(!window.Due("revision3", "base1", 1198), "third ACK within 200ms coalesces");
+    Check(window.Due("revision3", "base1", 1199), "latest overlay due at 200ms");
+    window.Published("revision3", "base1");
+    Check(!window.Due("revision3", "base1", 1400), "coalesced revision publishes once");
+    Check(!window.Due("revision4", "base1", 1500), "next burst starts new window");
+    Check(window.Due("revision4", "base2", 1501), "base change bypasses learning window");
     const auto root = argc > 1 ? std::filesystem::path(argv[1]) : Directory() / "selftest";
     std::filesystem::create_directories(root);
     if (argc > 4) {
@@ -77,6 +89,37 @@ int main(int argc, char** argv) {
     Check(conversion.Begin(original, L"かな", {L"哉"}) && conversion.State().text == L"▼哉", "pending learning order");
     Publish(root, {source, second}, "かな /哉/佳奈/仮名/\n", rules, 1);
     auto learned = OpenPublished(root);
+    auto reused = OpenPublished(root, original);
+    Check(original->Base() && reused->Base() == original->Base(), "overlay swap reuses identical base mapping");
+    Check(original->header().generation != reused->header().generation, "overlay has its own generation");
+    Check(original->Base()->header().overlay_sequence == 0, "base has no learning sequence");
+    size_t base_files = 0;
+    for (const auto& item : std::filesystem::directory_iterator(root))
+      if (item.path().filename().string().starts_with("generation-") && item.path().extension() == ".index") ++base_files;
+    Check(base_files == 1, "learning writes no new base");
+    Check(std::filesystem::file_size(reused->Path()) < 1024, "learning overlay contains only user records and base reference");
+    // Baked-generation oracle: source compilation/certification and tier order
+    // are unchanged when records live in two separately mapped files.
+    const auto baked = CompileSources({ParseDictionary("かな /仮名;first/哉/金/加奈/佳奈/香奈/\nか /蚊/\nかんじ /漢字/幹事/感じ/\nにほん /日本/二本/\nすうじ /(concat 1)/\n", true).entries,
+                                      ParseDictionary("かな /仮名;later/可奈/\nながい /" + std::string(1025, 'a') + "/\n", true).entries}, 1);
+    const auto users = ParseOverlay("かな /哉/佳奈/仮名/\n").entries;
+    for (const auto& [key, shared] : baked) {
+      const auto reading = Wide(BaseKey(key));
+      const auto found = users.find(key);
+      const auto user_raw = found == users.end() ? std::string{} : found->second.raw;
+      const auto shared_raw = shared.supported ? SerializeCandidates(shared.candidates) : "/(concat \"lfd1-unsupported\")/";
+      const auto entry = reused->Lookup(reading);
+      Check(entry.supported == CertifyEntry(reading, L"", user_raw, shared_raw, 1), "split certification equals baked oracle");
+      Check(entry.user == ParsePlain(user_raw).candidates && entry.shared == ParsePlain(shared_raw).candidates,
+            "split tiers equal baked oracle candidates and order");
+    }
+    const auto pinned_path = original->Path();
+    Cleanup(root, reused);
+    Check(std::filesystem::exists(pinned_path), "cleanup retains mapped old overlay");
+    // A validated but unpublished crash artifact is collectable.
+    const auto orphan = root / "overlay-orphan.index";
+    File(orphan, "incomplete"); Cleanup(root, reused);
+    Check(!std::filesystem::exists(orphan), "cleanup deletes abandoned publication");
     Check(original->Lookup(L"かな").user.front() == L"佳奈", "pinned old generation");
     Check(learned->Lookup(L"かな").user.front() == L"哉", "new overlay generation");
     bool failed = false; try { Publish(root, {root / "missing"}, user, rules, 1); } catch (...) { failed = true; }
@@ -116,6 +159,22 @@ int main(int argc, char** argv) {
     Check(conversion.Previous() == false && conversion.Commit().text == L"掛く", "capability swap pins open okuri");
     Check(!conversion.Begin(OpenPublished(root), L"かk", {}, L"く"), "new uncertified okuri selects provider");
     Publish(root, {source}, user, rules, 0);
+    {
+      const auto cleanup = root / "cleanup";
+      Publish(cleanup, {source}, user, rules, 1);
+      auto old = OpenPublished(cleanup);
+      const auto old_overlay = old->Path(), old_base = old->Base()->Path();
+      Publish(cleanup, {source}, user, rules, 0);
+      auto next = OpenPublished(cleanup, old);
+      Check(next->Base() != old->Base(), "capability change rebuilds base");
+      Check(std::filesystem::exists(old_overlay) && std::filesystem::exists(old_base), "mapped superseded pair retained");
+      old.reset(); Cleanup(cleanup, next);
+      Check(!std::filesystem::exists(old_overlay) && !std::filesystem::exists(old_base), "released superseded pair removed");
+      const auto current_base = next->Base();
+      File(source, "かな /仮名;first/哉/金/加奈/佳奈/香奈/\nか /蚊/\nかんじ /漢字/幹事/感じ/\nにほん /日本/二本/\nすうじ /(concat 1)/\n");
+      Publish(cleanup, {source}, user, rules, 0);
+      Check(OpenPublished(cleanup, next)->Base() == current_base, "metadata-only source change reuses content identity");
+    }
     const auto current = root / "current";
     std::ifstream manifest(current); std::string name; manifest >> name;
     std::ifstream in(root / name, std::ios::binary);
@@ -202,11 +261,48 @@ int main(int argc, char** argv) {
         if (entry.path().extension() == ".queue" || entry.path().extension() == ".lock")
           std::filesystem::remove(entry.path());
     }
+    {
+      // Core handoff is a released lease in the same live process, rather
+      // than process death. Its durable pending deltas must survive the swap.
+      Store prior; prior.Start();
+      Check(prior.Learn(L"かな", L"金"), "handoff learning queued");
+      prior.Stop();
+      Store replacement; replacement.Start();
+      for (unsigned n = 0; n < 200 && replacement.Capture().pending.empty(); ++n) Sleep(10);
+      Check(replacement.Capture().pending.size() == 1 && replacement.Capture().pending.front().candidate == L"金",
+            "released same-process spool transfers across core handoff");
+      replacement.Stop();
+      for (const auto& entry : std::filesystem::directory_iterator(Directory()))
+        if (entry.path().extension() == ".queue" || entry.path().extension() == ".lock")
+          std::filesystem::remove(entry.path());
+    }
     // Recover an ACKed delta while current names a missing/invalid generation.
     // Repair only the generation file: current's timestamp stays unchanged.
     std::ifstream valid_manifest(Directory() / "current");
     std::string valid_name; valid_manifest >> valid_name; valid_manifest.close();
     const auto valid_generation = Directory() / valid_name;
+    {
+      Store retained; retained.Start();
+      for (unsigned n = 0; n < 200 && !retained.Current(); ++n) Sleep(10);
+      const auto prior = retained.Current();
+      Check(prior != nullptr, "collection-race fixture has a verified prior mapping");
+      const auto replacement = Directory() / "overlay-collection-race.index";
+      std::filesystem::remove(replacement);
+      File(Directory() / "current", replacement.filename().string());
+      const auto stamp = std::filesystem::last_write_time(Directory() / "current");
+      for (unsigned n = 0; n < 200 && retained.MappingOpensForDiagnostics() < 2; ++n) Sleep(10);
+      Sleep(300);
+      Check(retained.Current() == prior && retained.MappingOpensForDiagnostics() == 2,
+            "missing replacement retains prior mapping without retrying every poll");
+      std::filesystem::copy_file(valid_generation, replacement);
+      for (unsigned n = 0; n < 250 && retained.Current()->Path() != replacement; ++n) Sleep(10);
+      Check(retained.Current()->Path() == replacement && retained.Current()->Base() == prior->Base(),
+            "replacement repair retries with the same pinned base");
+      Check(std::filesystem::last_write_time(Directory() / "current") == stamp,
+            "retained-map retry does not require manifest timestamp change");
+      retained.Stop();
+      File(Directory() / "current", valid_name);
+    }
     for (const bool missing : {true, false}) {
       const auto generation_name = missing ? "generation-hf1-missing.index" : "generation-hf1-invalid.index";
       const auto generation = Directory() / generation_name;

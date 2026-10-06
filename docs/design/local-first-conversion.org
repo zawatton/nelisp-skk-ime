@@ -412,9 +412,9 @@ source configuration changes require the normal host reload.
 The production schema is separate from LF1's experimental format: 144-byte
 header, 48-byte sorted records, SHA256 configuration/content digest and whole
 generation checksum, bounded UTF-8 sections and a validated rule export.
-The host parses sources plus an engine overlay snapshot, flushes and validates
-a uniquely named generation, then atomically replaces a small manifest. It
-retains three generations. Protected user/SYSTEM ACLs and owner checks apply.
+The LF2 host parsed sources plus an engine overlay snapshot into each full
+generation. LF5 replaces that publication format with the split below.
+Protected user/SYSTEM ACLs and owner checks apply.
 The core worker validates new mappings; key callbacks never build or fully
 validate a generation. A composition pins its candidate list and rules.
 
@@ -789,3 +789,50 @@ certifies 175019 of 175774 entries; 746 numeric keys and 9 executable Lisp
 entries remain on the provider. Both reported readings pass before and
 after this change. These counts do not inspect the personal source or
 establish which path the live TSF session selected.
+
+* LF5 split publication (2026-10-07)
+Schema 4 retains the 144-byte header and 48-byte record layout. A
+=generation-*.index= contains configured source tiers, rules and capability
+certification, with overlay sequence zero. An =overlay-*.index= contains
+only the engine's user snapshot: learned rankings, registrations and okuri
+blocks, together with its durable ACK sequence. Its metadata names the base
+file and its header repeats the base configuration digest and capabilities.
+=current= atomically selects the overlay, so readers cannot combine an
+overlay with an unrelated base. Nested base references are rejected.
+
+The host caches source metadata and a verified base. Source metadata changes
+trigger content hashing; unchanged content reuses the base. Rules or
+capability changes rebuild it. Host restart verifies current and reuses its
+base when the content digest agrees. Overlay publication parses, hashes,
+flushes and validates only the overlay against that pinned base. Directory
+collection runs separately, once per second. Each client reuses its existing
+base mapping while replacing the overlay. Composition ownership still pins
+its candidate list and rules; rule ownership follows the base generation.
+Lookup composes the same certified user/shared tiers as the baked format,
+including annotations, source order and unsupported-entry sentinels.
+
+Learning ACKs retain their checkpoint-before-ACK behavior. ACK activity
+wakes the publisher; a window anchored at the first dirty ACK collects
+changes for 200 ms. Idle status discovery remains once per second. Initial
+publication and source/rule/capability changes bypass the window. Pending
+client deltas continue to affect lookup until a verified overlay covers
+their ACK sequence, including an ACK received after that overlay was mapped.
+
+Readers retain file handles without delete sharing. Collection attempts to
+remove every superseded generation, overlay and incomplete manifest; files
+still pinned by a client survive until a later sweep. Startup repeats this
+collection. If collection races a client opening a selected filename, the
+client keeps its previous verified mapping and retries once per second,
+even when current's timestamp is unchanged. The host exclusively claims
+exited-process spool leases and
+replays their records through durable idempotent learning before deleting
+queues and locks. Unreplayable records are retained. Live processes are not
+reclaimed by the host. Core workers may transfer released same-process
+leases during hot swap. Empty retired queues are removed on worker exit;
+nonempty queues retain their per-client identity and recovery semantics.
+
+LF5 evidence and remaining gates are recorded in the LF5 section of
+=tools/ai/local-first-conversion-notes.org=. The byte measurement counts
+index publication, including the initial overlay; it does not measure the
+personal checkpoint or spool writes. No live settings or personal dictionary
+were used or changed by this worker.

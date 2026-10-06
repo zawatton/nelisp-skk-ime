@@ -9,12 +9,13 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <stdexcept>
 
 namespace ddskk::local {
 namespace {
 constexpr uint64_t kMagic = 0x32495844464c4b53ULL;
-constexpr uint64_t kSchema = 3;
+constexpr uint64_t kSchema = 4;
 constexpr uint64_t kLimit = 256ULL * 1024 * 1024;
 using Digest = std::array<unsigned char, 32>;
 std::vector<unsigned char> User() {
@@ -183,10 +184,10 @@ std::string_view Index::View(uint64_t offset, uint64_t bytes) const {
     throw std::runtime_error("payload bounds");
   return {base_ + offset, static_cast<size_t>(bytes)};
 }
-Index::Index(const std::filesystem::path& path) {
+Index::Index(const std::filesystem::path& path, std::shared_ptr<const Index> base, bool base_only) : path_(path) {
   try {
     VerifyAccess(path);
-    file_ = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
+    file_ = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
                         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     LARGE_INTEGER size{};
     if (file_ == INVALID_HANDLE_VALUE || !GetFileSizeEx(file_, &size) ||
@@ -216,66 +217,77 @@ Index::Index(const std::filesystem::path& path) {
     }
     if (header_.rules_offset != next || header_.rules_bytes != header_.bytes - next)
       throw std::runtime_error("index rules bounds");
-    (void)Wide(Rules());
-    auto rules = ParseRomajiRules(std::string(Rules()));
-    if (!rules || rules->empty()) throw std::runtime_error("invalid rule export");
-    rules_ = std::move(*rules);
+    const auto metadata = View(header_.rules_offset, header_.rules_bytes);
+    if (metadata.starts_with("BASE ")) {
+      const std::string name(metadata.substr(5));
+      if (base_only || name.size() > 100 || !name.starts_with("generation-") || !name.ends_with(".index") ||
+          name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-.") != name.npos)
+        throw std::runtime_error("invalid overlay base reference");
+      const auto base_path = path.parent_path() / name;
+      if (!base || base->Path() != base_path) base = std::make_shared<Index>(base_path, nullptr, true);
+      if (base->Base() || base->header().config != header_.config || base->header().capabilities != header_.capabilities)
+        throw std::runtime_error("overlay base identity");
+      base_index_ = std::move(base);
+      // Rules remain owned by the pinned base; overlay swaps do not parse them.
+    } else {
+      (void)Wide(metadata);
+      auto rules = ParseRomajiRules(std::string(metadata));
+      if (!rules || rules->empty()) throw std::runtime_error("invalid rule export");
+      rules_ = std::move(*rules);
+    }
   } catch (...) { Close(); throw; }
 }
-std::string_view Index::Rules() const { return View(header_.rules_offset, header_.rules_bytes); }
+std::string_view Index::Rules() const {
+  return base_index_ ? base_index_->Rules() : View(header_.rules_offset, header_.rules_bytes);
+}
+std::optional<Record> Index::Find(std::string_view key, char section) const {
+  const auto variant = VariantKey(key, section);
+  uint64_t low = 0, high = header_.count;
+  while (low < high) {
+    const auto mid = low + (high - low) / 2; const auto r = At(mid);
+    const auto found = View(r.key, r.key_bytes);
+    if (found < variant) low = mid + 1;
+    else if (variant < found) high = mid;
+    else return r;
+  }
+  return std::nullopt;
+}
 Entry Index::Lookup(std::wstring_view reading, std::wstring_view okuri) const {
   Entry entry;
   if (!(header_.capabilities & 1) || reading.empty() || Utf16Units(reading) > 256) return entry;
   const auto key = Utf8(reading);
-  auto locate = [&](char section) -> std::optional<Record> {
-    const auto variant = VariantKey(key, section);
-    uint64_t low = 0, high = header_.count;
-    while (low < high) {
-      const auto mid = low + (high - low) / 2; const auto r = At(mid);
-      const auto found = View(r.key, r.key_bytes);
-      if (found < variant) low = mid + 1;
-      else if (variant < found) high = mid;
-      else return r;
-    }
-    return std::nullopt;
-  };
-  auto record = locate(okuri.empty() ? 'N' : 'A');
-  if (!record) record = locate('U');
+  const char section = okuri.empty() ? 'N' : 'A';
+  auto record = Find(key, section);
+  if (!record) record = Find(key, 'U');
+  std::string_view user_raw, shared_raw;
   if (record) {
-      const auto r = *record;
-      const auto user_raw = View(r.user, r.user_bytes);
-      const auto shared_raw = View(r.shared, r.shared_bytes);
-      entry.supported = CertifyEntry(reading, okuri, user_raw, shared_raw, header_.capabilities);
-      auto user = ParsePlain(user_raw, !okuri.empty(), (header_.capabilities & 4) != 0);
-      auto shared = ParsePlain(shared_raw, !okuri.empty(), (header_.capabilities & 4) != 0);
-      entry.user = std::move(user.candidates);
-      entry.shared = std::move(shared.candidates);
-      return entry;
+    user_raw = View(record->user, record->user_bytes);
+    shared_raw = View(record->shared, record->shared_bytes);
   }
-  // A miss is routed to the engine's registration editor in this slice.
+  if (base_index_) {
+    auto shared = base_index_->Find(key, section);
+    if (!shared) shared = base_index_->Find(key, 'U');
+    if (shared) shared_raw = base_index_->View(shared->shared, shared->shared_bytes);
+    if (!record && !shared) return entry;
+  } else if (!record) return entry;
+  entry.supported = CertifyEntry(reading, okuri, user_raw, shared_raw, header_.capabilities);
+  entry.user = ParsePlain(user_raw, !okuri.empty(), (header_.capabilities & 4) != 0).candidates;
+  entry.shared = ParsePlain(shared_raw, !okuri.empty(), (header_.capabilities & 4) != 0).candidates;
   return entry;
 }
-void Publish(const std::filesystem::path& directory, const std::vector<std::filesystem::path>& files,
-             std::string_view overlay, std::string_view rules, uint64_t capabilities, uint64_t overlay_sequence) {
-  if (files.empty() || files.size() > 64 || rules.empty()) throw std::runtime_error("source plan unavailable");
-  std::filesystem::create_directories(directory);
-  Secure(directory);
-  uint64_t bad = 0;
-  auto user = Parse(overlay, bad, false, true);
-  const auto published_capabilities = PublishedCapabilities(capabilities, overlay);
-  std::vector<DictionaryTable> sources;
-  std::string config = std::to_string(published_capabilities) + std::string(rules);
-  for (const auto& file : files) {
-    const auto bytes = Read(file);
-    config += Utf8(file.wstring());
-    const auto digest = Hash(bytes); config.append(reinterpret_cast<const char*>(digest.data()), digest.size());
-    sources.push_back(Parse(bytes, bad, true));
-  }
-  const auto merged = CompileSources(sources, published_capabilities);
-  std::map<std::string, std::pair<std::string, std::string>, std::less<>> entries;
-  for (const auto& [key, raw] : user) entries[key].first = raw.raw;
-  for (const auto& [key, value] : merged)
-    entries[key].second = value.supported ? SerializeCandidates(value.candidates) : "/(concat \"lfd1-unsupported\")/";
+namespace {
+uint64_t Generation() {
+  FILETIME clock{}; GetSystemTimePreciseAsFileTime(&clock);
+  const uint64_t now = (static_cast<uint64_t>(clock.dwHighDateTime) << 32) | clock.dwLowDateTime;
+  static std::atomic<uint64_t> last{0};
+  auto previous = last.load(); uint64_t value;
+  do { value = std::max(now, previous + 1); } while (!last.compare_exchange_weak(previous, value));
+  return value;
+}
+using Entries = std::map<std::string, std::pair<std::string, std::string>, std::less<>>;
+std::string WriteIndex(const std::filesystem::path& directory, const Entries& entries,
+                       std::string_view metadata, uint64_t capabilities, uint64_t bad,
+                       uint64_t sequence, const Digest& config, bool overlay) {
   const uint64_t beginning = sizeof(Header) + entries.size() * sizeof(Record);
   std::vector<Record> records;
   std::string payload;
@@ -287,45 +299,103 @@ void Publish(const std::filesystem::path& directory, const std::vector<std::file
     r.shared = append(value.second); r.shared_bytes = value.second.size();
     records.push_back(r);
   }
-  FILETIME clock{}; GetSystemTimePreciseAsFileTime(&clock);
-  const uint64_t now = (static_cast<uint64_t>(clock.dwHighDateTime) << 32) | clock.dwLowDateTime;
-  static std::atomic<uint64_t> last_generation{0};
-  auto previous_generation = last_generation.load();
-  uint64_t generation;
-  do { generation = std::max(now, previous_generation + 1); }
-  while (!last_generation.compare_exchange_weak(previous_generation, generation));
-  Header header{kMagic, kSchema, beginning + payload.size() + rules.size(), records.size(), generation,
-                published_capabilities, bad, overlay_sequence, beginning + payload.size(), rules.size(), Hash(config), {}};
+  const auto generation = Generation();
+  Header header{kMagic, kSchema, beginning + payload.size() + metadata.size(), records.size(), generation,
+                capabilities, bad, sequence, beginning + payload.size(), metadata.size(), config, {}};
   if (header.bytes > kLimit) throw std::runtime_error("generation limit");
   std::string bytes(reinterpret_cast<const char*>(&header), sizeof(header));
   bytes.append(reinterpret_cast<const char*>(records.data()), records.size() * sizeof(Record));
-  bytes += payload; bytes += rules;
+  bytes += payload; bytes += metadata;
   header.checksum = Hash(bytes); std::memcpy(bytes.data(), &header, sizeof(header));
-  const auto name = "generation-" + std::to_string(generation) + "-" + std::to_string(GetCurrentProcessId()) + ".index";
-  const auto path = directory / name;
-  Write(path, bytes);
-  Index verified(path);
+  const auto name = std::string(overlay ? "overlay-" : "generation-") + std::to_string(generation) + "-" + std::to_string(GetCurrentProcessId()) + ".index";
+  Write(directory / name, bytes);
+  return name;
+}
+std::string SourceStamp(const std::vector<std::filesystem::path>& files, std::string_view rules, uint64_t capabilities) {
+  std::string stamp = std::to_string(capabilities) + std::string(rules);
+  for (const auto& path : files) {
+    stamp += Utf8(path.wstring()) + ":" + std::to_string(std::filesystem::file_size(path)) + ":" +
+        std::to_string(std::filesystem::last_write_time(path).time_since_epoch().count()) + "\n";
+  }
+  return stamp;
+}
+struct Publication {
+  std::string stamp, name;
+  std::shared_ptr<const Index> base;
+};
+std::mutex publication_mutex;
+std::map<std::filesystem::path, Publication> publications;
+}
+void Publish(const std::filesystem::path& directory, const std::vector<std::filesystem::path>& files,
+             std::string_view overlay, std::string_view rules, uint64_t capabilities, uint64_t overlay_sequence) {
+  if (files.empty() || files.size() > 64 || rules.empty()) throw std::runtime_error("source plan unavailable");
+  std::lock_guard lock(publication_mutex);
+  std::filesystem::create_directories(directory);
+  Secure(directory);
+  const auto flags = PublishedCapabilities(capabilities, overlay);
+  const auto stamp = SourceStamp(files, rules, flags);
+  auto& publication = publications[directory];
+  if (stamp != publication.stamp || !publication.base) {
+    uint64_t bad = 0;
+    std::vector<DictionaryTable> sources;
+    std::string config = std::to_string(flags) + std::string(rules);
+    for (const auto& file : files) {
+      const auto bytes = Read(file);
+      config += Utf8(file.wstring());
+      const auto digest = Hash(bytes); config.append(reinterpret_cast<const char*>(digest.data()), digest.size());
+      sources.push_back(Parse(bytes, bad, true));
+    }
+    const auto digest = Hash(config);
+    // On host restart reuse the verified base referenced by current.
+    if (!publication.base) {
+      try {
+        auto current = OpenPublished(directory);
+        if (current->Base()) { publication.base = current->Base(); publication.name = publication.base->Path().filename().string(); }
+      } catch (...) { }
+    }
+    if (!publication.base || publication.base->header().config != digest) {
+      Entries entries;
+      for (const auto& [key, value] : CompileSources(sources, flags))
+        entries[key].second = value.supported ? SerializeCandidates(value.candidates) : "/(concat \"lfd1-unsupported\")/";
+      const auto name = WriteIndex(directory, entries, rules, flags, bad, 0, digest, false);
+      auto base = std::make_shared<Index>(directory / name, nullptr, true);
+      publication.name = name; publication.base = std::move(base);
+    }
+    publication.stamp = stamp;
+  }
+  uint64_t bad = 0;
+  Entries entries;
+  for (const auto& [key, value] : Parse(overlay, bad, false, true)) entries[key].first = value.raw;
+  const auto name = WriteIndex(directory, entries, "BASE " + publication.name, flags, bad,
+                              overlay_sequence, publication.base->header().config, true);
+  auto verified = std::make_shared<Index>(directory / name, publication.base);
   const auto temp = directory / (name + ".manifest");
   Write(temp, name);
   if (!MoveFileExW(temp.c_str(), (directory / "current").c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
     throw std::runtime_error("manifest publication");
-  // Delete sharing keeps pinned mappings alive. Retain the current and two
-  // newest older files; failed/incomplete files never become publications.
-  std::vector<std::filesystem::path> generations;
-  for (const auto& item : std::filesystem::directory_iterator(directory))
-    if (item.path().extension() == ".index") generations.push_back(item.path());
-  std::sort(generations.rbegin(), generations.rend());
-  for (size_t i = 3; i < generations.size(); ++i) {
-    if (generations[i] == path) continue;
-    std::error_code error; std::filesystem::remove(generations[i], error);
-  }
+  // Housekeeping runs on the host sweep, outside overlay publication.
 }
-std::shared_ptr<const Index> OpenPublished(const std::filesystem::path& directory) {
+std::shared_ptr<const Index> OpenPublished(const std::filesystem::path& directory, std::shared_ptr<const Index> previous) {
   VerifyAccess(directory / "current");
   const auto name = Read(directory / "current");
-  if (name.size() > 100 || !name.starts_with("generation-") || !name.ends_with(".index") ||
+  if (name.size() > 100 || (!name.starts_with("generation-") && !name.starts_with("overlay-")) || !name.ends_with(".index") ||
       name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-.") != name.npos)
     throw std::runtime_error("invalid generation manifest");
-  return std::make_shared<Index>(directory / name);
+  if (previous && previous->Path() == directory / name) return previous;
+  return std::make_shared<Index>(directory / name, previous ? (previous->Base() ? previous->Base() : previous) : nullptr);
+}
+void Cleanup(const std::filesystem::path& directory, std::shared_ptr<const Index> current) {
+  // Readers deny delete sharing. Old files survive exactly while a conversion
+  // or client pins them; a later sweep (including host startup) retries deletion.
+  current = OpenPublished(directory, std::move(current));
+  const auto base = current->Base();
+  for (const auto& item : std::filesystem::directory_iterator(directory)) {
+    const auto name = item.path().filename().string();
+    if ((name.starts_with("generation-") || name.starts_with("overlay-")) &&
+        (name.ends_with(".index") || name.ends_with(".manifest")) &&
+        item.path() != current->Path() && (!base || item.path() != base->Path())) {
+      std::error_code error; std::filesystem::remove(item.path(), error);
+    }
+  }
 }
 }

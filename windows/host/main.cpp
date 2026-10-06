@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <fstream>
 #include <chrono>
 #include <cstring>
 #include <cstdio>
@@ -1317,6 +1318,10 @@ std::string Utf8KeyRequest(const std::string& request) {
   return request;
 }
 
+// Only completed durable learning ACKs wake the overlay publisher. Idle
+// capability/recovery probes retain the previous one-second cadence.
+std::atomic<uint64_t> g_local_ack_activity{0};
+
 bool Dispatch(Child& child, const std::string& request, std::string* response) {
   if (!child.wire_checked) {
     child.wire_checked = true;
@@ -1407,6 +1412,8 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
       continue;
     }
     *response = line;
+    if (request.starts_with("LOCAL LEARN ") && line.starts_with("ACK "))
+      g_local_ack_activity.fetch_add(1, std::memory_order_release);
     if (debug) {
       PROCESS_MEMORY_COUNTERS after{};
       K32GetProcessMemoryInfo(child.process, &after, sizeof(after));
@@ -1972,14 +1979,104 @@ bool LocalConversionRequested() {
   return enabled;
 }
 
+// Snapshot discovery includes file metadata, while publication hashes source
+// contents only when that metadata changes. Learning never scans a base file.
+std::string LocalSourceIdentity(const DictionaryServerConfig& config) {
+  std::string identity = ddskk::local::Utf8(config.dictionary_files) + std::to_string(config.enabled);
+  size_t start = 0;
+  while (start < config.dictionary_files.size()) {
+    auto end = config.dictionary_files.find(L';', start);
+    if (end == config.dictionary_files.npos) end = config.dictionary_files.size();
+    if (end > start) {
+      const std::filesystem::path file(config.dictionary_files.substr(start, end - start));
+      identity += ":" + std::to_string(std::filesystem::file_size(file)) + ":" +
+          std::to_string(std::filesystem::last_write_time(file).time_since_epoch().count());
+    }
+    start = end + 1;
+  }
+  return identity;
+}
+
+// The checkpoint ACK makes replay safe even if the host crashes between
+// replay and deletion. Never claim a live process's queue or lease.
+void RecoverLocalSpools(const std::filesystem::path& directory) {
+  if (!std::filesystem::exists(directory)) return;
+  for (const auto& item : std::filesystem::directory_iterator(directory)) {
+    const auto name = item.path().filename().string();
+    if (!name.starts_with("pending-")) continue;
+    const auto end = name.find('-', 8);
+    if (end == name.npos) continue;
+    const auto digits = name.substr(8, end - 8);
+    if (digits.empty() || digits.find_first_not_of("0123456789") != digits.npos) continue;
+    const auto pid = static_cast<DWORD>(std::stoull(digits));
+    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    const bool exited = process ? WaitForSingleObject(process, 0) == WAIT_OBJECT_0 : GetLastError() == ERROR_INVALID_PARAMETER;
+    if (process) CloseHandle(process);
+    if (!exited) continue;
+    if (name.ends_with(".queue.lock") && !std::filesystem::exists(item.path().wstring().substr(0, item.path().wstring().size() - 5))) {
+      HANDLE lease = CreateFileW(item.path().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+      if (lease != INVALID_HANDLE_VALUE) { CloseHandle(lease); DeleteFileW(item.path().c_str()); }
+      continue;
+    }
+    if (!name.ends_with(".queue")) continue;
+    const auto lease_path = item.path().wstring() + L".lock";
+    HANDLE lease = CreateFileW(lease_path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, 0, nullptr);
+    if (lease == INVALID_HANDLE_VALUE) continue;
+    bool acknowledged = true;
+    {
+      std::ifstream input(item.path());
+      if (!input) acknowledged = false;
+      std::string line;
+      while (acknowledged && std::getline(input, line)) {
+        std::istringstream row(line);
+        std::string id, key, word, okuri; uint64_t sequence = 0;
+        if (!(row >> id >> key >> word >> sequence) || id.size() > 96 || key.size() > 1536 || word.size() > 8192) {
+          acknowledged = false; break;
+        }
+        row >> okuri;
+        std::string response;
+        const auto request = "LOCAL LEARN " + id + " " + key + " " + word + (okuri.empty() || okuri == "-" ? "" : " " + okuri);
+        std::lock_guard lock(g_engine_mutex);
+        acknowledged = g_current_engine == "ddskk" && Dispatch(g_child, request, &response) && response.starts_with("ACK " + id + " ");
+      }
+    }
+    if (acknowledged) DeleteFileW(item.path().c_str());
+    CloseHandle(lease);
+    if (acknowledged) DeleteFileW(lease_path.c_str());
+  }
+}
+
 void LocalPublicationLoop() {
   std::string previous;
+  ddskk::local::PublicationWindow window;
   bool test_stalled = false;
+  std::shared_ptr<const ddskk::local::Index> mapped;
+  ULONGLONG next_cleanup = 0, next_probe = 0;
+  uint64_t observed_acks = 0;
   while (!g_stopping.load()) {
     try {
       if (LocalConversionRequested()) {
+        const auto directory = ddskk::local::Directory();
+        if (GetTickCount64() >= next_cleanup) {
+          RecoverLocalSpools(directory);
+          try {
+            auto current = ddskk::local::OpenPublished(directory, mapped);
+            ddskk::local::Cleanup(directory, current);
+            // The host pins only the reusable base. Current overlays belong
+            // to clients; retaining one here would delay collection after exit.
+            mapped = current->Base();
+          } catch (...) { }
+          next_cleanup = GetTickCount64() + 1000;
+        }
+        const auto now = GetTickCount64();
+        const auto acks = g_local_ack_activity.load(std::memory_order_acquire);
+        if (acks != observed_acks) { observed_acks = acks; window.Changed(now); }
+        if (now < next_probe && !window.Ready(now)) {
+          Sleep(50); continue;
+        }
+        next_probe = now + 1000;
         DictionaryServerConfig config;
-        std::string status, snapshot, rules;
+        std::string status, snapshot, rules, source_identity, base_identity;
         {
           std::lock_guard<std::mutex> lock(g_engine_mutex);
           // Match the provider's active source plan. Registry source changes
@@ -1988,8 +2085,10 @@ void LocalPublicationLoop() {
           if (g_current_engine == "ddskk") {
             Dispatch(g_child, "LOCAL STATUS", &status);
             { std::lock_guard<std::mutex> rules_lock(g_romaji_mutex); rules = g_romaji_rules; }
-            const auto identity = status + rules + ddskk::local::Utf8(config.dictionary_files) + std::to_string(config.enabled);
-            if (!rules.empty() && status.starts_with("LOCAL ") && identity != previous &&
+            source_identity = LocalSourceIdentity(config);
+            const auto identity = status + rules + source_identity;
+            base_identity = status.substr(0, status.rfind(' ')) + rules + source_identity;
+            if (!rules.empty() && status.starts_with("LOCAL ") && window.Due(identity, base_identity, GetTickCount64()) &&
                 Dispatch(g_child, "LOCAL SNAPSHOT", &snapshot) && snapshot.starts_with("OVERLAY ")) {
               // The snapshot is complete before releasing engine ownership.
               // Parsing, hashing, flushing and full mapping validation below
@@ -2024,14 +2123,18 @@ void LocalPublicationLoop() {
             Sleep(ms); // Snapshot obtained above; engine mutex is released.
           }
           ddskk::local::Publish(ddskk::local::Directory(), files, overlay, rules, capabilities, revision);
-          previous = status + rules + ddskk::local::Utf8(config.dictionary_files) + std::to_string(config.enabled);
+          previous = status + rules + source_identity;
+          window.Published(previous, base_identity);
           std::fprintf(stderr, "LOCAL publication status=%s capabilities=%llu\n", status.c_str(), capabilities);
         }
       }
     } catch (const std::exception& error) {
       std::fprintf(stderr, "LOCAL publication unavailable: %s\n", error.what());
     }
-    for (int n = 0; n < 10 && !g_stopping.load(); ++n) Sleep(100);
+    // A 200 ms window coalesces learning bursts. Durable ACKs are
+    // returned by the engine independently; clients fold pending deltas until
+    // the matching immutable overlay is verified.
+    if (!g_stopping.load()) Sleep(50);
   }
 }
 
