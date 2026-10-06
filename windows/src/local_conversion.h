@@ -10,7 +10,8 @@
 #include <thread>
 
 namespace ddskk::local {
-struct Learning { std::string id; std::wstring key, candidate; uint64_t sequence = 0; };
+struct Learning { std::string id; std::wstring key, candidate; uint64_t sequence = 0; std::wstring okuri; };
+struct Selection { std::shared_ptr<const Index> index; std::vector<Learning> pending; bool available = false; };
 // All file I/O, full validation and engine transactions belong to this
 // worker. The input thread only takes published snapshots and queues deltas.
 class Store {
@@ -18,18 +19,31 @@ class Store {
   ~Store() { Stop(); }
   void Start();
   void Stop();
-  std::shared_ptr<const Index> Current() const { return current_.load(); }
+  bool PrepareHandoff();
+  bool started() const { return !client_.empty(); }
+  std::shared_ptr<const Index> Current() const;
+  Selection Capture();
   std::vector<std::wstring> Pending(std::wstring_view key) const;
-  bool Learn(std::wstring key, std::wstring candidate);
+  bool Learn(std::wstring key, std::wstring candidate, std::wstring okuri = {});
   size_t Unsaved() const;
   bool Available() const;
  private:
   void Run();
-  std::atomic<std::shared_ptr<const Index>> current_;
-  mutable std::mutex mutex_;
+  struct Published {
+    std::shared_ptr<const Index> index;
+    std::deque<Learning> pending;
+    uint64_t acknowledged_operation = 0, acknowledged_sequence = 0;
+  };
+  std::atomic<std::shared_ptr<const Published>> published_;
+  // One TSF producer, one worker consumer. No worker-held lock is acquired
+  // by Capture/Learn or any key/edit callback.
+  std::array<std::optional<Learning>, 256> inbound_;
+  std::atomic<uint64_t> written_{0}, consumed_{0}, persisted_{0};
+  std::deque<Learning> ui_pending_;
+  std::deque<Learning> restart_pending_;
+  std::mutex wait_mutex_;
   std::condition_variable wake_;
-  std::deque<Learning> queue_;
-  bool stopping_ = false;
+  std::atomic<bool> stopping_{false};
   std::thread worker_;
   std::string client_;
   uint64_t operation_ = 0;
@@ -37,7 +51,7 @@ class Store {
 class Conversion {
  public:
   bool Begin(std::shared_ptr<const Index> index, const std::wstring& reading,
-             const std::vector<std::wstring>& pending = {});
+             const std::vector<std::wstring>& pending = {}, std::wstring okuri = {});
   bool active() const { return index_ != nullptr; }
   EngineState State() const;
   // False means exhausted: hand over one conversion barrier for registration.
@@ -47,10 +61,11 @@ class Conversion {
   EngineState Commit();
   void Reset();
   const std::wstring& reading() const { return reading_; }
+  const std::wstring& okuri() const { return okuri_; }
   const std::wstring& selected() const { return visible_[selection_]; }
  private:
   std::shared_ptr<const Index> index_;
-  std::wstring reading_;
+  std::wstring reading_, okuri_;
   std::vector<std::wstring> visible_, shared_;
   size_t selection_ = 0;
   bool shared_loaded_ = false;

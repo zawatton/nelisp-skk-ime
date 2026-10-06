@@ -1,5 +1,6 @@
 // GPL-3.0-or-later
 #include "local_index.h"
+#include <atomic>
 #include "registry_settings.h"
 #include <bcrypt.h>
 #include <aclapi.h>
@@ -91,7 +92,7 @@ void Write(const std::filesystem::path& path, std::string_view bytes) {
   CloseHandle(file);
   if (!ok) throw std::runtime_error("generation flush failed");
 }
-std::vector<std::wstring> Plain(std::string_view raw, bool* supported) {
+std::vector<std::wstring> Plain(std::string_view raw, bool* supported, bool okuri = false) {
   std::vector<std::wstring> result;
   if (raw.size() > 65536) { *supported = false; return result; }
   bool block = false;
@@ -100,7 +101,7 @@ std::vector<std::wstring> Plain(std::string_view raw, bool* supported) {
     if (raw[end] != '/') continue;
     const auto field = raw.substr(start, end - start); start = end + 1;
     if (field.empty()) continue;
-    if (field.front() == '[') { block = true; *supported = false; continue; }
+    if (field.front() == '[') { block = true; if (!okuri || field.size() == 1) *supported = false; continue; }
     if (block) { if (field == "]") block = false; continue; }
     const auto word = field.substr(0, field.find(';'));
     if (word.empty() || word.front() == '(' || word.find('#') != word.npos ||
@@ -112,6 +113,7 @@ std::vector<std::wstring> Plain(std::string_view raw, bool* supported) {
     result.push_back(std::move(candidate));
     if (result.size() > 1024) { *supported = false; return {}; }
   }
+  if (block) *supported = false;
   return result;
 }
 using Table = std::map<std::string, std::string, std::less<>>;
@@ -243,7 +245,7 @@ Index::Index(const std::filesystem::path& path) {
     if (!base_) throw std::runtime_error("index view");
     std::memcpy(&header_, base_, sizeof(header_));
     if (header_.magic != kMagic || header_.schema != 2 || header_.bytes != static_cast<uint64_t>(size.QuadPart) ||
-        header_.count > (header_.bytes - sizeof(Header)) / sizeof(Record) || header_.capabilities > 1)
+        header_.count > (header_.bytes - sizeof(Header)) / sizeof(Record) || header_.capabilities > 3)
       throw std::runtime_error("index header");
     Header copy = header_; copy.checksum = {};
     std::string checked(base_, static_cast<size_t>(header_.bytes));
@@ -269,12 +271,19 @@ Index::Index(const std::filesystem::path& path) {
   } catch (...) { Close(); throw; }
 }
 std::string_view Index::Rules() const { return View(header_.rules_offset, header_.rules_bytes); }
-Entry Index::Lookup(std::wstring_view reading) const {
+Entry Index::Lookup(std::wstring_view reading, std::wstring_view okuri) const {
   Entry entry;
-  if (header_.capabilities != 1 || reading.empty() || reading.size() > 256) return entry;
-  // This slice accepts only completed hiragana. Abbrev, numeric and okuri
-  // commands choose the provider before candidate state is constructed.
-  for (auto c : reading) if (c < 0x3041 || c > 0x3096) return entry;
+  if (!(header_.capabilities & 1) || reading.empty() || reading.size() > 256) return entry;
+  // Completed kana and certified stem+okuri are local. Abbrev, numeric and
+  // unsupported commands choose the provider before constructing candidates.
+  auto stem = reading;
+  if (!okuri.empty()) {
+    if (okuri.size() > 32) return entry;
+    if (!(header_.capabilities & 2) || reading.back() < L'a' || reading.back() > L'z') return entry;
+    stem.remove_suffix(1);
+    for (auto c : okuri) if ((c < 0x3041 || c > 0x3096) && c != L'ー') return entry;
+  }
+  for (auto c : stem) if ((c < 0x3041 || c > 0x3096) && c != L'ー') return entry;
   const auto key = Utf8(reading);
   uint64_t low = 0, high = header_.count;
   while (low < high) {
@@ -284,8 +293,11 @@ Entry Index::Lookup(std::wstring_view reading) const {
     else if (key < found) high = mid;
     else {
       entry.supported = true;
-      entry.user = Plain(View(r.user, r.user_bytes), &entry.supported);
-      entry.shared = Plain(View(r.shared, r.shared_bytes), &entry.supported);
+      entry.user = Plain(View(r.user, r.user_bytes), &entry.supported, !okuri.empty());
+      entry.shared = Plain(View(r.shared, r.shared_bytes), &entry.supported, !okuri.empty());
+      for (const auto* tier : {&entry.user, &entry.shared})
+        for (const auto& word : *tier)
+          if ((word.size() + reading.size() + okuri.size()) * 6 + 128 > 8192) entry.supported = false;
       return entry;
     }
   }
@@ -309,15 +321,15 @@ void Publish(const std::filesystem::path& directory, const std::vector<std::file
     const auto source = Parse(bytes, bad);
     for (const auto& [key, raw] : source) {
       bool supported = true;
-      const auto values = Plain(raw, &supported);
+      const auto values = Plain(raw, &supported, (capabilities & 2) && !key.empty() && key.back() >= 'a' && key.back() <= 'z');
       auto& into = merged[key];
       for (const auto& candidate : values) {
         const auto word = candidate.substr(0, candidate.find(L';'));
         if (std::none_of(into.begin(), into.end(), [&](const auto& x) { return x.substr(0, x.find(L';')) == word; }))
           into.push_back(candidate);
       }
-      // Preserve expression templates and okuri blocks as opaque source
-      // bytes. Their presence selects the engine before conversion starts.
+      // Preserve uncertified expressions/options as opaque source bytes.
+      // Their presence selects the engine before conversion starts.
       if (!supported) unsupported[key] += raw;
     }
   }
@@ -336,8 +348,13 @@ void Publish(const std::filesystem::path& directory, const std::vector<std::file
     r.shared = append(value.second); r.shared_bytes = value.second.size();
     records.push_back(r);
   }
-  FILETIME clock{}; GetSystemTimeAsFileTime(&clock);
-  const uint64_t generation = (static_cast<uint64_t>(clock.dwHighDateTime) << 32) | clock.dwLowDateTime;
+  FILETIME clock{}; GetSystemTimePreciseAsFileTime(&clock);
+  const uint64_t now = (static_cast<uint64_t>(clock.dwHighDateTime) << 32) | clock.dwLowDateTime;
+  static std::atomic<uint64_t> last_generation{0};
+  auto previous_generation = last_generation.load();
+  uint64_t generation;
+  do { generation = std::max(now, previous_generation + 1); }
+  while (!last_generation.compare_exchange_weak(previous_generation, generation));
   Header header{kMagic, 2, beginning + payload.size() + rules.size(), records.size(), generation,
                 capabilities, bad, overlay_sequence, beginning + payload.size(), rules.size(), Hash(config), {}};
   if (header.bytes > kLimit) throw std::runtime_error("generation limit");

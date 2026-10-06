@@ -290,6 +290,13 @@ class DocumentStore final : public ITextStoreACP,
       *phrSession = E_UNEXPECTED;
       return E_UNEXPECTED;
     }
+    if (deny_next_write_ && (dwLockFlags & TS_LF_SYNC) &&
+        (dwLockFlags & TS_LF_READWRITE) == TS_LF_READWRITE) {
+      deny_next_write_ = false;
+      *phrSession = TS_E_SYNCHRONOUS;
+      std::printf("EDIT_DENIED sync=1 flags=%lu\n", dwLockFlags);
+      return S_OK;
+    }
     if (locked_) {
       if (dwLockFlags & TS_LF_SYNC) {
         *phrSession = TS_E_SYNCHRONOUS;
@@ -589,6 +596,7 @@ class DocumentStore final : public ITextStoreACP,
 
   // --- Test-harness accessors -------------------------------------------
   std::wstring BufferSnapshot() const { return buffer_; }
+  void DenyNextWrite() { deny_next_write_ = true; }
   void ApplicationClear() {
     const LONG previous = static_cast<LONG>(buffer_.size());
     buffer_.clear();
@@ -647,6 +655,7 @@ class DocumentStore final : public ITextStoreACP,
     range->Release();
   }
 
+  bool deny_next_write_ = false;
   LONG ref_count_ = 1;
   HWND hwnd_ = nullptr;
   std::wstring buffer_;
@@ -787,6 +796,10 @@ bool TokenToKey(const std::wstring& token, KeyEvent* out) {
   }
   if (token.size() == 1) {
     const wchar_t ch = token[0];
+    if (ch == L'-') {
+      *out = KeyEvent{VK_OEM_MINUS, false, false};
+      return true;
+    }
     if (ch >= L'a' && ch <= L'z') {
       *out = KeyEvent{static_cast<UINT>(towupper(ch)), false, false};
       return true;
@@ -1286,6 +1299,8 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
         std::printf("TEST_KILL token=%s parent=%lu target=0 success=0\n", Utf8FromWide(token).c_str(), parent_pid);
         std::exit(1);
       }
+    } else if (token == L"DENYWRITE") {
+      stores[active]->DenyNextWrite();
     } else if (token == L"APPCLEAR") {
       stores[active]->ApplicationClear();
     } else if (token == L"CTX1" || token == L"CTX2") {

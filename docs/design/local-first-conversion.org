@@ -652,3 +652,15 @@ recorded test PIDs. Nothing committed or staged.
 An additional PID-file/host-hot-swap audit queried 23 distinct inline helper,
 Emacs and hot-swap host/runtime PIDs: alive=0. Other Emacs/NeLisp processes
 on the machine were left alone. No process started by LF2 remains running.
+
+* LF3 implementation note (2026-10-06)
+The certified standard-options slice now includes native complete-kana okuri,
+with asynchronous learning that records okuri strings and preserves ranking
+blocks. Denied TSF edits roll back native ownership; pending fallback has a
+watchdog; immutable mapping/overlay publication precedes learning ACKs.
+Open conversion generations and rule/capability snapshots remain pinned.
+Synthetic unsorted personal + L tests exercise duplicate keys, cross-file
+identity/annotation merge, ていこうち (chi/ti), おーむ and あたい.
+No live dictionary/settings, shim or exported ABI change. Criteria remain
+pending; see tools/ai/local-first-conversion-notes.org for exact scope,
+red/green evidence, callback audit, commands, tails, limits and cleanup.

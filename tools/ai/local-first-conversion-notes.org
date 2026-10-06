@@ -1,0 +1,623 @@
+#+TITLE: LF3 implementation and private verification (2026-10-06)
+
+* Scope and interpretation
+Unstaged worker changes only; no commit, deployment, shim/exported ABI change,
+live registry/pipe/data access, or read of the real personal dictionary.
+All two-source tests use an invented unsorted personal source followed by L.
+The ten ordinary fixture lines contain six duplicate keys and four descending
+adjacent pairs out of nine. Both chi and ti spellings reach ていこうち.
+
+* Red evidence and causes
+Before implementation, LocalConversion=1 passed the existing 23 stock OK1
+checkpoints through the engine: key_max_us=3424, no local-okuri-convert branch.
+The unchanged fallback recovery loop stayed pending after engine loss:
+#+begin_example
+SETTLE TIMEOUT token=SETTLE8000:RESOLVED elapsed_ms=8000 max_ms=8000 quiet_ms=100 observed=1 provider_idle=0 probe_hr=00000000 revision=43
+#+end_example
+See build/w/lf3-baseline-ok1.log and build/w/lf3-stuck-red.log.
+
+An untouched HEAD core (git archive HEAD windows, separate build under build/w)
+was also tested against the updated TSF harness. With the invented source plan,
+ordinary ていこうち lookup itself succeeded; duplicate import/merge did not
+reproduce a permanent stall. A denied first synchronous edit DID reproduce it:
+#+begin_example
+EDIT_DENIED sync=1 flags=7
+AFTER DENIED BUF=[▽ていこうち] SEL=6,6 COMP=0,6
+AFTER RETRY BUF=[▽ていこうち] SEL=6,6 COMP=0,6
+AFTER COMMIT BUF=[▽抵抗値] SEL=4,4 COMP=0,4
+#+end_example
+The old controller advanced before the edit succeeded. With the one deduplicated
+candidate, the next SPACE exhausted its invisible candidate list and entered
+registration. Fix: roll back controller/front-end transitions on edit denial.
+This is a deterministic cause of the reported symptom, not proof that the live
+application denied the edit. The actual live personal source was not inspected.
+See build/w/lf3-denied-baseline.log.
+
+Seed 20261006, 20 ordinary episodes against the untouched core also failed the
+exact commit assertion (expected 40 units, observed 36 including literal x).
+The index excluded the prolonged kana mark ー, so おーむ crossed into the engine
+path amid otherwise local typing ahead. ー is now certified as kana.
+See build/w/lf3-stress-red.log. Existing source import is order independent and
+last duplicate key wins, as in the host; configured-file merge retains the first
+candidate identity without its annotation for comparison. DDSKK's subsequent
+overlay/server skk-nunion is directional, and is intentionally preserved.
+
+A pending-learning core-swap test found that a newly activated Store mapped the
+index but published it only after an ACK. A five-second recovered-learning stall
+made that core unavailable. Publish the verified mapping and its pending overlay
+before attempting learning; ACK retirement still requires a covering generation.
+Registration loss also left registration_mode set after restoring the native
+reading; fallback now clears the registration flag/range as well. A focused
+registration-loss negative control remained red in the earlier compiled core.
+A rebuild attempted during active harness runs failed with LNK1104 (files in
+use); that result is not a successful build. Rebuild and recovery verification
+were rerun after those gates released the binaries; the successful rebuild
+produced the registration ownership fix. The final source also makes the engine
+resync flag atomic: cancellation/focus can mark it while a cancelled provider
+transaction unwinds. A focused context-switch test checks old/new document
+commits while asynchronous learning is stalled. See build/w/lf3-build-inuse.log.
+The intermediate failures are retained in build/w/lf3-edit-recovery.log and
+build/w/local-edit-recovery-ceefbf55970a47d7914a3b3fb22e1e97/swap.log.
+
+* Callback and state-machine audit
+- Store Capture/Learn: one immutable atomic snapshot and a bounded 256-slot SPSC
+  queue. No shared worker mutex, file mapping/validation, disk write or engine RPC.
+- Mapping plus ACK retirement is published together; an open candidate frontier
+  pins its generation, capability, rules and candidate identities. Traversal does
+  not reread a newer overlay. Learning does not own a conversion pending flag.
+- Core swap requests signal/drain on the worker and poll its OS termination with
+  zero timeout; they do not join an active worker on a key callback. A timer and
+  actual input resume the Store after a rejected swap. Ordinary deactivation may
+  still join workers; this is lifecycle cleanup, not local key/edit processing.
+- Opt-in provider recovery has a three-second retry deadline and a five-second
+  pending watchdog. Stale replies are invalidated, semantic queued keys retained,
+  and ownership restored to a usable native reading. Default-off recovery remains
+  unchanged. Failed provider edits use the same bounded ownership recovery.
+- Opt-in settings refresh uses try_lock; cleanup replies cannot claim a new local
+  episode. Open/close and context settle discard native ownership consistently.
+- Local candidate UI selection, traversal, commit and abort use transactional
+  synchronous TSF edits: denial rolls state back rather than advancing invisibly.
+  Candidate UI updates follow successful edits. Custom carry recursion is capped.
+- Existing registry state publication is queued beyond key callbacks. External
+  TSF/COM edit and candidate UI calls remain host-controlled synchronous calls;
+  observed callback watchdog bounds are not a hard real-time guarantee against
+  an arbitrary application blocking inside its own COM implementation.
+
+* Okuri rollout
+Capability bit 2 certifies complete-kana okuri with standard DDSKK options. Early,
+automatic, strict, strict-precedence and delete-okuri-on-quit options remain on
+the engine before the marker episode starts. Registration, expression entries,
+oversize requests and unsupported rules/plans retain the provider path.
+KaKu, KaTta, SiNda, uppercase vowel, prefix Backspace, Ctrl+G, SPACE/x, ENTER
+and implicit commit are native when certified. Engine learning receives both the
+stem key and exact okuri string, and preserves/updates DDSKK ranking blocks.
+Pending overlay order is immediately visible to the next conversion; only the
+engine writes the learned jisyo. No local typing-ahead key replay is used.
+
+* Verification commands and verbatim tails
+The completed commands/results follow below. Runtime and L paths
+are parameters supplied by the caller, never repository functional constants.
+
+* Limits
+The full default-off compatibility gates ran before the last opt-in
+registration-flag cleanup. That cleanup and the resync metadata change are
+checked separately by focused recovery/context tests, stress and rebuilt CTest.
+No assertion is made that every earlier gate loaded the final DLL hash.
+The S2 criteria remain pending. This is the certified source/options slice, not
+general DDSKK reimplementation or a live deployment. A bounded in-memory pending
+queue and durable spool preserve asynchronous learning; extended storage failure
+testing and user-visible unsaved status remain beyond this worker slice.
+
+* Final gate record
+Parameters: $root is this checkout; $r=$root/build/w/Release. $runtime and
+$large are the caller-provided runtime and public L file. Scripts were launched
+with powershell -NoProfile -ExecutionPolicy Bypass. Artifact paths below are
+literal observations, not configuration constants.
+
+** Configure/build
+#+begin_src powershell
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64 "-DNELISP_EXECUTABLE=$runtime"
+cmake --build build/w --config Release
+#+end_src
+Log: build/w/lf3-final-build.log
+#+begin_example
+  nativeime-registry-settings-test.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\Release\nativeime-registry-settings-test.exe
+  register-categories.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\Release\register-categories.exe
+  set-profile-icon.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\Release\set-profile-icon.exe
+  tsf-host.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\Release\tsf-host.exe
+#+end_example
+
+** CTest
+#+begin_src powershell
+ctest --test-dir build/w -C Release
+#+end_src
+Log: build/w/lf3-atomic-ctest.log
+#+begin_example
+      Start 11: ddskk-engine-e2e-test
+11/11 Test #11: ddskk-engine-e2e-test ..............   Passed   25.22 sec
+
+100% tests passed, 0 tests failed out of 11
+
+Total Test time (real) =  28.72 sec
+#+end_example
+
+** Stock oracle
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); $env:LOCAL_ORACLE_DIR='build/w/lf3-stock-oracle';
+emacs -Q --batch -L vendor/ddskk -l windows/test-host/local-stock-oracle.el
+emacs -Q --batch -L vendor/ddskk -l windows/test-host/local-okuri-stock-oracle.el
+build/w/Release/nativeime-local-conversion-test.exe build/w/lf3-oracle-index build/w/lf3-stock-oracle/stock.oracle build/w/lf3-stock-oracle
+#+end_src
+Log: build/w/lf3-oracle-index.log
+#+begin_example
+Stock DDSKK oracle 8 readings/order/commits PASS
+Stock DDSKK LF3 oracle 18 readings/order/commits PASS
+PASS local conversion 138 checks (4 corrupt/source negative controls)
+#+end_example
+
+** Learning ERT
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); $env:LOCAL_LEARNING_TEST_DIR='build/w/lf3-learning-ert'; emacs -Q --batch -L engine -l engine/test-local-conversion.el -f ert-run-tests-batch-and-exit
+#+end_src
+Log: build/w/lf3-learning-ert.log
+#+begin_example
+
+Ran 9 tests, 9 results as expected, 0 unexpected (2026-10-06 08:15:24+0900, 0.046663 sec)
+
+#+end_example
+
+** Stateline ERT
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+Log: build/w/lf3-stateline.log
+#+begin_example
+
+Ran 31 tests, 31 results as expected, 0 unexpected (2026-10-06 08:15:22+0900, 0.050298 sec)
+
+#+end_example
+
+** Lattice ERT
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+Log: build/w/lf3-lattice.log
+#+begin_example
+
+Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-06 08:15:23+0900, 0.040009 sec)
+
+#+end_example
+
+** Input rules ERT
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L engine -L vendor/ddskk -l engine/test-input-rules.el -f ert-run-tests-batch-and-exit
+#+end_src
+Log: build/w/lf3-input-ert.log
+#+begin_example
+
+Ran 13 tests, 13 results as expected, 0 unexpected (2026-10-06 08:15:24+0900, 0.847092 sec)
+
+#+end_example
+
+** DDSKK default off
+#+begin_src powershell
+windows/test-host/test-ddskk-behavior.ps1 -DllPath "$r/ddskk-ime.dll" -TsfHostExe "$r/tsf-host.exe" -EngineHostPath "$r/ddskk-engine-host.exe" -EngineExecutablePath $runtime -RepositoryPath $root -ColdLoadSleepSec 45
+#+end_src
+Log: build/w/lf3-ddskk.log
+#+begin_example
+
+Result CtrlGMaxMs Assertions
+------ ---------- ----------
+PASS         0.54         45
+
+#+end_example
+
+** Host hot swap
+#+begin_src powershell
+windows/test-host/test-hot-swap.ps1 -EngineHostPath "$r/ddskk-engine-host.exe" -EngineExecutablePath $runtime -BuildDirectory $r -RepositoryPath $root -StressKeys
+#+end_src
+Log: build/w/lf3-hot-swap.log
+#+begin_example
+PROGRESS current=ENGINE lattice requests=240 max_ms=47.353
+PROGRESS current=ENGINE lattice requests=300 max_ms=47.353
+SWITCH current=passthrough requests=348 max_ms=79.139
+LOG verified=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\Release\host-a26d3c1cbdab4fa0b01928fe1b0faf3f.log rotation=True child_exit_count=5 stop=SHUTDOWN
+PASS hot-swap, reload, death recovery, registry notification, shutdown
+#+end_example
+
+** Core hot swap
+#+begin_src powershell
+windows/test-host/test-core-hot-swap.ps1 -BuildDirectory $r -EngineExecutablePath $runtime -RepositoryPath $root -ArtifactDirectory build/w/lf3-core-hot-swap -ColdLoadSleepSec 45
+#+end_src
+Log: build/w/lf3-core-hot-swap.log
+#+begin_example
+AFTER CLIENT BUF=[ああ仮名あ蚊あ蚊あああああああ] SEL=15,15 COMP=-
+FINAL BUF_LEN=15 BUF_FNV=6a55bd76644f78f6
+CANDIDATEUI close open=0
+ddskk-engine-host: loaded dictionary D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\windows\test-host\data\behavior-jisyo.utf8 (3 entries, 0 ms)
+PASS core hot swap assertions=19 processes=1 ordinary_max_us=3963
+#+end_example
+
+** Emacs integration
+#+begin_src powershell
+windows/test-host/test-emacs-integration.ps1 -DllPath "$r/ddskk-ime.dll" -TsfHostExe "$r/tsf-host.exe" -EngineHostPath "$r/ddskk-engine-host.exe" -EngineExecutablePath $runtime -RepositoryPath $root -ColdLoadSleepSec 45
+#+end_src
+Log: build/w/lf3-emacs.log
+#+begin_example
+AFTER CLIENT BUF=[] SEL=0,0 COMP=-
+CLIENT_ABRUPT_EXIT pid=40524
+ddskk-engine-host: loaded dictionary D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\windows\test-host\data\behavior-jisyo.utf8 (3 entries, 0 ms)
+DEADPID PASS assertions=1
+PASS emacs integration assertions=33 cases=5
+#+end_example
+
+** Okuri handoff
+#+begin_src powershell
+windows/test-host/test-okuri-handoff.ps1 -BuildDirectory $r -EngineExecutablePath $runtime -RepositoryPath $root -ArtifactDirectory build/w/lf3-okuri-handoff -ColdLoadSleepSec 45
+#+end_src
+Log: build/w/lf3-handoff.log
+#+begin_example
+MATCH late/COMMIT text=6d883048308b
+MATCH late/WAIT6500 text=
+MATCH late/WAIT100 text=25bd304b002a304f
+LATENCY late max_us=5933
+PASS okuri handoff assertions=19 cases=3 delay_ms=5500
+#+end_example
+
+** Input rules
+#+begin_src powershell
+windows/test-host/input-rules/test-input-rules.ps1 -BuildDirectory $r -RulesBuildDirectory build/input-rules/Release -KeymapExe build/keymap/Release/nelisp-ime-keymap.exe -EngineExecutablePath $runtime -ColdLoadSleepSec 45
+#+end_src
+Log: build/w/lf3-input-rules.log
+#+begin_example
+INPUT_PARITY checks=525 symbols=7 failures=0
+INPUT_PARITY checks=525 symbols=7 failures=0
+PASS input rules assertions=17 widths=2 hooks=0 SendInput=0
+#+end_example
+
+** Local matrix
+#+begin_src powershell
+windows/test-host/test-local-conversion.ps1 -Runtime $runtime
+#+end_src
+Log: build/w/lf3-local-matrix.log
+#+begin_example
+PASS local TSF case=uncertified log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\local-tsf-65805d96db2d474c9b4c3b447ac9db85\uncertified.log
+PASS local TSF case=okuri log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\local-tsf-65805d96db2d474c9b4c3b447ac9db85\okuri.log
+PASS local TSF cases=9 checks=31 artifacts=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\local-tsf-65805d96db2d474c9b4c3b447ac9db85
+#+end_example
+
+** Local stock OK1
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); windows/test-host/test-okuri-conversion.ps1 -BuildDirectory build/w/Release -EngineExecutablePath $runtime -LocalConversion 1 -ColdLoadSleepSec 45 -ArtifactDirectory build/w/lf3-local-ok1-final
+#+end_src
+Log: build/w/lf3-local-ok1-final.log
+#+begin_example
+MATCH vowel-cancel mode=preedit text=639b304f6d883048308b8cb73063305f6b7b30933060639b304f25bd304b3046
+MATCH vowel-clear mode=hiragana text=639b304f6d883048308b8cb73063305f6b7b30933060639b304f
+PASS okuri conversion checkpoints=23 key_max_us=2709 dictionary=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\windows\test-host\data\okuri-jisyo.utf8
+#+end_example
+
+** Missing/corrupt generation and engine loss
+#+begin_src powershell
+windows/test-host/test-local-fallback.ps1 -Runtime $runtime
+#+end_src
+Log: build/w/lf3-fallback-final.log
+#+begin_example
+PASS local fallback generation=missing callbacks=15 max_us=5999 log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\local-fallback-78516fc86442411ca428f5a47f58c6a4\missing.log
+PASS local fallback generation=corrupt callbacks=15 max_us=6244 log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\local-fallback-78516fc86442411ca428f5a47f58c6a4\corrupt.log
+PASS local fallback cases=2; failed control/engine loss/resolved ownership/retry; pending bound=5000 ms
+#+end_example
+
+** Edit denial/core swap/registration loss
+#+begin_src powershell
+windows/test-host/test-local-edit-recovery.ps1 -Runtime $runtime -LargeDictionary $large
+#+end_src
+Log: build/w/lf3-edit-recovery-built.log
+#+begin_example
+PASS local edit recovery case=denied callbacks=14 max_us=3511 log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\lf3-edit-e987ff6f85f744a48d93cd6ee74cc792\denied.log
+PASS local edit recovery case=swap callbacks=44 max_us=3367 log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\lf3-edit-e987ff6f85f744a48d93cd6ee74cc792\swap.log
+PASS local edit recovery case=provider-denied callbacks=10 max_us=2363 log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\lf3-edit-e987ff6f85f744a48d93cd6ee74cc792\provider-denied.log
+PASS local edit recovery case=registration-loss callbacks=22 max_us=4058 log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\lf3-edit-e987ff6f85f744a48d93cd6ee74cc792\registration-loss.log
+#+end_example
+
+** Stress seed 20261006
+#+begin_src powershell
+windows/test-host/test-local-state-stress.ps1 -Runtime $runtime -LargeDictionary $large
+#+end_src
+Log: build/w/lf3-stress-final.log
+#+begin_example
+PASS local state stress seed=20261006 episodes=60 commits=60 candidate_checks=15 callbacks=507 max_us=7441 log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\local-stress-c2fdcc965b18461eb3081eeb1bb563ce\stress.log
+#+end_example
+
+** Stress seed 173
+#+begin_src powershell
+windows/test-host/test-local-state-stress.ps1 -Runtime $runtime -LargeDictionary $large -Seed 173 -Episodes 100
+#+end_src
+Log: build/w/lf3-stress-atomic.log
+#+begin_example
+PASS local state stress seed=173 episodes=100 commits=100 candidate_checks=25 callbacks=847 max_us=5488 log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\local-stress-e654a0fa9c4748c6a62003937ff7a166\stress.log
+#+end_example
+
+** Paired okuri latency
+#+begin_src powershell
+windows/test-host/bench-okuri-tsf.ps1 -Runtime $runtime -Dictionary $large
+#+end_src
+Log: build/w/lf3-okuri-latency-final.log
+#+begin_example
+OKURI path=engine n=20 p50_us=238192 p90_us=255842 max_us=344948 log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\okuri-paired-60020a0f6ad049d988c0d3a26142360c\path-0.log
+OKURI path=local n=20 p50_us=797 p90_us=1032 max_us=1513 log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\okuri-paired-60020a0f6ad049d988c0d3a26142360c\path-1.log
+Machine busy; paired samples collected under load, quiet-machine latency unverified
+At D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\windows\test-host\bench-okuri-tsf.ps1:44 char:12
++  if($busy){throw 'Machine busy; paired samples collected under load,  ...
++            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (Machine busy; p...ency unverified:String) [], RuntimeException
+    + FullyQualifiedErrorId : Machine busy; paired samples collected under load, quiet-machine latency unverified
+ 
+#+end_example
+
+** Inline inline
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --runtime $runtime --dll "$r/ddskk-ime.dll" --core "$r/ddskk-ime-core.dll" --tsf-host "$r/tsf-host.exe" --engine-host "$r/ddskk-engine-host.exe" --artifacts build/w/lf3-inline-inline --case inline --cold-load 45
+#+end_src
+Log: build/w/lf3-inline-inline.log
+#+begin_example
+PASS candidate windows observations=8 visible=1 core_extra=0 x=321 y=483
+PASS inline-preedit case=inline channel_lines=35 ordinary_max_us=3261 final_units=10
+#+end_example
+
+** Inline missing
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --runtime $runtime --dll "$r/ddskk-ime.dll" --core "$r/ddskk-ime-core.dll" --tsf-host "$r/tsf-host.exe" --engine-host "$r/ddskk-engine-host.exe" --artifacts build/w/lf3-inline-missing --case missing --cold-load 45
+#+end_src
+Log: build/w/lf3-inline-missing.log
+#+begin_example
+
+PASS inline-preedit case=missing channel_lines=0 ordinary_max_us=3360 final_units=10
+#+end_example
+
+** Inline wrong
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --runtime $runtime --dll "$r/ddskk-ime.dll" --core "$r/ddskk-ime-core.dll" --tsf-host "$r/tsf-host.exe" --engine-host "$r/ddskk-engine-host.exe" --artifacts build/w/lf3-inline-wrong --case wrong --cold-load 45
+#+end_src
+Log: build/w/lf3-inline-wrong.log
+#+begin_example
+
+PASS inline-preedit case=wrong channel_lines=30 ordinary_max_us=5424 final_units=10
+#+end_example
+
+** Inline drop
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --runtime $runtime --dll "$r/ddskk-ime.dll" --core "$r/ddskk-ime-core.dll" --tsf-host "$r/tsf-host.exe" --engine-host "$r/ddskk-engine-host.exe" --artifacts build/w/lf3-inline-drop --case drop --cold-load 45
+#+end_src
+Log: build/w/lf3-inline-drop.log
+#+begin_example
+
+PASS inline-preedit case=drop channel_lines=2 ordinary_max_us=3244 final_units=10
+#+end_example
+
+** Inline emacs
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --runtime $runtime --dll "$r/ddskk-ime.dll" --core "$r/ddskk-ime-core.dll" --tsf-host "$r/tsf-host.exe" --engine-host "$r/ddskk-engine-host.exe" --artifacts build/w/lf3-inline-emacs --case emacs --cold-load 45
+#+end_src
+Log: build/w/lf3-inline-emacs.log
+#+begin_example
+PASS candidate windows observations=8 visible=1 core_extra=0 x=321 y=483
+PASS inline-preedit case=emacs channel_lines=0 ordinary_max_us=5829 final_units=10
+#+end_example
+
+** Inline pair
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --runtime $runtime --dll "$r/ddskk-ime.dll" --core "$r/ddskk-ime-core.dll" --tsf-host "$r/tsf-host.exe" --engine-host "$r/ddskk-engine-host.exe" --artifacts build/w/lf3-inline-pair --case pair --cold-load 45
+#+end_src
+Log: build/w/lf3-inline-pair.log
+#+begin_example
+
+PASS inline-preedit case=pair pair_lines=1 opener_only=True cleanup=confirmed
+#+end_example
+
+** Inline pair-legacy
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --runtime $runtime --dll "$r/ddskk-ime.dll" --core "$r/ddskk-ime-core.dll" --tsf-host "$r/tsf-host.exe" --engine-host "$r/ddskk-engine-host.exe" --artifacts build/w/lf3-inline-pair-legacy --case pair-legacy --cold-load 45
+#+end_src
+Log: build/w/lf3-inline-pair-legacy.log
+#+begin_example
+
+PASS inline-preedit case=pair-legacy pair_lines=0 opener_only=True cleanup=confirmed
+#+end_example
+
+** Inline pair-down
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --runtime $runtime --dll "$r/ddskk-ime.dll" --core "$r/ddskk-ime-core.dll" --tsf-host "$r/tsf-host.exe" --engine-host "$r/ddskk-engine-host.exe" --artifacts build/w/lf3-inline-pair-down --case pair-down --cold-load 45
+#+end_src
+Log: build/w/lf3-inline-pair-down.log
+#+begin_example
+
+PASS inline-preedit case=pair-down pair_lines=0 opener_only=False cleanup=confirmed
+#+end_example
+
+** Inline emacs-pair
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --runtime $runtime --dll "$r/ddskk-ime.dll" --core "$r/ddskk-ime-core.dll" --tsf-host "$r/tsf-host.exe" --engine-host "$r/ddskk-engine-host.exe" --artifacts build/w/lf3-inline-emacs-pair --case emacs-pair --cold-load 45
+#+end_src
+Log: build/w/lf3-inline-emacs-pair.log
+#+begin_example
+
+PASS inline-preedit case=emacs-pair pair_lines=1 opener_only=True cleanup=confirmed
+#+end_example
+
+** Inline local-emacs
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --runtime $runtime --dll "$r/ddskk-ime.dll" --core "$r/ddskk-ime-core.dll" --tsf-host "$r/tsf-host.exe" --engine-host "$r/ddskk-engine-host.exe" --artifacts build/w/lf3-inline-local-emacs --case emacs --cold-load 45 --local-conversion
+#+end_src
+Log: build/w/lf3-inline-local-emacs.log
+#+begin_example
+PASS candidate windows observations=5 visible=1 core_extra=0 x=321 y=483
+PASS inline-preedit case=emacs channel_lines=0 ordinary_max_us=2533 final_units=10
+#+end_example
+
+** Inline local-emacs-accept-queue
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --runtime $runtime --dll "$r/ddskk-ime.dll" --core "$r/ddskk-ime-core.dll" --tsf-host "$r/tsf-host.exe" --engine-host "$r/ddskk-engine-host.exe" --artifacts build/w/lf3-inline-local-emacs-accept-queue --case emacs-accept-queue --cold-load 45 --local-conversion
+#+end_src
+Log: build/w/lf3-inline-local-emacs-accept-queue.log
+#+begin_example
+
+PASS inline accept-and-queue final=������� selection_unavailable=False
+#+end_example
+
+** Inline local-emacs-okuri
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --runtime $runtime --dll "$r/ddskk-ime.dll" --core "$r/ddskk-ime-core.dll" --tsf-host "$r/tsf-host.exe" --engine-host "$r/ddskk-engine-host.exe" --artifacts build/w/lf3-inline-local-emacs-okuri --case emacs-okuri --cold-load 45 --local-conversion
+#+end_src
+Log: build/w/lf3-inline-local-emacs-okuri.log
+#+begin_example
+
+PASS real Emacs local okuri checkpoints=10 final_units=13 callbacks=37 max_us=2695 cleanup=confirmed
+#+end_example
+
+** Focus/context swap final build
+#+begin_src powershell
+windows/test-host/test-local-edit-recovery.ps1 -Runtime $runtime -LargeDictionary $large -Only focus-swap
+#+end_src
+Log: build/w/lf3-focus-swap.log
+#+begin_example
+PASS local edit recovery case=focus-swap callbacks=19 max_us=2958 log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\lf3-edit-3e08c1451000421ab436ec5e69d14f37\focus-swap.log
+#+end_example
+
+** Registration recovery final build
+#+begin_src powershell
+windows/test-host/test-local-edit-recovery.ps1 -Runtime $runtime -LargeDictionary $large -Only registration-loss
+#+end_src
+Log: build/w/lf3-registration-final.log
+#+begin_example
+PASS local edit recovery case=registration-loss callbacks=22 max_us=3108 log=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\lf3-edit-47caee56feef4fd69dbf0dbfef70edf5\registration-loss.log
+#+end_example
+
+
+* Reproduction commands before production edits
+The initial stock checkpoint command ran against the unchanged tree. The outer
+branch assertion failed because no local-okuri-convert trace existed, although
+the 23 engine-backed checkpoints passed.
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); $env:DDSKK_HARNESS_LOCAL_CONVERSION='1';
+windows/test-host/test-okuri-conversion.ps1 -BuildDirectory build/w/Release -EngineExecutablePath $runtime -ColdLoadSleepSec 45 -ArtifactDirectory build/w/lf3-baseline-ok1
+#+end_src
+Log: build/w/lf3-baseline-ok1.log
+#+begin_example
+MATCH vowel-clear mode=hiragana text=639b304f6d883048308b8cb73063305f6b7b30933060639b304f
+PASS okuri conversion checkpoints=23 key_max_us=3424 dictionary=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\windows\test-host\data\okuri-jisyo.utf8
+#+end_example
+
+The unchanged missing-reply reproduction used this script with the private
+harness registry/pipe and a corrupt local generation. Its exact timeout appears
+in Red evidence above.
+#+begin_src powershell
+$env:DDSKK_HARNESS_DIAGNOSTICS='1'; $env:DDSKK_CANDIDATE_CONTROL_FAIL_MS='1600';
+windows/test-host/run-harness.ps1 -DllPath "$r/ddskk-ime.dll" -TsfHostExe "$r/tsf-host.exe" -EngineHostPath "$r/ddskk-engine-host.exe" -EngineExecutablePath $runtime -RepositoryPath $root -LocalConversion 1 -LocalIndexFailure corrupt -ColdLoadSleepSec 45 -ArtifactDirectory build/w/lf3-stuck-red -Script 'a i SPACE WAIT3000 ENTER K a n a SPACE SETTLE30000:FIRST KILLHOST SPACE SETTLE8000:RESOLVED CTRLG SETTLE30000:CANCEL'
+#+end_src
+
+A separately built untouched HEAD core was passed as -CoreDll for the denied
+edit negative control. $syntheticPersonal is an invented fixture, not the live
+personal dictionary; the supplied $large is the public L file. The exact old
+preedit/commit result appears in Red evidence above.
+#+begin_src powershell
+$env:DDSKK_DICTIONARY_FILES=$syntheticPersonal+';'+$large; $env:DDSKK_HARNESS_DIAGNOSTICS='1';
+windows/test-host/run-harness.ps1 -DllPath "$r/ddskk-ime.dll" -CoreDll $oldCore -TsfHostExe "$r/tsf-host.exe" -EngineHostPath "$r/ddskk-engine-host.exe" -EngineExecutablePath $runtime -RepositoryPath $root -LocalConversion 1 -ColdLoadSleepSec 45 -ArtifactDirectory build/w/lf3-denied-baseline -Script 'CTX2 a i SPACE WAIT3000 ENTER CTX1 T e i k o u c h i DENYWRITE SPACE SETTLE8000:DENIED SPACE SETTLE8000:RETRY ENTER SETTLE8000:COMMIT'
+#+end_src
+The historical 20-episode ordinary-only stress command was:
+#+begin_src powershell
+windows/test-host/test-local-state-stress.ps1 -Runtime $runtime -LargeDictionary $large -CoreDll $oldCore -Episodes 20
+#+end_src
+It failed the exact 40-unit commit assertion with 36 units; see
+build/w/lf3-stress-red.log. The final stress script additionally includes okuri.
+
+* Earlier failed checks and remaining limits
+The initial CTest run was 9/11. A generation filename collision and an incorrectly
+quoted runtime cache argument were corrected; the final CTest run is 11/11.
+#+begin_src powershell
+ctest --test-dir build/w -C Release
+#+end_src
+Log: build/w/lf3-ctest.log
+#+begin_example
+11/11 Test #11: ddskk-engine-e2e-test ..............***Failed    0.42 sec
+
+82% tests passed, 2 tests failed out of 11
+
+Total Test time (real) =   4.13 sec
+
+The following tests FAILED:
+	  1 - nativeime-local-conversion-test (Failed)
+	 11 - ddskk-engine-e2e-test (Failed)
+Errors while running CTest
+Output from these tests are in: D:/Cowork/Notes/dev/nelisp-skk-ime-worker-lf2/build/w/Testing/Temporary/LastTest.log
+Use "--rerun-failed --output-on-failure" to re-run the failed cases verbosely.
+#+end_example
+
+A build attempted while private tests held the core/host open failed. These are
+verbatim failure lines (the last target lines alone would conceal the failure).
+#+begin_src powershell
+cmake --build build/w --config Release
+#+end_src
+Log: build/w/lf3-build-inuse.log
+#+begin_example
+LINK : fatal error LNK1104: 繝輔ぃ繧､繝ｫ 'D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\Release\ddskk-engine-host.exe' 繧帝幕縺上％縺ｨ縺後〒縺阪∪縺帙ｓ縲� [D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\ddskk-engine-host.vcxproj]
+LINK : fatal error LNK1104: 繝輔ぃ繧､繝ｫ 'D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\Release\ddskk-ime-core.dll' 繧帝幕縺上％縺ｨ縺後〒縺阪∪縺帙ｓ縲� [D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\ddskk-ime-core.vcxproj]
+LINK : fatal error LNK1104: 繝輔ぃ繧､繝ｫ 'D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\Release\ddskk-ime-core-B.dll' 繧帝幕縺上％縺ｨ縺後〒縺阪∪縺帙ｓ縲� [D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\build\w\ddskk-ime-core-B.vcxproj]
+#+end_example
+
+An intermediate edit-recovery fixture exceeded Windows path length and failed
+before its assertions; shortening only its private artifact directory resolved
+that setup failure. Earlier swap/registration failures are documented above and
+were rerun successfully. No acceptance threshold was relaxed.
+
+Paired latency collected 20 samples per path on the same machine: engine
+p50/p90 238.192/255.842 ms, local 0.797/1.032 ms. This gate exits 1 because the
+unchanged quiet-machine CPU guard detected a pre-existing runtime consuming
+approximately one CPU. Quiet-machine latency remains unverified. That process
+started at 02:37:41, before this worker, and was left untouched.
+
+* Cleanup and deliverable identity
+Final process audit: 158 distinct recorded harness/helper/hot-swap PIDs, zero
+alive; zero host/runtime/test executables alive under this checkout's build
+folder. The PID list is build/w/lf3-owned-pids.json. Existing unrelated runtimes
+were not stopped. No live settings, personal dictionary or other checkout was
+modified. Changes are unstaged; no commit was made.
+
+Final Release core SHA256:
+B1905B8865B4192A5A8C02F8F87D279ABBED48EFC6F32FB2EABDA240367E0548
+Final Release engine host SHA256:
+CA99E6977C70254B1F3E325FA1FAEDC26120E38AEE7400AA5F02484C506B6246
+Final core build time: 2026-10-06 08:54:38. Final CTest, oracle, 100-episode
+stress, focus-swap and registration-loss checks used this final build. Earlier
+broad default-off gates used the earlier build as disclosed in Limits.
+
+* Changed-file locations
+Every modified hunk start is listed below (new files start at line 1).
+- docs/design/local-first-conversion.org:655
+- engine/skk-local-conversion.el:44,82,86,90,99,117
+- engine/skk-user-jisyo.el:88,221,441,465,528,557,810
+- engine/test-local-conversion.el:18,31,94
+- tools/ai/local-first-conversion-notes.org:1
+- tools/ai/local-first-conversion-progress.org:64
+- windows/host/main.cpp:1951,1984
+- windows/src/engine_client.cpp:303,305
+- windows/src/engine_client.h:75,99
+- windows/src/local_conversion.cpp:29,41,53,62,67,70,95,103,106,120,128,149,157,159,163,165,172,181,186,189,192,194,203,208,219,222,226,233,235,237,248,260,263
+- windows/src/local_conversion.h:13,22,27,32,46,54,64,68
+- windows/src/local_index.cpp:3,95,104,116,248,274,276,296,324,331,351
+- windows/src/local_index.h:35
+- windows/src/realtime_frontend.cpp:120,171,201,237,256,295,353
+- windows/src/realtime_frontend.h:55,76,86
+- windows/src/text_service.cpp:319,374,448,453,457,491,579,640,683,704,734,754,767,782,801,859,925,928,1388,1427,1437,2003,2043,2217,2249,2263,2273,2277,2281,2283,2290,2296,2303,2318,2365,2462,2630,2649,2664,2674,2876,2880,2885,3005,3072,3103,3159,3181,3351,3353,3389,3392,3411,3429,3433,3435,4041,4048
+- windows/src/text_service.h:195,209,212,240
+- windows/test-host/bench-okuri-tsf.ps1:1
+- windows/test-host/local-okuri-stock-oracle.el:1
+- windows/test-host/test-inline-preedit.py:22,78,134,189,198,243
+- windows/test-host/test-local-conversion.ps1:1,30,48
+- windows/test-host/test-local-edit-recovery.ps1:1
+- windows/test-host/test-local-fallback.ps1:1
+- windows/test-host/test-local-state-stress.ps1:1
+- windows/test-host/test-okuri-conversion.ps1:1,8,68,71
+- windows/test-host/tsf_host.cpp:293,599,658,799,1302
+- windows/test/local_conversion_test.cpp:54,103,145
+- windows/test/realtime_frontend_test.cpp:239

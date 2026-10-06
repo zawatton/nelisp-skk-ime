@@ -52,6 +52,15 @@ class RealtimeFrontend {
   }
   bool composing() const { return preedit_ || !pending_.empty(); }
   bool preedit() const { return preedit_; }
+  std::wstring okuri_key() const {
+    const auto marker = text_.find(L'*');
+    return okuri_started_ && marker != text_.npos ? text_.substr(0, marker) + wchar_t(okuri_letter_) : L"";
+  }
+  std::wstring okuri_text() const {
+    const auto marker = text_.find(L'*');
+    return okuri_started_ && marker != text_.npos ? text_.substr(marker + 1) : L"";
+  }
+  EngineState CancelOkuri();
   bool okuri_started() const { return okuri_started_; }
   bool katakana() const { return katakana_; }
   bool latin() const { return latin_; }
@@ -64,7 +73,7 @@ class RealtimeFrontend {
   }
 
  private:
-  std::optional<EngineState> FeedAscii(char key, bool record);
+  std::optional<EngineState> FeedAscii(char key, bool record, unsigned steps = 0);
   EngineState Snapshot(bool terminal = false) const;
   void RebuildPreedit();
   static std::wstring Katakana(const std::wstring& text);
@@ -74,6 +83,7 @@ class RealtimeFrontend {
   bool latin_ = false;
   bool wide_latin_ = false;
   bool okuri_started_ = false;
+  char okuri_letter_ = 0;
   bool continuous_preedit_ = false;
   std::wstring text_;
   std::string pending_;

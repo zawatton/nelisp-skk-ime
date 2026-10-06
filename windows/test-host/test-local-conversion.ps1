@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([Parameter(Mandatory)][string]$Runtime,
       [string]$BuildDir='build/w', [int]$ColdLoadSleepSec=45,
       [string[]]$Cases=@('ordinary','offline','missing','corrupt','disabled','app-disabled','app-enabled','uncertified','okuri'))
@@ -27,7 +27,7 @@ try {
    app-disabled { $arguments.ApplicationLocalConversion=0; $local=$false }
    app-enabled { $arguments.LocalConversion=0; $arguments.ApplicationLocalConversion=1 }
    uncertified { $env:DDSKK_SEARCH_KATAKANA='1'; $local=$false }
-   okuri { $script='a i SPACE WAIT3000 ENTER K i e R u ENTER SETTLE30000:COMMIT'; $local=$false }
+   okuri { $script='a i SPACE WAIT3000 ENTER K i e R u ENTER SETTLE30000:COMMIT' }
    default { throw "Unknown case $case" }
   }
   $log=Join-Path $run ($case+'.log')
@@ -45,8 +45,8 @@ try {
     if ($actual -ne $hex) { throw "Mismatch $case/$label expected=$hex actual=$actual log=$log" }
     $script:checks++
   }
-  if ($local -and $text -notmatch 'branch=local-convert') { throw "No local conversion: $case" }
-  if (-not $local -and $text -match 'branch=local-convert') { throw "Unexpected local capability: $case" }
+  if ($local -and $text -notmatch 'branch=local-(okuri-)?convert') { throw "No local conversion: $case" }
+  if (-not $local -and $text -match 'branch=local-(okuri-)?convert') { throw "Unexpected local capability: $case" }
   $checks++
   switch ($case) {
    ordinary {

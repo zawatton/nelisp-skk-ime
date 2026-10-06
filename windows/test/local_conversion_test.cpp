@@ -51,6 +51,39 @@ int main(int argc, char** argv) {
     Check(failed && OpenPublished(root)->header().generation == learned->header().generation, "missing source retains publication");
     Publish(root, {source}, user, rules, 0);
     Check(!OpenPublished(root)->Lookup(L"かな").supported, "uncertified source plan");
+    // Live-shaped source plan: unsorted personal source, six duplicate keys,
+    // shared words with and without annotations, plus an overlay of the same word.
+    const auto personal = root / "unsorted.jisyo", large = root / "overlap.jisyo";
+    File(personal, "ていこうち /抵抗値/\nあたい /値/\nおーむ /Ω/オーム/\nかな /仮名/\nあたい /値/\nていこうち /抵抗値/\nおーむ /Ω/オーム/\nかな /仮名/\nあたい /値/\nていこうち /抵抗値/\n");
+    File(large, "あたい /値;value. (字義:そのものの価値)/価;price/\nおーむ /Ω/王蟲/\nていこうち /抵抗値/\nかんじ /漢字/\n");
+    Publish(root, {personal, large}, "ていこうち /抵抗値/\n", rules, 1);
+    auto overlap = OpenPublished(root);
+    Check(overlap->Lookup(L"ていこうち").shared == std::vector<std::wstring>{L"抵抗値"}, "duplicate unsorted source merge");
+    Check(overlap->Lookup(L"おーむ").shared == std::vector<std::wstring>{L"Ω", L"オーム", L"王蟲"}, "prolonged kana source order");
+    Check(overlap->Lookup(L"あたい").shared == std::vector<std::wstring>{L"値", L"価;price"}, "first source annotation identity");
+    Check(conversion.Begin(overlap, L"ていこうち"), "overlapping overlay begin");
+    Check(!conversion.Next() && conversion.active(), "duplicate frontier exhausts without stuck state");
+    Check(conversion.Commit().text == L"抵抗値", "single overlapping candidate commit");
+    Check(conversion.Begin(overlap, L"おーむ"), "prolonged kana local capability");
+    Check(conversion.Next() && conversion.State().text == L"▼オーム", "overlap traversal");
+    Check(conversion.Next() && conversion.Commit().text == L"王蟲", "third source candidate commit");
+    const auto verbs = root / "okuri.jisyo";
+    File(verbs, "かk /書/掛/[く/書/掛/]/\nかt /買/飼/[った/買/飼/]/\nしn /死/[んだ/死/]/\n");
+    Publish(root, {verbs}, "", rules, 3);
+    auto okuri_index = OpenPublished(root);
+    Check(conversion.Begin(okuri_index, L"かk", {}, L"く"), "certified okuri");
+    Check(conversion.State().text == L"▼書く", "okuri display");
+    Check(conversion.Next() && conversion.Commit().text == L"掛く", "okuri traversal commit");
+    Check(conversion.Begin(okuri_index, L"かt", {}, L"った") && conversion.Commit().text == L"買った", "sokuon okuri commit");
+    Check(conversion.Begin(okuri_index, L"しn", {}, L"んだ") && conversion.Commit().text == L"死んだ", "n okuri commit");
+    Publish(root, {verbs}, "かk /掛/書/[く/掛/書/]/\n", rules, 3, 1);
+    auto okuri_learned = OpenPublished(root);
+    Check(conversion.Begin(okuri_learned, L"かk", {}, L"く") && conversion.State().text == L"▼掛く", "learned okuri order");
+    // An open frontier retains its generation and capability through swaps.
+    Publish(root, {verbs}, "", rules, 0);
+    Check(conversion.Previous() == false && conversion.Commit().text == L"掛く", "capability swap pins open okuri");
+    Check(!conversion.Begin(OpenPublished(root), L"かk", {}, L"く"), "new uncertified okuri selects provider");
+    Publish(root, {source}, user, rules, 0);
     const auto current = root / "current";
     std::ifstream manifest(current); std::string name; manifest >> name;
     std::ifstream in(root / name, std::ios::binary);
@@ -67,6 +100,27 @@ int main(int argc, char** argv) {
     a = {L"仮名;note"}; Union(a, {L"仮名", L"仮名;other"});
     Check(a.size() == 1, "annotated directional equality");
     Check(Unhex(ScalarHex(L"漢字😀")) == L"漢字😀", "scalar roundtrip");
+    // Store restart must retain pending learning and the producer identity.
+    // Every transport/data path is private even when this binary runs directly.
+    const auto worker_data = std::filesystem::absolute(root / "worker-data").wstring();
+    SetEnvironmentVariableW(L"LOCALAPPDATA", worker_data.c_str());
+    const auto registry = L"Software\\NativeIME-test-local-store-" + std::to_wstring(GetCurrentProcessId());
+    SetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", registry.c_str());
+    const auto pipe = L"\\\\.\\pipe\\local-store-test-" + std::to_wstring(GetCurrentProcessId());
+    SetEnvironmentVariableW(L"DDSKK_PIPE_NAME", pipe.c_str());
+    Publish(Directory(), {source}, "", rules, 1);
+    Store store; store.Start();
+    for (unsigned n = 0; n < 200 && !store.Current(); ++n) Sleep(10);
+    Check(store.Current() != nullptr, "worker publishes verified snapshot");
+    Check(store.Learn(L"かな", L"哉") && store.Learn(L"かな", L"金"), "offline learning enqueue");
+    store.Stop(); store.Start();
+    const auto recovered = store.Capture();
+    Check(recovered.pending.size() == 2 && recovered.pending[1].candidate == L"金", "restart retains pending order");
+    Check(store.Learn(L"かな", L"仮名"), "restart continues learning identity");
+    bool stopped = false;
+    for (unsigned n = 0; n < 300 && !stopped; ++n) { stopped = store.PrepareHandoff(); if (!stopped) Sleep(10); }
+    Check(stopped, "handoff drains durable learning off input thread");
+    store.Stop();
     if (argc > 2) {
       // Independent stock oracle: key, complete candidate vector, committed
       // text. Each row exercises traversal from the local source frontier.
@@ -87,6 +141,26 @@ int main(int argc, char** argv) {
       }
       Check(rows == 8, "stock corpus count");
       std::cout << "Stock DDSKK oracle 8 readings/order/commits PASS\n";
+    }
+    if (argc > 3) {
+      const auto corpus = std::filesystem::path(argv[3]);
+      auto read = [](const auto& path) { std::ifstream file(path, std::ios::binary); return std::string(std::istreambuf_iterator<char>(file), {}); };
+      Publish(root / "oracle-before", {corpus / "lf3-stock-shared.jisyo"}, "", rules, 3);
+      Publish(root / "oracle-after", {corpus / "lf3-stock-shared.jisyo"}, read(corpus / "lf3-stock-user.jisyo"), rules, 3);
+      auto before = OpenPublished(root / "oracle-before"), after = OpenPublished(root / "oracle-after");
+      std::ifstream oracle(corpus / "lf3-stock.oracle");
+      unsigned phase, rows = 0; std::string key, suffix, list, commit;
+      while (oracle >> phase >> key >> suffix >> list >> commit) {
+        Check(conversion.Begin(phase ? after : before, Unhex(key), {}, suffix == "-" ? L"" : Unhex(suffix)), "LF3 stock begin");
+        while (conversion.Next()) {}
+        std::wstring actual = L"/";
+        for (const auto& word : conversion.State().candidates) actual += word + L"/";
+        Check(actual == Unhex(list), "LF3 stock candidate vector/order");
+        Check(conversion.Commit().text == Unhex(commit), "LF3 stock commit including okuri");
+        ++rows;
+      }
+      Check(rows == 18, "LF3 stock corpus count");
+      std::cout << "Stock DDSKK LF3 oracle 18 readings/order/commits PASS\n";
     }
     std::cout << "PASS local conversion " << checks << " checks (4 corrupt/source negative controls)\n";
     return 0;
