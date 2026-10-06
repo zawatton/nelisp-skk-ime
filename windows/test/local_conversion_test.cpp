@@ -109,6 +109,118 @@ int main(int argc, char** argv) {
     const auto pipe = L"\\\\.\\pipe\\local-store-test-" + std::to_wstring(GetCurrentProcessId());
     SetEnvironmentVariableW(L"DDSKK_PIPE_NAME", pipe.c_str());
     Publish(Directory(), {source}, "", rules, 1);
+    {
+      Store idle;
+      idle.Start();
+      for (unsigned n = 0; n < 200 && !idle.Current(); ++n) Sleep(10);
+      Check(idle.Current() != nullptr, "idle worker publishes snapshot");
+      for (unsigned n = 0; n < 20; ++n) idle.Start();
+      Sleep(300);
+      Check(idle.SpoolWritesForDiagnostics() == 0, "idle and repeated activation write no spools");
+      Check(idle.MappingOpensForDiagnostics() == 1, "idle current stat does not reopen mapping");
+      Check(idle.Learn(L"かな", L"哉"), "single spool change enqueue");
+      for (unsigned n = 0; n < 200 && !idle.SpoolWritesForDiagnostics(); ++n) Sleep(10);
+      Check(idle.SpoolWritesForDiagnostics() == 1, "one durable write per addition");
+      Sleep(300);
+      Check(idle.SpoolWritesForDiagnostics() == 1, "unchanged pending queue writes nothing");
+      idle.Stop(); idle.Start();
+      Sleep(300);
+      Check(idle.SpoolWritesForDiagnostics() == 1, "restart retains durable spool identity and contents");
+      Check(idle.Learn(L"かな", L"金"), "second spool change enqueue");
+      idle.Stop();
+      Check(idle.SpoolWritesForDiagnostics() == 2, "handoff writes changed queue exactly once");
+      size_t spools = 0, leases = 0;
+      for (const auto& entry : std::filesystem::directory_iterator(Directory())) {
+        if (entry.path().extension() == ".queue") ++spools;
+        if (entry.path().extension() == ".lock") ++leases;
+      }
+      Check(spools == 1 && leases == 1, "repeated Start creates one spool and lease");
+      // This test has no engine to acknowledge its synthetic deltas.
+      // Remove only its private artifacts before the existing recovery test.
+      for (const auto& entry : std::filesystem::directory_iterator(Directory()))
+        if (entry.path().extension() == ".queue" || entry.path().extension() == ".lock")
+          std::filesystem::remove(entry.path());
+    }
+    {
+      // An exited owner's acknowledged spool must transfer durably before
+      // deletion, then retire exactly once when its generation is mapped.
+      const auto crashed = Directory() / "pending-4294967295-recovery.queue";
+      File(crashed, "recovery.1 " + ScalarHex(L"かな") + " " + ScalarHex(L"哉") + " 7 -\n");
+      File(crashed.wstring() + L".lock", "");
+      Publish(Directory(), {source}, "かな /哉/\n", rules, 1, 7);
+      Store recovery; recovery.Start();
+      for (unsigned n = 0; n < 200 && recovery.SpoolWritesForDiagnostics() < 2; ++n) Sleep(10);
+      Check(recovery.SpoolWritesForDiagnostics() == 2, "recovery transfer and retirement each write once");
+      Check(!std::filesystem::exists(crashed), "recovery deletes durably transferred source");
+      Check(recovery.Capture().pending.empty(), "mapped acknowledged recovery retires");
+      Sleep(300);
+      Check(recovery.SpoolWritesForDiagnostics() == 2, "retired empty spool stays idle");
+      recovery.Stop(); recovery.Start(); Sleep(300); recovery.Stop();
+      Check(recovery.SpoolWritesForDiagnostics() == 2, "restart of retired spool writes nothing");
+      for (const auto& entry : std::filesystem::directory_iterator(Directory()))
+        if (entry.path().extension() == ".queue" || entry.path().extension() == ".lock")
+          std::filesystem::remove(entry.path());
+    }
+    // Recover an ACKed delta while current names a missing/invalid generation.
+    // Repair only the generation file: current's timestamp stays unchanged.
+    std::ifstream valid_manifest(Directory() / "current");
+    std::string valid_name; valid_manifest >> valid_name; valid_manifest.close();
+    const auto valid_generation = Directory() / valid_name;
+    for (const bool missing : {true, false}) {
+      const auto generation_name = missing ? "generation-hf1-missing.index" : "generation-hf1-invalid.index";
+      const auto generation = Directory() / generation_name;
+      std::filesystem::remove(generation);
+      if (!missing) File(generation, "invalid-index");
+      File(Directory() / "current", generation_name);
+      const auto stamp = std::filesystem::last_write_time(Directory() / "current");
+      const auto crashed = Directory() / "pending-4294967295-unmapped.queue";
+      File(crashed, "unmapped.1 " + ScalarHex(L"かな") + " " + ScalarHex(L"哉") + " 7 -\n");
+      File(crashed.wstring() + L".lock", "");
+      Store unmapped; unmapped.Start();
+      for (unsigned n = 0; n < 200 && !unmapped.MappingOpensForDiagnostics(); ++n) Sleep(10);
+      Sleep(300); // Cross several 50 ms polls with a null map and nonzero sequence.
+      auto pending = unmapped.Capture();
+      Check(!pending.index && pending.pending.size() == 1 && pending.pending.front().sequence == 7,
+            "ACKed recovery remains pending without a mapping or crash");
+      Check(unmapped.MappingOpensForDiagnostics() == 1, "failed mapping is not retried every poll");
+      for (unsigned n = 0; n < 200 && unmapped.MappingOpensForDiagnostics() < 2; ++n) Sleep(10);
+      Sleep(200);
+      Check(unmapped.MappingOpensForDiagnostics() == 2, "null mapping retries once per second");
+      Check(unmapped.SpoolWritesForDiagnostics() == 1, "unchanged ACKed queue is not rewritten on retries");
+      std::filesystem::copy_file(valid_generation, generation, std::filesystem::copy_options::overwrite_existing);
+      Check(std::filesystem::last_write_time(Directory() / "current") == stamp,
+            "generation repair leaves current unchanged");
+      for (unsigned n = 0; n < 250 && !unmapped.Current(); ++n) Sleep(10);
+      Check(unmapped.Current() && unmapped.Current()->header().overlay_sequence == 7,
+            "bounded retry picks up repaired generation with unchanged current");
+      for (unsigned n = 0; n < 200 && unmapped.SpoolWritesForDiagnostics() < 2; ++n) Sleep(10);
+      Check(unmapped.Capture().pending.empty() && unmapped.SpoolWritesForDiagnostics() == 2,
+            "recovered ACK retires durably after mapping appears");
+      const auto opens = unmapped.MappingOpensForDiagnostics();
+      Sleep(1100);
+      Check(unmapped.MappingOpensForDiagnostics() == opens, "valid mapping is not reopened after retry interval");
+      unmapped.Stop();
+      for (const auto& entry : std::filesystem::directory_iterator(Directory()))
+        if (entry.path().extension() == ".queue" || entry.path().extension() == ".lock")
+          std::filesystem::remove(entry.path());
+    }
+    {
+      File(Directory() / "current", "invalid-manifest");
+      Store invalid; invalid.Start();
+      for (unsigned n = 0; n < 200 && !invalid.MappingOpensForDiagnostics(); ++n) Sleep(10);
+      Sleep(300);
+      Check(!invalid.Current() && invalid.MappingOpensForDiagnostics() == 1,
+            "unchanged invalid manifest is not retried before bounded interval");
+      Publish(Directory(), {source}, "", rules, 1);
+      for (unsigned n = 0; n < 200 && !invalid.Current(); ++n) Sleep(10);
+      Check(invalid.Current() && invalid.MappingOpensForDiagnostics() == 2,
+            "changed publication retries failed mapping");
+      Check(invalid.SpoolWritesForDiagnostics() == 0, "mapping retry performs no spool writes");
+      invalid.Stop();
+      for (const auto& entry : std::filesystem::directory_iterator(Directory()))
+        if (entry.path().extension() == ".lock") std::filesystem::remove(entry.path());
+    }
+    Publish(Directory(), {source}, "", rules, 1);
     Store store; store.Start();
     for (unsigned n = 0; n < 200 && !store.Current(); ++n) Sleep(10);
     Check(store.Current() != nullptr, "worker publishes verified snapshot");

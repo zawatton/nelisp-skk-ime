@@ -621,3 +621,48 @@ Every modified hunk start is listed below (new files start at line 1).
 - windows/test-host/tsf_host.cpp:293,599,658,799,1302
 - windows/test/local_conversion_test.cpp:54,103,145
 - windows/test/realtime_frontend_test.cpp:239
+
+* HF1: idle learning-spool writes (2026-10-06)
+Store now marks additions, ACK sequence assignments and retirements dirty,
+compares serialized content against the last successful durable write, and
+retains that snapshot across worker restarts. FlushFileBuffers and atomic
+write-through publication, persisted_/PrepareHandoff, and 50 ms polling remain.
+Unchanged valid mappings are cached by current's timestamp. Without a mapping,
+failed opens retry at most once per second for unchanged current; other polls
+only stat current. Recovery closes its reader before source deletion.
+
+Private live-like TSF measurement: unchanged code failed with 78 spool
+publications in 5.004 s (15.587/s); initial fix passed with 0 in 5.003 s (0/s),
+no queue file, and four idle checks. These count spool publications, not all OS I/O.
+Initial HF1 validation before review correction: CTest 11/11 (68 local checks),
+stock oracle 156 checks,
+local TSF 9 cases/31 checks, LF3 recovery 5 cases, stress 60 commits/15 candidate
+checks/507 callbacks (4008 us peak), fallback 2 cases, DDSKK 45 assertions,
+core hot swap 19 assertions, and host hot swap including five child exits.
+ERT stateline/lattice/learning/input-rules: 31/14/9/13, all expected.
+
+Recovery/stress used the bundled SKK-JISYO.M faithfully converted from EUC-JP
+to UTF-8 (8378 lines); production SKK-JISYO.L was not exercised. Initial EUC-JP
+input and native switch-passing failures were corrected and rerun. The new
+recovery test also exposed and verified the reader-close correction.
+Recorded owned-process audit: 123 PIDs, zero alive. Live IME/registry/data were
+untouched; changes remain unstaged, with no commit. Commands, verbatim tails,
+all changed-file hunk locations and failure history are in
+[[file:../../build/hf1-report.txt][the HF1 validation report]].
+
+** HF1 review correction: null mapping and bounded retry
+The new recovered-ACK/missing-generation test reproduced a SegFault before
+production edits. Store::Run now guards its sole mapped-> dereference and uses
+a steady-clock deadline to retry an unchanged current once per second while
+mapped is null. Changed publications still open promptly; unchanged valid
+mappings remain pinned.
+Two unit cases cover missing and invalid generations with an ACKed delta:
+pending survives without a map, generation repair leaves current unchanged,
+retry picks up the valid generation, and retirement persists exactly once.
+Requested reruns passed: CTest 11/11 (84 local checks), private idle test 4 checks
+with 0 writes in 5.020 s, and local TSF 9 cases/31 checks. Earlier broad-suite
+results above precede this review correction. Owned-process audit: 158 recorded
+PIDs, zero owned processes alive; one verified exited host PID was reused by
+an unrelated node process and left untouched. No commit or live changes.
+Commands, verbatim tails, changed locations and the red reproduction are in
+[[file:../../build/hf1-review-report.txt][the HF1 review report]].

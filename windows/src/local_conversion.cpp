@@ -23,10 +23,13 @@ std::string Identity() {
   for (auto c : random) { out += digits[c >> 4]; out += digits[c & 15]; }
   return out;
 }
-void Spool(const std::filesystem::path& path, const std::deque<Learning>& queue) {
+std::string SpoolBytes(const std::deque<Learning>& queue) {
   std::string bytes;
   for (const auto& item : queue)
     bytes += item.id + " " + ScalarHex(item.key) + " " + ScalarHex(item.candidate) + " " + std::to_string(item.sequence) + " " + (item.okuri.empty() ? "-" : ScalarHex(item.okuri)) + "\n";
+  return bytes;
+}
+void Spool(const std::filesystem::path& path, const std::string& bytes) {
   const auto temp = path.wstring() + L".tmp";
   HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) throw std::runtime_error("learning spool create");
@@ -36,6 +39,15 @@ void Spool(const std::filesystem::path& path, const std::deque<Learning>& queue)
   if (!ok || !MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
     throw std::runtime_error("learning spool publication");
 }
+}
+void Store::Persist(const std::filesystem::path& path, const std::deque<Learning>& queue) {
+  auto bytes = SpoolBytes(queue);
+  if (bytes == durable_spool_) return;
+  Spool(path, bytes);
+  durable_spool_ = std::move(bytes); // Advance only after flush + atomic publication.
+  const auto writes = ++spool_writes_;
+  if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
+    std::printf("LOCAL_SPOOL writes=%llu count=%zu\n", writes, queue.size());
 }
 void Store::Start() {
   if (worker_.joinable()) {
@@ -115,12 +127,14 @@ bool Store::Learn(std::wstring key, std::wstring candidate, std::wstring okuri) 
 void Store::Run() {
   EngineClient learner;
   std::filesystem::path directory, spool;
-  std::filesystem::file_time_type manifest_time{};
+  std::optional<std::filesystem::file_time_type> manifest_time;
+  std::chrono::steady_clock::time_point next_mapping_retry{};
   HANDLE lease = INVALID_HANDLE_VALUE;
   std::deque<Learning> queue = std::move(restart_pending_);
   std::shared_ptr<const Index> mapped;
   uint64_t acknowledged_operation = 0, acknowledged_sequence = 0;
   bool stalled = false;
+  bool spool_dirty = true;
   try {
     directory = Directory(); std::filesystem::create_directories(directory);
     spool = directory / ("pending-" + std::to_string(GetCurrentProcessId()) + "-" + client_ + ".queue");
@@ -156,13 +170,14 @@ void Store::Run() {
           throw std::runtime_error("recovered learning limit");
         recovered.push_back({id, Unhex(key), Unhex(word), sequence, okuri.empty() || okuri == "-" ? L"" : Unhex(okuri)});
       }
+      input.close(); // Windows deletion requires releasing the recovery reader.
       {
         if (queue.size() + recovered.size() > kQueueLimit) {
           continue;
         }
         queue.insert(queue.begin(), recovered.begin(), recovered.end());
       }
-      Spool(spool, queue);
+      Persist(spool, queue); // Durable ownership transfer precedes source deletion.
       std::filesystem::remove(entry.path());
       if (claim != INVALID_HANDLE_VALUE) { CloseHandle(claim); ownership.handle = INVALID_HANDLE_VALUE; }
       std::filesystem::remove(entry.path().wstring() + L".lock");
@@ -173,12 +188,18 @@ void Store::Run() {
     while (consumed != written_.load(std::memory_order_acquire)) {
       auto& item = *inbound_[consumed % kQueueLimit];
       if (std::none_of(queue.begin(), queue.end(), [&](const auto& x) { return x.id == item.id; }))
-        queue.push_back(std::move(item));
+        { queue.push_back(std::move(item)); spool_dirty = true; }
       inbound_[consumed % kQueueLimit].reset();
       consumed_.store(++consumed, std::memory_order_release);
     }
     bool durable = false;
-    try { if (!spool.empty()) { Spool(spool, queue); durable = true; persisted_.store(consumed_.load()); } }
+    try {
+      if (!spool.empty()) {
+        if (spool_dirty) { Persist(spool, queue); spool_dirty = false; }
+        durable = true;
+        persisted_.store(consumed_.load());
+      }
+    }
     catch (const std::exception& error) {
       if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
         std::printf("LOCAL_UNSAVED count=%zu error=%s win32=%lu\n", queue.size(), error.what(), GetLastError());
@@ -186,18 +207,24 @@ void Store::Run() {
     if (stopping_) break;
     try {
       const auto time = std::filesystem::last_write_time(directory / "current");
-      if (!mapped || time != manifest_time) {
-        mapped = OpenPublished(directory);
+      const auto now = std::chrono::steady_clock::now();
+      if (!manifest_time || time != *manifest_time || (!mapped && now >= next_mapping_retry)) {
+        // Keep successful unchanged mappings pinned. Without a mapping,
+        // retry failures at most once per second for an unchanged current.
         manifest_time = time;
+        next_mapping_retry = now + std::chrono::seconds(1);
+        ++mapping_opens_;
+        mapped = OpenPublished(directory);
       }
       // Retire even when an ACK arrives after its generation was mapped.
-      while (!queue.empty() && queue.front().sequence && queue.front().sequence <= mapped->header().overlay_sequence) {
+      while (mapped && !queue.empty() && queue.front().sequence && queue.front().sequence <= mapped->header().overlay_sequence) {
         const auto& item = queue.front();
         if (item.id.starts_with(client_ + ".")) {
           acknowledged_operation = std::stoull(item.id.substr(client_.size() + 1));
           acknowledged_sequence = item.sequence;
         }
         queue.pop_front();
+        spool_dirty = true;
       }
     } catch (...) { /* Keep the last verified mapping. */ }
     // Mapping availability must not depend on an ACK. This also covers a
@@ -219,7 +246,10 @@ void Store::Run() {
       if (auto sequence = learner.LearnLocal(item.id, ScalarHex(item.key), ScalarHex(item.candidate), 1500, item.okuri.empty() ? "" : ScalarHex(item.okuri))) {
         if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
           std::printf("LOCAL_ACK id=%s sequence=%llu\n", item.id.c_str(), *sequence);
-        for (auto& pending : queue) if (pending.id == item.id) pending.sequence = *sequence;
+        for (auto& pending : queue) if (pending.id == item.id && pending.sequence != *sequence) {
+          pending.sequence = *sequence;
+          spool_dirty = true;
+        }
       } else if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
         std::printf("LOCAL_PENDING id=%s response=%.160s\n", item.id.c_str(), learner.last_response().c_str());
     }
