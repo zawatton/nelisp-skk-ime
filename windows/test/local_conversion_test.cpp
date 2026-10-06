@@ -1,5 +1,6 @@
 // GPL-3.0-or-later
 #include "local_conversion.h"
+#include "state_mirror.h"
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -19,6 +20,37 @@ int main(int argc, char** argv) {
   try {
     const auto root = argc > 1 ? std::filesystem::path(argv[1]) : Directory() / "selftest";
     std::filesystem::create_directories(root);
+    if (argc > 4) {
+      const auto navigation = root / "navigation.jisyo";
+      File(navigation, "かな /仮名/佳奈/加奈/可奈/哉/金/香奈/花菜/奏/叶/華奈/河南/\n");
+      Publish(root / "navigation", {navigation}, "", rules, 3);
+      auto index = OpenPublished(root / "navigation");
+      std::ifstream oracle(argv[4]); std::string kind;
+      size_t rows = 0;
+      while (oracle >> kind) {
+        Conversion value; Check(value.Begin(index, L"かな"), "first-only navigation begin");
+        if (kind == "previous") {
+          size_t from; int to; std::string text;
+          oracle >> from >> to >> text;
+          Check(value.Select(from), "oracle previous setup");
+          const bool previous = value.Previous();
+          Check(previous == (to >= 0), "stock previous/reading boundary");
+          if (previous) Check(value.State().text == Unhex(text), "stock previous text");
+          else Check(Unhex(text) == L"▽かな", "stock first to reading");
+        } else if (kind == "menu") {
+          std::string events, pages; int to; oracle >> events >> pages >> to;
+          Check(value.Select(4), "oracle menu setup");
+          if (events.starts_with("32,")) {
+            Check(value.NextMenu() && value.State().candidate_index == 11, "stock next menu page");
+            Check(value.PreviousMenu() && value.State().candidate_index == to, "stock previous menu page");
+          } else Check(value.PreviousMenu() && value.State().candidate_index == to - 1, "stock menu escape then previous");
+          Check(pages == (events.starts_with("32,") ? "4,11,4" : "4"), "stock default page offsets");
+        } else throw std::runtime_error("Unknown navigation oracle row");
+        ++rows;
+      }
+      Check(rows == 16, "navigation oracle complete");
+      std::cout << "Stock DDSKK navigation oracle rows=16 PASS\n";
+    }
     const auto source = root / "shared.jisyo", second = root / "second.jisyo";
     File(source, "かな /仮名;first/哉/金/加奈/佳奈/香奈/\nか /蚊/\nかんじ /漢字/幹事/感じ/\nにほん /日本/二本/\nすうじ /(concat 1)/\n");
     File(second, "かな /仮名;later/可奈/\nながい /" + std::string(1025, 'a') + "/\n");
@@ -60,7 +92,7 @@ int main(int argc, char** argv) {
     auto overlap = OpenPublished(root);
     Check(overlap->Lookup(L"ていこうち").shared == std::vector<std::wstring>{L"抵抗値"}, "duplicate unsorted source merge");
     Check(overlap->Lookup(L"おーむ").shared == std::vector<std::wstring>{L"Ω", L"オーム", L"王蟲"}, "prolonged kana source order");
-    Check(overlap->Lookup(L"あたい").shared == std::vector<std::wstring>{L"値", L"価;price"}, "first source annotation identity");
+    Check(overlap->Lookup(L"あたい").shared == std::vector<std::wstring>{L"値", L"値;value. (字義:そのものの価値)", L"価;price"}, "directional stock annotation merge");
     Check(conversion.Begin(overlap, L"ていこうち"), "overlapping overlay begin");
     Check(!conversion.Next() && conversion.active(), "duplicate frontier exhausts without stuck state");
     Check(conversion.Commit().text == L"抵抗値", "single overlapping candidate commit");
@@ -109,6 +141,15 @@ int main(int argc, char** argv) {
     const auto pipe = L"\\\\.\\pipe\\local-store-test-" + std::to_wstring(GetCurrentProcessId());
     SetEnvironmentVariableW(L"DDSKK_PIPE_NAME", pipe.c_str());
     Publish(Directory(), {source}, "", rules, 1);
+    const HANDLE mirror = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+        sizeof(NativeStateMirror), NativeStateMirrorName(pipe).c_str());
+    auto* mirror_view = static_cast<NativeStateMirror*>(MapViewOfFile(mirror, FILE_MAP_WRITE, 0, 0, sizeof(NativeStateMirror)));
+    Check(mirror_view != nullptr, "private observer mapping");
+    const HANDLE owner_map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+        sizeof(NativeStateOwner), (NativeStateMirrorName(pipe) + L"-owner").c_str());
+    auto* owner_view = static_cast<NativeStateOwner*>(MapViewOfFile(owner_map, FILE_MAP_WRITE, 0, 0, sizeof(NativeStateOwner)));
+    Check(owner_view != nullptr, "private observer ownership mapping");
+    const HANDLE writer_mutex = CreateMutexW(nullptr, FALSE, (NativeStateMirrorName(pipe) + L"-writer").c_str());
     {
       Store idle;
       idle.Start();
@@ -224,6 +265,35 @@ int main(int argc, char** argv) {
     Store store; store.Start();
     for (unsigned n = 0; n < 200 && !store.Current(); ++n) Sleep(10);
     Check(store.Current() != nullptr, "worker publishes verified snapshot");
+    Conversion observed; Check(observed.Begin(store.Current(), L"かな"), "unlearned observer conversion");
+    Check(store.PublishState(observed.State()), "first candidate reaches Sumi mirror offline");
+    Check(std::string(mirror_view->line).starts_with("STATE candidate "), "observer has authoritative local mode");
+    LONG writer = 0; Check(TryOwnStateMirror(mirror_view, &writer, writer_mutex), "stalled publication writer seam");
+    const auto begin = GetTickCount64();
+    Check(!store.PublishState(observed.State()), "stalled mirror writer never blocks input");
+    Check(GetTickCount64() - begin <= 25, "observer callback watchdog 25 ms");
+    store.ReleaseState();
+    Check(!owner_view->requested_owner, "stalled writer cannot strand provider handoff");
+    Check(store.PublishState(observed.State(), false), "released authority cancels observer retry");
+    ReleaseStateMirror(mirror_view, writer, writer_mutex);
+    Check(observed.Next() && store.PublishState(observed.State()), "observer progresses after publication stall");
+    bool crashed_writer = false;
+    std::thread([&] {
+      LONG abandoned_sequence = 0;
+      if (TryOwnStateMirror(mirror_view, &abandoned_sequence, writer_mutex)) {
+        crashed_writer = true; mirror_view->line[0] = '?';
+        // Intentional thread exit while owning the mutex: model a dead writer.
+      }
+    }).join();
+    Check(crashed_writer, "dead observer writer exercised");
+    Check(store.PublishState(observed.State()) && !(mirror_view->sequence & 1), "dead writer recovers without spinning");
+    Check(std::string(mirror_view->line).starts_with("STATE candidate "), "dead writer partial snapshot replaced");
+    Check(owner_view->local_owner == static_cast<LONG>(GetCurrentProcessId()), "local observer ownership");
+    InterlockedExchange(&owner_view->requested_owner, 0);
+    const auto stable = std::string(mirror_view->line);
+    Check(store.PublishState(observed.Commit(), false) && stable == mirror_view->line, "focus supersedes stale observer retry");
+    ddskk::EngineState settled; settled.mode = L"hiragana"; store.PublishState(settled);
+    store.ReleaseState(); Check(!owner_view->local_owner, "provider observer handoff");
     Check(store.Learn(L"かな", L"哉") && store.Learn(L"かな", L"金"), "offline learning enqueue");
     store.Stop(); store.Start();
     const auto recovered = store.Capture();
@@ -233,6 +303,45 @@ int main(int argc, char** argv) {
     for (unsigned n = 0; n < 300 && !stopped; ++n) { stopped = store.PrepareHandoff(); if (!stopped) Sleep(10); }
     Check(stopped, "handoff drains durable learning off input thread");
     store.Stop();
+    CloseHandle(writer_mutex);
+    UnmapViewOfFile(owner_view); CloseHandle(owner_map);
+    UnmapViewOfFile(mirror_view); CloseHandle(mirror);
+    // A verified generation can be available before the observer mapping.
+    // First snapshots survive that race; cancellation/new ownership wins.
+    auto late_observer = [&](const wchar_t* suffix, int fault) {
+      const auto late_pipe = pipe + suffix;
+      SetEnvironmentVariableW(L"DDSKK_PIPE_NAME", late_pipe.c_str());
+      Publish(Directory(), {source}, "", rules, 1);
+      Store late; late.Start();
+      for (unsigned n = 0; n < 200 && !late.Current(); ++n) Sleep(10);
+      Check(late.Current() != nullptr, "late observer generation ready");
+      Conversion first; Check(first.Begin(late.Current(), L"かな"), "late observer first-only reading");
+      Check(!late.PublishState(first.State()), "first snapshot waits for absent observer resource");
+      if (fault == 1) late.ReleaseState(); // focus/provider handoff before mapping
+      const auto late_name = NativeStateMirrorName(late_pipe);
+      HANDLE late_map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(NativeStateMirror), late_name.c_str());
+      auto* late_view = static_cast<NativeStateMirror*>(MapViewOfFile(late_map, FILE_MAP_WRITE, 0, 0, sizeof(NativeStateMirror)));
+      HANDLE late_owner = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(NativeStateOwner), (late_name + L"-owner").c_str());
+      auto* late_intent = static_cast<NativeStateOwner*>(MapViewOfFile(late_owner, FILE_MAP_WRITE, 0, 0, sizeof(NativeStateOwner)));
+      HANDLE late_writer = CreateMutexW(nullptr, FALSE, (late_name + L"-writer").c_str());
+      Check(late_view && late_intent && late_writer, "late observer resources created");
+      if (fault == 2) {
+        InterlockedExchange(&late_intent->requested_owner, 12345);
+        strcpy_s(late_view->line, "STATE newer-owner");
+      }
+      for (unsigned n = 0; n < 200; ++n) { if (late.PublishState(first.State(), false)) break; Sleep(10); }
+      const auto line = std::string(late_view->line);
+      const bool correct = fault == 0 ? line.starts_with("STATE candidate ")
+          : fault == 1 ? line.empty() : line == "STATE newer-owner" && late_intent->requested_owner == 12345;
+      late.ReleaseState(); late.Stop();
+      UnmapViewOfFile(late_intent); UnmapViewOfFile(late_view);
+      CloseHandle(late_writer); CloseHandle(late_owner); CloseHandle(late_map);
+      Check(correct, fault == 0 ? "first snapshot survives late observer publication"
+          : fault == 1 ? "cancel before mapping cannot revive first snapshot" : "newer owner supersedes late first snapshot");
+    };
+    late_observer(L"-late", 0);
+    late_observer(L"-late-cancel", 1);
+    late_observer(L"-late-superseded", 2);
     if (argc > 2) {
       // Independent stock oracle: key, complete candidate vector, committed
       // text. Each row exercises traversal from the local source frontier.

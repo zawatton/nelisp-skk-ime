@@ -10,6 +10,7 @@
 #include <thread>
 
 namespace ddskk::local {
+struct MirrorMapping;
 struct Learning { std::string id; std::wstring key, candidate; uint64_t sequence = 0; std::wstring okuri; };
 struct Selection { std::shared_ptr<const Index> index; std::vector<Learning> pending; bool available = false; };
 // All file I/O, full validation and engine transactions belong to this
@@ -27,6 +28,8 @@ class Store {
   bool Learn(std::wstring key, std::wstring candidate, std::wstring okuri = {});
   size_t Unsaved() const;
   bool Available() const;
+  bool PublishState(const EngineState& state, bool claim = true);
+  void ReleaseState();
   uint64_t SpoolWritesForDiagnostics() const { return spool_writes_.load(); }
   uint64_t MappingOpensForDiagnostics() const { return mapping_opens_.load(); }
  private:
@@ -38,6 +41,7 @@ class Store {
     uint64_t acknowledged_operation = 0, acknowledged_sequence = 0;
   };
   std::atomic<std::shared_ptr<const Published>> published_;
+  std::atomic<std::shared_ptr<MirrorMapping>> mirror_;
   // One TSF producer, one worker consumer. No worker-held lock is acquired
   // by Capture/Learn or any key/edit callback.
   std::array<std::optional<Learning>, 256> inbound_;
@@ -55,6 +59,8 @@ class Store {
   std::thread worker_;
   std::string client_;
   uint64_t operation_ = 0;
+  LONG mirror_cookie_ = 0;
+  bool mirror_claim_pending_ = false; // UI-thread intent while resources open
 };
 class Conversion {
  public:
@@ -65,6 +71,9 @@ class Conversion {
   // False means exhausted: hand over one conversion barrier for registration.
   bool Next();
   bool Previous();
+  void Materialize();
+  bool NextMenu();
+  bool PreviousMenu();
   bool Select(size_t index);
   EngineState Commit();
   void Reset();

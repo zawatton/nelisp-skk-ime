@@ -207,6 +207,14 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   void RenderLocalOkuri(ITfContext* context);
   HRESULT ApplyLocalState(ITfContext* context, const ddskk::EngineState& state);
   HRESULT CommitLocal(ITfContext* context);
+  void CancelLocalRetry();
+  void ScheduleLocalRetry();
+  void RetryLocalConversion();
+  void PublishLocalObserver(const ddskk::EngineState& state);
+  std::optional<ddskk::EngineState> local_observer_retry_;
+  ULONGLONG local_observer_deadline_ = 0;
+  std::optional<ddskk::local::Conversion> local_conversion_retry_;
+  ULONGLONG local_retry_deadline_ = 0;
   mutable ddskk::local::Store local_store_;
   mutable ULONGLONG local_handoff_requested_ = 0;
   ddskk::local::Conversion local_conversion_;

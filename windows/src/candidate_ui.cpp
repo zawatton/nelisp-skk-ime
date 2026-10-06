@@ -55,15 +55,37 @@ HRESULT CandidateUI::GetDocumentMgr(ITfDocumentMgr** value) { if (!value) return
 HRESULT CandidateUI::GetCount(UINT* count) { if (!count) return E_POINTER; *count = static_cast<UINT>(candidates_.size()); return S_OK; }
 HRESULT CandidateUI::GetSelection(UINT* index) { if (!index) return E_POINTER; *index = selection_; return S_OK; }
 HRESULT CandidateUI::GetString(UINT index, BSTR* text) { if (!text) return E_POINTER; *text = nullptr; if (index >= candidates_.size()) return E_INVALIDARG; *text = SysAllocStringLen(candidates_[index].data(), static_cast<UINT>(candidates_[index].size())); return *text ? S_OK : E_OUTOFMEMORY; }
-HRESULT CandidateUI::GetPageIndex(UINT* indices, UINT size, UINT* count) { if (!count) return E_POINTER; *count = candidates_.empty() ? 0 : 1; if (*count && (!indices || size < 1)) return E_NOT_SUFFICIENT_BUFFER; if (*count) indices[0] = 0; return S_OK; }
-HRESULT CandidateUI::SetPageIndex(UINT*, UINT) { return E_NOTIMPL; }
-HRESULT CandidateUI::GetCurrentPage(UINT* page) { if (!page) return E_POINTER; *page = 0; return S_OK; }
+HRESULT CandidateUI::GetPageIndex(UINT* indices, UINT size, UINT* count) {
+  if (!count) return E_POINTER;
+  *count = static_cast<UINT>(pages_.size());
+  if (*count && (!indices || size < *count)) return E_NOT_SUFFICIENT_BUFFER;
+  for (UINT i = 0; i < *count; ++i) indices[i] = pages_[i];
+  return S_OK;
+}
+HRESULT CandidateUI::SetPageIndex(UINT* indices, UINT count) {
+  if (!local_pages_) return E_NOTIMPL;
+  if (!indices || !count || indices[0] != 0) return E_INVALIDARG;
+  for (UINT i = 0; i < count; ++i)
+    if (indices[i] >= candidates_.size() || (i && indices[i] <= indices[i-1])) return E_INVALIDARG;
+  pages_.assign(indices, indices + count); updated_flags_ |= TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE;
+  return S_OK;
+}
+HRESULT CandidateUI::GetCurrentPage(UINT* page) {
+  if (!page) return E_POINTER;
+  *page = 0;
+  while (*page + 1 < pages_.size() && pages_[*page + 1] <= selection_) ++*page;
+  return S_OK;
+}
 HRESULT CandidateUI::SetSelection(UINT index) { return index < candidates_.size() && handler_ ? handler_->SelectCandidate(index) : E_INVALIDARG; }
 HRESULT CandidateUI::Finalize() { return handler_ ? handler_->FinalizeCandidate() : E_UNEXPECTED; }
 HRESULT CandidateUI::Abort() { return handler_ ? handler_->AbortCandidate() : E_UNEXPECTED; }
-void CandidateUI::Update(const ddskk::EngineState& state, ITfDocumentMgr* document) {
+void CandidateUI::Update(const ddskk::EngineState& state, ITfDocumentMgr* document, bool local) {
   if (document != document_) { if (document_) document_->Release(); document_ = document; if (document_) document_->AddRef(); }
+  local_pages_ = local;
   candidates_ = state.candidates;
+  pages_.clear();
+  if (!candidates_.empty()) pages_.push_back(0);
+  if (local) for (UINT i = 4; i < candidates_.size(); i += 7) pages_.push_back(i);
   selection_ = state.candidate_index < 0 ? 0 : static_cast<UINT>(state.candidate_index);
   updated_flags_ = TF_CLUIE_COUNT | TF_CLUIE_SELECTION | TF_CLUIE_STRING |
                    TF_CLUIE_PAGEINDEX | TF_CLUIE_CURRENTPAGE;

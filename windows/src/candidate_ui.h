@@ -52,7 +52,7 @@ class CandidateUI final : public ITfCandidateListUIElementBehavior {
   HRESULT STDMETHODCALLTYPE Finalize() override;
   HRESULT STDMETHODCALLTYPE Abort() override;
   void DetachHandler() { handler_ = nullptr; }
-  void Update(const ddskk::EngineState& state, ITfDocumentMgr* document);
+  void Update(const ddskk::EngineState& state, ITfDocumentMgr* document, bool local = false);
 
  private:
   ~CandidateUI();
@@ -62,6 +62,8 @@ class CandidateUI final : public ITfCandidateListUIElementBehavior {
                          TF_CLUIE_STRING | TF_CLUIE_PAGEINDEX |
                          TF_CLUIE_CURRENTPAGE;
   UINT selection_ = 0;
+  std::vector<UINT> pages_;
+  bool local_pages_ = false;
   std::vector<std::wstring> candidates_;
   ITfDocumentMgr* document_ = nullptr;
   CandidateUIHandler* handler_;

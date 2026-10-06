@@ -1,6 +1,8 @@
 // GPL-3.0-or-later
 #include "local_conversion.h"
 #include "engine_client.h"
+#include "state_mirror.h"
+#include <cstring>
 #include <bcrypt.h>
 #include <algorithm>
 #include <fstream>
@@ -8,6 +10,12 @@
 #include <cstdio>
 
 namespace ddskk::local {
+struct MirrorMapping {
+  HANDLE map = nullptr, owner_map = nullptr, writer = nullptr;
+  NativeStateMirror* view = nullptr;
+  NativeStateOwner* owner = nullptr;
+  ~MirrorMapping() { if (view) UnmapViewOfFile(view); if (map) CloseHandle(map); if (owner) UnmapViewOfFile(owner); if (owner_map) CloseHandle(owner_map); if (writer) CloseHandle(writer); }
+};
 namespace {
 constexpr size_t kQueueLimit = 256;
 struct Claim {
@@ -54,7 +62,11 @@ void Store::Start() {
     if (WaitForSingleObject(worker_.native_handle(), 0) != WAIT_OBJECT_0) return;
     worker_.join(); // OS thread already ended; this cannot wait for I/O.
   }
-  if (client_.empty()) client_ = Identity();
+  if (client_.empty()) {
+    client_ = Identity();
+    mirror_cookie_ = static_cast<LONG>(std::stoul(client_.substr(0, 8), nullptr, 16));
+    if (!mirror_cookie_) mirror_cookie_ = 1;
+  }
   else {
     const auto captured = Capture();
     restart_pending_.assign(captured.pending.begin(), captured.pending.end());
@@ -114,6 +126,66 @@ std::vector<std::wstring> Store::Pending(std::wstring_view key) const {
   };
   add(ui_pending_);
   return words;
+}
+bool Store::PublishState(const EngineState& state, bool claim) {
+  if (claim) mirror_claim_pending_ = true;
+  const auto mapped = mirror_.load();
+  if (!mapped || !mapped->view || !mapped->owner) return false;
+  const LONG owner = static_cast<LONG>(GetCurrentProcessId());
+  if (mirror_claim_pending_) {
+    if (claim) InterlockedExchange(&mapped->owner->requested_owner, mirror_cookie_);
+    else {
+      // The first claim arrived before mapping. Install it once resources
+      // exist, without replacing a newer local owner.
+      const LONG prior = InterlockedCompareExchange(&mapped->owner->requested_owner, mirror_cookie_, 0);
+      if (prior && prior != mirror_cookie_) { mirror_claim_pending_ = false; return true; }
+    }
+    mirror_claim_pending_ = false;
+  } else if (mapped->owner->requested_owner != mirror_cookie_) return true; // superseded observer intent
+  auto hex = [](const auto& value) { return value.empty() ? std::string("-") : ScalarHex(value); };
+  std::string line = "STATE " + Utf8(state.mode) + " " + std::to_string(state.cursor) + " " +
+      std::to_string(state.composition_start) + " " + hex(state.text) + " " + hex(state.pending_romaji) + " ";
+  int selection = state.candidate_index;
+  std::string candidates;
+  if (selection >= 0 && static_cast<size_t>(selection) < state.candidates.size()) {
+    // Sumi displays its received page without knowing a global offset.
+    const size_t start = selection < 4 ? 0 : 4 + (selection - 4) / 7 * 7;
+    for (size_t i = start; i < std::min(start + (start ? 7 : 4), state.candidates.size()); ++i) {
+      if (!candidates.empty()) candidates += ',';
+      candidates += hex(state.candidates[i]);
+    }
+    selection -= static_cast<int>(start);
+    if (line.size() + candidates.size() + 16 >= sizeof(mapped->view->line)) {
+      // Preserve the selected identity even for a long annotation page.
+      candidates = hex(state.candidates[state.candidate_index]); selection = 0;
+      line = "STATE candidate 0 0 - - ";
+    }
+  }
+  line += std::to_string(selection) + " " + (candidates.empty() ? "-" : candidates);
+  if (line.size() >= sizeof(mapped->view->line)) return false;
+  LONG sequence = 0;
+  if (!TryOwnStateMirror(mapped->view, &sequence, mapped->writer)) return false;
+  if (mapped->owner->requested_owner != mirror_cookie_) { ReleaseStateMirror(mapped->view, sequence, mapped->writer); return true; }
+  mapped->owner->local_owner = owner;
+  memcpy(mapped->view->line, line.c_str(), line.size() + 1);
+  ReleaseStateMirror(mapped->view, sequence, mapped->writer);
+  return true;
+}
+void Store::ReleaseState() {
+  mirror_claim_pending_ = false;
+  const auto mapped = mirror_.load();
+  if (!mapped || !mapped->view || !mapped->owner) return;
+  // Revoke authority even when a publisher holds the writer mutex.
+  // A stale retry sees the changed cookie and cannot reclaim it.
+  InterlockedCompareExchange(&mapped->owner->requested_owner, 0, mirror_cookie_);
+  LONG sequence = 0;
+  if (!TryOwnStateMirror(mapped->view, &sequence, mapped->writer)) return;
+  if (mapped->owner->local_owner == static_cast<LONG>(GetCurrentProcessId()) &&
+      mapped->owner->requested_owner == 0) {
+    mapped->owner->local_owner = 0;
+    InterlockedCompareExchange(&mapped->owner->requested_owner, 0, mirror_cookie_);
+  }
+  ReleaseStateMirror(mapped->view, sequence, mapped->writer);
 }
 bool Store::Learn(std::wstring key, std::wstring candidate, std::wstring okuri) {
   const auto written = written_.load(std::memory_order_relaxed);
@@ -184,6 +256,20 @@ void Store::Run() {
     }
   } catch (...) { /* Pending memory remains usable; Unsaved reports it. */ }
   while (true) {
+    if (!mirror_.load()) {
+      wchar_t value[256]{};
+      const auto n = GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", value, 256);
+      const std::wstring pipe = n && n < 256 ? value : L"\\\\.\\pipe\\ddskk-ime-v1";
+      auto mapped_mirror = std::make_shared<MirrorMapping>();
+      mapped_mirror->map = OpenFileMappingW(FILE_MAP_WRITE, FALSE, NativeStateMirrorName(pipe).c_str());
+      if (mapped_mirror->map) mapped_mirror->view = static_cast<NativeStateMirror*>(
+          MapViewOfFile(mapped_mirror->map, FILE_MAP_WRITE, 0, 0, sizeof(NativeStateMirror)));
+      mapped_mirror->owner_map = OpenFileMappingW(FILE_MAP_WRITE, FALSE, (NativeStateMirrorName(pipe) + L"-owner").c_str());
+      if (mapped_mirror->owner_map) mapped_mirror->owner = static_cast<NativeStateOwner*>(
+          MapViewOfFile(mapped_mirror->owner_map, FILE_MAP_WRITE, 0, 0, sizeof(NativeStateOwner)));
+      mapped_mirror->writer = OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, (NativeStateMirrorName(pipe) + L"-writer").c_str());
+      if (mapped_mirror->view && mapped_mirror->owner && mapped_mirror->writer) mirror_.store(std::move(mapped_mirror));
+    }
     auto consumed = consumed_.load(std::memory_order_relaxed);
     while (consumed != written_.load(std::memory_order_acquire)) {
       auto& item = *inbound_[consumed % kQueueLimit];
@@ -278,10 +364,22 @@ EngineState Conversion::State() const {
   state.text = L"▼" + selected().substr(0, selected().find(L';')) + okuri_;
   state.cursor = static_cast<int>(state.text.size()); return state;
 }
+void Conversion::Materialize() { if (!shared_loaded_) { Union(visible_, shared_); shared_loaded_ = true; } }
 bool Conversion::Next() {
   if (selection_ + 1 == visible_.size() && !shared_loaded_) { Union(visible_, shared_); shared_loaded_ = true; }
   if (selection_ + 1 >= visible_.size()) return false;
   ++selection_; return true;
+}
+bool Conversion::NextMenu() {
+  if (selection_ < 4) return Next();
+  Materialize();
+  const size_t target = 4 + (selection_ - 4) / 7 * 7 + 7;
+  return Select(target);
+}
+bool Conversion::PreviousMenu() {
+  if (selection_ < 4) return Previous();
+  const size_t page = 4 + (selection_ - 4) / 7 * 7;
+  return Select(page >= 11 ? page - 7 : 3);
 }
 bool Conversion::Previous() { if (!selection_) return false; --selection_; return true; }
 bool Conversion::Select(size_t index) { if (index >= visible_.size()) return false; selection_ = index; return true; }

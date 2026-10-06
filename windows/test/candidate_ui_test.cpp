@@ -53,5 +53,16 @@ int main() {
   assert(SUCCEEDED(ui->SetSelection(0)) && handler.selected == 0);
   assert(SUCCEEDED(ui->Finalize()) && handler.finalized);
   assert(SUCCEEDED(ui->Abort()) && handler.aborted);
+  state.candidates.resize(20, L"候補"); state.candidate_index = 12;
+  ui->Update(state, nullptr, true);
+  UINT indices[4]{};
+  assert(ui->GetPageIndex(indices, 1, &pages) == E_NOT_SUFFICIENT_BUFFER && pages == 4);
+  assert(SUCCEEDED(ui->GetPageIndex(indices, 4, &pages)) && indices[0] == 0 && indices[1] == 4 && indices[2] == 11 && indices[3] == 18);
+  assert(SUCCEEDED(ui->GetCurrentPage(&page_index)) && page_index == 2);
+  UINT custom[]{0, 8, 16};
+  assert(SUCCEEDED(ui->SetPageIndex(custom, 3)));
+  assert(SUCCEEDED(ui->GetCurrentPage(&page_index)) && page_index == 1);
+  UINT invalid[]{0, 8, 8};
+  assert(ui->SetPageIndex(invalid, 3) == E_INVALIDARG);
   ui->Release();
 }

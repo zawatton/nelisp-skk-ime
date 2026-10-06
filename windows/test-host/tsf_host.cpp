@@ -290,7 +290,7 @@ class DocumentStore final : public ITextStoreACP,
       *phrSession = E_UNEXPECTED;
       return E_UNEXPECTED;
     }
-    if (deny_next_write_ && (dwLockFlags & TS_LF_SYNC) &&
+    if ((deny_next_write_ || GetTickCount64() < deny_write_until_) && (dwLockFlags & TS_LF_SYNC) &&
         (dwLockFlags & TS_LF_READWRITE) == TS_LF_READWRITE) {
       deny_next_write_ = false;
       *phrSession = TS_E_SYNCHRONOUS;
@@ -597,6 +597,7 @@ class DocumentStore final : public ITextStoreACP,
   // --- Test-harness accessors -------------------------------------------
   std::wstring BufferSnapshot() const { return buffer_; }
   void DenyNextWrite() { deny_next_write_ = true; }
+  void DenyWrites(DWORD ms) { deny_write_until_ = GetTickCount64() + ms; }
   void ApplicationClear() {
     const LONG previous = static_cast<LONG>(buffer_.size());
     buffer_.clear();
@@ -656,6 +657,7 @@ class DocumentStore final : public ITextStoreACP,
   }
 
   bool deny_next_write_ = false;
+  ULONGLONG deny_write_until_ = 0;
   LONG ref_count_ = 1;
   HWND hwnd_ = nullptr;
   std::wstring buffer_;
@@ -759,6 +761,9 @@ struct KeyEvent {
 
 bool TokenToKey(const std::wstring& token, KeyEvent* out) {
   if (token == L"BRACKET") { *out = KeyEvent{VK_OEM_4, false, false}; return true; }
+  if (token == L"SSPACE") { *out = KeyEvent{VK_SPACE, true, false}; return true; }
+  if (token == L"PGUP") { *out = KeyEvent{VK_PRIOR, false, false}; return true; }
+  if (token == L"PGDN") { *out = KeyEvent{VK_NEXT, false, false}; return true; }
   if (token == L"SPACE") { *out = KeyEvent{VK_SPACE, false, false}; return true; }
   if (token == L"ENTER") { *out = KeyEvent{VK_RETURN, false, false}; return true; }
   if (token == L"BS") { *out = KeyEvent{VK_BACK, false, false}; return true; }
@@ -1148,17 +1153,57 @@ HRESULT SetKeyboardOpen(ITfThreadMgr* thread_mgr, TfClientId client_id,
 }
 
 #include "inline_context_alias.h"
+#include "../src/state_mirror.h"
 
 void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
                ITfThreadMgr* thread_mgr, TfClientId client_id,
                ITfContext* const contexts[2], DocumentStore* const stores[2],
                ITfDocumentMgr* const documents[2],
                const std::wstring& script) {
+  struct HeldMirror {
+    HANDLE map = nullptr, writer = nullptr; NativeStateMirror* view = nullptr; LONG sequence = 0;
+    void Clear() {
+      if (view) { ReleaseStateMirror(view, sequence, writer); UnmapViewOfFile(view); view = nullptr; }
+      if (map) { CloseHandle(map); map = nullptr; }
+      if (writer) { CloseHandle(writer); writer = nullptr; }
+    }
+    ~HeldMirror() { Clear(); }
+  } held;
   std::wstringstream stream(script);
   std::wstring token;
   size_t active = 0;
   bool alias_next = false;
   while (stream >> token) {
+    if (token == L"MIRRORUNLOCK") { held.Clear(); std::printf("MIRROR unlocked=1\n"); continue; }
+    if (token == L"MIRRORLOCK") {
+      wchar_t pipe[256]{}; const DWORD n = GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", pipe, 256);
+      if (!n || n >= 256 || held.view) { std::printf("MIRROR lock_failed=1\n"); continue; }
+      held.map = OpenFileMappingW(FILE_MAP_WRITE, FALSE, NativeStateMirrorName(pipe).c_str());
+      auto* view = held.map ? static_cast<NativeStateMirror*>(MapViewOfFile(held.map, FILE_MAP_WRITE, 0, 0, sizeof(NativeStateMirror))) : nullptr;
+      held.writer = OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, (NativeStateMirrorName(pipe) + L"-writer").c_str());
+      if (!view || !TryOwnStateMirror(view, &held.sequence, held.writer)) {
+        if (view) UnmapViewOfFile(view); held.Clear(); std::printf("MIRROR lock_failed=1\n"); continue;
+      }
+      held.view = view; std::printf("MIRROR locked=1\n"); continue;
+    }
+    if (token == L"MIRROR") {
+      wchar_t pipe[256]{};
+      const DWORD n = GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", pipe, 256);
+      if (!n || n >= 256) { std::printf("MIRROR unavailable=pipe\n"); continue; } // Private test only.
+      std::wstring suffix(pipe);
+      for (auto& c : suffix) if (c == L'\\' || c == L'/') c = L'_';
+      const auto name = L"Local\\ddskk-ime-state-v1-" + suffix;
+      HANDLE map = OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
+      struct Mirror { volatile LONG sequence; char line[8192]; };
+      const auto* view = map ? static_cast<const Mirror*>(MapViewOfFile(map, FILE_MAP_READ, 0, 0, sizeof(Mirror))) : nullptr;
+      if (!view) { if (map) CloseHandle(map); std::printf("MIRROR unavailable=mapping\n"); continue; }
+      const LONG before = view->sequence;
+      char line[8192]{}; memcpy(line, view->line, sizeof(line)-1); MemoryBarrier();
+      const LONG after = view->sequence;
+      std::printf("MIRROR stable=%d line=%s\n", before == after && !(after & 1), line);
+      UnmapViewOfFile(view); CloseHandle(map);
+      continue;
+    }
     if (token == L"KEYSTATE:SHIFT" || token == L"KEYSTATE:CLEAR") {
       BYTE ambient[256]{};
       ambient[VK_SHIFT] = token == L"KEYSTATE:SHIFT" ? 0x80 : 0;
@@ -1299,6 +1344,9 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
         std::printf("TEST_KILL token=%s parent=%lu target=0 success=0\n", Utf8FromWide(token).c_str(), parent_pid);
         std::exit(1);
       }
+    } else if (token.starts_with(L"DENYWRITES") && token.size() > 10) {
+      const auto ms = wcstoul(token.c_str() + 10, nullptr, 10);
+      if (ms && ms <= 10000) stores[active]->DenyWrites(ms);
     } else if (token == L"DENYWRITE") {
       stores[active]->DenyNextWrite();
     } else if (token == L"APPCLEAR") {
