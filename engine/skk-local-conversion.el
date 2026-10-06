@@ -37,6 +37,18 @@
               '((ddskk-user-jisyo-search) (ddskk-engine-server-search)))
        (eq skk-update-jisyo-function 'ddskk-user-jisyo--update)
        (not ddskk-user-jisyo-learning-disabled)
+       ;; The native menu follows stock's first four, then seven candidates.
+       ;; Session transport sets 1000000 to disable Emacs's interactive menu;
+       ;; this is not a companion/native menu preference.
+       (or (not (boundp 'skk-show-candidates-nth-henkan-char))
+           (memq skk-show-candidates-nth-henkan-char '(5 1000000)))
+       (or (not (boundp 'skk-henkan-number-to-display-candidates))
+           (equal skk-henkan-number-to-display-candidates 7))
+       (or (not (boundp 'skk-henkan-show-candidates-keys))
+           (equal (list (nth 0 skk-henkan-show-candidates-keys) (nth 1 skk-henkan-show-candidates-keys)
+                        (nth 2 skk-henkan-show-candidates-keys) (nth 3 skk-henkan-show-candidates-keys)
+                        (nth 4 skk-henkan-show-candidates-keys) (nth 5 skk-henkan-show-candidates-keys)
+                        (nth 6 skk-henkan-show-candidates-keys)) '(97 115 100 102 106 107 108)))
        (not (and (boundp 'skk-search-end-function) skk-search-end-function))
        (not (and (boundp 'skk-search-hook) skk-search-hook))
        (not (and (boundp 'skk-kakutei-hook) skk-kakutei-hook))))

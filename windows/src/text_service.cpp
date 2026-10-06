@@ -319,6 +319,18 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
     service->FlushModeIndicator();
     return 0;
   }
+  if (message == WM_TIMER && wparam == 4 && service != nullptr) {
+    if (!service->local_observer_retry_ || !service->local_enabled_ ||
+        GetTickCount64() >= service->local_observer_deadline_ ||
+        service->local_store_.PublishState(*service->local_observer_retry_, false)) {
+      service->local_observer_retry_.reset(); KillTimer(window, 4);
+    }
+    return 0;
+  }
+  if (message == WM_TIMER && wparam == 3 && service != nullptr) {
+    service->RetryLocalConversion();
+    return 0;
+  }
   if (message == WM_TIMER && wparam == 2 && service != nullptr) {
     // Failed core replacement has no ABI resume notification. Resume only
     // after the shim stops requesting quiescence; never compete with its swap.
@@ -366,6 +378,9 @@ bool TextService::CreateProviderWindow() {
 }
 
 bool TextService::BeginProviderConversion(const std::u32string& keys, bool registration) {
+  CancelLocalRetry();
+  local_observer_retry_.reset();
+  local_store_.ReleaseState();
   if (keys.empty() || provider_window_ == nullptr) return false;
   if (okuri_handoff_active_) okuri_handoff_keys_ = realtime_frontend_.raw_keys();
   provider_cleanup_pending_ = false;
@@ -425,6 +440,7 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
 
 bool TextService::BeginProviderControl(ddskk::EngineControl control,
                                        bool apply_state) {
+  if (apply_state) { local_observer_retry_.reset(); local_store_.ReleaseState(); }
   if (provider_window_ == nullptr) return false;
   DWORD test_failure_delay = 0;
   // Copy the authoritative candidate and reading before the worker starts.
@@ -567,6 +583,7 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
 }
 
 bool TextService::BeginProviderKey(char32_t key, bool may_convert) {
+  local_observer_retry_.reset(); local_store_.ReleaseState();
   if (provider_window_ == nullptr) return false;
   if (may_convert && realtime_frontend_.okuri_started()) {
     if (!okuri_handoff_active_) okuri_handoff_retry_ = false;
@@ -612,6 +629,7 @@ bool TextService::BeginProviderKey(char32_t key, bool may_convert) {
 }
 
 bool TextService::BeginProviderKeys(const std::u32string& keys, bool sync) {
+  local_observer_retry_.reset(); local_store_.ReleaseState();
   if (keys.empty() || provider_window_ == nullptr) return false;
   if (sync && realtime_frontend_.okuri_started() &&
       (okuri_handoff_active_ || !provider_composition_active_)) {
@@ -1175,6 +1193,9 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
 }
 
 HRESULT TextService::Deactivate() {
+  CancelLocalRetry();
+  local_observer_retry_.reset();
+  local_store_.ReleaseState();
   local_store_.Stop();
   local_conversion_.Reset();
   ClearInlineEpisode();
@@ -1503,6 +1524,9 @@ bool TextService::WouldClaimKey(WPARAM wparam, bool composing) const {
            wparam == VK_HOME || wparam == VK_END ||
            wparam == VK_F6 || wparam == VK_F7;
   }
+  if (local_conversion_.active() && ((wparam == 'P' && control_down) ||
+      (!control_down && (wparam == VK_UP || wparam == VK_DOWN || wparam == VK_PRIOR || wparam == VK_NEXT ||
+                       wparam == VK_HOME || wparam == VK_END)))) return true;
   if (wparam == 'G' && control_down) return composing;
   // Ctrl+J is handled before this predicate by both key callbacks and
   // Ctrl+G was handled immediately above.  Never reinterpret any other
@@ -1551,8 +1575,8 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
     debug_exit(-1, -1);
     return S_OK;
   }
-  const bool realtime_claim = !provider_composition_active_ &&
-      last_engine_mode_ != L"candidate" && !registration_mode_;
+  const bool realtime_claim = local_conversion_.active() || local_conversion_retry_ || (!provider_composition_active_ &&
+      last_engine_mode_ != L"candidate" && !registration_mode_);
   if (ctrl_j && !registration_mode_ && realtime_claim) {
     *eaten = TRUE;
     debug_exit(-1, -1);
@@ -2006,6 +2030,8 @@ void TextService::LoadSettings() {
       (application_local_conversion_ >= 0 ? application_local_conversion_ == 1 : local == 1);
   if (local_enabled_) {
     try { local_store_.Start(); SetTimer(provider_window_, 2, 50, nullptr); } catch (...) { local_enabled_ = false; }
+  } else {
+    CancelLocalRetry(); local_observer_retry_.reset(); local_store_.ReleaseState();
   }
   ddskk_engine_ = engine_id_ != "passthrough";
   realtime_frontend_.SetContinuousPreedit(engine_id_ != "ddskk");
@@ -2212,6 +2238,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
    * application untouched.  Previously direct KeyDown still translated a
    * digit/punctuation character and sent it to DDSKK, despite TestKeyDown
    * having declined it, so those ordinary editor keys disappeared. */
+  if (local_conversion_retry_) {
+    RetryLocalConversion(); CancelLocalRetry();
+    if (local_conversion_.active() && wparam == VK_SPACE && !ShiftDown()) {
+      *eaten = TRUE; branch = L"local-convert-retry"; state = local_conversion_.State();
+      debug_exit(*eaten); return S_OK;
+    }
+  }
   const bool control_down = tested_control_down_ || ControlDown();
   const bool ctrl_j = wparam == 'J' && control_down;
   const bool ctrl_g = wparam == 'G' && control_down;
@@ -2289,8 +2322,27 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       debug_exit(*eaten); return S_OK;
     }
     const auto key = !control_down ? TranslateKey(wparam, lparam) : std::optional<char32_t>{};
-    if (wparam == VK_SPACE || wparam == VK_RIGHT) {
-      if (local_conversion_.Next()) {
+    if ((wparam == VK_SPACE && ShiftDown()) || wparam == VK_LEFT || wparam == VK_UP ||
+        (control_down && wparam == 'P') || (key && *key == U'x')) {
+      if ((wparam == VK_LEFT || wparam == VK_UP) ? local_conversion_.Previous() : local_conversion_.PreviousMenu()) state = local_conversion_.State();
+      else { state = realtime_frontend_.okuri_started() ? realtime_frontend_.CancelOkuri() : realtime_frontend_.RestorePreedit(); local_conversion_.Reset(); }
+      apply(*state);
+      debug_exit(*eaten); return S_OK;
+    }
+    if (wparam == VK_HOME || wparam == VK_END || wparam == VK_PRIOR || wparam == VK_NEXT) {
+      const auto selected = static_cast<size_t>(local_conversion_.State().candidate_index);
+      const size_t page = selected < 4 ? 0 : 4 + (selected - 4) / 7 * 7;
+      size_t target = wparam == VK_HOME ? 0 : wparam == VK_END ? local_conversion_.State().candidates.size() - 1
+          : wparam == VK_PRIOR ? (page >= 11 ? page - 7 : page ? 3 : 0) : page ? page + 7 : 4;
+      // Materialize a next source frontier at most once, without an RPC.
+      if (wparam == VK_END || target >= local_conversion_.State().candidates.size()) local_conversion_.Materialize();
+      target = std::min(target, local_conversion_.State().candidates.size() - 1);
+      if (wparam == VK_END) target = local_conversion_.State().candidates.size() - 1;
+      local_conversion_.Select(target); apply(local_conversion_.State());
+      debug_exit(*eaten); return S_OK;
+    }
+    if (wparam == VK_SPACE || wparam == VK_RIGHT || wparam == VK_DOWN) {
+      if (wparam == VK_SPACE ? local_conversion_.NextMenu() : local_conversion_.Next()) {
         state = local_conversion_.State();
         apply(*state);
       } else {
@@ -2303,11 +2355,19 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       }
       debug_exit(*eaten); return S_OK;
     }
-    if (wparam == VK_LEFT || (key && *key == U'x')) {
-      if (local_conversion_.Previous()) state = local_conversion_.State();
-      else { state = realtime_frontend_.okuri_started() ? realtime_frontend_.CancelOkuri() : realtime_frontend_.RestorePreedit(); local_conversion_.Reset(); }
-      apply(*state);
-      debug_exit(*eaten); return S_OK;
+    if (key && local_conversion_.State().candidate_index >= 4) {
+      const std::u32string choices = U"asdfjkl";
+      const size_t slot = choices.find(*key);
+      if (slot != choices.npos) {
+        const size_t selected = local_conversion_.State().candidate_index;
+        const size_t target = 4 + (selected - 4) / 7 * 7 + slot;
+        if (local_conversion_.Select(target)) {
+          const HRESULT hr = CommitLocal(context);
+          if (FAILED(hr)) local_conversion_ = saved_conversion;
+          debug_exit(*eaten, hr, hr); return S_OK;
+        }
+        debug_exit(*eaten); return S_OK;
+      }
     }
     if (wparam == VK_RETURN || ctrl_j) {
       const HRESULT hr = CommitLocal(context);
@@ -2666,7 +2726,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
           branch = L"local-convert";
           state = local_conversion_.State();
           const HRESULT hr = ApplyLocalState(context, *state);
-          if (FAILED(hr)) local_conversion_.Reset();
+          if (FAILED(hr)) ScheduleLocalRetry();
           *eaten = TRUE;
           if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
             std::printf("SPACE-CANDIDATE ms=%llu seq=%llu path=local\n",
@@ -3041,6 +3101,8 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   // holds the latest engine state, regardless of which branch produced
   // it. This never influences *eaten, which was already decided above.
   MaybeShowModeIndicator(context, &*state);
+  if (local_enabled_ && SUCCEEDED(request) && SUCCEEDED(edit_result) &&
+      !provider_composition_active_ && !provider_pending_.load()) PublishLocalObserver(*state);
   return S_OK;
 }
 
@@ -3064,6 +3126,8 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
 // OnKeyDown failure path that abandons a composition, from
 // OnCompositionTerminated(), and from Deactivate().
 void TextService::ResetAbandonedComposition() {
+  CancelLocalRetry();
+  local_store_.ReleaseState();
   local_conversion_.Reset();
   ClearInlineEpisode();
   // Do not send RESET here.  This callback can arrive late from an old
@@ -3161,6 +3225,8 @@ void TextService::ForceCancelComposition(ITfContext* context) {
 }
 
 void TextService::SettleContextComposition(ITfContext* context) {
+  CancelLocalRetry();
+  local_observer_retry_.reset();
   const bool local_committed = local_conversion_.active() && SUCCEEDED(CommitLocal(context));
   local_conversion_.Reset();
   if (!local_committed && inline_epoch_ && context) {
@@ -3331,7 +3397,7 @@ void TextService::UpdateCandidateUI(ITfContext* context,
   candidate_count_ = state.candidates.size();
   ITfDocumentMgr* document = nullptr;
   context->GetDocumentMgr(&document);
-  if (candidate_ui_ != nullptr) candidate_ui_->Update(state, document);
+  if (candidate_ui_ != nullptr) candidate_ui_->Update(state, document, local_conversion_.active());
   if (document != nullptr) document->Release();
   if (candidate_ui_ != nullptr) {
     if (candidate_ui_id_ == TF_INVALID_UIELEMENTID) {
@@ -3424,7 +3490,53 @@ HRESULT TextService::ApplyLocalState(ITfContext* context, const ddskk::EngineSta
   kana_mode_ = ddskk::DeriveKanaMode(state);
   UpdateCandidateUI(context, state);
   MaybeShowModeIndicator(context, &state);
+  if (local_enabled_) PublishLocalObserver(state);
   return S_OK;
+}
+
+void TextService::PublishLocalObserver(const ddskk::EngineState& state) {
+  if (local_store_.PublishState(state)) {
+    local_observer_retry_.reset(); if (provider_window_) KillTimer(provider_window_, 4);
+  } else {
+    local_observer_retry_ = state;
+    local_observer_deadline_ = GetTickCount64() + 5000;
+    if (provider_window_) SetTimer(provider_window_, 4, 50, nullptr);
+  }
+}
+void TextService::CancelLocalRetry() {
+  local_conversion_retry_.reset(); local_retry_deadline_ = 0;
+  if (provider_window_) KillTimer(provider_window_, 3);
+}
+void TextService::ScheduleLocalRetry() {
+  local_conversion_retry_ = local_conversion_;
+  local_conversion_.Reset();
+  local_retry_deadline_ = GetTickCount64() + 5000;
+  if (provider_window_) SetTimer(provider_window_, 3, 50, nullptr);
+}
+void TextService::RetryLocalConversion() {
+  if (!local_conversion_retry_) return;
+  struct RetryTrace {
+    LARGE_INTEGER start{};
+    RetryTrace() { QueryPerformanceCounter(&start); }
+    ~RetryTrace() {
+      if (!GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) return;
+      LARGE_INTEGER end{}, frequency{}; QueryPerformanceCounter(&end); QueryPerformanceFrequency(&frequency);
+      std::printf("LOCAL_RETRY total_us=%llu\n", static_cast<unsigned long long>((end.QuadPart - start.QuadPart) * 1000000 / frequency.QuadPart));
+    }
+  } trace;
+  if (!active_context_ || !keyboard_open_ || !realtime_frontend_.preedit() ||
+      GetTickCount64() >= local_retry_deadline_) {
+    if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
+      std::printf("LOCAL_EDIT abandoned=1 pending=0\n");
+    CancelLocalRetry(); return;
+  }
+  local_conversion_ = *local_conversion_retry_;
+  const HRESULT hr = ApplyLocalState(active_context_, local_conversion_.State());
+  if (SUCCEEDED(hr)) {
+    CancelLocalRetry();
+    if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
+      std::printf("LOCAL_EDIT recovered=1 pending=0\n");
+  } else local_conversion_.Reset();
 }
 
 HRESULT TextService::CommitLocal(ITfContext* context) {
@@ -4050,6 +4162,8 @@ bool TextService::CoreQuiescent() const {
       (candidate_ui_id_ != TF_INVALID_UIELEMENTID ? 256 : 0) |
       (!ending_compositions_.empty() ? 512 : 0) |
       (local_conversion_.active() ? 1024 : 0) |
+      (local_conversion_retry_ ? 2048 : 0) |
+      (local_observer_retry_ ? 4096 : 0) |
       (static_cast<uint64_t>(refs) << 16);
   wchar_t diagnostics[2]{};
   if (flags != quiescence_trace_ && GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", diagnostics, 2)) {

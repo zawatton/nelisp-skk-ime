@@ -19,7 +19,7 @@ def main():
     p = argparse.ArgumentParser()
     for name in ('dll', 'core', 'tsf-host', 'engine-host', 'runtime', 'artifacts'):
         p.add_argument('--' + name, required=True)
-    p.add_argument('--case', choices=('inline', 'missing', 'wrong', 'drop', 'emacs', 'pair', 'pair-legacy', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri'), default='inline')
+    p.add_argument('--case', choices=('inline', 'missing', 'wrong', 'drop', 'emacs', 'pair', 'pair-legacy', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation'), default='inline')
     p.add_argument('--context-alias', action='store_true',
                    help='Deliver the vowel through a context tear-off with the same COM identity')
     p.add_argument('--selection-unavailable', action='store_true',
@@ -75,7 +75,7 @@ def main():
                 return
             while not done.is_set() and not pidfile.exists():
                 time.sleep(.02)
-            if done.is_set() or args.case in ('missing', 'emacs', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri'):
+            if done.is_set() or args.case in ('missing', 'emacs', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation'):
                 return
             pid = int(pidfile.read_text())
             published_token = 'f' * 32 if args.case == 'wrong' else token
@@ -131,6 +131,15 @@ def main():
                   'K a SPACE SETTLE8000 n '
                   + ('SETTLE8000 CONTEXTALIAS ' if args.context_alias else '')
                   + 'u SETTLE8000 WAIT500')
+    if args.case == 'emacs-navigation':
+        assert args.local_conversion, 'Navigation case requires local ownership'
+        script = ('WAIT2500 K a n a DENYWRITE SPACE WAIT200 SETTLE8000:FIRST MIRROR '
+                  'SPACE WAIT100 x WAIT100 SPACE SSPACE WAIT100 SPACE CTRLP WAIT100 '
+                  'PGDN WAIT100 PGDN WAIT100 PGUP WAIT100 UP WAIT100 DOWN WAIT100 '
+                  'HOME x WAIT100 SPACE ENTER WAIT100 '
+                  'K a n j i DENYWRITE SPACE WAIT200 SETTLE8000:NEW ENTER WAIT6500 '
+                  'T e i k o u c h i DENYWRITE SPACE WAIT200 SETTLE8000:PUBLISHED ENTER '
+                  'T e i k o u t i SPACE ENTER SETTLE8000:END WAIT500')
     if args.case == 'emacs-okuri':
         assert args.local_conversion, 'Okuri inline case requires local ownership'
         script = ('WAIT2500 K WAIT100 a WAIT100 K WAIT100 u WAIT300 '
@@ -186,6 +195,14 @@ def main():
         rules.write_text('width = hankaku\nauto-pair = yes\n[pairs-hankaku]\n[ = ' + pair + '\n',
                          encoding='utf-8')
         env['NELISP_IME_INPUT_RULES'] = str(rules)
+    if args.case == 'emacs-navigation':
+        source = directory / 'shared.utf8'
+        source.write_text('かな /仮名/佳奈/加奈/可奈/哉/金/香奈/花菜/奏/叶/華奈/河南/\n'
+                          'かんじ /漢字/幹事/感じ/\nていこうち /抵抗値/\n', encoding='utf-8')
+        personal = directory / 'personal.utf8'
+        personal.write_text('ていこうち /抵抗値/\nおーむ /Ω/\nていこうち /抵抗値/\n', encoding='utf-8')
+        env['DDSKK_DICTIONARY_FILES'] = str(personal) + ';' + str(source)
+        env['NATIVEIME_TEST_LOCAL_WORKER_STALL_MS'] = '5000'
     if args.case == 'emacs-okuri':
         env['DDSKK_DICTIONARY_FILES'] = str(root / 'windows/test-host/data/okuri-jisyo.utf8')
     try:
@@ -195,7 +212,7 @@ def main():
             observer = subprocess.Popen([os.sys.executable,
                 str(root / 'windows/test-host/candidate-window-observer.py'),
                 str(directory), str(artifacts), caret_map])
-        if args.case in ('emacs', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri'):
+        if args.case in ('emacs', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation'):
             # Same prefix required for every PowerShell launch of Emacs.
             emacs_command = "$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L emacs -l windows/test-host/inline-emacs-subscriber.el"
             emacs = subprocess.Popen(['powershell', '-NoProfile', '-Command', emacs_command], cwd=root, env=env)
@@ -240,6 +257,19 @@ def main():
     assert not errors, errors
     assert 'UnknownToken' not in host_text, 'Invalid test script'
     assert 'exited=True' in output, 'Harness did not confirm owned process cleanup'
+    if args.case == 'emacs-navigation':
+        assert 'AFTER END BUF=[仮名漢字抵抗値抵抗値] SEL=10,10 COMP=-' in host_text, host_text[-4000:]
+        assert 'LOCAL_EDIT recovered=1' in host_text and 'branch=local-convert' in host_text
+        assert 'branch=provider-queue' not in host_text and 'branch=provider-convert' not in host_text
+        rendered = (directory / 'emacs.log').read_text(encoding='utf-8')
+        for text in ('▽かな', '▼仮名', '▼佳奈', '▼哉', '▼河南', '▼可奈', '▼漢字', '▼抵抗値'):
+            assert text in rendered, (text, rendered)
+        assert 'BUFFER_UNCHANGED=t' in rendered and emacs.returncode == 0
+        assert 'COMPOSITION START' not in host_text
+        times = [int(value) for value in re.findall(r'^KEYLAT token=\S+ .*total_us=(\d+) claimed=1', host_text, re.MULTILINE)]
+        assert times and max(times) <= 25000, times
+        print(f'PASS real Emacs local navigation checkpoints=8 final_units=10 callbacks={len(times)} max_us={max(times)} cleanup=confirmed')
+        return
     if args.case == 'emacs-okuri':
         assert 'AFTER END BUF=[掛く買った死んだ掛く買うぬ] SEL=13,13 COMP=-' in host_text, host_text[-4000:]
         assert 'branch=local-okuri-convert' in host_text
