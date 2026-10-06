@@ -30,8 +30,11 @@ class Store {
   bool Available() const;
   bool PublishState(const EngineState& state, bool claim = true);
   void ReleaseState();
+  uint64_t SpoolWritesForDiagnostics() const { return spool_writes_.load(); }
+  uint64_t MappingOpensForDiagnostics() const { return mapping_opens_.load(); }
  private:
   void Run();
+  void Persist(const std::filesystem::path& path, const std::deque<Learning>& queue);
   struct Published {
     std::shared_ptr<const Index> index;
     std::deque<Learning> pending;
@@ -43,6 +46,11 @@ class Store {
   // by Capture/Learn or any key/edit callback.
   std::array<std::optional<Learning>, 256> inbound_;
   std::atomic<uint64_t> written_{0}, consumed_{0}, persisted_{0};
+  std::atomic<uint64_t> spool_writes_{0};
+  std::atomic<uint64_t> mapping_opens_{0};
+  // Worker-owned; retained across Start/Stop so restarting an unchanged
+  // queue (including an empty queue) does not republish its spool.
+  std::string durable_spool_;
   std::deque<Learning> ui_pending_;
   std::deque<Learning> restart_pending_;
   std::mutex wait_mutex_;
