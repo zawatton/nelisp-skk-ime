@@ -2264,3 +2264,43 @@ none remain. Existing user/coordinator processes were left alone. Changes are
 unstaged; the git index remains untouched. Claude still needs to run all blocked
 gates, including the new test-local-key-refusal.ps1 and the full edit-recovery
 script with the real dictionary, in its registry-enabled environment.
+
+* EG1: can a fast engine replace local conversion? (2026-10-07)
+Keep local conversion for the certified dictionary cases, and improve the
+engine for fallback, full DDSKK behavior and learning. A faster engine would
+reduce fallback latency; it does not currently remove the value of local.
+
+On base 8e022fa, private raw-key replay reproduced plain p50 111 ms and okuri
+127 ms. The final unprofiled run measured a minimal metadata round trip at
+15.8 ms, same-session no-op at 15.9 ms, and already-fed Space at 88.0 ms
+(first four) / 87.0 ms (eight learned). An earlier run was ~64 ms for the
+combined persistent-Space/candidate-next group. These are implementation
+floors/observations, not a physical lower limit for cross-process IPC.
+Host polling, interpreter work and synchronous relay still cost time even
+when actual indexed lookup is ~0.01 ms. A synthetic loopback TCP query took
+~0.13 ms; engine-side relay observation was ~14 ms in the earlier profile.
+
+The shared engine also exposes every app to another app's transaction:
+explicit GC took roughly 143--371 ms in profiled runs, and a second client's
+otherwise small request waited 159--192 ms behind GC. Learning commit was
+~63--79 ms across measured runs. Fast average search does not bound those tails.
+Local conversion's existing ~1 ms path avoids that cross-process/shared-mutex
+barrier for certified hits, while retaining the engine as the authority.
+
+Safe sanitation optimization improved a long-reply parser by 32% (slash)
+and 39% (LIST) in alternating A/B samples. It did not establish an overall
+plain conversion speedup. Prioritize eliminating replay, unnecessary relay
+round trips and per-key state encoding, then interpreter/AOT and GC isolation.
+Existing stock search already defers the server after a user-dictionary hit;
+the host already skips skkserv after a built-in hit. Do not sacrifice candidate
+coverage by globally disabling sources. Reconsider removing local only after
+measuring low single-digit Space and bounded tails under multiple apps with
+learning and GC active. That engine has not been demonstrated here.
+
+Full phase tables, changes, exact commands, tails and limitations are in
+[[file:../../docs/design/local-first-conversion.org::*EG1: engine conversion latency investigation (2026-10-07)][EG1 design report]].
+Engine ERT: 30/30 plus stock oracle 9/9, stock input 6/6 and reload 1/1;
+framework/lattice: 31/31 and 14/14. NeLisp reader/sanitation/replay/checkpoint
+and encoding-cache checks pass. CTest: all ten wrappers blocked by sandbox
+private-registry denial; nine applicable direct executables passed. No live
+settings, personal dictionary, ABI or core files changed; changes unstaged.
