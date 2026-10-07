@@ -479,6 +479,80 @@ int main(int argc, char** argv) {
       Check(rows == 18, "LF3 stock corpus count");
       std::cout << "Stock DDSKK LF3 oracle 18 readings/order/commits PASS\n";
     }
+    {
+      const auto file = root / "server-tier.utf8";
+      File(file, "kana /file/duplicate/\n");
+      Publish(root / "server-tier", {file}, "kana /user/\n", rules, 3);
+      Conversion value; Check(value.Begin(OpenPublished(root / "server-tier"), L"kana"), "server-tier begin");
+      Check(value.State().candidates == std::vector<std::wstring>{L"user"}, "user immediately before files");
+      Check(value.UpdateServer({L"duplicate", L"extra", L"user"}), "publish server reply");
+      Check(value.State().candidates == std::vector<std::wstring>{L"user", L"file", L"duplicate", L"extra"}, "user file server stock order dedup");
+      Check(value.State().candidate_index == 0, "server update preserves selection");
+      Check(value.Select(3) && value.Commit().text == L"extra", "server candidate commit identity");
+      Check(value.Begin(OpenPublished(root / "server-tier"), L"kana"), "config toggle begin");
+      value.UpdateServer({L"extra"}); value.Select(3);
+      Check(value.UpdateServer({}), "config disable removes server tier");
+      Check(value.State().candidates.size() == 3 && value.State().candidate_index == 2, "toggle retains file candidates and valid selection");
+    }
+    // Exercise the real core metadata worker over a private pipe, including
+    // reply certification and shutdown. No registry or engine is involved.
+    for (bool unsafe : {false, true}) {
+      const auto server_name = std::wstring(LR"(\\.\pipe\NativeIME-test-sk1-core-)") + std::to_wstring(GetCurrentProcessId()) + (unsafe ? L"-unsafe" : L"-plain");
+      SetEnvironmentVariableW(L"DDSKK_PIPE_NAME", server_name.c_str());
+      HANDLE server_pipe = CreateNamedPipeW(server_name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+          PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, 1, 8192, 8192, 0, nullptr);
+      HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+      Check(server_pipe != INVALID_HANDLE_VALUE && event, "private core pipe resources created");
+      OVERLAPPED connect{}; connect.hEvent = event;
+      const bool connected = ConnectNamedPipe(server_pipe, &connect) != FALSE;
+      const auto connect_error = connected ? ERROR_SUCCESS : GetLastError();
+      Store worker; worker.Start(); worker.RequestServer(L"kana");
+      Check(connected || connect_error == ERROR_PIPE_CONNECTED ||
+          (connect_error == ERROR_IO_PENDING && WaitForSingleObject(event, 3000) == WAIT_OBJECT_0), "core server worker connects privately");
+      const auto exchange = [&](bool write, void* data, DWORD size) {
+        OVERLAPPED operation{}; operation.hEvent = event; ResetEvent(event); DWORD count = 0;
+        BOOL ok = write ? WriteFile(server_pipe, data, size, &count, &operation) : ReadFile(server_pipe, data, size, &count, &operation);
+        if (!ok && GetLastError() == ERROR_IO_PENDING) {
+          if (WaitForSingleObject(event, 1000) == WAIT_OBJECT_0) ok = GetOverlappedResult(server_pipe, &operation, &count, FALSE);
+          else { CancelIoEx(server_pipe, &operation); GetOverlappedResult(server_pipe, &operation, &count, TRUE); }
+        }
+        return ok ? count : 0;
+      };
+      char request[256]{}; const auto count = exchange(false, request, sizeof(request));
+      Check(std::string(request, count) == "LOCAL SERVER 00006b00006100006e000061 -", "core sends reading and okuri cache key");
+      std::string response = unsafe ? "SERVER 1/(concat a b)/" : "SERVER 1/extra/";
+      Check(exchange(true, response.data(), static_cast<DWORD>(response.size())) == response.size(), "core fixture reply delivered");
+      std::shared_ptr<const ServerReply> result;
+      for (unsigned n = 0; n < 100; ++n) { result = worker.Server(L"kana"); if (result && result->ready) break; Sleep(10); }
+      worker.Stop(); CloseHandle(event); CloseHandle(server_pipe);
+      Check(result && result->ready && result->supported == !unsafe &&
+          (unsafe ? result->candidates.empty() : result->candidates == std::vector<std::wstring>{L"extra"}), "core certifies replies without evaluating expressions");
+    }
+    wchar_t oracle_path[1024]{};
+    if (GetEnvironmentVariableW(L"SK1_STOCK_ORACLE", oracle_path, 1024)) {
+      const auto oracle_dir = std::filesystem::path(oracle_path).parent_path();
+      auto read = [](const auto& path) { std::ifstream file(path, std::ios::binary); return std::string(std::istreambuf_iterator<char>(file), {}); };
+      std::ifstream oracle(oracle_path); std::string key, list; unsigned rows = 0;
+      while (oracle >> key >> list) {
+        Publish(root / "stock-server", {oracle_dir / "sk1-files.utf8"},
+            read(oracle_dir / (rows < 2 ? "sk1-user.utf8" : "sk1-learned.utf8")), rules, 3);
+        auto index = OpenPublished(root / "stock-server");
+        const auto reading = Unhex(key); auto entry = index->Lookup(reading);
+        auto words = entry.user; Union(words, entry.shared);
+        const std::vector<std::wstring> server = reading == L"かな"
+            ? std::vector<std::wstring>{L"仮名", L"serverExtra"} : std::vector<std::wstring>{L"serverOnly"};
+        Union(words, server);
+        Check(Wide(SerializeCandidates(words)) == Unhex(list), "SK1 stock source order and learning");
+        Conversion value;
+        if (value.Begin(index, reading)) {
+          value.UpdateServer(server);
+          Check(value.State().candidates == words, "SK1 conversion stock vector");
+        } else Check(entry.user.empty() && entry.shared.empty(), "SK1 server-only uses bounded provider barrier");
+        ++rows;
+      }
+      Check(rows == 4, "SK1 stock rows complete");
+      std::cout << "PASS SK1 stock oracle rows=4 readings=2 learning=1\n";
+    }
     std::cout << "PASS local conversion " << checks << " checks (4 corrupt/source negative controls)\n";
     return 0;
   } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; return 1; }

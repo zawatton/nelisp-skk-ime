@@ -33,6 +33,9 @@
 #include <atomic>
 #include <fstream>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <map>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -561,11 +564,8 @@ struct DictionaryServerConfig {
   // twice, and the engine's own NeLisp heap cannot hold a multi-MB
   // dictionary (its semispace GC copies all live data; pauses would reach
   // seconds), so the dictionary belongs here, in the host. When set,
-  // LookupDictionary() merges candidates from every configured file
-  // (SKK semantics: union across files, not first-file-wins) and only
-  // ever falls through to the external server for words none of them
-  // have -- see LoadBuiltinDictionariesThread()/MergeBuiltinCandidates()
-  // below. Env DDSKK_DICTIONARY_FILES takes precedence over
+  // LookupDictionary() merges all files, then the external server, using
+  // stock candidate union order. Network work belongs to ServerCache. Env DDSKK_DICTIONARY_FILES takes precedence over
   // HKCU\Software\NativeIME\DictionaryFiles, same env-first pattern as
   // start_command above.
   std::wstring dictionary_files;
@@ -949,11 +949,8 @@ void CloseDictionarySocket() {
 
 // Resolves and connects to the configured dictionary server. Returns
 // INVALID_SOCKET on any failure (bad hostname, connection refused, etc.).
-// Note: connect() itself is not bounded by the SO_RCVTIMEO/SO_SNDTIMEO set
-// below (those only cover send()/recv() after the connection is up), so a
-// server whose TCP stack accepts SYNs but never completes the handshake
-// could still stall for the OS-level connect timeout; the intended target
-// is a local/LAN skkserv, where that is not expected to happen in practice.
+// TCP connect is bounded to 150ms per resolved address. Name resolution
+// belongs to the background worker, never an input callback.
 SOCKET ConnectDictionaryServer(const DictionaryServerConfig& config) {
   const std::string host_utf8 = WideToUtf8(config.host);
   const std::string port_text = std::to_string(config.port);
@@ -972,18 +969,26 @@ SOCKET ConnectDictionaryServer(const DictionaryServerConfig& config) {
     socket_handle = socket(candidate->ai_family, candidate->ai_socktype,
                            candidate->ai_protocol);
     if (socket_handle == INVALID_SOCKET) continue;
-    if (connect(socket_handle, candidate->ai_addr,
-               static_cast<int>(candidate->ai_addrlen)) == 0) {
-      break;
+    u_long nonblocking = 1; ioctlsocket(socket_handle, FIONBIO, &nonblocking);
+    int connected = connect(socket_handle, candidate->ai_addr, static_cast<int>(candidate->ai_addrlen));
+    if (connected != 0 && WSAGetLastError() == WSAEWOULDBLOCK) {
+      // Winsock reports a refused nonblocking connect in exceptfds, rather
+      // than writefds. Observe both so a refused server fails immediately.
+      fd_set writes, errors; FD_ZERO(&writes); FD_SET(socket_handle, &writes);
+      FD_ZERO(&errors); FD_SET(socket_handle, &errors); timeval timeout{0, 150000};
+      if (select(0, nullptr, &writes, &errors, &timeout) > 0) {
+        int error = 0, bytes = sizeof(error);
+        if (getsockopt(socket_handle, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &bytes) == 0 && !error) connected = 0;
+      }
     }
+    if (connected == 0) { nonblocking = 0; ioctlsocket(socket_handle, FIONBIO, &nonblocking); break; }
     closesocket(socket_handle);
     socket_handle = INVALID_SOCKET;
   }
   freeaddrinfo(result);
   if (socket_handle == INVALID_SOCKET) return INVALID_SOCKET;
 
-  // This runs while the single engine mutex is held.  A dead skkserv must
-  // never freeze every application's conversion path for a full second.
+  // Worker-owned socket: dead servers cannot block input callbacks.
   // Local/LAN skkserv replies are normally sub-millisecond; a slower reply
   // degrades to the already-loaded local dictionaries for this conversion.
   const DWORD timeout_ms = 150;
@@ -1060,12 +1065,18 @@ bool TrySpawnSkkServ(const std::wstring& command) {
 // Sends `request` in full and reads a single line (up to '\n', which is
 // consumed but not included in *raw_response; a trailing '\r' is stripped
 // too). Returns false on any send/recv error, timeout, graceful close, or
-// if the line exceeds the 64 KiB cap -- the caller treats all of those as
-// "retry with a fresh connection, then give up".
+// if the line exceeds 64 KiB or the total exchange exceeds 150ms.
 bool SendAndReceive(SOCKET socket_handle, const std::string& request,
                     std::string* raw_response) {
+  const auto deadline = GetTickCount64() + 150;
+  const auto budget = [&](int option) {
+    const auto now = GetTickCount64(); if (now >= deadline) return false;
+    const DWORD remaining = static_cast<DWORD>(deadline - now);
+    return setsockopt(socket_handle, SOL_SOCKET, option, reinterpret_cast<const char*>(&remaining), sizeof(remaining)) == 0;
+  };
   size_t offset = 0;
   while (offset < request.size()) {
+    if (!budget(SO_SNDTIMEO)) return false;
     const int sent = send(socket_handle, request.data() + offset,
                           static_cast<int>(request.size() - offset), 0);
     if (sent <= 0) return false;
@@ -1075,6 +1086,7 @@ bool SendAndReceive(SOCKET socket_handle, const std::string& request,
   raw_response->clear();
   char buffer[4096];
   for (;;) {
+    if (!budget(SO_RCVTIMEO)) return false;
     const int received = recv(socket_handle, buffer, sizeof(buffer), 0);
     if (received <= 0) return false;  // 0 = peer closed, <0 = error/timeout
     raw_response->append(buffer, static_cast<size_t>(received));
@@ -1089,84 +1101,139 @@ bool SendAndReceive(SOCKET socket_handle, const std::string& request,
   return true;
 }
 
-// Looks up `midasi` (already UTF-8 encoded by the engine; not transcoded
-// here), first against the built-in dictionaries (if configured and
-// loaded -- see BuiltinDictionaryState/MergeBuiltinCandidates() above),
-// then, only if that comes up empty, against the external dictionary
-// server. Returns the single line to hand back to the engine, matching
-// the skkserv wire protocol's own reply forms byte-for-byte either way:
-// "1/cand/cand/.../" on a hit (built-in or external), or "4" for
-// not-found / disabled / any failure. Never throws and never blocks
-// longer than the configured send/recv timeouts (plus, in the worst case,
-// one OS-level connect timeout on the retry -- see
-// ConnectDictionaryServer()).
-std::string LookupDictionary(const std::string& midasi) {
-  try {
-    if (GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0) {
-      std::fprintf(stderr, "ddskk-engine-host: lookup [%s]\n", midasi.c_str());
-    }
-    if (!g_dictionary_server.config_loaded) {
-      LoadDictionaryServerConfig(&g_dictionary_server.config);
-      g_dictionary_server.config_loaded = true;
-    }
-
-    // Built-in dictionaries take priority over the external server, and
-    // are consulted even if the external server is disabled or
-    // unreachable -- this is what makes conversion work with no
-    // dictionary server running at all. A lookup that arrives before the
-    // loader thread has published its maps just falls through to the
-    // external-server logic below unchanged, exactly as if
-    // dictionary_files were never configured.
-    if (g_builtin_dictionary.ready.load(std::memory_order_acquire)) {
-      const double lookup_started = ProfileMilliseconds();
-      const std::string merged = MergeBuiltinCandidates(midasi);
-      if (GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0) {
-        std::fprintf(stderr, "dictionary-source name=builtin-index ms=%.6f\n",
-                     ProfileMilliseconds()-lookup_started);
-        std::fprintf(stderr, "ddskk-engine-host: builtin [%s]\n",
-                     merged.c_str());
+// External I/O runs independently of provider transactions. Pending work and
+// replies are bounded. Config generations discard obsolete in-flight replies.
+class ServerCache {
+ public:
+  ~ServerCache() { Stop(); }
+  void Start() { worker_ = std::thread([this] { Run(); }); }
+  void Stop() {
+    { std::lock_guard lock(mutex_); stop_ = true; }
+    changed_.notify_all(); if (worker_.joinable()) worker_.join();
+  }
+  std::optional<std::string> Query(const std::string& reading, const std::string& okuri = {}, DWORD wait_ms = 0) {
+    // Profile every cache exit, including LOCAL SERVER polls, disabled
+    // sources, hits and the provider's bounded wait. Log after unlocking.
+    struct CacheProfile {
+      bool enabled; double started;
+      ~CacheProfile() {
+        if (enabled)
+          std::fprintf(stderr, "dictionary-source name=skkserv-cache ms=%.6f\n",
+                       ProfileMilliseconds()-started);
       }
-      if (!merged.empty()) return "1" + merged;
+    };
+    const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
+    const CacheProfile profile{debug, debug ? ProfileMilliseconds() : 0};
+    DictionaryServerConfig config; LoadDictionaryServerConfig(&config);
+    const auto identity = WideToUtf8(config.host) + ":" + std::to_string(config.port) + ":" +
+        std::to_string(config.enabled) + ":" + WideToUtf8(config.dictionary_files) + ":" + WideToUtf8(config.start_command);
+    const auto key = reading + '\x1f' + okuri;
+    std::unique_lock lock(mutex_);
+    if (identity != identity_) { identity_ = identity; ++generation_; cache_.clear(); jobs_.clear(); }
+    if (!config.enabled) return "4";
+    auto found = cache_.find(key);
+    if (found != cache_.end() && found->second.reply && GetTickCount64() - found->second.completed >=
+        (found->second.reply->starts_with("1") ? 60000 : 2000)) { cache_.erase(found); found = cache_.end(); }
+    if (found == cache_.end()) {
+      if (cache_.size() >= 256) {
+        auto victim = std::find_if(cache_.begin(), cache_.end(), [](const auto& x) { return x.second.reply.has_value(); });
+        if (victim == cache_.end()) return "4";
+        cache_.erase(victim);
+      }
+      cache_[key] = {};
+      jobs_.push_back({key, reading, config, generation_}); changed_.notify_all();
     }
-
-    if (g_dictionary_server.config.enabled == 0) return "4";
-    if (!EnsureWinsock()) return "4";
-
-    const std::string request = "1" + midasi + " ";
-    std::string raw_response;
-
-    // Up to two attempts total: reuse (or make) the cached connection, and
-    // on any failure drop it and retry exactly once with a fresh one.
-    for (int attempt = 0; attempt < 2; ++attempt) {
-      if (g_dictionary_server.socket == INVALID_SOCKET) {
-        g_dictionary_server.socket = ConnectDictionaryServer(g_dictionary_server.config);
-        if (g_dictionary_server.socket == INVALID_SOCKET) {
-          // Self-heal the field incident this connect failure might be:
-          // the dictionary server may simply not be running. Spawn it
-          // (rate-limited by TrySpawnSkkServ's cooldown) and give it
-          // let it become ready in the background.  Waiting 1.5 seconds
-          // here held g_engine_mutex and froze all active editors.  This
-          // lookup returns not-found; the next conversion uses the server.
-          if (TrySpawnSkkServ(g_dictionary_server.config.start_command)) {
-            continue;
-          }
+    const auto generation = generation_;
+    if (wait_ms) changed_.wait_for(lock, std::chrono::milliseconds(wait_ms), [&] {
+      auto item = cache_.find(key);
+      return stop_ || generation != generation_ || (item != cache_.end() && item->second.reply.has_value());
+    });
+    found = cache_.find(key);
+    if (generation != generation_ || found == cache_.end()) return "4";
+    return found->second.reply;
+  }
+ private:
+  struct Entry { std::optional<std::string> reply; ULONGLONG completed = 0; };
+  struct Job { std::string key, reading; DictionaryServerConfig config; uint64_t generation; };
+  std::mutex mutex_; std::condition_variable changed_;
+  std::map<std::string, Entry> cache_; std::deque<Job> jobs_;
+  std::string identity_; uint64_t generation_ = 0; bool stop_ = false;
+  std::thread worker_;
+  void Run() {
+    WSADATA data{}; const bool winsock = WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    for (;;) {
+      Job job;
+      { std::unique_lock lock(mutex_); changed_.wait(lock, [&] { return stop_ || !jobs_.empty(); });
+        if (stop_) break; job = std::move(jobs_.front()); jobs_.pop_front(); }
+      std::string reply = "4";
+      if (winsock) {
+        const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
+        const double connect_started = debug ? ProfileMilliseconds() : 0;
+        SOCKET socket = ConnectDictionaryServer(job.config);
+        if (debug)
+          std::fprintf(stderr, "dictionary-source name=skkserv-connect ms=%.6f\n",
+                       ProfileMilliseconds()-connect_started);
+        if (socket != INVALID_SOCKET) {
+          std::string response;
+          const double server_started = debug ? ProfileMilliseconds() : 0;
+          const bool found = SendAndReceive(socket, "1" + job.reading + " ", &response);
+          if (debug)
+            std::fprintf(stderr, "dictionary-source name=skkserv-query ms=%.6f\n",
+                         ProfileMilliseconds()-server_started);
+          if (found &&
+              !response.empty() && (response[0] == '1' || response[0] == '4')) reply = std::move(response);
+          closesocket(socket);
+        } else if (!job.config.start_command.empty()) TrySpawnSkkServ(job.config.start_command);
+      }
+      { std::lock_guard lock(mutex_);
+        if (job.generation == generation_) {
+          auto item = cache_.find(job.key); if (item != cache_.end()) { item->second.reply = std::move(reply); item->second.completed = GetTickCount64(); }
         }
       }
-      if (g_dictionary_server.socket == INVALID_SOCKET) continue;
-      const double server_started = ProfileMilliseconds();
-      const bool found = SendAndReceive(g_dictionary_server.socket, request, &raw_response);
-      if (GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0)
-        std::fprintf(stderr, "dictionary-source name=skkserv-query ms=%.6f\n",
-                     ProfileMilliseconds()-server_started);
-      if (found && !raw_response.empty()) {
-        return raw_response;
-      }
-      CloseDictionarySocket();
+      changed_.notify_all();
     }
-    return "4";
-  } catch (...) {
-    return "4";
+    if (winsock) WSACleanup();
   }
+};
+ServerCache g_server_cache;
+// Keep provider data opaque: expressions and okuri blocks belong to DDSKK,
+// and must not be truncated by the local literal-candidate certification cap.
+std::string MergeServerReply(std::string_view files, std::string_view server) {
+  std::vector<std::string> words;
+  for (auto raw : {files, server}) {
+    size_t start = 0;
+    for (;;) {
+      const auto slash = raw.find('/', start); if (slash == raw.npos) break;
+      if (slash > start) {
+        const std::string word(raw.substr(start, slash - start));
+        const bool found = std::any_of(words.begin(), words.end(), [&](const auto& existing) {
+          const auto note = existing.find(';');
+          return existing == word || (note != existing.npos && existing.substr(0, note) == word.substr(0, word.find(';')));
+        });
+        if (!found) words.push_back(word);
+      }
+      start = slash + 1;
+    }
+  }
+  std::string result = "1/"; for (const auto& word : words) result += word + '/';
+  return result;
+}
+std::string LookupDictionary(const std::string& midasi) {
+  const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
+  const double lookup_started = debug ? ProfileMilliseconds() : 0;
+  const std::string files = g_builtin_dictionary.ready.load(std::memory_order_acquire) ? MergeBuiltinCandidates(midasi) : "";
+  if (debug) {
+    std::fprintf(stderr, "dictionary-source name=builtin-index ms=%.6f\n",
+                 ProfileMilliseconds()-lookup_started);
+    std::fprintf(stderr, "ddskk-engine-host: lookup [%s]\n", midasi.c_str());
+    std::fprintf(stderr, "ddskk-engine-host: builtin [%s]\n", files.c_str());
+  }
+  // Provider keys already run off the input thread. Give a miss at most 200ms
+  // before registration; local hits do not use this waiting path.
+  const auto server = g_server_cache.Query(midasi, {}, 200);
+  if (!server || server->empty() || (*server)[0] != '1') return files.empty() ? "4" : "1" + files;
+  if (files.empty()) return *server;
+  return MergeServerReply(files, std::string_view(*server).substr(1));
 }
 
 void ShutdownDictionaryServer() {
@@ -1521,8 +1588,8 @@ bool DispatchConvertKeys(Child& child, const std::string& request,
 // complete SKK checkpoint when that id changes. `g_engine_mutex` makes each
 // request/response transaction atomic with respect to the others: it is held
 // for the entire Dispatch() call, which already
-// contains the nested "SERVER " dictionary-lookup sub-exchange loop (and
-// therefore LookupDictionary()'s cached socket in g_dictionary_server), so
+// contains the nested "SERVER " dictionary-lookup sub-exchange loop and
+// its bounded cache wait (external sockets belong to ServerCache), so
 // a dictionary round trip can never be interleaved with another client's
 // request either. The same mutex is held while tearing the child down on
 // shutdown (see wmain), so its pipes are never closed out from under a
@@ -2013,7 +2080,8 @@ bool LocalConversionRequested() {
 // Snapshot discovery includes file metadata, while publication hashes source
 // contents only when that metadata changes. Learning never scans a base file.
 std::string LocalSourceIdentity(const DictionaryServerConfig& config) {
-  std::string identity = ddskk::local::Utf8(config.dictionary_files) + std::to_string(config.enabled);
+  std::string identity = ddskk::local::Utf8(config.dictionary_files) + std::to_string(config.enabled) + ":" +
+      ddskk::local::Utf8(config.host) + ":" + std::to_string(config.port);
   size_t start = 0;
   while (start < config.dictionary_files.size()) {
     auto end = config.dictionary_files.find(L';', start);
@@ -2141,7 +2209,7 @@ void LocalPublicationLoop() {
           std::string label; uint64_t flags = 0, revision = 0;
           if (!(metadata >> label >> flags >> revision) || label != "LOCAL" || flags > 3)
             throw std::runtime_error("local capability metadata");
-          const uint64_t capabilities = config.enabled == 0 ? flags : 0;
+          const uint64_t capabilities = flags;
           wchar_t registry[128]{}, delay[16]{};
           if (!test_stalled && !previous.empty() &&
               GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0) &&
@@ -2197,6 +2265,18 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     const bool is_preview = request.rfind("PREVIEW ", 0) == 0;
     if (is_shutdown) {
       response = "OK";
+    } else if (engine_request.starts_with("LOCAL SERVER ")) {
+      try {
+        std::istringstream fields(engine_request.substr(13));
+        std::string key, okuri, extra; fields >> key >> okuri;
+        const auto reading = ddskk::local::Unhex(key);
+        const auto suffix = okuri == "-" ? std::wstring{} : ddskk::local::Unhex(okuri);
+        if ((fields >> extra) || !ddskk::local::LocalReading(reading) || suffix.size() > 32) response = "SERVER 4";
+        else {
+          const auto reply = g_server_cache.Query(ddskk::local::Utf8(reading), ddskk::local::Utf8(suffix));
+          response = reply ? "SERVER " + *reply : "SERVER PENDING";
+        }
+      } catch (...) { response = "SERVER 4"; }
     } else if (engine_request == "ROMAJI RULES 1") {
       std::lock_guard<std::mutex> lock(g_romaji_mutex);
       response = g_romaji_rules.empty()
@@ -2527,6 +2607,7 @@ int wmain(int argc, wchar_t** argv) {
   std::thread(IdleGcLoop).detach();
   std::thread replacement_worker(ReplacementLoop);
   std::thread registry_worker(WatchEngineRegistry, initial_registry_engine);
+  g_server_cache.Start();
   std::thread local_worker(LocalPublicationLoop);
   // Accept loop: each iteration blocks in ConnectNamedPipe() on `pipe` (the
   // one spare, not-yet-connected instance), then immediately opens the next
@@ -2588,6 +2669,7 @@ int wmain(int argc, wchar_t** argv) {
     std::lock_guard<std::mutex> lock(g_engine_mutex);
     StopChild(g_child);
   }
+  g_server_cache.Stop();
   ShutdownDictionaryServer();
   return 0;
 }

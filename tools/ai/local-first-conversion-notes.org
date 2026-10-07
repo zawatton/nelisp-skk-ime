@@ -352,7 +352,7 @@ At D:\Cowork\Notes\dev\nelisp-skk-ime-worker-lf2\windows\test-host\bench-okuri-t
 +            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     + CategoryInfo          : OperationStopped: (Machine busy; p...ency unverified:String) [], RuntimeException
     + FullyQualifiedErrorId : Machine busy; paired samples collected under load, quiet-machine latency unverified
- 
+
 #+end_example
 
 ** Inline inline
@@ -2264,6 +2264,707 @@ none remain. Existing user/coordinator processes were left alone. Changes are
 unstaged; the git index remains untouched. Claude still needs to run all blocked
 gates, including the new test-local-key-refusal.ps1 and the full edit-recovery
 script with the real dictionary, in its registry-enabled environment.
+
+* SK1 worker: asynchronous skkserv sources (2026-10-07)
+
+Changes are unstaged; no commit, live registry, live pipe, Google, personal
+jisyo or other checkout was changed. All runtime arguments came from the
+coordinator-supplied Runtime parameter. Commands below use $Runtime for that
+same supplied executable; no machine path is embedded in implementation.
+
+** Outcome and limits
+
+Before implementation the production relay test failed its file-hit union:
+#+begin_example
+FAIL fixture file plus server
+host UTF8 protocol: 47 checks, 1 failures
+#+end_example
+Command: cmake --build build/w --config Release --target ddskk-host-utf8-protocol-test
+followed by build/w/Release/ddskk-host-utf8-protocol-test.exe. Only the fixture
+was added before this reproduction; production code was still unchanged.
+
+The fixture used 31101 and a preloaded synthetic file map. A present reading
+returned only file in the old relay, while a file-missing reading returned
+server-only. Local TSF with SkkServ enabled was not measured: registry access
+was denied before host startup. Code inspection found its capability was
+explicitly zeroed when SkkServEnable was set; that guard is removed.
+
+Stock DDSKK was measured over the synthetic UTF-8/EUC-JP network fixture
+on 31102. The four stock.oracle rows are:
+| Phase | Reading | Order |
+| Before | かな | user, 仮名, 哉, serverExtra |
+| Before | なぞ | serverOnly |
+| Learned | かな | serverExtra, user, 仮名, 哉 |
+| Learned | なぞ | serverOnly |
+Native local candidate merging matches all four rows. The empty-file row
+checks source merge and the existing provider barrier; it is not a measured
+TSF/NeLisp result. Host relay tests cover file/server order, server-only,
+slow, unreachable, config generations and okuri cache identity. The native
+core worker also exchanges real LOCAL SERVER requests on private named
+pipes and rejects unsafe expressions for provider handoff.
+
+The full engine/local/stock TSF comparison, real ~1ms SPACE, failed-edit
+behavior of asynchronous UI updates, and the five new TSF fixture cases
+remain for Claude's less restricted sandbox. New fixture cases: extra
+append/learning, server-only, slow, unreachable and config toggle. Existing
+thresholds/tests are retained; new local SPACE checks require <=5ms.
+
+Host DNS resolution uses the OS resolver on the background worker. Caller
+waits are bounded, but shutdown may wait for a slow resolver to finish.
+External servers retain the existing UTF-8 host wire convention; the stock
+fixture additionally supports EUC-JP, without accessing external services.
+
+** Change locations
+
+- windows/host/main.cpp:939,1051,1092,1165,1185: Bound TCP/exchange; joined 256-entry config-generation cache; opaque file/server union and 200ms provider wait.
+- windows/host/main.cpp:2025,2155,2210,2549,2611: Include endpoint in source identity, retain local capability, serve metadata without engine mutex, start/stop worker.
+- windows/src/local_conversion.h:15,23,41,82,95: Immutable reply/request publication, core worker lifecycle and appended conversion tier.
+- windows/src/local_conversion.cpp:60,83,207,214,221,458: Nonblocking restart/handoff, cancelable private-pipe polling and selected-word-preserving merge/removal.
+- windows/src/text_service.h:214,234: Provider frontier argument and pending next/menu deadline.
+- windows/src/text_service.cpp:343,432,2462,2515,2910,3173: UI-timer merge/retry, bounded pending traversal, unsafe frontier handoff, SPACE/completed-okuri requests.
+- windows/test-host/host_utf8_protocol_test.cpp:20,75: Loopback fixture and relay/cache/time/config/opaque-data regressions.
+- windows/test/local_conversion_test.cpp:482,497,532: Source/selection/config tests, real metadata-worker pipe tests and four stock oracle rows.
+- windows/test-host/run-harness.ps1:91,259: Private enable flag and loopback fixture port only.
+- windows/test-host/tsf_host.cpp:1254: Toggle only a validated NativeIME-test registry key.
+- windows/test-host/sk1-skkserv-fixture.py:1: Loopback-only fixture, bounded test port range, stock and host encodings, synthetic slow replies.
+- windows/test-host/sk1-stock-oracle.el:1: Actual stock network search/learning, private source snapshots, four oracle rows.
+- windows/test-host/test-sk1-skkserv.ps1:1: Five private TSF cases, candidate vectors, learning and input latency assertions; fixture finally cleanup.
+- docs/design/local-first-conversion.org:891: SK1 architecture, deadlines, source ordering and measured/unmeasured behavior.
+- tools/ai/local-first-conversion-notes.org:2268: This SK1 handoff, exact gate tails and blockers.
+
+Exact changed hunk anchors (includes comment/API changes):
+- docs/design/local-first-conversion.org:890
+- windows/host/main.cpp:36
+- windows/host/main.cpp:556
+- windows/host/main.cpp:941
+- windows/host/main.cpp:961
+- windows/host/main.cpp:970
+- windows/host/main.cpp:977
+- windows/host/main.cpp:1054
+- windows/host/main.cpp:1057
+- windows/host/main.cpp:1065
+- windows/host/main.cpp:1075
+- windows/host/main.cpp:1090
+- windows/host/main.cpp:1117
+- windows/host/main.cpp:1120
+- windows/host/main.cpp:1157
+- windows/host/main.cpp:1179
+- windows/host/main.cpp:1180
+- windows/host/main.cpp:1182
+- windows/host/main.cpp:1534
+- windows/host/main.cpp:2026
+- windows/host/main.cpp:2155
+- windows/host/main.cpp:2210
+- windows/host/main.cpp:2549
+- windows/host/main.cpp:2611
+- windows/src/local_conversion.cpp:65
+- windows/src/local_conversion.cpp:77
+- windows/src/local_conversion.cpp:80
+- windows/src/local_conversion.cpp:87
+- windows/src/local_conversion.cpp:94
+- windows/src/local_conversion.cpp:96
+- windows/src/local_conversion.cpp:207
+- windows/src/local_conversion.cpp:454
+- windows/src/local_conversion.cpp:469
+- windows/src/local_conversion.cpp:491
+- windows/src/local_conversion.h:15
+- windows/src/local_conversion.h:23
+- windows/src/local_conversion.h:41
+- windows/src/local_conversion.h:82
+- windows/src/local_conversion.h:94
+- windows/src/text_service.cpp:343
+- windows/src/text_service.cpp:432
+- windows/src/text_service.cpp:454
+- windows/src/text_service.cpp:465
+- windows/src/text_service.cpp:2462
+- windows/src/text_service.cpp:2513
+- windows/src/text_service.cpp:2524
+- windows/src/text_service.cpp:2910
+- windows/src/text_service.cpp:3173
+- windows/src/text_service.h:214
+- windows/src/text_service.h:234
+- windows/test-host/host_utf8_protocol_test.cpp:20
+- windows/test-host/run-harness.ps1:91
+- windows/test-host/run-harness.ps1:259
+- windows/test-host/tsf_host.cpp:1254
+- windows/test/local_conversion_test.cpp:482
+
+** Gates and verbatim output tails
+
+Initial configure: cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+Initial and final complete build: cmake --build build/w --config Release
+Both completed exit 0. Focused rebuilds of ddskk-host-utf8-protocol-test and
+nativeime-local-conversion-test also completed exit 0. Existing compiler
+warnings were not suppressed. Final build tail is below.
+
+*** Final build
+
+Command:
+#+begin_example
+cmake --build build/w --config Release
+#+end_example
+Exit=0; build, no test count. Log: build/w/sk1-final-build.log
+Verbatim tail:
+#+begin_example
+  nativeime-local-conversion-test.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-sk1\build\w\Release\nativeime-local-conversion-test.exe
+  nativeime-registry-settings-test.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-sk1\build\w\Release\nativeime-registry-settings-test.exe
+  register-categories.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-sk1\build\w\Release\register-categories.exe
+  set-profile-icon.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-sk1\build\w\Release\set-profile-icon.exe
+  tsf-host.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-sk1\build\w\Release\tsf-host.exe
+#+end_example
+
+*** Host fixture
+
+Command:
+#+begin_example
+build/w/Release/ddskk-host-utf8-protocol-test.exe
+#+end_example
+Exit=0; 59 checks, 0 failures. Log: build/w/sk1-host-final.log
+Verbatim tail:
+#+begin_example
+host UTF8 protocol: 59 checks, 0 failures
+#+end_example
+
+*** Stock network oracle
+
+Command:
+#+begin_example
+Start-Process python -WindowStyle Hidden -PassThru -ArgumentList '-u','windows/test-host/sk1-skkserv-fixture.py','--port','31102'; $env:LOCAL_ORACLE_DIR=<private build/w/sk1-stock>; $env:SK1_FIXTURE_PORT='31102'; $env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L vendor/ddskk -l windows/test-host/sk1-stock-oracle.el
+#+end_example
+Exit=0; 4 rows, 2 readings, 1 learning operation; fixture stopped in finally. Log: build/w/sk1-stock.log
+Verbatim tail:
+#+begin_example
+STOCK ���� ("user" "����" "��" "serverExtra")
+STOCK �Ȃ� ("serverOnly")
+STOCK ���� ("serverExtra" "user" "����" "��")
+STOCK �Ȃ� ("serverOnly")
+PASS SK1 stock oracle rows=4 readings=2 learning=1
+#+end_example
+
+*** Native local + stock + core worker
+
+Command:
+#+begin_example
+$env:SK1_STOCK_ORACLE=<private build/w/sk1-stock/sk1-stock.oracle>; build/w/Release/nativeime-local-conversion-test.exe <fresh build/w/sk1-local-guid>
+#+end_example
+Exit=0; 182 checks, 4 stock rows; 4 original corruption/source negative controls. Log: build/w/sk1-unit-final.log
+Verbatim tail:
+#+begin_example
+PASS SK1 stock oracle rows=4 readings=2 learning=1
+PASS local conversion 182 checks (4 corrupt/source negative controls)
+#+end_example
+
+*** Stateline ERT
+
+Command:
+#+begin_example
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+#+end_example
+Exit=0; 31/31 expected, 0 unexpected. Log: build/w/sk1-stateline.log
+Verbatim tail:
+#+begin_example
+   passed  30/31  nelisp-ime-stateline-test-skk-abbreviations-not-okuri (0.000151 sec)
+   passed  31/31  nelisp-ime-stateline-test-status-has-no-side-effects (0.000304 sec)
+
+Ran 31 tests, 31 results as expected, 0 unexpected (2026-10-07 17:37:43+0900, 0.070460 sec)
+
+#+end_example
+
+*** Lattice ERT
+
+Command:
+#+begin_example
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+#+end_example
+Exit=0; 14/14 expected, 0 unexpected. Log: build/w/sk1-lattice.log
+Verbatim tail:
+#+begin_example
+   passed  13/14  nelisp-ime-lattice-test-resize-obeys-reading-bounds (0.000154 sec)
+   passed  14/14  nelisp-ime-lattice-test-selects-candidate-within-active-segment (0.000188 sec)
+
+Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-07 17:37:43+0900, 0.051258 sec)
+
+#+end_example
+
+*** Ctest initial
+
+Command:
+#+begin_example
+ctest --test-dir build/w -C Release --output-on-failure
+#+end_example
+Exit=8; 10/10 blocked by registry wrapper; binaries not reached. Log: build/w/sk1-ctest.log
+Verbatim tail:
+#+begin_example
+
+
+0% tests passed, 10 tests failed out of 10
+
+Total Test time (real) =   2.88 sec
+
+The following tests FAILED:
+	  1 - nativeime-local-conversion-test (Failed)
+	  2 - ddskk-engine-protocol-test (Failed)
+	  3 - ddskk-engine-client-test (Failed)
+	  4 - ddskk-candidate-ui-test (Failed)
+	  5 - ddskk-display-attribute-test (Failed)
+	  6 - ddskk-langbar-button-test (Failed)
+	  7 - ddskk-mode-indicator-test (Failed)
+	  8 - ddskk-realtime-frontend-test (Failed)
+	  9 - nativeime-registry-settings-test (Failed)
+	 10 - ddskk-host-utf8-protocol-test (Failed)
+Errors while running CTest
+#+end_example
+
+*** Ctest runtime enabled
+
+Command:
+#+begin_example
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64 -DNELISP_EXECUTABLE=$Runtime; ctest --test-dir build/w -C Release --output-on-failure
+#+end_example
+Exit=8; 11/11 blocked by registry wrapper; binaries not reached. Log: build/w/sk1-ctest-final.log
+Verbatim tail:
+#+begin_example
+
+0% tests passed, 11 tests failed out of 11
+
+Total Test time (real) =   2.99 sec
+
+The following tests FAILED:
+	  1 - nativeime-local-conversion-test (Failed)
+	  2 - ddskk-engine-protocol-test (Failed)
+	  3 - ddskk-engine-client-test (Failed)
+	  4 - ddskk-candidate-ui-test (Failed)
+	  5 - ddskk-display-attribute-test (Failed)
+	  6 - ddskk-langbar-button-test (Failed)
+	  7 - ddskk-mode-indicator-test (Failed)
+	  8 - ddskk-realtime-frontend-test (Failed)
+	  9 - nativeime-registry-settings-test (Failed)
+	 10 - ddskk-host-utf8-protocol-test (Failed)
+	 11 - ddskk-engine-e2e-test (Failed)
+Errors while running CTest
+#+end_example
+
+*** SK1 TSF
+
+Command:
+#+begin_example
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-sk1-skkserv.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+#+end_example
+Exit=1; 0/5 cases executed; private registry denied. Log: build/w/sk1-sk1-tsf-gate.log
+Verbatim tail:
+#+begin_example
++    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ ...
++    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (New-Item : Acce...687' is denied.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+#+end_example
+
+*** Local conversion TSF
+
+Command:
+#+begin_example
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-conversion.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+#+end_example
+Exit=1; 0/9 cases executed; private registry denied. Log: build/w/sk1-local-tsf-gate.log
+Verbatim tail:
+#+begin_example
++   & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $P ...
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (New-Item : Acce...b06' is denied.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+#+end_example
+
+*** Local navigation TSF
+
+Command:
+#+begin_example
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-navigation.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+#+end_example
+Exit=1; 0 cases executed; private registry denied. Log: build/w/sk1-navigation-gate.log
+Verbatim tail:
+#+begin_example
++  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PS ...
++  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (New-Item : Acce...9ff' is denied.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+#+end_example
+
+*** DDSKK behavior
+
+Command:
+#+begin_example
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-ddskk-behavior.ps1 -RepositoryPath . -ColdLoadSleepSec 45 -DllPath build/w/Release/ddskk-ime.dll -TsfHostExe build/w/Release/tsf-host.exe -EngineHostPath build/w/Release/ddskk-engine-host.exe -EngineExecutablePath $Runtime
+#+end_example
+Exit=1; 0 cases executed; private registry denied. Log: build/w/sk1-behavior-gate.log
+Verbatim tail:
+#+begin_example
++   $lines = @(& powershell -ExecutionPolicy Bypass -File $harness `
++              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (New-Item : Acce...3e5' is denied.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+#+end_example
+
+*** Emacs inline
+
+Command:
+#+begin_example
+python windows/test-host/test-inline-preedit.py --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $Runtime --artifacts build/w/sk1-inline --case emacs --local-conversion --cold-load 45
+#+end_example
+Exit=1; 0 TSF cases executed; private registry denied. Log: build/w/sk1-inline-gate.log
+Verbatim tail:
+#+begin_example
+    ~~~~^^
+  File "D:\Cowork\Notes\dev\nelisp-skk-ime-worker-sk1\windows\test-host\test-inline-preedit.py", line 304, in main
+    assert result.returncode == 0, (result.returncode, output[-4000:])
+           ^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: (1, "New-Item : Access to the registry key 'HKEY_CURRENT_USER\\Software\\NativeIME-test-7394f73508fd' is denied.\nAt D:\\Cowork\\Notes\\dev\\nelisp-skk-ime-worker-sk1\\windows\\test-host\\run-harness.ps1:247 char:1\n+ New-Item -Path $regPath -Force | Out-Null\n+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n    + CategoryInfo          : PermissionDenied: (HKEY_CURRENT_US...st-7394f73508fd:String) [New-Item], UnauthorizedAcc \n   essException\n    + FullyQualifiedErrorId : System.UnauthorizedAccessException,Microsoft.PowerShell.Commands.NewItemCommand\n \n")
+#+end_example
+
+** Failed attempts retained
+
+- Initial local harness -Cases ordinary, with fixture endpoint env 31101,
+  stopped first at "tsf-host.exe not found" while the initial build was
+  still running, then at private registry creation after the build finished.
+- The first new TSF script attempt failed Windows PowerShell parsing because
+  its UTF-8 Japanese strings lacked a BOM. Adding the BOM fixed parsing;
+  the next attempt reached the same private registry denial.
+- Reusing build/w/sk1-local-unit failed "FAIL learning writes no new base".
+  The fixture requires a fresh directory; rerunning unchanged assertions in
+  a new GUID directory passed. The final run uses a fresh directory.
+- A new private-pipe worker test caught an incorrectly escaped pipe name in
+  the test fixture: "FAIL core server worker connects privately". Correcting
+  that fixture to a raw C++ pipe literal passed all 182 checks. The core's
+  production pipe literal was already correct at this point.
+
+** Cleanup and coordinator follow-up
+
+Every Python fixture was stopped, waited and disposed in its owning finally.
+Native fixtures/Store workers are joined; native executables exited. Harness
+registry denial preceded host/NeLisp/TSF startup. The Emacs inline runner's
+finally stopped and waited its Emacs and window-observer children. No owned
+leftover is known. Independent global process inventory was attempted with
+Get-CimInstance Win32_Process, and denied by the sandbox; no unrelated process
+was killed.
+
+Claude must rerun the blocked ctest/TSF/navigation/behavior/inline gates with
+its private registry authorization, and confirm the engine source vectors,
+SPACE timing, unsafe provider frontier and edit retry behavior. No live
+registry/pipe/server/Google access is needed or authorized for that rerun.
+
+** SK1 regression follow-up: evidence, changes, and remaining gates
+
+Read the coordinator logs in build/claude-verify-sk1 before editing again.
+The reported TSF failures are not established as relay failures:
+- harness-kaku.log rejects u in TestKeyDown (claimed=0); u is never sent
+  to the provider. The local server worker is not active in this mode.
+- inline-emacs's DLL log reports ordinary a/i as handled=0, connect=-1.
+  For letters in kana mode WouldClaimKey rejects only a Ctrl chord. The
+  script's thread Ctrl is zero; asynchronous physical state was not logged.
+  Physical modifier contamination is an inference needing rerun evidence.
+  Its final committed buffer is incorrect, rather than wholly empty; the
+  assertion's empty list results from requiring SEL=10,10.
+- hotswap.log starts an unexpected preedit on a lowercase a after the
+  previous commit. Subsequent a tokens extend it, so the next q resolves
+  that preedit instead of changing an idle mode. Async Shift interference
+  is possible; the cause is not proven by that log.
+- async-space gap-20 fails on warm-up RESET with ERR REQUEST before TSF
+  starts. The preceding CONVERT-KEYS returned a KEY-like preedit response.
+  There is no host transaction trace in that original log. No production
+  protocol recovery or ignored-error workaround was added.
+- SK1 unreachable recorded SPACE-CANDIDATE ms=15, while the same KEYLAT
+  total_us=4894. GetTickCount64 tick quantization falsely exceeded 5 ms.
+
+Second-turn changes (in addition to the original SK1 changes above):
+- windows/host/main.cpp:964: select observes exceptfds for failed connects;
+  the network budget remains 150 ms. This is not claimed to explain the
+  disabled-server failures.
+- windows/src/text_service.cpp:20,2892,2920: local SPACE diagnostic uses
+  steady_clock and emits us; no candidate or key ownership behavior changes.
+- windows/test-host/test-sk1-skkserv.ps1:55: require that microsecond field
+  and enforce <=5000 us. Missing precision also fails; no limit relaxation.
+- windows/test-host/tsf_host.cpp:951,984: await physical modifier release
+  before measurements, fail explicitly after 10 seconds, log async state.
+- windows/test-host/run-harness.ps1:230,265: preserve/restore DDSKK_HOST_DEBUG
+  and enable host transaction traces with DebugLog.
+- windows/test-host/host_utf8_protocol_test.cpp:65: disabled no-request,
+  base okuri result, miss, unreachable nonblocking cache and file checks.
+- windows/test-host/test-sk1-provider-relay.ps1:1: parameterized actual
+  provider gate, private nonexistent registry key, file fixtures or supplied
+  dictionary, persistent scoped pipe, disabled/unreachable cases, cleanup.
+- docs/design/local-first-conversion.org:948: SK1 follow-up design/evidence.
+- tools/ai/local-first-conversion-notes.org:2658: this SK1 follow-up record.
+Line numbers should be obtained again before integration if preceding SK1
+hunks change. All work remains unstaged; no commit or live configuration.
+
+*** Reproduction and gates in this follow-up
+
+Runtime in the commands below is the supplied runtime parameter, never a
+repository default. DictionaryFiles was the supplied SKK-JISYO.L UTF-8
+asset; no personal dictionary was read. ColdLoadSleepSec=45 throughout.
+
+Temporary build/w/sk1-relay-repro.ps1 first accidentally closed the scoped
+pipe between requests; the host then correctly closed that session. That
+attempt does not verify okuri state. A corrected persistent pipe replay
+through the unchanged second-turn host produced:
+#+begin_example
+REQUEST=SESSION sk1 CONTROL SYNC-KEYS 75,97,75 RESPONSE=STATE preedit 3 1 0025bd00304b00002a 00006b -1 -
+#+end_example
+The following KEY 117 returned STATE candidate with text ▼書く and the
+real L vector beginning 書,掛,欠. Dictionary relay reported ms=0.
+Owned host/child both exited. Log is in
+build/w/sk1-relay-repro-727218cc1dab4d7c972186cd63b5314d.
+
+Command: & build/w/sk1-miss-repro.ps1 -Runtime $Runtime -Dictionary $Files
+With the async-space fixture file pair: eight CONVERT-KEYS/RESET pairs,
+all registration/hiragana; no ERR response. Exit=0. Verbatim response:
+#+begin_example
+REQUEST=CONTROL CONVERT-KEYS 75,97 RESPONSE=STATE registration 0 -1 - - -1 - 00304b
+REQUEST=RESET RESPONSE=STATE hiragana 0 -1 - - -1 -
+#+end_example
+Log: build/w/sk1-relay-repro-b9d374bcd05c45dda26a5fc06adb5f5f.
+Both owned processes exited. This did not run the registry-enabled local
+publication worker, so it cannot rule out every warm-up race.
+
+Command: cmake --build build/w --config Release
+An initial build collided with our owned diagnostic host and failed LNK1104.
+After that host exited, rebuilds passed exit=0. Final build log:
+build/w/sk1-followup-build.log. Verbatim last compiler line:
+#+begin_example
+  tsf_host.cpp
+#+end_example
+All Release targets built. No compiler errors were suppressed.
+
+Command: & build/w/Release/ddskk-host-utf8-protocol-test.exe
+An intermediate draft emitted 65 checks, 3 failures: two wrong expectations
+that the base file relay preserved okuri blocks, and an unsupported assumption
+that Windows loopback refusal completes within 100 ms. Base already filters
+those blocks; the existing network budget is 150 ms. The final assertions
+check the actual base result and the nonwaiting cache consumer's existing
+30 ms bound, not an invented provider connect deadline. Final exit=0:
+#+begin_example
+host UTF8 protocol: 66 checks, 0 failures
+#+end_example
+Log: build/w/sk1-followup-host-test.log.
+
+Command: & build/w/Release/nativeime-local-conversion-test.exe $FreshPrivateRoot
+Private registry/pipe/user/data environment; fresh GUID directory. Exit=0:
+#+begin_example
+PASS local conversion 173 checks (4 corrupt/source negative controls)
+#+end_example
+Log: build/w/sk1-followup-local-test.log. This invocation did not supply the
+optional stock oracle; the previous 182-check oracle result is above.
+
+Command: & windows/test-host/test-sk1-provider-relay.ps1 -Runtime $Runtime -DictionaryFiles $Files -ColdLoadSleepSec 45
+Exit=0; two modes, 20 checks, real SKK-JISYO.L. Ran twice; the first run used
+an awkward symbolic absent reading, then the final run used complete kana
+なぞなぞなぞなぞ. Final log: build/w/sk1-followup-provider-final.log.
+Both modes logged PASS, and cleanup printed:
+#+begin_example
+OWNED_HOST_EXITED=True
+OWNED_CHILD_EXITED=True
+#+end_example
+This is actual NeLisp provider evidence, not a TSF gate or local timing result.
+
+Command: & build/w/sk1-tsf-direct-repro.ps1 -Runtime $Runtime -Dictionary $Files
+Temporary diagnostic launched the real TSF executable with a private
+nonexistent registry branch and default settings after provider warm-up.
+Exit=0; one complete kaku episode passed, all owned processes exited.
+Log: build/w/sk1-followup-kaku-direct.log. Verbatim relevant tail:
+#+begin_example
+AFTER SETTLE5000 BUF=[掛く] SEL=2,2 COMP=-
+FINAL BUF_LEN=2 BUF_FNV=6cf839080ab1f32f
+CANDIDATEUI close open=0
+TSF_EXIT=0
+#+end_example
+The complete TSF log shows u claimed=1 (390 us), ▼書く then ▼掛く,
+SPACE callback=651 us, and async Shift/Ctrl both zero. This does not prove
+the cause of the coordinator's earlier failed key claim.
+
+Command: & windows/test-host/test-sk1-provider-relay.ps1 -Runtime $Runtime -DictionaryFiles $Files -ColdLoadSleepSec 45 -Tsf
+Exit=0; final version: 28 checks, both disabled and unreachable, actual L,
+provider and real TSF kaku. Log: build/w/sk1-followup-provider-tsf.log.
+Four TSF assertions per mode: process exit, u claimed, ▼書く, committed 掛く
+without settle timeout. Both cases printed PASS and the verbatim cleanup:
+#+begin_example
+OWNED_TSF_EXITED=True
+OWNED_HOST_EXITED=True
+OWNED_CHILD_EXITED=True
+#+end_example
+No private registry writes were required; LocalConversion defaults off.
+
+Command: ctest --test-dir build/w -C Release --output-on-failure
+Exit=8; all 11 wrappers failed before test binaries at private registry
+creation, not assertions. Log: build/w/sk1-followup-ctest.log. Verbatim:
+#+begin_example
+0% tests passed, 11 tests failed out of 11
+#+end_example
+
+Command: & windows/test-host/run-harness.ps1 -Script 'K a K u SETTLE8000 SPACE SETTLE8000 ENTER SETTLE5000' -TsfHostExe $TsfHost -DllPath $Dll -CoreDllPath $Core -EngineHostPath $EngineHost -EngineExecutablePath $Runtime -RepositoryPath $Root -ColdLoadSleepSec 45 -DebugLog -ArtifactDirectory build/w/sk1-followup/kaku
+Exit=1 before starting hosts. Log: build/w/sk1-followup-kaku.log. Verbatim:
+#+begin_example
+     | Access to the registry key 'HKEY_CURRENT_USER\Software\NativeIME-test-80aa2894c035' is denied.
+#+end_example
+
+Command: & windows/test-host/test-sk1-skkserv.ps1 -Runtime $Runtime -ColdLoadSleepSec 45
+Exit=1, zero case assertions run: first extra case blocked by private key
+creation. Its Python fixture was stopped/waited in finally. Log:
+build/w/sk1-followup-tsf.log; child log:
+build/w/sk1-tsf-78c6e3ba3ce74694a7cbc2dfc92a0f13/extra.log.
+Command: & windows/test-host/test-async-space.ps1 -Runtime $Runtime -ColdLoadSleepSec 45
+Exit=1, zero case assertions run: gap-0 blocked by private key creation.
+Log: build/w/sk1-followup-async.log. Both private-key failures end:
+#+begin_example
+    + FullyQualifiedErrorId : System.UnauthorizedAccessException,Microsoft.PowerShell.Commands.NewItemCommand
+#+end_example
+
+Command: $env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+Exit=0; log build/w/sk1-followup-stateline.log. Verbatim:
+#+begin_example
+Ran 31 tests, 31 results as expected, 0 unexpected (2026-10-07 19:34:25+0900, 0.046929 sec)
+#+end_example
+Command: $env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+Exit=0; log build/w/sk1-followup-lattice.log. Verbatim:
+#+begin_example
+Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-07 19:37:10+0900, 0.027998 sec)
+#+end_example
+
+Commands: & build/w/Release/ddskk-engine-protocol-test.exe; & build/w/Release/ddskk-realtime-frontend-test.exe
+Both exit=0 with no stdout (no reported assertion count). No registry or
+provider process is used by these pure parser/frontend binaries.
+
+Latency assertion negative control, using the exact new diagnostic regex:
+#+begin_example
+LATENCY_ORACLE us=5000 pass=True
+LATENCY_ORACLE us=5001 pass=False
+OLD_LATENCY ms=15 callback_us=4894
+#+end_example
+Three checks passed: equality accepted, one microsecond over refused, and
+the coordinator's old coarse value disagrees with its precise callback.
+
+No full hot-swap, Emacs-inline, local TSF/navigation or DDSKK behavior rerun
+is claimed for this second turn; their required registry creation is denied.
+The prior coordinator PASS counts are user-supplied evidence, not new runs.
+Remaining: rerun all five reported failing gates with these diagnostics;
+capture host.stderr.log if warm-up ERR REQUEST recurs and async modifier
+fields if key ownership/mode still diverges. Do not declare those regressions
+fixed until the actual TSF gates pass. Every owned provider/runtime/fixture
+from the checks above exited; no unrelated process was touched.
+
+Final mechanical checks: git -c safe.directory=$Root diff --check exited 0;
+git -c safe.directory=$Root diff --cached --quiet exited 0 (nothing staged).
+PowerShell Parser.ParseFile of the new provider gate returned zero errors:
+#+begin_example
+STAGED_DIFF_EXIT=0
+PROVIDER_SCRIPT_PARSE_ERRORS=0
+#+end_example
+Final provider TSF SPACE callback measurements (steady-clock KEYLAT):
+#+begin_example
+PROVIDER_TSF_LAT mode=disabled space_us=540
+PROVIDER_TSF_LAT mode=unreachable space_us=498
+#+end_example
+These are provider-mode callbacks, not a new local opt-in latency gate.
+
+** SK1 / EG1 merge resolution (2026-10-07)
+
+Working tree resolution only; Claude started the merge and will stage it.
+Kept the complete SK1 sections followed by the complete EG1 sections in both
+documents. Both original conflict blocks were retained byte-for-byte before
+adding this validation note. The host conflicts kept SK1's async cache,
+worker, source merging and bounded replies; EG1's builtin/query timings were
+ported to the new execution sites. Incoming engine sanitation and profiling
+files were not edited by this worker.
+
+Host integration changes:
+- windows/host/main.cpp:53: incoming QPC clock helper.
+- windows/host/main.cpp:1117: cache scope timing on every return, including
+  nonwaiting LOCAL SERVER polls and disabled/cache-hit paths; outside lock.
+- windows/host/main.cpp:1171: background connection timing (including failure).
+- windows/host/main.cpp:1178: preserved skkserv-query timing around worker TCP
+  send/receive, rather than the removed synchronous socket path.
+- windows/host/main.cpp:1223: preserved builtin-index timing in merged lookup.
+- windows/host/main.cpp:1423,1459,1506,1517: incoming dispatch/phase/relay QPC
+  records, with all original integer diagnostics retained.
+- windows/host/main.cpp:2255,2321,2412: incoming receive/mutex/write timing.
+- docs/design/local-first-conversion.org:983: merge validation before EG1.
+- tools/ai/local-first-conversion-notes.org:2871: this merge record before EG1.
+
+Commands and verbatim tails (all exit 0):
+
+#+begin_example
+cmake --build build/w --config Release
+#+end_example
+Ran twice, including the final cache instrumentation. Final log:
+build/w/sk1-eg1-merge-build.log. Build, no assertion count. Verbatim tail:
+#+begin_example
+  register-categories.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-sk1\build\w\Release\register-categories.exe
+  set-profile-icon.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-sk1\build\w\Release\set-profile-icon.exe
+  tsf-host.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-sk1\build\w\Release\tsf-host.exe
+#+end_example
+
+#+begin_example
+$env:DDSKK_HOST_DEBUG='1'; & build/w/Release/ddskk-host-utf8-protocol-test.exe
+#+end_example
+Log: build/w/sk1-eg1-merge-host.log. Verbatim test tail:
+#+begin_example
+host UTF8 protocol: 66 checks, 0 failures
+#+end_example
+Checked the emitted debug log using the exact decimal format regex
+=dictionary-source name=<phase> ms=(\d+\.\d{6})=; all four phases present:
+#+begin_example
+QPC_PHASE name=builtin-index records=11
+QPC_PHASE name=skkserv-cache records=14
+QPC_PHASE name=skkserv-connect records=9
+QPC_PHASE name=skkserv-query records=5
+#+end_example
+These use the production worker against a loopback fixture in the test-port
+range. Cache hits, disabled replies, okuri keys, slow/unreachable servers,
+source append/order and invalidation assertions remain enabled.
+
+#+begin_example
+& build/w/Release/nativeime-local-conversion-test.exe $FreshPrivateRoot
+#+end_example
+Fresh GUID root and private registry/pipe/user/data environment. No registry
+creation needed. Log: build/w/sk1-eg1-merge-local.log. Verbatim tail:
+#+begin_example
+PASS local conversion 173 checks (4 corrupt/source negative controls)
+#+end_example
+
+#+begin_example
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L engine -L vendor/ddskk -l engine/test-input-rules.el -l engine/test-local-conversion.el -l engine/test-eg1-cleaner.el -f ert-run-tests-batch-and-exit
+#+end_example
+Private LOCAL_LEARNING_TEST_DIR, DDSKK_USER_JISYO and LOCALAPPDATA under
+build/w. Log: build/w/sk1-eg1-merge-engine-ert.log. Verbatim tail:
+#+begin_example
+Ran 30 tests, 30 results as expected, 0 unexpected (2026-10-07 20:04:12+0900, 0.530478 sec)
+#+end_example
+
+#+begin_example
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+#+end_example
+Log: build/w/sk1-eg1-merge-stateline.log. Verbatim tail:
+#+begin_example
+Ran 31 tests, 31 results as expected, 0 unexpected (2026-10-07 20:04:11+0900, 0.040308 sec)
+#+end_example
+
+#+begin_example
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+#+end_example
+Log: build/w/sk1-eg1-merge-lattice.log. Verbatim tail:
+#+begin_example
+Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-07 20:04:54+0900, 0.040690 sec)
+#+end_example
+
+Conflict-marker scan and git diff --check passed. No add/commit command was
+run: the index retains its three unmerged paths until Claude stages these
+resolved working files. Native test fixtures/threads joined and all test
+executables and batch Emacs processes exited; no owned leftovers. Ctest and
+TSF gates were not rerun in this merge turn; Claude will run those outside
+the sandbox. No live IME settings, pipe, server, Google or personal dictionary
+was touched.
 
 * EG1: can a fast engine replace local conversion? (2026-10-07)
 Keep local conversion for the certified dictionary cases, and improve the
