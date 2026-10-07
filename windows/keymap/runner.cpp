@@ -5,7 +5,10 @@
 #include <wtsapi32.h>
 
 #include <atomic>
+#include <cstdio>
 #include <cwctype>
+#include <fcntl.h>
+#include <io.h>
 #include <iostream>
 #include <memory>
 
@@ -15,6 +18,43 @@
 #include "win_io.h"
 namespace {
 using namespace keymap;
+void connectParentOutput() {
+  // Save inherited pipes/files before AttachConsole can replace standard handles.
+  HANDLE inherited[] = {GetStdHandle(STD_OUTPUT_HANDLE),
+                        GetStdHandle(STD_ERROR_HANDLE)};
+  bool attached = AttachConsole(ATTACH_PARENT_PROCESS) != FALSE;
+  for (int i = 0; i < 2; ++i) {
+    HANDLE handle = inherited[i];
+    if (!handle || handle == INVALID_HANDLE_VALUE ||
+        GetFileType(handle) == FILE_TYPE_UNKNOWN)
+      handle = attached ? GetStdHandle(i == 0 ? STD_OUTPUT_HANDLE
+                                              : STD_ERROR_HANDLE)
+                        : nullptr;
+    HANDLE copy = nullptr;
+    if (!handle || handle == INVALID_HANDLE_VALUE ||
+        !DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(),
+                         &copy, 0, FALSE, DUPLICATE_SAME_ACCESS))
+      continue;
+    // GUI CRT startup may leave FILE descriptors at -2. Initialize the FILE
+    // before replacing its descriptor with the saved console/redirect handle.
+    FILE* stream = i == 0 ? stdout : stderr;
+    FILE* reopened = nullptr;
+    if (freopen_s(&reopened, "NUL", "w", stream) != 0) {
+      CloseHandle(copy);
+      continue;
+    }
+    int fd = _open_osfhandle(reinterpret_cast<intptr_t>(copy), _O_TEXT);
+    if (fd == -1) {
+      CloseHandle(copy);
+      continue;
+    }
+    _dup2(fd, _fileno(stream));
+    _close(fd);
+    clearerr(stream);
+  }
+  std::cout.clear();
+  std::cerr.clear();
+}
 constexpr UINT Stop = WM_APP + 1, Act = WM_APP + 2, Foreground = WM_APP + 3;
 std::atomic<const Snapshot*> current{nullptr};
 State state;
@@ -536,6 +576,7 @@ int selfTest() {
 }
 }  // namespace
 int wmain(int argc, wchar_t** argv) {
+  connectParentOutput();
   bool self = false, edit = false, ui = false, stop = false, rules = false;
   for (int i = 1; i < argc; ++i) {
     std::wstring a = argv[i];
@@ -566,11 +607,9 @@ int wmain(int argc, wchar_t** argv) {
   table(Layout::US);
   table(Layout::JIS);
   if (rules) {
-    if (!ui && !self) FreeConsole();
     return keymap::rulesEditor(ui || self);
   }
   if (edit) {
-    if (!ui && !self) FreeConsole();
     return keymap::editor(ui || self);
   }
   if (ui) return 2;
