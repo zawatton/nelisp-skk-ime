@@ -290,11 +290,32 @@ class DocumentStore final : public ITextStoreACP,
       *phrSession = E_UNEXPECTED;
       return E_UNEXPECTED;
     }
-    if ((deny_next_write_ || GetTickCount64() < deny_write_until_) && (dwLockFlags & TS_LF_SYNC) &&
+    if ((refuse_next_write_ || GetTickCount64() < refuse_write_until_) &&
+        (dwLockFlags & TS_LF_READWRITE) == TS_LF_READWRITE) {
+      refuse_next_write_ = false;
+      *phrSession = TS_E_READONLY;
+      std::printf("EDIT_REFUSED flags=%lu\n", dwLockFlags);
+      return S_OK;
+    }
+    // DENYWRITE models refusal, not a request to retry asynchronously. It
+    // must reject ASYNCDONTCARE/ASYNC writes too, before the delayed-lock seam.
+    if ((deny_next_write_ || GetTickCount64() < deny_write_until_) &&
         (dwLockFlags & TS_LF_READWRITE) == TS_LF_READWRITE) {
       deny_next_write_ = false;
-      *phrSession = TS_E_SYNCHRONOUS;
-      std::printf("EDIT_DENIED sync=1 flags=%lu\n", dwLockFlags);
+      *phrSession = TS_E_READONLY;
+      std::printf("EDIT_DENIED sync=%d flags=%lu\n", (dwLockFlags & TS_LF_SYNC) != 0, dwLockFlags);
+      return S_OK;
+    }
+    if (async_writes_ && (dwLockFlags & TS_LF_READWRITE) == TS_LF_READWRITE) {
+      if (dwLockFlags & TS_LF_SYNC) {
+        *phrSession = TS_E_SYNCHRONOUS;
+      } else {
+        pending_lock_ = true;
+        pending_lock_flags_ = dwLockFlags;
+        *phrSession = TS_S_ASYNC;
+      }
+      std::printf("EDIT_ASYNC queued=%d flags=%lu tick=%llu\n",
+                  pending_lock_ ? 1 : 0, dwLockFlags, GetTickCount64());
       return S_OK;
     }
     if (locked_) {
@@ -316,7 +337,7 @@ class DocumentStore final : public ITextStoreACP,
     // now that the outer lock has released. sink_->OnLockGranted() below
     // may itself re-enter RequestLock and queue another one, so this is a
     // loop, not a single follow-up call.
-    while (pending_lock_) {
+    while (pending_lock_ && !async_writes_) {
       pending_lock_ = false;
       const DWORD flags = pending_lock_flags_;
       locked_ = true;
@@ -435,6 +456,8 @@ class DocumentStore final : public ITextStoreACP,
                     static_cast<size_t>(end - start), pchText, cch);
     const LONG new_end = start + static_cast<LONG>(cch);
     sel_start_ = sel_end_ = new_end;
+    if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
+      std::printf("VISIBLE tick=%llu units=%zu\n", GetTickCount64(), buffer_.size());
     if (pChange != nullptr) {
       pChange->acpStart = start;
       pChange->acpOldEnd = end;
@@ -596,6 +619,20 @@ class DocumentStore final : public ITextStoreACP,
 
   // --- Test-harness accessors -------------------------------------------
   std::wstring BufferSnapshot() const { return buffer_; }
+  void DelayWrites() { async_writes_ = true; }
+  void FlushWrites() {
+    async_writes_ = false;
+    if (!pending_lock_ || !sink_) return;
+    pending_lock_ = false;
+    locked_ = true; current_lock_flags_ = pending_lock_flags_;
+    const auto started = GetTickCount64();
+    const HRESULT result = sink_->OnLockGranted(pending_lock_flags_);
+    locked_ = false; current_lock_flags_ = 0;
+    std::printf("EDIT_ASYNC executed=1 hr=%08lx elapsed_ms=%llu tick=%llu\n",
+                result, GetTickCount64() - started, GetTickCount64());
+  }
+  void RefuseNextWrite() { refuse_next_write_ = true; }
+  void RefuseWrites(DWORD ms) { refuse_write_until_ = GetTickCount64() + ms; }
   void DenyNextWrite() { deny_next_write_ = true; }
   void DenyWrites(DWORD ms) { deny_write_until_ = GetTickCount64() + ms; }
   void ApplicationClear() {
@@ -656,6 +693,9 @@ class DocumentStore final : public ITextStoreACP,
     range->Release();
   }
 
+  bool async_writes_ = false;
+  bool refuse_next_write_ = false;
+  ULONGLONG refuse_write_until_ = 0;
   bool deny_next_write_ = false;
   ULONGLONG deny_write_until_ = 0;
   LONG ref_count_ = 1;
@@ -855,7 +895,9 @@ bool CompactHarnessMode() {
   return compact;
 }
 
+DWORD scripted_key_gap = MAXDWORD;
 DWORD PerKeyPumpMs() {
+  if (scripted_key_gap != MAXDWORD) return scripted_key_gap;
   // The normal harness leaves enough time to observe asynchronous UI work.
   // Compact mode is used by long throughput/ordering soaks, where a 15 ms
   // delay after both key-down and key-up would dominate the run entirely.
@@ -898,6 +940,11 @@ void PumpMessages(DWORD duration_ms) {
 // exact same entry point ITfKeystrokeMgr would call, with the same
 // context, so everything under test (claim logic, engine I/O, edit
 // sessions, compositions) still runs unmodified.
+unsigned long long EpochMicroseconds() {
+  FILETIME time{}; GetSystemTimePreciseAsFileTime(&time);
+  ULARGE_INTEGER value{}; value.LowPart = time.dwLowDateTime; value.HighPart = time.dwHighDateTime;
+  return (value.QuadPart - 116444736000000000ULL) / 10;
+}
 void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
                      ITfContext* context, const KeyEvent& key,
                      const std::wstring& token) {
@@ -911,9 +958,9 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   if (key.ctrl) state[VK_CONTROL] |= 0x80;
   SetKeyboardState(state);
   if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
-    std::printf("SCRIPTKEY token=%s inherited_shift=%d shift=%d control=%d\n",
+    std::printf("SCRIPTKEY token=%s inherited_shift=%d shift=%d control=%d tick=%llu utc_us=%llu\n",
                 Utf8FromWide(token).c_str(), (state_before[VK_SHIFT] & 0x80) != 0,
-                key.shift, key.ctrl);
+                key.shift, key.ctrl, GetTickCount64(), EpochMicroseconds());
   }
 
   const UINT scan = MapVirtualKeyW(key.vk, MAPVK_VK_TO_VSC);
@@ -1086,6 +1133,36 @@ void Settle(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   if (!success) std::exit(1);
 }
 
+void WaitForRemap(DWORD max_ms) {
+  wchar_t path[32768]{};
+  GetEnvironmentVariableW(L"NATIVEIME_HARNESS_TSF_OUTPUT", path, _countof(path));
+  HANDLE log = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE |
+      FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  const auto started = GetTickCount64();
+  bool observed = false;
+  while (log != INVALID_HANDLE_VALUE && GetTickCount64() - started < max_ms) {
+    std::fflush(stdout);
+    SetFilePointer(log, 0, nullptr, FILE_BEGIN);
+    char bytes[131072]{}; DWORD count = 0;
+    if (ReadFile(log, bytes, sizeof(bytes) - 1, &count, nullptr)) {
+      const std::string text(bytes, count);
+      auto offset = text.find("LOCAL_MAPPING delay_ms=");
+      while (offset != std::string::npos) {
+        const auto end = text.find('\n', offset);
+        if (text.substr(offset, end - offset).find("retained=1") != std::string::npos) {
+          observed = true; break;
+        }
+        offset = text.find("LOCAL_MAPPING delay_ms=", offset + 1);
+      }
+    }
+    if (observed) break;
+    PumpMessages(5);
+  }
+  if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
+  std::printf("REMAP %s elapsed_ms=%llu\n", observed ? "OK" : "TIMEOUT", GetTickCount64() - started);
+  std::fflush(stdout);
+  if (!observed) std::exit(1);
+}
 void PrintAfterLine(const std::wstring& token, const DocumentStore* store) {
   const std::wstring buf = store->BufferSnapshot();
   const bool compact = CompactHarnessMode();
@@ -1344,9 +1421,21 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
         std::printf("TEST_KILL token=%s parent=%lu target=0 success=0\n", Utf8FromWide(token).c_str(), parent_pid);
         std::exit(1);
       }
+    } else if (token == L"REFUSEWRITE") {
+      stores[active]->RefuseNextWrite();
+    } else if (token.starts_with(L"REFUSEWRITES")) {
+      stores[active]->RefuseWrites(std::min<DWORD>(10000, wcstoul(token.c_str() + 12, nullptr, 10)));
     } else if (token.starts_with(L"DENYWRITES") && token.size() > 10) {
       const auto ms = wcstoul(token.c_str() + 10, nullptr, 10);
       if (ms && ms <= 10000) stores[active]->DenyWrites(ms);
+    } else if (token.starts_with(L"WAITREMAP")) {
+      WaitForRemap(std::min<DWORD>(10000, wcstoul(token.c_str() + 9, nullptr, 10)));
+    } else if (token.starts_with(L"KEYGAP")) {
+      scripted_key_gap = std::min<DWORD>(20, wcstoul(token.c_str() + 6, nullptr, 10));
+    } else if (token == L"ASYNCWRITE") {
+      stores[active]->DelayWrites();
+    } else if (token == L"ASYNCFLUSH") {
+      stores[active]->FlushWrites();
     } else if (token == L"DENYWRITE") {
       stores[active]->DenyNextWrite();
     } else if (token == L"APPCLEAR") {

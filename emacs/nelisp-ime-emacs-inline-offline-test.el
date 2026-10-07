@@ -15,6 +15,7 @@
 (defun nelisp-ime-emacs-inline-test-run-offline (&optional selector log-file)
   "Run SELECTOR using a simulated transport, then exit with ERT's status."
   (let ((network-processes nil) queue stats
+        (original-live-p (symbol-function 'process-live-p))
         (original-contact (symbol-function 'process-contact))
         (original-delete (symbol-function 'delete-process)))
     (cl-labels
@@ -38,7 +39,7 @@
                  (funcall (plist-get settings :log) server peer "offline accept")))
              process))
          (send (process string)
-           (unless (process-live-p process) (error "Offline connection closed"))
+           (unless (funcall original-live-p process) (error "Offline connection closed"))
            (setq queue
                  (nconc queue
                         (list (cons (process-get process 'offline-peer)

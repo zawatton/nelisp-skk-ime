@@ -14,6 +14,50 @@
 (defcustom nelisp-ime-emacs-open-states '(insert replace)
   "Evil states whose entry opens the IME in the selected buffer."
   :type '(repeat symbol))
+(defcustom nelisp-ime-emacs-open-mode-function nil
+  "Function selecting SKK mode for an opening or a changed editing context.
+Return `latin' for ASCII with the IME open, `kana' for hiragana, or nil to
+preserve its mode. Called in the selected window's buffer. Requires inline
+preedit and a core supporting MODE requests. An unchanged return value never
+reasserts a mode during typing: C-j remains free to switch latin to kana."
+  :type '(choice (const nil) function))
+(defvar nelisp-ime-emacs--open-mode-context nil)
+(defvar nelisp-ime-emacs--pending-open-mode nil)
+
+(defun nelisp-ime-emacs--send-open-mode ()
+  (when (and nelisp-ime-emacs--pending-open-mode
+             (process-live-p nelisp-ime-emacs--inline-client)
+             (process-get nelisp-ime-emacs--inline-client 'authenticated))
+    (when (nelisp-ime-emacs--inline-send
+           nelisp-ime-emacs--inline-client
+           (format "MODE %s\n" nelisp-ime-emacs--pending-open-mode))
+      (setq nelisp-ime-emacs--pending-open-mode nil))))
+
+(defun nelisp-ime-emacs--request-open-mode (open &optional force)
+  "Request the selected context's mode once; FORCE marks a new opening."
+  (if (not open)
+      (setq nelisp-ime-emacs--open-mode-context nil
+            nelisp-ime-emacs--pending-open-mode nil)
+    (when nelisp-ime-emacs-open-mode-function
+      (with-current-buffer (window-buffer (selected-window))
+        (let* ((mode (funcall nelisp-ime-emacs-open-mode-function))
+               (context (list (selected-frame) (current-buffer) mode)))
+          (unless (memq mode '(nil kana latin))
+            (error "IME open mode must be nil, kana or latin: %S" mode))
+          (when (or force (not (equal context nelisp-ime-emacs--open-mode-context)))
+            (setq nelisp-ime-emacs--open-mode-context context
+                  nelisp-ime-emacs--pending-open-mode mode)
+            (nelisp-ime-emacs--send-open-mode)))))))
+
+(defun nelisp-ime-emacs--check-open-mode ()
+  "Detect a context transition without overriding IME mode keys."
+  (when (and nelisp-ime-emacs-mode nelisp-ime-emacs-open-mode-function
+             (not (minibufferp)))
+    (nelisp-ime-emacs--request-open-mode
+     (if (bound-and-true-p evil-local-mode)
+         (nelisp-ime-emacs--desired-open)
+       (and (fboundp 'w32-get-ime-open-status) (w32-get-ime-open-status))))))
+
 (defcustom nelisp-ime-emacs-poll-interval 0.1
   "Seconds between focused-frame registry polls."
   :type 'number)
@@ -151,6 +195,7 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
                       'nelisp-ime-emacs-before-open-hook))))
       (when (fboundp 'w32-set-ime-open-status)
         (w32-set-ime-open-status (and open t)))
+      (nelisp-ime-emacs--request-open-mode open t)
       (unless open
         (setq nelisp-ime-emacs--label "")
         (nelisp-ime-emacs--restore (selected-frame))))))
@@ -189,6 +234,7 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
         (let ((open (nelisp-ime-emacs--desired-open)))
           (unless (eq open (and (w32-get-ime-open-status) t))
             (w32-set-ime-open-status open)
+            (nelisp-ime-emacs--request-open-mode open t)
             (unless open
               (setq nelisp-ime-emacs--label "")
               (nelisp-ime-emacs--restore (selected-frame)))))))))
@@ -527,9 +573,11 @@ An opener already inserted at point may also be up to two seconds old."
               (when (and old (not (eq old client)))
                 (nelisp-ime-emacs--inline-disconnect old))
               (when (nelisp-ime-emacs--inline-send client "OK 1 pair\n")
+                (nelisp-ime-emacs--send-open-mode)
                 (nelisp-ime-emacs--inline-update)))
           (error "Invalid inline preedit handshake"))
       (cond
+       ((member line '("MODE-APPLIED latin" "MODE-APPLIED kana")) nil)
        ((string-match-p "\\`PAIR\\(?:[ \t\r]\\|\\'\\)" line)
         ;; PAIR is advisory. A malformed request must not disconnect the
         ;; listener, advance the sequence, or erase a valid pending pair.
@@ -638,7 +686,7 @@ An opener already inserted at point may also be up to two seconds old."
                 nelisp-ime-emacs--inline-server
                 (make-network-process
                  :name "nelisp-ime-inline" :server t :host "127.0.0.1" :family 'ipv4
-                 :service t :coding 'utf-8-unix :noquery t
+                 :service t :coding 'utf-8-unix :noquery t :no-delay t
                  :filter #'nelisp-ime-emacs--inline-filter
                  :sentinel #'nelisp-ime-emacs--inline-sentinel
                  :log #'nelisp-ime-emacs--inline-accept))
@@ -672,8 +720,11 @@ An opener already inserted at point may also be up to two seconds old."
           (setq nelisp-ime-emacs--timer
                 (run-at-time nil nelisp-ime-emacs-poll-interval #'nelisp-ime-emacs--poll)))
         (nelisp-ime-emacs--check-settings)
-        (nelisp-ime-emacs--inline-start))
+        (nelisp-ime-emacs--inline-start)
+        (add-hook 'post-command-hook #'nelisp-ime-emacs--check-open-mode))
     (nelisp-ime-emacs--inline-stop)
+    (remove-hook 'post-command-hook #'nelisp-ime-emacs--check-open-mode)
+    (setq nelisp-ime-emacs--open-mode-context nil nelisp-ime-emacs--pending-open-mode nil)
     (advice-remove 'evil-set-cursor-color #'nelisp-ime-emacs--evil-set-cursor-color)
     (remove-hook 'window-selection-change-functions #'nelisp-ime-emacs--selection-change)
     (remove-hook 'window-buffer-change-functions #'nelisp-ime-emacs--selection-change)

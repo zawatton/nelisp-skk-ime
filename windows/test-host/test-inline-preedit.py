@@ -9,17 +9,38 @@ import os
 import re
 from pathlib import Path
 import socket
+import struct
 import subprocess
 import threading
 import time
 import uuid
 
 
+def verify_custom_symbol_rules(artifacts):
+    # Verify the configured export actually reached the immutable base. A
+    # default table could otherwise make the custom-rules reproduction green.
+    bases = list(artifacts.rglob('generation-*.index'))
+    assert bases, 'No published rule base for custom-symbol fixture'
+    for base in bases:
+        data = base.read_bytes()
+        offset, length = struct.unpack_from('<QQ', data, 64)
+        rules = data[offset:offset + length].decode('utf-8')
+        symbols = {}
+        for record in rules.split()[2:]:
+            fields = record.split(':')
+            if fields[0] in ('00002e', '00002c'):
+                symbols[fields[0]] = fields[2]
+        assert symbols == {'00002e': '003002', '00002c': '003001'}, symbols
+
+
 def main():
     p = argparse.ArgumentParser()
     for name in ('dll', 'core', 'tsf-host', 'engine-host', 'runtime', 'artifacts'):
         p.add_argument('--' + name, required=True)
-    p.add_argument('--case', choices=('inline', 'missing', 'wrong', 'drop', 'emacs', 'pair', 'pair-legacy', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation'), default='inline')
+    p.add_argument('--case', choices=('inline', 'missing', 'wrong', 'drop', 'emacs', 'pair', 'pair-legacy', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation', 'emacs-fast-typeahead', 'emacs-open-mode', 'emacs-provider-restored'), default='inline')
+    p.add_argument('--custom-symbol-rules', action='store_true')
+    p.add_argument('--map-during-reading', action='store_true')
+    p.add_argument('--key-gap', type=int, choices=(0, 10, 20), default=0)
     p.add_argument('--context-alias', action='store_true',
                    help='Deliver the vowel through a context tear-off with the same COM identity')
     p.add_argument('--selection-unavailable', action='store_true',
@@ -75,7 +96,7 @@ def main():
                 return
             while not done.is_set() and not pidfile.exists():
                 time.sleep(.02)
-            if done.is_set() or args.case in ('missing', 'emacs', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation'):
+            if done.is_set() or args.case in ('missing', 'emacs', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation', 'emacs-fast-typeahead', 'emacs-open-mode', 'emacs-provider-restored'):
                 return
             pid = int(pidfile.read_text())
             published_token = 'f' * 32 if args.case == 'wrong' else token
@@ -113,7 +134,7 @@ def main():
         except Exception as error:
             errors.append(repr(error))
 
-    thread = threading.Thread(target=serve)
+    thread = threading.Thread(target=serve, daemon=True)
     thread.start()
     # The private harness warms the engine separately; direct DDSKK Space
     # would insert a literal space into the measured document.
@@ -133,12 +154,12 @@ def main():
                   + 'u SETTLE8000 WAIT500')
     if args.case == 'emacs-navigation':
         assert args.local_conversion, 'Navigation case requires local ownership'
-        script = ('WAIT2500 K a n a DENYWRITE SPACE WAIT200 SETTLE8000:FIRST MIRROR '
+        script = ('WAIT2500 K a n a REFUSEWRITE SPACE WAIT200 SETTLE8000:FIRST MIRROR '
                   'SPACE WAIT100 x WAIT100 SPACE SSPACE WAIT100 SPACE CTRLP WAIT100 '
                   'PGDN WAIT100 PGDN WAIT100 PGUP WAIT100 UP WAIT100 DOWN WAIT100 '
                   'HOME x WAIT100 SPACE ENTER WAIT100 '
-                  'K a n j i DENYWRITE SPACE WAIT200 SETTLE8000:NEW ENTER WAIT6500 '
-                  'T e i k o u c h i DENYWRITE SPACE WAIT200 SETTLE8000:PUBLISHED ENTER '
+                  'K a n j i REFUSEWRITE SPACE WAIT200 SETTLE8000:NEW ENTER WAIT6500 '
+                  'T e i k o u c h i REFUSEWRITE SPACE WAIT200 SETTLE8000:PUBLISHED ENTER '
                   'T e i k o u t i SPACE ENTER SETTLE8000:END WAIT500')
     if args.case == 'emacs-okuri':
         assert args.local_conversion, 'Okuri inline case requires local ownership'
@@ -155,6 +176,13 @@ def main():
                   'SPACE SETTLE30000:second SPACE SETTLE30000:third '
                   'SPACE SETTLE30000:fourth SPACE SETTLE30000:fifth '
                   'ENTER SETTLE30000:commit WAIT500')
+    if args.case == 'emacs-fast-typeahead':
+        assert args.local_conversion
+        script = (f'KEYGAP{args.key_gap} WAIT2500 N a i ASYNCWRITE SPACE ASYNCFLUSH WAIT100 '
+                  'ASYNCWRITE ENTER N a i SPACE ENTER ASYNCFLUSH WAITREMAP5000 '
+                  'N a i SPACE WAIT100 ENTER SETTLE8000:END WAIT500')
+    if args.case == 'emacs-open-mode':
+        script = 'IMEOFF WAIT2500 CLIENT IMEON WAIT100 CLIENT n a i WAIT100 CLIENT CTRLJ WAIT100 CLIENT n a i WAIT100 CLIENT ENTER SETTLE8000:END WAIT500'
     if args.q_regression:
         assert args.case == 'emacs' and not args.cycle_regression
         script = ('WAIT2500 K a n a q SETTLE30000:q '
@@ -173,14 +201,30 @@ def main():
                '-ColdLoadSleepSec', str(args.cold_load), '-InlinePreedit', '-InlineDirectory', str(directory),
                '-InlinePidFile', str(pidfile), '-CaretMapName', caret_map,
                '-ArtifactDirectory', str(artifacts), '-TsfHostTimeoutSec', '90']
+    command += ['-DebugLog']
+    if args.case == 'emacs-provider-restored':
+        command[command.index('-Script') + 1] = 'KEYGAP0 WAIT2500 N a i SPACE WAIT4000 LEFT WAIT100 a ASYNCWRITE SPACE ASYNCFLUSH ENTER SETTLE8000:END'
+    if args.case == 'emacs-open-mode':
+        command += ['-PublishState']
     if args.local_conversion:
         command += ['-LocalConversion', '1']
     env = os.environ.copy()
     env['DDSKK_HARNESS_DIAGNOSTICS'] = '1'
+    if args.custom_symbol_rules:
+        private_appdata = directory / 'appdata'
+        rules = private_appdata / 'NativeIME' / 'input-rules.conf'
+        rules.parent.mkdir(parents=True, exist_ok=True)
+        rules.write_text('[symbols-hankaku]\n, = "、"\n. = "。"\n', encoding='utf-8')
+        command += ['-InputRulesFile', str(rules)]
+    if args.map_during_reading:
+        env['NATIVEIME_TEST_LOCAL_MAP_DELAY_MS'] = '3000'
+        script = script.replace('N a i ASYNCWRITE', 'N a i WAIT1000 ASYNCWRITE', 1)
+        command[command.index('-Script') + 1] = script
     if args.selection_unavailable:
         env['NATIVEIME_TEST_SELECTION_UNAVAILABLE'] = '1'
     if args.cycle_regression:
         env['NATIVEIME_TEST_CANDIDATE_CONTROL_FAIL_MS'] = '1600'
+    env['INLINE_TEST_OPEN_MODE'] = 'latin' if args.case == 'emacs-open-mode' else ''
     env['INLINE_TEST_PIDFILE'] = str(pidfile)
     env['NELISP_IME_INLINE_DIR'] = str(directory)
     env['INLINE_TEST_PAIR'] = ('2' if args.case == 'emacs-nested-pair'
@@ -203,6 +247,15 @@ def main():
         personal.write_text('ていこうち /抵抗値/\nおーむ /Ω/\nていこうち /抵抗値/\n', encoding='utf-8')
         env['DDSKK_DICTIONARY_FILES'] = str(personal) + ';' + str(source)
         env['NATIVEIME_TEST_LOCAL_WORKER_STALL_MS'] = '5000'
+    if args.case in ('emacs-fast-typeahead', 'emacs-provider-restored'):
+        first, second = directory / 'first.utf8', directory / 'second.utf8'
+        first.write_text('ない /無い/内/\nかな /仮名/佳奈/\n', encoding='utf-8')
+        second.write_text('ない /無い/亡い/\nかな /仮名/加奈/\n', encoding='utf-8')
+        env['DDSKK_DICTIONARY_FILES'] = str(first) + ';' + str(second)
+        env['NATIVEIME_TEST_LOCAL_REMAP_DELAY_MS'] = '400'
+        if args.case == 'emacs-provider-restored':
+            first.write_text('ない /無い/内/\nないあ /無い亜/\n', encoding='utf-8')
+            env['NATIVEIME_TEST_LOCAL_MAP_DELAY_MS'] = '6000'
     if args.case == 'emacs-okuri':
         env['DDSKK_DICTIONARY_FILES'] = str(root / 'windows/test-host/data/okuri-jisyo.utf8')
     try:
@@ -212,7 +265,7 @@ def main():
             observer = subprocess.Popen([os.sys.executable,
                 str(root / 'windows/test-host/candidate-window-observer.py'),
                 str(directory), str(artifacts), caret_map])
-        if args.case in ('emacs', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation'):
+        if args.case in ('emacs', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation', 'emacs-fast-typeahead', 'emacs-open-mode', 'emacs-provider-restored'):
             # Same prefix required for every PowerShell launch of Emacs.
             emacs_command = "$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L emacs -l windows/test-host/inline-emacs-subscriber.el"
             emacs = subprocess.Popen(['powershell', '-NoProfile', '-Command', emacs_command], cwd=root, env=env)
@@ -246,17 +299,62 @@ def main():
                 observer.kill()
                 observer.wait()
     output = result.stdout + result.stderr
+    (directory / 'harness.log').write_text(output, encoding='utf-8')
+    (directory / 'channel.log').write_text('\n'.join(lines), encoding='utf-8')
+    assert result.returncode == 0, (result.returncode, output[-4000:])
     # Read the host's UTF-8 bytes directly; Windows PowerShell's outer stdout
     # encoding depends on its launcher, and is not a protocol observation.
     tsf_log = max(artifacts.glob('harness-*/tsf.stdout.log'), key=lambda path: path.stat().st_mtime)
     host_text = tsf_log.read_text(encoding='utf-8')
-    (directory / 'harness.log').write_text(output, encoding='utf-8')
-    (directory / 'channel.log').write_text('\n'.join(lines), encoding='utf-8')
     print(host_text[-1000:].encode('ascii', 'backslashreplace').decode('ascii'))
-    assert result.returncode == 0, result.returncode
     assert not errors, errors
     assert 'UnknownToken' not in host_text, 'Invalid test script'
+    if args.custom_symbol_rules:
+        verify_custom_symbol_rules(artifacts)
     assert 'exited=True' in output, 'Harness did not confirm owned process cleanup'
+    if args.case == 'emacs-open-mode':
+        states = re.findall(r'^CLIENT mode=(\S+) open=(\d+) composing=(\d+) sequence=(\d+)', host_text, re.MULTILINE)
+        assert len(states) == 5, states
+        assert states[0][1] == '0' and states[1][:3] == ('latin', '1', '0'), states
+        assert states[2][:3] == ('latin', '1', '0') and states[2][3] == states[1][3], states
+        assert states[3][:3] == ('hiragana', '1', '0') and states[4][0:2] == ('hiragana', '1'), states
+        assert 'INLINE_MODE mode=latin open=1 label=SKK' in host_text
+        assert host_text.count('INLINE_MODE mode=latin') == 1
+        assert 'AFTER END BUF=[ない] SEL=2,2 COMP=-' in host_text, host_text[-3000:]
+        assert 'COMPOSITION START' not in host_text
+        rendered = (directory / 'emacs.log').read_text(encoding='utf-8')
+        assert 'MODEACK MODE-APPLIED latin' in rendered and 'BUFFER_UNCHANGED=t' in rendered, rendered
+        assert emacs.returncode == 0
+        print('PASS real Emacs open-mode latin open=1 label=SKK C-j=hiragana unchanged_typing=1 checkpoints=5 cleanup=confirmed')
+        return
+    if args.case == 'emacs-provider-restored':
+        debug = '\n'.join(f.read_text(encoding='utf-8') for f in artifacts.rglob('dll-debug.log'))
+        assert 'LOCAL_RECLAIM ' in debug, debug
+        assert 'AFTER END BUF=[無い亜] SEL=3,3 COMP=-' in host_text, host_text[-4000:]
+        assert 'branch=provider-preedit-key' not in host_text and 'branch=local-convert' in host_text
+        assert emacs.returncode == 0
+        print('PASS real Emacs provider-restored reading reclaimed=1 following_letters=local following_SPACE=local cleanup=confirmed')
+        return
+    if args.case == 'emacs-fast-typeahead':
+        assert 'AFTER ASYNCFLUSH BUF=[無い無い] SEL=4,4 COMP=-' in host_text, host_text[-4000:]
+        assert 'AFTER END BUF=[無い無い無い] SEL=6,6 COMP=-' in host_text, host_text[-4000:]
+        assert 'EDIT_ASYNC queued=1' in host_text and 'EDIT_ASYNC executed=1' in host_text
+        assert 'LOCAL_MAPPING delay_ms=400 retained=1' in host_text
+        assert not re.search(r'branch=provider-(queue|convert)|LOCAL_EDIT recovered', host_text)
+        assert 'COMPOSITION START' not in host_text
+        rendered = (directory / 'emacs.log').read_text(encoding='utf-8')
+        assert '▼無い' in rendered and 'BUFFER_UNCHANGED=t' in rendered, rendered
+        assert emacs.returncode == 0, emacs.returncode
+        times = [int(value) for value in re.findall(r'^KEYLAT token=\S+ .*total_us=(\d+) claimed=1', host_text, re.MULTILINE)]
+        assert times and max(times) <= 25000, times
+        # Correlate SPACE receipt and the first candidate render using UTC.
+        spaces = [int(v) / 1000000 for v in re.findall(r'^SCRIPTKEY token=SPACE .*utc_us=(\d+)', host_text, re.MULTILINE)]
+        candidates = [float(v) for v in re.findall(r'RENDER_AT ([0-9.]+)\nRENDER \d+ ▼無い', rendered)]
+        assert spaces and candidates, (host_text, rendered)
+        latency = (candidates[0] - spaces[0]) * 1000
+        assert 0 <= latency <= 100, latency
+        print(f'PASS real Emacs async typeahead gap_ms={args.key_gap} callbacks={len(times)} max_us={max(times)} first_visible_ms={latency:.3f} cleanup=confirmed')
+        return
     if args.case == 'emacs-navigation':
         assert 'AFTER END BUF=[仮名漢字抵抗値抵抗値] SEL=10,10 COMP=-' in host_text, host_text[-4000:]
         assert 'LOCAL_EDIT recovered=1' in host_text and 'branch=local-convert' in host_text

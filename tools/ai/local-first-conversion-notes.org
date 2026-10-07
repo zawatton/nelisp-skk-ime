@@ -1951,3 +1951,316 @@ S1.1 hash refreshed after LF3-LF5 design-doc edits. S2.1-S2.3 evidence is
 Claude's verification of the LF5 worktree (worker/lf5-overlay, merged into
 main as f5097a5; deployed 2026-10-07 04:52), logs copied to
 build/validation/release-f5097a5-lf5/.
+
+** TL1 worker: latency, late rule pinning and Emacs open mode (2026-10-07)
+Changes remain unstaged. No live registry, pipe, dictionary, init file,
+deployment script, host/engine implementation or ABI was changed.
+
+*** Reproduction and findings
+Before changing production code, synchronous-write denial reproduced delayed
+visibility: SPACE-CANDIDATE ms=0 path=local, AFTER WAIT10 still the reading,
+LOCAL_EDIT recovered=1 and only AFTER WAIT200 the candidate. The explicit
+unchanged-tree assertion exited 1: FAIL: SPACE not visible by WAIT10 after
+synchronous denial. Evidence: build/w/baseline.log.
+
+The supplied build/live-emacs-debug.log establishes provider SPACE and queued
+provider input, but has no index/rule/precondition fields. It cannot by itself
+prove which local guard failed on that live machine. Custom punctuation alone
+still publishes LOCAL 3 capabilities. A private two-source real-Emacs test with
+custom APPDATA/NativeIME/input-rules.conf and an index arriving during the
+reading reproduced mapped=1/available=1 followed by provider-convert. The code
+had not pinned the rules, because adoption required an idle frontend. That
+red run failed its immediate ASYNCFLUSH assertion. The identical reading is
+now replayed against published rules before adoption; changed readings are
+rejected. The same late-map test passed with three local conversions and
+first_visible_ms=31.380, callbacks=15, max_us=3351. Evidence:
+build/w/gate-custom-late-red.log and build/w/gate-custom-late-green.log.
+
+Overlay replacement retains a verified map during worker validation/delay.
+Accepted async edits publish range and candidate UI in the edit session itself.
+Actual refusal continues to exercise bounded retry/fallback with REFUSEWRITE;
+At this verification stage DENYWRITE retained its older synchronous-only
+meaning; the regression follow-up below supersedes that seam. Candidate conversion
+reuses reading caret geometry. Native fallback rules are exported on a worker,
+not fetched on an ordinary key. Deferred keys after local fallback reenter
+native dispatch. Matching provider-restored preedit can reclaim native typing.
+
+Diagnostics use DebugLog=1 (legacy DllDebug also accepted), buffered UTF-8,
+a 100 ms flush timer, PID and key sequence plus QPC microseconds. All provider
+requests carry the original key sequence through engine lookup and edit
+execution. LOCAL_PRECONDITION distinguishes disabled, unavailable, missing
+index, unpinned/mismatched rules, Begin failure and provider ownership.
+GetTextExt remains necessary when there is no usable caret; a host can defer
+an async session itself. No private test models a genuinely blocking Terminal
+GetTextExt call. Callback latency and first Emacs candidate render latency are
+measured separately; coalesced Emacs redisplay is not a per-character latency
+measurement. A live trace from this diagnostic build is still needed to
+identify the live user's exact rejected guard.
+
+Emacs open mode uses authenticated MODE latin/kana and MODE-APPLIED. Requests
+wait for an idle composition boundary and are scoped to the client epoch.
+Latin stays open (SKK), C-j switches to kana; ordinary typing does not request
+mode again. The Org configuration example and hook migration are in the TL1
+section of docs/design/local-first-conversion.org.
+
+*** Change locations
+Each number below is the start of a changed diff hunk (file:line).
+- docs/design/local-first-conversion.org:839
+- emacs/nelisp-ime-emacs-inline-frame-test.el:40
+- emacs/nelisp-ime-emacs-inline-offline-test.el:18, emacs/nelisp-ime-emacs-inline-offline-test.el:42
+- emacs/nelisp-ime-emacs-inline-test.el:892
+- emacs/nelisp-ime-emacs-test.el:507
+- emacs/nelisp-ime-emacs.el:17, emacs/nelisp-ime-emacs.el:198, emacs/nelisp-ime-emacs.el:237, emacs/nelisp-ime-emacs.el:576, emacs/nelisp-ime-emacs.el:580, emacs/nelisp-ime-emacs.el:689, emacs/nelisp-ime-emacs.el:723, emacs/nelisp-ime-emacs.el:726
+- tools/ai/local-first-conversion-notes.org:1954
+- windows/src/inline_preedit.cpp:123, windows/src/inline_preedit.cpp:147, windows/src/inline_preedit.cpp:181, windows/src/inline_preedit.cpp:213, windows/src/inline_preedit.cpp:232
+- windows/src/inline_preedit.h:25, windows/src/inline_preedit.h:31, windows/src/inline_preedit.h:41
+- windows/src/local_conversion.cpp:304
+- windows/src/realtime_frontend.cpp:80
+- windows/src/realtime_frontend.h:25
+- windows/src/text_service.cpp:90, windows/src/text_service.cpp:95, windows/src/text_service.cpp:119, windows/src/text_service.cpp:137, windows/src/text_service.cpp:145, windows/src/text_service.cpp:294, windows/src/text_service.cpp:304, windows/src/text_service.cpp:343, windows/src/text_service.cpp:414, windows/src/text_service.cpp:427, windows/src/text_service.cpp:430, windows/src/text_service.cpp:439, windows/src/text_service.cpp:452, windows/src/text_service.cpp:500, windows/src/text_service.cpp:506, windows/src/text_service.cpp:509, windows/src/text_service.cpp:600, windows/src/text_service.cpp:602, windows/src/text_service.cpp:636, windows/src/text_service.cpp:641, windows/src/text_service.cpp:650, windows/src/text_service.cpp:652, windows/src/text_service.cpp:702, windows/src/text_service.cpp:707, windows/src/text_service.cpp:710, windows/src/text_service.cpp:727, windows/src/text_service.cpp:729, windows/src/text_service.cpp:746, windows/src/text_service.cpp:940, windows/src/text_service.cpp:973, windows/src/text_service.cpp:994, windows/src/text_service.cpp:996, windows/src/text_service.cpp:999, windows/src/text_service.cpp:1002, windows/src/text_service.cpp:1026, windows/src/text_service.cpp:1117, windows/src/text_service.cpp:1122, windows/src/text_service.cpp:1141, windows/src/text_service.cpp:1145, windows/src/text_service.cpp:1210, windows/src/text_service.cpp:1221, windows/src/text_service.cpp:1270, windows/src/text_service.cpp:1544, windows/src/text_service.cpp:2056, windows/src/text_service.cpp:2109, windows/src/text_service.cpp:2128, windows/src/text_service.cpp:2224, windows/src/text_service.cpp:2227, windows/src/text_service.cpp:2247, windows/src/text_service.cpp:2250, windows/src/text_service.cpp:2288, windows/src/text_service.cpp:2332, windows/src/text_service.cpp:2383, windows/src/text_service.cpp:2395, windows/src/text_service.cpp:2583, windows/src/text_service.cpp:2620, windows/src/text_service.cpp:2851, windows/src/text_service.cpp:2854, windows/src/text_service.cpp:2870, windows/src/text_service.cpp:2880, windows/src/text_service.cpp:2911, windows/src/text_service.cpp:3247, windows/src/text_service.cpp:3251, windows/src/text_service.cpp:3284, windows/src/text_service.cpp:3400, windows/src/text_service.cpp:3467, windows/src/text_service.cpp:3563, windows/src/text_service.cpp:3580, windows/src/text_service.cpp:3639, windows/src/text_service.cpp:3642, windows/src/text_service.cpp:3652, windows/src/text_service.cpp:3713, windows/src/text_service.cpp:3728, windows/src/text_service.cpp:3896, windows/src/text_service.cpp:3923, windows/src/text_service.cpp:3938, windows/src/text_service.cpp:4041, windows/src/text_service.cpp:4113, windows/src/text_service.cpp:4122, windows/src/text_service.cpp:4125, windows/src/text_service.cpp:4169, windows/src/text_service.cpp:4191, windows/src/text_service.cpp:4220, windows/src/text_service.cpp:4229
+- windows/src/text_service.h:95, windows/src/text_service.h:147, windows/src/text_service.h:205, windows/src/text_service.h:351, windows/src/text_service.h:353
+- windows/test-host/inline-emacs-subscriber.el:24, windows/test-host/inline-emacs-subscriber.el:31, windows/test-host/inline-emacs-subscriber.el:34, windows/test-host/inline-emacs-subscriber.el:40, windows/test-host/inline-emacs-subscriber.el:51
+- windows/test-host/run-harness.ps1:79, windows/test-host/run-harness.ps1:228, windows/test-host/run-harness.ps1:261, windows/test-host/run-harness.ps1:285
+- windows/test-host/test-inline-preedit.py:12, windows/test-host/test-inline-preedit.py:19, windows/test-host/test-inline-preedit.py:40, windows/test-host/test-inline-preedit.py:99, windows/test-host/test-inline-preedit.py:137, windows/test-host/test-inline-preedit.py:157, windows/test-host/test-inline-preedit.py:161, windows/test-host/test-inline-preedit.py:179, windows/test-host/test-inline-preedit.py:204, windows/test-host/test-inline-preedit.py:213, windows/test-host/test-inline-preedit.py:227, windows/test-host/test-inline-preedit.py:250, windows/test-host/test-inline-preedit.py:268, windows/test-host/test-inline-preedit.py:312, windows/test-host/test-inline-preedit.py:315
+- windows/test-host/test-local-edit-recovery.ps1:21, windows/test-host/test-local-edit-recovery.ps1:23, windows/test-host/test-local-edit-recovery.ps1:36, windows/test-host/test-local-edit-recovery.ps1:38
+- windows/test-host/test-local-navigation.ps1:16
+- windows/test-host/tsf_host.cpp:293, windows/test-host/tsf_host.cpp:338, windows/test-host/tsf_host.cpp:457, windows/test-host/tsf_host.cpp:620, windows/test-host/tsf_host.cpp:694, windows/test-host/tsf_host.cpp:896, windows/test-host/tsf_host.cpp:898, windows/test-host/tsf_host.cpp:941, windows/test-host/tsf_host.cpp:959, windows/test-host/tsf_host.cpp:961, windows/test-host/tsf_host.cpp:1134, windows/test-host/tsf_host.cpp:1422, windows/test-host/tsf_host.cpp:1429
+- windows/test/realtime_frontend_test.cpp:239
+- windows/test-host/test-async-space.ps1:1 (new async/type-ahead regression)
+
+*** Gates and exact output artifacts
+Runtime is supplied by the coordinator as $Runtime; no machine-specific runtime
+path is stored here. Commands below retain the test arguments; redirection and
+PowerShell exit-status capture are omitted. Complete verbatim output/tails are
+in the named build/w logs. Earlier exploratory failures remain in their logs.
+
+#+begin_src powershell
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+ctest --test-dir build/w -C Release
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-conversion.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-navigation.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-async-space.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-ddskk-behavior.ps1 -RepositoryPath . -ColdLoadSleepSec 45 -DllPath build/w/Release/ddskk-ime.dll -TsfHostExe build/w/Release/tsf-host.exe -EngineHostPath build/w/Release/ddskk-engine-host.exe -EngineExecutablePath $Runtime
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-emacs-integration.ps1 -DllPath build/w/Release/ddskk-ime.dll -TsfHostExe build/w/Release/tsf-host.exe -EngineHostPath build/w/Release/ddskk-engine-host.exe -EngineExecutablePath $Runtime -RepositoryPath . -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-hot-swap.ps1 -EngineHostPath (Resolve-Path build/w/Release/ddskk-engine-host.exe).Path -EngineExecutablePath $Runtime -BuildDirectory (Resolve-Path build/w).Path -RepositoryPath (Resolve-Path .).Path
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-core-hot-swap.ps1 -BuildDirectory build/w/Release -EngineExecutablePath $Runtime -RepositoryPath . -ArtifactDirectory build/w/core-hot-swap
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L emacs -l emacs/nelisp-ime-emacs-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L emacs -l emacs/nelisp-ime-emacs-inline-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L emacs -l emacs/nelisp-ime-emacs-inline-test.el -l emacs/nelisp-ime-emacs-inline-offline-test.el -f nelisp-ime-emacs-inline-test-run-offline
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q -nw -L emacs -l emacs/nelisp-ime-emacs-inline-frame-test.el -l build/w/run-frame-ert.el
+#+end_src
+
+Real-Emacs commands share:
+#+begin_src powershell
+python windows/test-host/test-inline-preedit.py --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $Runtime --artifacts $Artifacts --case $Case --local-conversion --cold-load 45
+#+end_src
+$Case=emacs; emacs-fast-typeahead with --key-gap 0/10/20 and
+--custom-symbol-rules; emacs-fast-typeahead with --custom-symbol-rules
+--map-during-reading; emacs-open-mode; emacs-provider-restored with
+--custom-symbol-rules. Each has a separate artifact directory and log.
+
+Build logs: tl1-build-complete.log, gate-build-core-diagnostics.log.
+A concurrent loaded core caused LNK1104 in tl1-build.log; the subsequent
+completed builds exited 0. An incorrectly named frontend target caused
+MSB1009; corrected ddskk-realtime-frontend-test built and executed with exit 0.
+
+Frame ERT must run in a native terminal; batch lacks terminal geometry and
+redirected -nw lacks a console handle. The stale OK 1 expectation was corrected
+to existing OK 1 pair protocol (46/46 pass). Offline transport's closed-peer
+simulation now tests the original process liveness, preserving the failed-send
+assertion under that test's deliberate process-live-p override (44/44 pass).
+A real-Emacs subscriber timed out before TSF PID under concurrent cold loads;
+sequential reruns keep the existing timeout. The new provider-restoration
+fixture initially used invalid BACK; BS was then observed to delete candidate
+text. LEFT (Previous at the first candidate) exercises intact reading restoration. No thresholds or
+semantic expectations were relaxed.
+
+*** Additional red/green ownership evidence
+The provider-restored test used a private delayed initial mapping, allowing
+first SPACE to reach the provider. After the index appeared, LEFT returned
+STATE preedit with the original reading. Three keys (a, SPACE, ENTER) were
+already queued while that provider control ran. LOCAL_RECLAIM appeared, but
+an unconditional assignment after RequestEditSession changed ownership back
+to provider. The final buffer was incorrect. This is a production defect,
+not a relaxed fixture expectation: the test still requires the complete
+three-character result and local following SPACE. That overwrite was removed.
+Red evidence: build/w/gate-inline-restored-final.log.
+
+The full conversion/async/navigation/integration matrices were run before
+this final narrow ownership correction. The focused provider-restored test
+and ctest are run after it. Most recent whole build: gate-build-reclaim-final.log.
+
+*** Results, counts and tails
+The log links contain the verbatim tails, including their artifact paths.
+Counts and timing excerpts are reproduced below without machine-specific paths.
+
+| Gate | Result/count | Verbatim output artifact |
+| ctest after final ownership fix | 100% tests passed, 0 tests failed out of 10; 13.02 sec | build/w/gate-ctest-reclaim-final.log |
+| DDSKK behavior | PASS, CtrlGMaxMs=0.528, Assertions=45 | build/w/gate-ddskk-behavior-final.log |
+| Host hot swap | PASS hot-swap, reload, death recovery, registry notification, shutdown; child_exit_count=5 | build/w/gate-hot-swap.log |
+| Core hot swap | PASS core hot swap assertions=19 processes=1 ordinary_max_us=2397 | build/w/gate-core-hot-swap.log |
+| Emacs integration | PASS emacs integration assertions=33 cases=5 | build/w/gate-emacs-integration-final.log |
+| Ordinary real Emacs inline | PASS inline-preedit case=emacs channel_lines=0 ordinary_max_us=3951 final_units=10; windows observations=5 visible=1 core_extra=0 | build/w/gate-inline-emacs-final.log |
+| Local conversion | PASS local TSF cases=9 checks=31 | build/w/gate-local-conversion-final.log |
+| Local navigation | PASS local navigation checkpoints=25 mirrors=8 callbacks=169 max_us=6036 | build/w/gate-local-navigation-final.log |
+| Async SPACE | PASS async SPACE cases=4 checks=66; gap 0/10/20 max_us=1946/2188/2142; late map max_us=2124 | build/w/gate-async-space-final.log |
+| Late-map custom rules, real Emacs | PASS real Emacs async typeahead gap_ms=0 callbacks=15 max_us=3351 first_visible_ms=31.380 cleanup=confirmed | build/w/gate-custom-late-green.log |
+| Custom rules, real Emacs, gap 0 | PASS real Emacs async typeahead gap_ms=0 callbacks=15 max_us=3247 first_visible_ms=11.463 cleanup=confirmed | build/w/gate-inline-fast-final-0.log |
+| Custom rules, real Emacs, gap 10 | PASS real Emacs async typeahead gap_ms=10 callbacks=15 max_us=2743 first_visible_ms=57.498 cleanup=confirmed | build/w/gate-inline-sequential-fast10.log |
+| Custom rules, real Emacs, gap 20 | PASS real Emacs async typeahead gap_ms=20 callbacks=15 max_us=3179 first_visible_ms=95.097 cleanup=confirmed | build/w/gate-inline-sequential-fast20.log |
+| Latin open mode | PASS real Emacs open-mode latin open=1 label=SKK C-j=hiragana unchanged_typing=1 checkpoints=5 cleanup=confirmed | build/w/gate-inline-sequential-mode.log |
+| Provider-restored ownership after final fix | PASS real Emacs provider-restored reading reclaimed=1 following_letters=local following_SPACE=local cleanup=confirmed | build/w/gate-inline-restored-green.log |
+| Actual write refusal after final fix | PASS local edit recovery case=denied callbacks=13 max_us=4142 | build/w/gate-local-edit-recovery.log |
+| Stateline ERT | Ran 31 tests, 31 results as expected, 0 unexpected | build/w/gate-ert-stateline.log |
+| Lattice ERT | Ran 14 tests, 14 results as expected, 0 unexpected | build/w/gate-ert-lattice.log |
+| Emacs ERT | Ran 26 tests, 26 results as expected, 0 unexpected | build/w/gate-final-nelisp-ime-emacs-test.el.log |
+| Inline ERT | Ran 44 tests, 44 results as expected, 0 unexpected | build/w/gate-final-nelisp-ime-emacs-inline-test.el.log |
+| Native terminal frame ERT | Ran 46 tests, 46 results as expected, 0 unexpected | build/w/gate-ert-frame-native.log |
+| Offline inline ERT | Ran 44 tests, 44 results as expected, 0 unexpected | build/w/gate-ert-offline-final.log |
+
+The last genuine-refusal command was:
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-edit-recovery.ps1 -Runtime $Runtime -LargeDictionary windows/test-host/data/behavior-jisyo.utf8 -BuildDir build/w -ColdLoadSleepSec 45 -Only denied
+#+end_src
+Other edit-recovery cases were not run as that script; navigation exercised
+refusal/recovery and core-hot-swap exercised swap behavior independently.
+
+Per-key TSF update latencies (15 visible state updates per gap) are in
+build/w/tl1-per-key-latency.csv and .json. Receipt-to-range-update maximums
+were 3131 / 189129 / 379921 us at gaps 0 / 10 / 20. The latter include the
+harness deliberately holding the write lock through the entire type-ahead
+burst. Once the host executed each edit session, range-update maximums were
+477 / 451 / 581 us. The ASYNCFLUSH document assertions passed immediately;
+there was no additional 50 ms timer or key before visibility. These are TSF
+range-update endpoints, not screen-paint timestamps. Emacs first-candidate
+render timestamps are measured independently in the table above.
+
+Cleanup: the final owned hosts, TSF hosts, runtime children and real-Emacs
+subscribers exited. No owned process remains. A newer-looking unrelated
+Emacs PID was checked and identified as the coordinator's Anvil server; it
+was not stopped. Python cache generated by compilation was removed by
+explicit file unlink. A recursive PowerShell cache cleanup was blocked by
+execution policy; the explicit-file cleanup succeeded without approval.
+Git index remains untouched. No live verification or deployment was performed.
+The exact live local guard remains unproven until this build's diagnostics are
+captured by the coordinator on the live machine.
+
+Custom-rule verifier additionally inspected all five successful custom-rule
+bases: the period export is 003002 (。), comma 003001 (、). This check is now
+permanent in test-inline-preedit.py whenever --custom-symbol-rules is selected.
+It was also run directly against the saved successful artifacts; a default
+symbol export negative control was rejected. Verbatim output:
+#+begin_example
+PASS custom export check custom-late-green
+PASS custom export check inline-fast-final-0
+PASS custom export check inline-sequential-fast10
+PASS custom export check inline-sequential-fast20
+PASS custom export check inline-restored-green
+PASS negative control rejects default symbol export
+#+end_example
+The direct command loaded verify_custom_symbol_rules through runpy.run_path
+and called it on each named build/w artifact directory. The negative fixture
+was created and deleted under build/w. git diff --check passed; git diff
+--cached --name-only returned no paths. The last process inventory contained
+only pre-existing user/coordinator processes, with no owned leftovers.
+
+** TL1 regression follow-up: async refusal and accepted repeated keys
+The unchanged stress reproduced expected_chars=157 and SEL=164,164. Evidence:
+=build/w/gate-stress-regression-red.log= and
+=build/w/local-stress-fc1b7665ecae4492b304113c457b135f/stress.log=.
+Seed 20261006, 60 episodes, generates 11 injected denials. The four denied
+okuri episodes (4, 7, 22, 55) add respectively "うx", "う", "あx", "あx"
+when the old synchronous-only seam accepts both explicitly scripted keys.
+Those seven characters explain the complete mismatch. The adjacent
+"抵抗値値" is expected: two consecutive commits are 抵抗値 and 値.
+The rule-pinning replay does not explain the observed extra characters.
+
+This trace demonstrates a fault-injection defect, not production replay of
+committed text. For a real refusal before DoEditSession, no document update
+executes: failed local applies restore the saved conversion/frontend state,
+and CommitLocal restores the conversion without resetting the frontend or
+learning. This is code-review evidence, not a universal claim covering a
+host that fails after accepting/executing only part of an edit. The new
+focused integration tests remain unexecuted because of the sandbox blocker.
+
+Changes in this follow-up:
+- windows/test-host/tsf_host.cpp:294,300 rejects both sync and async-capable
+  DENYWRITE/DENYWRITES requests with TS_E_READONLY before queuing delayed locks.
+- windows/test-host/test-local-state-stress.ps1:40,50,82 counts every injection
+  and requires matching actual host refusals and local rollback reports.
+- windows/test-host/test-local-key-refusal.ps1:1,24,27,38 adds two document
+  assertions: refused/retried final okuri keys appear once; genuinely accepted
+  repeated u remains after the committed candidate. Includes x navigation,
+  immediate next readings, late rule adoption and held async edit sessions.
+- windows/test-host/inline-emacs-subscriber.el:17 observes the stop file while
+  waiting for the private TSF PID, allowing prompt cleanup after startup failure.
+- windows/test-host/test-inline-preedit.py:300 saves harness diagnostics and
+  reports its nonzero status before looking for a nonexistent host log.
+- docs/design/local-first-conversion.org:881 documents the refusal seam and
+  verification limit. This section supersedes the earlier DENYWRITE note.
+
+The real SKK-JISYO.L is readable; its first byte was 59. Runtime and dictionary
+paths are supplied as $Runtime and $LargeDictionary, never embedded in sources.
+The resumed sandbox rejects New-Item for private HKCU Software NativeIME-test-*
+keys. No live registry was accessed and no workaround/ACL change was attempted.
+All requested gate commands were attempted after the denial fix; none of the
+registry-dependent tests reached its host. Commands (PowerShell):
+#+begin_src powershell
+cmake --build build/w --config Release
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-state-stress.ps1 -Runtime $Runtime -LargeDictionary $LargeDictionary -BuildDir build/w -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-key-refusal.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-async-space.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-conversion.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-navigation.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-edit-recovery.ps1 -Runtime $Runtime -LargeDictionary $LargeDictionary -BuildDir build/w -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-ddskk-behavior.ps1 -RepositoryPath . -ColdLoadSleepSec 45 -DllPath build/w/Release/ddskk-ime.dll -TsfHostExe build/w/Release/tsf-host.exe -EngineHostPath build/w/Release/ddskk-engine-host.exe -EngineExecutablePath $Runtime
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); $env:PYTHONUTF8='1'; python windows/test-host/test-inline-preedit.py --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $Runtime --artifacts build/w/inline-emacs-denial-cleanup --case emacs --local-conversion --cold-load 45
+ctest --test-dir build/w -C Release
+#+end_src
+
+Logs below are under build/w. Full command outputs are preserved verbatim;
+these tails omit only blank lines. Paths in the build tail are relative here.
+| Gate | Exit | Completed counts | Log | Tail |
+| build | 0 | full Release build | gate-build-denial-fix.log | tsf-host.vcxproj -> build/w/Release/tsf-host.exe |
+| SKK-JISYO.L stress | 1 | 0 episodes | gate-stress-denial-fix.log | + FullyQualifiedErrorId : NativeCommandError |
+| focused refusal | 1 | 0/2 cases | gate-key-refusal-denial-fix.log | + FullyQualifiedErrorId : NativeCommandError |
+| async SPACE | 1 | 0 cases | gate-async-space-denial-fix.log | + FullyQualifiedErrorId : NativeCommandError |
+| local conversion | 1 | 0 cases | gate-local-conversion-denial-fix.log | + FullyQualifiedErrorId : NativeCommandError |
+| local navigation | 1 | 0 checkpoints | gate-local-navigation-denial-fix.log | + FullyQualifiedErrorId : NativeCommandError |
+| edit recovery, all cases requested | 1 | 0 cases | gate-local-edit-recovery-denial-fix.log | + FullyQualifiedErrorId : NativeCommandError |
+| DDSKK behavior | 1 | 0 assertions | gate-ddskk-behavior-denial-fix.log | + FullyQualifiedErrorId : NativeCommandError |
+| inline Emacs | 1 | 0 assertions | gate-inline-emacs-denial-cleanup.log | EXIT=1 |
+| ctest | 8 | 0/10 passed, all 10 wrappers failed | gate-ctest-denial-fix.log | Use "--rerun-failed --output-on-failure" to re-run the failed cases verbosely. |
+ctest's count line is verbatim: =0% tests passed, 10 tests failed out of 10=.
+All ten failures are private registry creation, before the test binaries.
+The first inline attempt hid the same startup error behind
+=ValueError: max() iterable argument is empty=; cleanup/reporting was corrected
+and the second attempt promptly reported the actual registry denial.
+
+Two pure executables were also run directly with private NATIVEIME_REGISTRY_KEY,
+DDSKK_PIPE_NAME, workspace LOCALAPPDATA and DDSKK_DISABLE_HOST_SPAWN=1:
+#+begin_src powershell
+& build/w/Release/ddskk-realtime-frontend-test.exe
+& build/w/Release/ddskk-engine-protocol-test.exe
+#+end_src
+Both exit 0, with empty output; logs direct-ddskk-realtime-frontend-test-denial-fix.log
+and direct-ddskk-engine-protocol-test-denial-fix.log. These are two executable
+passes, not a successful ctest run. PowerShell parser checked both refusal and
+stress scripts: parse_errors=0 each. Python ast.parse checked the inline runner:
+=PASS Python syntax=. No new integration result is claimed.
+The subscriber was checked with the required HOME prefix and:
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch --eval '(progn (find-file "windows/test-host/inline-emacs-subscriber.el") (check-parens) (princ "PASS subscriber parentheses\n"))'
+#+end_src
+Exit 0, tail =PASS subscriber parentheses=; log
+=build/w/gate-subscriber-syntax-denial-fix.log=.
+
+Owned Emacs subscribers 24300 (first attempt) and 11600 (cleanup rerun) exited.
+No owned TSF host, engine host or runtime started in this resumed gate attempt;
+none remain. Existing user/coordinator processes were left alone. Changes are
+unstaged; the git index remains untouched. Claude still needs to run all blocked
+gates, including the new test-local-key-refusal.ps1 and the full edit-recovery
+script with the real dictionary, in its registry-enabled environment.

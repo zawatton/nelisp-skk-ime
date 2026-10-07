@@ -22,10 +22,13 @@ class InlinePreedit final {
   bool Caret(uint64_t epoch, RECT* rect);
   // Last listener caret for the live connection, including outside preedit.
   bool LastCaret(RECT* rect);
+  struct ModeRequest { uint64_t epoch; std::wstring mode; };
+  bool TakeModeRequest(ModeRequest* request);
+  bool ReplyMode(uint64_t epoch, const std::wstring& mode);
  private:
   void Run();
   struct Update {
-    enum Kind { Preedit, Clear, Pair } kind;
+    enum Kind { Preedit, Clear, Pair, ModeApplied } kind;
     std::wstring text;
     size_t cursor;
     std::wstring closer;
@@ -35,6 +38,7 @@ class InlinePreedit final {
   std::thread worker_;
   std::mutex mutex_;
   std::deque<Update> updates_;
+  ModeRequest mode_request_{};
   RECT caret_{};
   bool caret_valid_ = false;
   bool pair_capable_ = false;

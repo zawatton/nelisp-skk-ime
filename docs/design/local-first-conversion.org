@@ -836,3 +836,54 @@ LF5 evidence and remaining gates are recorded in the LF5 section of
 index publication, including the initial overlay; it does not measure the
 personal checkpoint or spool writes. No live settings or personal dictionary
 were used or changed by this worker.
+
+* TL1: edit-session visibility and explicit Emacs SKK mode
+Local SPACE uses an ASYNCDONTCARE write session. An accepted TF_S_ASYNC
+session owns its captured state; its execution updates composition, range,
+caret and candidate UI together. There is no additional provider timer tick.
+Actual write refusal retains bounded recovery. Delayed sessions check context
+identity and lifecycle generation before applying. Candidate geometry reuses
+an existing reading caret when possible. DebugLog=1 (DllDebug remains an alias)
+records PID, key sequence and QPC microseconds for lookup, request flags/HRESULT,
+execution, ranges, caret and UI. Lines are buffered and flushed every 100 ms.
+
+Rule exports pin the immutable base through an episode. If mapping arrives
+while a reading is underway, replay with its rules must produce the identical
+reading, pending syllable and mode before the core may adopt and certify it.
+Overlay remapping retains the last verified map. LOCAL_PRECONDITION reports
+which local guard rejected SPACE; the supplied live trace predates this field
+and alone cannot distinguish a missing map from missing rules or an uncertified
+entry. A matching provider-restored preedit may return ownership to native
+input; unmatched provider state remains authoritative.
+
+Emacs uses the authenticated inline channel to send MODE latin or MODE kana.
+MODE-APPLIED acknowledges application, without advancing preedit sequence.
+The request waits for an idle composition boundary and stays in the same client
+epoch. Latin keeps the IME open, gives the SKK indicator, and C-j selects kana.
+Ordinary typing does not reassert a requested mode. Context changes and explicit
+openings invoke nelisp-ime-emacs-open-mode-function. Both TCP endpoints disable
+Nagle for small preedit/mode messages.
+
+For Org, replace a src-block hook that closes the IME with an open mode function:
+#+begin_src emacs-lisp
+(setq nelisp-ime-emacs-inline-preedit t
+      nelisp-ime-emacs-open-mode-function
+      (lambda ()
+        (if (or (bound-and-true-p org-src-mode)
+                (and (derived-mode-p 'org-mode) (org-in-src-block-p)))
+            'latin
+          'kana)))
+#+end_src
+The existing before-open hook must allow opening in src blocks. No init file
+or live registry was edited. Verification and limits are recorded in the TL1
+section of tools/ai/local-first-conversion-notes.org.
+
+DENYWRITE and DENYWRITES in the private TSF host refuse both synchronous and
+async-capable writes with TS_E_READONLY, before the delayed-session seam.
+The state stress counts every injected refusal. A focused key-refusal fixture
+distinguishes a refused okuri completion retried once from two genuinely
+accepted keys, while adopting rules mid-reading and holding async sessions.
+The reported 164/157 stress mismatch was caused by the former synchronous-only
+seam accepting both explicitly scripted keys; the seven extra characters match
+those inputs. The resumed sandbox blocks private registry creation, so the
+new refusal fixtures still require execution in the coordinator environment.
