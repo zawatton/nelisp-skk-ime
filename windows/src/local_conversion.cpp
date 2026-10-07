@@ -62,6 +62,9 @@ void Store::Start() {
     if (WaitForSingleObject(worker_.native_handle(), 0) != WAIT_OBJECT_0) return;
     worker_.join(); // OS thread already ended; this cannot wait for I/O.
   }
+  if (server_worker_.joinable() && WaitForSingleObject(server_worker_.native_handle(), 0) != WAIT_OBJECT_0) {
+    stopping_ = true; wake_.notify_all(); return; // Restart after I/O has unwound, never join on input.
+  }
   if (client_.empty()) {
     client_ = Identity();
     mirror_cookie_ = static_cast<LONG>(std::stoul(client_.substr(0, 8), nullptr, 16));
@@ -71,21 +74,26 @@ void Store::Start() {
     const auto captured = Capture();
     restart_pending_.assign(captured.pending.begin(), captured.pending.end());
   }
+  stopping_ = true; wake_.notify_all();
+  if (server_worker_.joinable()) server_worker_.join();
   stopping_ = false;
+  server_worker_ = std::thread([this] { RunServer(); });
   worker_ = std::thread([this] { Run(); });
 }
 bool Store::PrepareHandoff() {
   if (!worker_.joinable()) return true;
   if (WaitForSingleObject(worker_.native_handle(), 0) == WAIT_OBJECT_0 &&
       persisted_.load() != written_.load()) Start();
-  stopping_ = true; wake_.notify_one();
-  return WaitForSingleObject(worker_.native_handle(), 0) == WAIT_OBJECT_0 &&
+  stopping_ = true; wake_.notify_all();
+  return (!server_worker_.joinable() || WaitForSingleObject(server_worker_.native_handle(), 0) == WAIT_OBJECT_0) &&
+         WaitForSingleObject(worker_.native_handle(), 0) == WAIT_OBJECT_0 &&
          persisted_.load() == written_.load();
 }
 void Store::Stop() {
   stopping_ = true;
-  wake_.notify_one();
+  wake_.notify_all();
   if (worker_.joinable()) worker_.join();
+  if (server_worker_.joinable()) server_worker_.join();
 }
 size_t Store::Unsaved() const {
   return ui_pending_.size();
@@ -195,6 +203,63 @@ bool Store::Learn(std::wstring key, std::wstring candidate, std::wstring okuri) 
   inbound_[written % kQueueLimit] = std::move(item);
   written_.store(written + 1, std::memory_order_release);
   wake_.notify_one(); return true;
+}
+void Store::RequestServer(std::wstring reading, std::wstring okuri) {
+  auto previous = server_request_.load();
+  if (previous && previous->reading == reading && previous->okuri == okuri) return;
+  server_reply_.store(nullptr);
+  server_request_.store(std::make_shared<ServerReply>(ServerReply{std::move(reading), std::move(okuri)}));
+  wake_.notify_all();
+}
+void Store::CancelServer() {
+  server_request_.store(nullptr); server_reply_.store(nullptr); wake_.notify_all();
+}
+std::shared_ptr<const ServerReply> Store::Server(std::wstring_view reading, std::wstring_view okuri) const {
+  auto reply = server_reply_.load();
+  return reply && reply->reading == reading && reply->okuri == okuri ? reply : nullptr;
+}
+void Store::RunServer() {
+  wchar_t value[256]{}; DWORD n = GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", value, 256);
+  const std::wstring pipe = n && n < 256 ? value : LR"(\\.\pipe\ddskk-ime-v1)";
+  while (!stopping_) {
+    auto query = server_request_.load();
+    if (query) {
+      HANDLE file = CreateFileW(pipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+      if (file != INVALID_HANDLE_VALUE) {
+        DWORD mode = PIPE_READMODE_MESSAGE; SetNamedPipeHandleState(file, &mode, nullptr, nullptr);
+        HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        const auto transfer = [&](bool write, void* bytes, DWORD size, DWORD& count) {
+          OVERLAPPED operation{}; operation.hEvent = event; ResetEvent(event);
+          BOOL ok = write ? WriteFile(file, bytes, size, &count, &operation) : ReadFile(file, bytes, size, &count, &operation);
+          if (!ok && GetLastError() == ERROR_IO_PENDING) {
+            if (WaitForSingleObject(event, 100) == WAIT_OBJECT_0) ok = GetOverlappedResult(file, &operation, &count, FALSE);
+            else { CancelIoEx(file, &operation); GetOverlappedResult(file, &operation, &count, TRUE); }
+          }
+          return ok != FALSE;
+        };
+        std::string request = "LOCAL SERVER " + ScalarHex(query->reading) + " " + (query->okuri.empty() ? "-" : ScalarHex(query->okuri));
+        std::array<char, 65536 + 16> bytes{}; DWORD count = 0;
+        if (event && transfer(true, request.data(), static_cast<DWORD>(request.size()), count) && count == request.size() &&
+            transfer(false, bytes.data(), static_cast<DWORD>(bytes.size()), count)) {
+          std::string_view response(bytes.data(), count);
+          if (response.starts_with("SERVER ")) {
+            response.remove_prefix(7); auto result = std::make_shared<ServerReply>(*query);
+            result->ready = response != "PENDING";
+            if (response.starts_with("1")) {
+              auto parsed = ParsePlain(response.substr(1), !query->okuri.empty());
+              result->supported = static_cast<bool>(parsed) &&
+                  CertifyEntry(query->reading, query->okuri, "", response.substr(1), 3);
+              if (result->supported) result->candidates = std::move(parsed.candidates);
+            }
+            if (server_request_.load() == query) server_reply_.store(std::move(result));
+          }
+        }
+        if (event) CloseHandle(event); CloseHandle(file);
+      }
+    }
+    std::unique_lock lock(wait_mutex_);
+    wake_.wait_for(lock, std::chrono::milliseconds(50), [&] { return stopping_.load() || server_request_.load() != query; });
+  }
 }
 void Store::Run() {
   EngineClient learner;
@@ -386,9 +451,22 @@ EngineState Conversion::State() const {
   state.text = L"▼" + selected().substr(0, selected().find(L';')) + okuri_;
   state.cursor = static_cast<int>(state.text.size()); return state;
 }
-void Conversion::Materialize() { if (!shared_loaded_) { Union(visible_, shared_); shared_loaded_ = true; } }
+void Conversion::Materialize() {
+  if (!shared_loaded_) { Union(visible_, shared_); shared_loaded_ = true; }
+  Union(visible_, server_);
+}
+bool Conversion::UpdateServer(const std::vector<std::wstring>& candidates) {
+  if (!active() || server_ == candidates) return false;
+  const auto selected_word = selected();
+  if (file_count_) visible_.resize(file_count_);
+  server_.clear(); Materialize(); file_count_ = visible_.size();
+  server_ = candidates; Union(visible_, server_);
+  auto found = std::find(visible_.begin(), visible_.end(), selected_word);
+  selection_ = found != visible_.end() ? static_cast<size_t>(found - visible_.begin()) : std::min(selection_, visible_.size() - 1);
+  return true;
+}
 bool Conversion::Next() {
-  if (selection_ + 1 == visible_.size() && !shared_loaded_) { Union(visible_, shared_); shared_loaded_ = true; }
+  if (selection_ + 1 == visible_.size()) Materialize();
   if (selection_ + 1 >= visible_.size()) return false;
   ++selection_; return true;
 }
@@ -410,5 +488,5 @@ EngineState Conversion::Commit() {
   state.mode = L"hiragana"; state.text = selected().substr(0, selected().find(L';')) + okuri_;
   state.cursor = static_cast<int>(state.text.size()); Reset(); return state;
 }
-void Conversion::Reset() { index_.reset(); visible_.clear(); shared_.clear(); reading_.clear(); okuri_.clear(); selection_ = 0; shared_loaded_ = false; }
+void Conversion::Reset() { index_.reset(); visible_.clear(); shared_.clear(); server_.clear(); reading_.clear(); okuri_.clear(); selection_ = 0; file_count_ = 0; shared_loaded_ = false; }
 }
