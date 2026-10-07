@@ -404,20 +404,27 @@ ordinary ASCII abbreviations such as skk belong in okuri-nasi."
 Keep ordinary candidate text and annotations unchanged.  Control-only
 and whitespace-only fields cannot be inserted or learned as words."
   (when (stringp candidate)
-    (let ((index 0) (visible nil) (eol nil) chars)
-      (while (< index (length candidate))
+    (let ((index 0) (count (length candidate)) (visible nil) (eol nil))
+      ;; Visibility needs only one substantive character. Do not allocate a
+      ;; character list for the overwhelmingly common unchanged candidate.
+      (while (< index count)
         (let ((ch (aref candidate index)))
-          (if (memq ch '(10 13))
-              (setq eol t)
-            (push ch chars))
-          (unless (or (<= ch 32) (and (>= ch 127) (<= ch 159))
+          (when (memq ch '(10 13)) (setq eol t))
+          (unless (or visible (<= ch 32) (and (>= ch 127) (<= ch 159))
                       (memq ch '(160 5760 8192 8193 8194 8195 8196 8197
                                  8198 8199 8200 8201 8202 8232 8233 8239
                                  8287 12288 65279)))
             (setq visible t)))
         (setq index (1+ index)))
       (when visible
-        (if eol (apply #'string (nreverse chars)) candidate)))))
+        (if eol
+            (let ((position 0) chars)
+              (while (< position count)
+                (let ((ch (aref candidate position)))
+                  (unless (memq ch '(10 13)) (push ch chars)))
+                (setq position (1+ position)))
+              (apply #'string (nreverse chars)))
+          candidate)))))
 
 (defun ddskk-user-jisyo--clean-candidates (candidates)
   "Filter CANDIDATES, preserving their order and substantive text."

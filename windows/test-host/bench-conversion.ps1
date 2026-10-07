@@ -7,12 +7,16 @@ param(
   [string]$RepositoryPath = '',
   [string]$SkkServExecutable = '',
   [string]$SkkServDependencyDir = '',
+  [string]$FixtureServerPython = '',
   [ValidateRange(31100,31199)][int]$Port = 31181,
   [ValidateRange(1,1000)][int]$Iterations = 20,
   [switch]$Profile,
   [switch]$Learning,
   [switch]$ServerOnly,
   [switch]$RequireQuiet,
+  [ValidateRange(0,100)][int]$PersistentIterations = 0,
+  [switch]$Contention,
+  [ValidateRange(0,100)][int]$ProbeIterations = 0,
   [ValidateSet('plain','okuri')][string[]]$Kinds=@('plain','okuri'),
   [int]$ColdLoadSleepSec = 45
 )
@@ -39,16 +43,23 @@ $rows = [Collections.Generic.List[object]]::new()
 $learned = [Collections.Generic.List[object]]::new()
 $coldLoads = [Collections.Generic.List[object]]::new()
 $maintenance = [Collections.Generic.List[object]]::new()
+$transactions = [Collections.Generic.List[object]]::new()
 # Request framing matches host/main.cpp: one UTF-8 message, no newline.
-function Request([string]$text) {
+function Request([string]$text, [string]$operation = '') {
+  $clock=[Diagnostics.Stopwatch]::StartNew()
   $bytes = [Text.Encoding]::UTF8.GetBytes($text)
   $pipe.Write($bytes,0,$bytes.Length); $pipe.Flush()
+  $writeMs=$clock.Elapsed.TotalMilliseconds
   $buffer = New-Object byte[] 65536
   $read = $pipe.ReadAsync($buffer,0,$buffer.Length)
   if (-not $read.Wait(30000)) { throw "Host response timeout: $text" }
   $n = $read.Result
+  $readMs=$clock.Elapsed.TotalMilliseconds-$writeMs
   if ($n -eq 0) { throw 'Host closed the pipe' }
-  [Text.Encoding]::UTF8.GetString($buffer,0,$n)
+  $reply=[Text.Encoding]::UTF8.GetString($buffer,0,$n)
+  $transactions.Add([pscustomobject]@{request=$text;operation=$operation;writeMs=$writeMs;readMs=$readMs;
+    decodeMs=$clock.Elapsed.TotalMilliseconds-$writeMs-$readMs;totalMs=$clock.Elapsed.TotalMilliseconds})
+  $reply
 }
 function Load-Snapshot {
   # Two snapshots give interval CPU consumption, not lifetime CPU totals.
@@ -69,11 +80,11 @@ try {
   $env:DDSKK_SKKSERV_PORT="$Port"; $env:DDSKK_SKKSERV_START_COMMAND=''
   $env:NELISP_IME_ENGINE='ddskk'; $env:DDSKK_HOST_DEBUG='1'; $env:DDSKK_PHASE_TRACE='1'
   $env:DDSKK_CONVERSION_PROFILE=if ($Profile) {'1'} else {'0'}
-  if ($SkkServExecutable) {
-    if (-not $SkkServDependencyDir) {
+  if ($SkkServExecutable -or $FixtureServerPython) {
+    if ($SkkServExecutable -and -not $SkkServDependencyDir) {
       $SkkServDependencyDir=Split-Path (Get-Command emacs.exe -ErrorAction Stop).Source
     }
-    $env:PATH=$SkkServDependencyDir+';'+$env:PATH
+    if ($SkkServDependencyDir) {$env:PATH=$SkkServDependencyDir+';'+$env:PATH}
     # Reserve/check only the selected test port before starting our server.
     # If another instance owns it, fail without querying that instance.
     $portProbe=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,$Port)
@@ -87,8 +98,14 @@ try {
     $env:SKKSERV_GOOGLE_CACHE=Join-Path $run 'cache'
     [IO.File]::WriteAllLines($env:SKKSERV_CONFIG,@($copy,"$Port",'1','1','0','0','86400'))
     [IO.File]::WriteAllText($env:SKKSERV_DICTIONARIES_CONFIG,"1`t$copy`n")
-    $serverProcess=Start-Process -FilePath $SkkServExecutable -WorkingDirectory $run -WindowStyle Hidden -PassThru `
+    if ($FixtureServerPython) {
+      $serverProcess=Start-Process -FilePath $FixtureServerPython -WorkingDirectory $run -WindowStyle Hidden -PassThru `
+        -ArgumentList @('-u',('"'+(Join-Path $PSScriptRoot 'profile-eg1-server.py')+'"'),'--dictionary',('"'+$copy+'"'),'--port',"$Port") `
+        -RedirectStandardOutput (Join-Path $run 'server-stdout.log') -RedirectStandardError (Join-Path $run 'server-stderr.log')
+    } else {
+      $serverProcess=Start-Process -FilePath $SkkServExecutable -WorkingDirectory $run -WindowStyle Hidden -PassThru `
       -RedirectStandardOutput (Join-Path $run 'server-stdout.log') -RedirectStandardError (Join-Path $run 'server-stderr.log')
+    }
     $serverHandle=$serverProcess.Handle
     # Large dictionaries can take much longer than a fixture to index.
     # Check an actual L hit; a listening TCP socket alone is insufficient.
@@ -110,7 +127,7 @@ try {
       "ready=$serverReady attempts=$($attempt+1) wallMs=$($serverWatch.Elapsed.TotalMilliseconds) pid=$($serverProcess.Id)")
     if (-not $serverReady) { throw "Private server failed full-L lookup readiness: $run" }
   }
-  $env:DDSKK_SKKSERV_ENABLE=if ($SkkServExecutable) {'1'} else {'0'}
+  $env:DDSKK_SKKSERV_ENABLE=if ($SkkServExecutable -or $FixtureServerPython) {'1'} else {'0'}
   $load=Load-Snapshot
   if ($RequireQuiet) {
     $attempts=[Collections.Generic.List[object]]::new()
@@ -126,7 +143,7 @@ try {
     if ($busy.Count) { throw 'Machine remains busy; wall-clock gates not measured' }
   }
   if ($ServerOnly) {
-    if (-not $SkkServExecutable) { throw 'ServerOnly requires a private server executable' }
+    if (-not ($SkkServExecutable -or $FixtureServerPython)) { throw 'ServerOnly requires a private server' }
     $empty=Join-Path $run 'empty-host-jisyo.utf8'
     [IO.File]::WriteAllText($empty,';; Private empty host tier: benchmark the server relay.')
     $env:DDSKK_DICTIONARY_FILES=$empty
@@ -179,13 +196,47 @@ try {
     $gcTimer=[Diagnostics.Stopwatch]::StartNew(); $gcReply=Request 'GC'; $gcTimer.Stop(); $engine.Refresh()
     $maintenance.Add([pscustomobject]@{kind=$kind; response=$gcReply; wallMs=$gcTimer.Elapsed.TotalMilliseconds;
       cpuMs=($engine.TotalProcessorTime.TotalMilliseconds-$gcCpu)})
+    # Compare a warm, already-fed session's Space barrier to raw-key replay.
+    # Key requests still serialize responses; their cost is in transactions.
+    for ($iteration=0; $iteration -lt $PersistentIterations; $iteration++) {
+      foreach ($item in $items) {
+        [void](Request 'SESSION bench RESET')
+        foreach ($key in [char[]]$item.keys) {
+          [void](Request ('SESSION bench KEY '+[int]$key))
+        }
+        $operation=if($iteration -eq 0){'persistent-space-new'}else{'persistent-space-learned'}
+        $reply=Request 'SESSION bench CONTROL CONVERT' $operation
+        if ($reply -notmatch '^STATE candidate ') {throw "Persistent conversion failed: $reply"}
+        [void](Request 'SESSION bench CONTROL COMMIT' 'persistent-commit')
+        [void](Request 'HELLO 1')
+      }
+    }
+    for ($probe=0; $probe -lt $ProbeIterations; $probe++) {
+      [void](Request 'WIRE UTF8 1' 'metadata-hop')
+      [void](Request 'SESSION bench HELLO 1' 'same-session-noop')
+    }
+    if ($Contention) {
+      # A second private client makes the real shared-engine mutex visible.
+      $other=[IO.Pipes.NamedPipeClientStream]::new('.', $env:DDSKK_PIPE_NAME.Substring(9),[IO.Pipes.PipeDirection]::InOut)
+      try {
+        $other.Connect(10000)
+        $bytes=[Text.Encoding]::UTF8.GetBytes('GC')
+        $other.Write($bytes,0,$bytes.Length); $other.Flush()
+        Start-Sleep -Milliseconds 20
+        [void](Request 'HELLO 1' 'queued-behind-gc')
+        $buffer=New-Object byte[] 65536
+        $pending=$other.ReadAsync($buffer,0,$buffer.Length)
+        if (-not $pending.Wait(30000)) {throw 'Contending GC response timeout'}
+        if ($pending.Result -eq 0) {throw 'Contending client disconnected'}
+      } finally {$other.Dispose()}
+    }
     if ($Learning) {
       foreach ($item in $items) {
         $encoded=([int[]][char[]]$item.keys) -join ','
         $first=Request "SESSION bench CONTROL CONVERT-KEYS $encoded"
-        $selected=Request 'SESSION bench CONTROL CONVERT'
+        $selected=Request 'SESSION bench CONTROL CONVERT' 'candidate-next'
         if ($selected -notmatch '^STATE candidate ') { throw "No second candidate for $($item.name)" }
-        [void](Request 'SESSION bench CONTROL COMMIT')
+        [void](Request 'SESSION bench CONTROL COMMIT' 'learning-commit')
         $again=Request "SESSION bench CONTROL CONVERT-KEYS $encoded"
         $learned.Add([pscustomobject]@{name=$item.name; first=$first; selected=$selected; learned=$again})
         [void](Request 'SESSION bench CONTROL CANCEL')
@@ -197,9 +248,9 @@ try {
   }
   $result=[pscustomobject]@{schema=1; runtimeHash=(Get-FileHash $Runtime).Hash;
     dictionaryHash=(Get-FileHash $copy).Hash; corpusHash=(Get-FileHash (Join-Path $PSScriptRoot 'conversion-corpus.json')).Hash;
-    server=[bool]$SkkServExecutable; serverOnly=[bool]$ServerOnly; quietRequired=[bool]$RequireQuiet;
+    server=[bool]($SkkServExecutable -or $FixtureServerPython); fixtureServer=[bool]$FixtureServerPython; serverOnly=[bool]$ServerOnly; quietRequired=[bool]$RequireQuiet;
     load=$load; loadAfter=(Load-Snapshot);
-    coldLoads=$coldLoads.ToArray(); maintenance=$maintenance.ToArray(); traceDir=$run; samples=$rows.ToArray(); learning=$learned.ToArray()}
+    coldLoads=$coldLoads.ToArray(); maintenance=$maintenance.ToArray(); traceDir=$run; samples=$rows.ToArray(); learning=$learned.ToArray(); transactions=$transactions.ToArray()}
   $result | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 $Output
   foreach ($kind in $Kinds) {
     $warm=@($rows | Where-Object { $_.kind -eq $kind -and -not $_.cold })
