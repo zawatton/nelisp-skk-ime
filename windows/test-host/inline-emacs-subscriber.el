@@ -14,26 +14,32 @@
   (with-temp-buffer
     (insert (format "EMACS_PID=%d\n" (emacs-pid)))
     (write-region (point-min) (point-max) logfile nil 'silent))
-  (while (and (not (file-exists-p pidfile)) (< (float-time) deadline))
+  (while (and (not (file-exists-p pidfile))
+              (not (file-exists-p stopfile)) (< (float-time) deadline))
     (sleep-for 0.02))
+  (when (file-exists-p stopfile) (kill-emacs 0))
   (unless (file-exists-p pidfile) (error "No private TSF PID"))
   (setq nelisp-ime-emacs--inline-test-pid
         (with-temp-buffer (insert-file-contents pidfile) (string-to-number (buffer-string))))
   (switch-to-buffer (get-buffer-create "*inline-integrated-probe*"))
   (setq nelisp-ime-emacs--warned t)
+  (when (equal (getenv "INLINE_TEST_OPEN_MODE") "latin")
+    (setq nelisp-ime-emacs-open-mode-function (lambda () 'latin)))
   (cl-letf (((symbol-function 'window-absolute-pixel-position)
              (lambda (&rest _) '(321 . 456)))
             ((symbol-function 'line-pixel-height) (lambda () 23)))
     (advice-add 'nelisp-ime-emacs--inline-line :before
                 (lambda (_client line)
-                  (when (string-prefix-p "PAIR " line)
+                  (when (or (string-prefix-p "PAIR " line)
+                            (string-prefix-p "MODE-APPLIED " line))
                     (with-temp-buffer
-                      (insert (concat line "\n"))
+                      (insert (concat (if (string-prefix-p "MODE-APPLIED " line) "MODEACK " "") line "\n"))
                       (write-region (point-min) (point-max) logfile t 'silent)))))
     (advice-add 'nelisp-ime-emacs--inline-render :after
                 (lambda (text cursor)
                   (let ((display (overlay-get nelisp-ime-emacs--inline-overlay 'after-string)))
                     (with-temp-buffer
+                      (insert (format "RENDER_AT %.6f\n" (float-time)))
                       (insert (format "RENDER %d %s cursor=%S\n" cursor text
                                       (get-text-property cursor 'cursor display)))
                       (write-region (point-min) (point-max) logfile t 'silent)))))
@@ -44,6 +50,8 @@
     (unwind-protect
         (progn
           (nelisp-ime-emacs-mode 1)
+          (when nelisp-ime-emacs-open-mode-function
+            (nelisp-ime-emacs--request-open-mode t t))
           (unless (process-live-p nelisp-ime-emacs--inline-server)
             (error "Real Emacs TCP listener failed"))
           (while (and (not (file-exists-p stopfile)) (< (float-time) deadline))

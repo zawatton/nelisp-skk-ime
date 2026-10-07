@@ -87,11 +87,15 @@ bool ShiftDown() {
          (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 }
 
+bool SameComIdentity(IUnknown* left, IUnknown* right);
+
 class StateEditSession final : public ITfEditSession {
  public:
   StateEditSession(TextService* service, ITfContext* context,
-                   ddskk::EngineState state)
-      : service_(service), context_(context), state_(std::move(state)) {
+                   ddskk::EngineState state, const wchar_t* path = L"engine", uint64_t sequence = 0)
+      : service_(service), context_(context), state_(std::move(state)),
+        sequence_(sequence ? sequence : service->KeySequence()), generation_(service->EditGeneration()), path_(path) {
+    service_->StateSessionCreated();
     service_->AddRef();
     context_->AddRef();
   }
@@ -112,13 +116,25 @@ class StateEditSession final : public ITfEditSession {
     return count;
   }
   HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie edit_cookie) override {
-    return service_->ApplyEngineState(edit_cookie, context_, state_, &pair_caret_);
+    if (!executed_) { executed_ = true; service_->StateSessionExecuted(); }
+    if (!service_->StateEditAllowed(context_, generation_)) {
+      service_->TracePhase(L"edit-abandoned", sequence_, path_, S_FALSE);
+      return S_FALSE;
+    }
+    const auto saved_trace = service_->SetEditTraceSequence(sequence_);
+    service_->TracePhase(L"edit-start", sequence_, path_);
+    const HRESULT result = service_->ApplyEngineState(edit_cookie, context_, state_, &pair_caret_);
+    service_->FinishStateEdit(context_, state_, result);
+    service_->TracePhase(L"edit-end", sequence_, path_, result);
+    service_->SetEditTraceSequence(saved_trace);
+    return result;
   }
 
  private:
   ~StateEditSession() {
     // Synchronous callers retain this reference through text-store unlock.
     pair_caret_.Complete();
+    if (!executed_) service_->StateSessionExecuted();
     context_->Release();
     service_->Release();
   }
@@ -126,6 +142,9 @@ class StateEditSession final : public ITfEditSession {
   TextService* service_;
   ITfContext* context_;
   ddskk::EngineState state_;
+  uint64_t sequence_, generation_;
+  const wchar_t* path_;
+  bool executed_ = false;
   ddskk::AutoPairCaretUpdate pair_caret_;
 };
 
@@ -272,6 +291,7 @@ struct TextService::ProviderResult {
   uint64_t sequence = 0;
   std::optional<ddskk::EngineState> state;
   bool apply_state = true;
+  uint64_t key_sequence = 0;
 };
 
 TextService::TextService() {
@@ -281,6 +301,7 @@ TextService::TextService() {
 
 TextService::~TextService() {
   inline_channel_.Stop();
+  FlushDebugLog();
   if (candidate_ui_) candidate_ui_->DetachHandler();
   RemovePublishedState();
   settings_watcher_.Stop();
@@ -317,6 +338,10 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
   }
   if (message == kModeIndicatorMessage && service != nullptr) {
     service->FlushModeIndicator();
+    return 0;
+  }
+  if (message == WM_TIMER && wparam == 5 && service != nullptr) {
+    service->FlushDebugLog();
     return 0;
   }
   if (message == WM_TIMER && wparam == 4 && service != nullptr) {
@@ -386,6 +411,8 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
   provider_cleanup_pending_ = false;
   provider_conversion_active_ = true;
   provider_conversion_started_ = GetTickCount64();
+  const auto key_sequence = key_sequence_;
+  TracePhase(L"engine-lookup-request", key_sequence, L"engine");
   const uint64_t sequence =
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   provider_pending_.store(true, std::memory_order_release);
@@ -397,9 +424,10 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
   const bool retry_okuri = okuri_handoff_active_ && okuri_handoff_retry_;
   AddRef();
   try {
-    std::thread([this, keys, sequence, destination, retry_okuri, registration] {
+    std::thread([this, keys, sequence, key_sequence, destination, retry_okuri, registration] {
       if (retry_okuri) Sleep(100);
       DelayTestProvider();
+      TracePhase(L"engine-lookup-start", key_sequence, L"engine");
       DebugLog(L"Provider convert begin seq=%llu keys=%zu",
                static_cast<unsigned long long>(sequence), keys.size());
       std::optional<ddskk::EngineState> state;
@@ -408,6 +436,7 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
         state = registration ? engine_.RegisterLocal(keys, kModeReplayTimeoutMs)
                              : engine_.ConvertKeys(keys, kConversionTimeoutMs);
       }
+      TracePhase(L"engine-lookup-end", key_sequence, L"engine", state ? S_OK : E_FAIL);
       DebugLog(L"Provider convert done seq=%llu state=%d raw=%hs",
                static_cast<unsigned long long>(sequence), state ? 1 : 0,
                engine_.last_response().c_str());
@@ -420,7 +449,7 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
         std::fflush(stdout);
       }
       auto* result = new (std::nothrow) ProviderResult{this, sequence,
-                                                       std::move(state)};
+                                                       std::move(state), true, key_sequence};
       if (result == nullptr ||
           !PostMessageW(destination, kProviderResultMessage, 0,
                         reinterpret_cast<LPARAM>(result))) {
@@ -468,13 +497,16 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
     provider_deadline_ = GetTickCount64() + 5000;
     SetTimer(provider_window_, 1, 50, nullptr);
   }
+  const auto key_sequence = key_sequence_;
+  TracePhase(L"engine-lookup-request", key_sequence, L"engine");
   const HWND destination = provider_window_;
   const bool bounded_recovery = local_enabled_;
   AddRef();
   try {
-    std::thread([this, control, sequence, destination, apply_state, test_failure_delay,
+    std::thread([this, control, sequence, key_sequence, destination, apply_state, test_failure_delay,
                  candidate, reading, bounded_recovery] {
       const ULONGLONG started = GetTickCount64();
+      TracePhase(L"engine-lookup-start", key_sequence, L"engine");
       DelayTestProvider();
       std::optional<ddskk::EngineState> state;
       {
@@ -565,8 +597,9 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
           std::fflush(stdout);
         }
       }
+      TracePhase(L"engine-lookup-end", key_sequence, L"engine", state ? S_OK : E_FAIL);
       auto* result = new (std::nothrow) ProviderResult{this, sequence,
-                                                       std::move(state), apply_state};
+                                                       std::move(state), apply_state, key_sequence};
       if (result == nullptr ||
           !PostMessageW(destination, kProviderResultMessage, 0,
                         reinterpret_cast<LPARAM>(result))) {
@@ -600,10 +633,13 @@ bool TextService::BeginProviderKey(char32_t key, bool may_convert) {
     provider_deadline_ = GetTickCount64() + 5000;
     SetTimer(provider_window_, 1, 50, nullptr);
   }
+  const auto key_sequence = key_sequence_;
+  TracePhase(L"engine-lookup-request", key_sequence, L"engine");
   const HWND destination = provider_window_;
   AddRef();
   try {
-    std::thread([this, key, may_convert, sequence, destination] {
+    std::thread([this, key, may_convert, sequence, key_sequence, destination] {
+      TracePhase(L"engine-lookup-start", key_sequence, L"engine");
       DelayTestProvider();
       std::optional<ddskk::EngineState> state;
       {
@@ -611,8 +647,9 @@ bool TextService::BeginProviderKey(char32_t key, bool may_convert) {
         state = engine_.SendKey(key, may_convert ? kConversionTimeoutMs
                                                : kInteractiveTimeoutMs);
       }
+      TracePhase(L"engine-lookup-end", key_sequence, L"engine", state ? S_OK : E_FAIL);
       auto* result = new (std::nothrow) ProviderResult{
-          this, sequence, std::move(state)};
+          this, sequence, std::move(state), true, key_sequence};
       if (result == nullptr ||
           !PostMessageW(destination, kProviderResultMessage, 0,
                         reinterpret_cast<LPARAM>(result))) {
@@ -662,12 +699,15 @@ bool TextService::BeginProviderKeys(const std::u32string& keys, bool sync) {
     provider_deadline_ = GetTickCount64() + 5000;
     SetTimer(provider_window_, 1, 50, nullptr);
   }
+  const auto key_sequence = key_sequence_;
+  TracePhase(L"engine-lookup-request", key_sequence, L"engine");
   const HWND destination = provider_window_;
   AddRef();
   try {
-    std::thread([this, keys, sync, sequence, destination, test_failure_delay,
+    std::thread([this, keys, sync, sequence, key_sequence, destination, test_failure_delay,
                  test_drop_reply, retry_okuri = okuri_handoff_retry_] {
       if (retry_okuri) Sleep(100);
+      TracePhase(L"engine-lookup-start", key_sequence, L"engine");
       DelayTestProvider();
       std::optional<ddskk::EngineState> state;
       {
@@ -684,8 +724,9 @@ bool TextService::BeginProviderKeys(const std::u32string& keys, bool sync) {
                        : engine_.SendKeys(keys, kConversionTimeoutMs);
         }
       }
+      TracePhase(L"engine-lookup-end", key_sequence, L"engine", state ? S_OK : E_FAIL);
       auto* result = new (std::nothrow) ProviderResult{
-          this, sequence, std::move(state)};
+          this, sequence, std::move(state), true, key_sequence};
       if (result == nullptr ||
           !PostMessageW(destination, kProviderResultMessage, 0,
                         reinterpret_cast<LPARAM>(result))) {
@@ -702,6 +743,7 @@ bool TextService::BeginProviderKeys(const std::u32string& keys, bool sync) {
 }
 
 void TextService::ResolveLocalFallback() {
+  TracePhase(L"provider-fallback", key_sequence_, L"engine");
   // Keep semantic keys, invalidate replies, and return ownership to the native
   // reading. No engine transaction or worker lock belongs to this callback.
   auto queued = std::move(deferred_provider_keys_);
@@ -895,6 +937,25 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   }
   provider_composition_active_ = !registration_mode_ &&
       result->state->composition_start >= 0;
+  if (local_enabled_ && provider_composition_active_ && result->state->mode == L"preedit" &&
+      realtime_frontend_.preedit() && !realtime_frontend_.okuri_started()) {
+    const auto index = local_store_.Current();
+    if (index && realtime_frontend_.TrySetRulesForReading(index->ParsedRules())) {
+      local_rule_snapshot_ = index->Base() ? index->Base() : index;
+      local_rule_generation_ = local_rule_snapshot_->header().generation;
+      auto_pair_.SetRules(local_rule_snapshot_->ParsedRules());
+    }
+    const auto native = realtime_frontend_.RestorePreedit();
+    if (index && local_rule_snapshot_ && index->Rules() == local_rule_snapshot_->Rules() &&
+        result->state->text == native.text && result->state->pending_romaji == native.pending_romaji) {
+      // A provider quit/restoration may leave a reading the native frontend
+      // already owns exactly. Return typing to it instead of serializing
+      // each following letter through the provider transaction queue.
+      provider_composition_active_ = false;
+      engine_.MarkNeedsResync();
+      DebugLog(L"LOCAL_RECLAIM seq=%llu mode=preedit", key_sequence_);
+    }
+  }
   engine_pending_ = registration_mode_ || result->state->composition_start >= 0 ||
                     !result->state->pending_romaji.empty();
   kana_mode_ = ddskk::DeriveKanaMode(*result->state);
@@ -909,7 +970,8 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
     }
     if (!deferred_provider_keys_.empty()) {
       bool started = false;
-      const DeferredProviderKey key = deferred_provider_keys_.front();
+      TracePhase(L"provider-key-replay", key_sequence_, L"engine");
+    const DeferredProviderKey key = deferred_provider_keys_.front();
       if (key.has_codepoint) {
         std::u32string keys;
         while (!deferred_provider_keys_.empty() &&
@@ -930,19 +992,15 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
     return;
   }
   if (active_context_ == nullptr) return;
-  UpdateCandidateUI(active_context_, *result->state);
   auto* edit_session =
-      new (std::nothrow) StateEditSession(this, active_context_, *result->state);
+      new (std::nothrow) StateEditSession(this, active_context_, *result->state, L"engine", result->key_sequence);
   if (edit_session == nullptr) return;
   HRESULT edit_result = E_FAIL;
-  const HRESULT request = active_context_->RequestEditSession(
-      client_id_, edit_session, TF_ES_SYNC | TF_ES_READWRITE, &edit_result);
+  const HRESULT request = RequestEdit(active_context_, edit_session, &edit_result, L"engine", result->key_sequence);
   edit_session->Release();
   MaybeShowModeIndicator(active_context_, &*result->state);
-  // Applying the edit derives the generic candidate flag from STATE. A
-  // synced DDSKK ▽ still belongs to the provider even without candidates.
-  provider_composition_active_ = !registration_mode_ &&
-      result->state->composition_start >= 0;
+  // Preserve the ownership decision above through synchronous or delayed
+  // edit execution, including a certified reading reclaimed by the frontend.
   if (SUCCEEDED(request) && SUCCEEDED(edit_result)) {
     if (result->state->mode == L"candidate") TraceOkuriCandidate(false);
     ReplayDeferredProviderKeys();
@@ -965,6 +1023,21 @@ void TextService::ReplayDeferredProviderKeys() {
          !provider_pending_.load(std::memory_order_acquire)) {
     const DeferredProviderKey key = deferred_provider_keys_.front();
     deferred_provider_keys_.pop_front();
+    if (local_enabled_ && kana_mode_ && !provider_composition_active_ && !registration_mode_) {
+      // A late index must use the same local barriers as fresh typing. The
+      // old replay loop sent every subsequent SPACE back to the provider,
+      // even after the mapped index became available.
+      BYTE saved[256]{}, keyboard[256]{};
+      GetKeyboardState(saved);
+      if (key.shift) keyboard[VK_SHIFT] = 0x80;
+      if (key.ctrl_j) keyboard[VK_CONTROL] = 0x80;
+      SetKeyboardState(keyboard);
+      BOOL eaten = FALSE;
+      const auto scan = MapVirtualKeyW(static_cast<UINT>(key.virtual_key), MAPVK_VK_TO_VSC);
+      OnKeyDown(active_context_, key.virtual_key, (static_cast<LPARAM>(scan) << 16) | 1, &eaten);
+      SetKeyboardState(saved);
+      continue;
+    }
     std::optional<ddskk::EngineState> state;
     if (provider_composition_active_) {
       if (key.has_codepoint) {
@@ -1042,13 +1115,11 @@ void TextService::ReplayDeferredProviderKeys() {
                       !state->pending_romaji.empty();
     kana_mode_ = ddskk::DeriveKanaMode(*state);
     last_engine_mode_ = state->mode;
-    UpdateCandidateUI(active_context_, *state);
     auto* edit_session =
         new (std::nothrow) StateEditSession(this, active_context_, *state);
     if (edit_session == nullptr) return;
     HRESULT edit_result = E_FAIL;
-    const HRESULT request = active_context_->RequestEditSession(
-        client_id_, edit_session, TF_ES_SYNC | TF_ES_READWRITE, &edit_result);
+    const HRESULT request = RequestEdit(active_context_, edit_session, &edit_result);
     edit_session->Release();
     if (FAILED(request) || FAILED(edit_result)) return;
   }
@@ -1068,11 +1139,10 @@ void TextService::RenderLocalOkuri(ITfContext* context) {
   const auto state = realtime_frontend_.RestorePreedit();
   engine_pending_ = true;
   last_engine_mode_ = L"preedit";
-  UpdateCandidateUI(context, state);
   auto* edit = new (std::nothrow) StateEditSession(this, context, state);
   if (!edit) return;
   HRESULT result = E_FAIL;
-  context->RequestEditSession(client_id_, edit, TF_ES_SYNC | TF_ES_READWRITE, &result);
+  RequestEdit(context, edit, &result);
   edit->Release();
 }
 
@@ -1137,7 +1207,8 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
   // service alive here could run its window destructor on this worker.
   InterlockedIncrement(&g_object_count);
   try {
-    std::thread([] {
+    fallback_rules_ = std::make_shared<std::atomic<std::shared_ptr<const RuleExport>>>();
+    std::thread([rules = fallback_rules_] {
       struct WarmupLease {
         ~WarmupLease() { InterlockedDecrement(&g_object_count); }
       } lease;
@@ -1147,7 +1218,10 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
         while (GetTickCount64() < deadline) {
           if (warm_up_client.Connect(2000)) {
             warm_up_client.CurrentEngine(1000);
-            return;
+            if (auto exported = warm_up_client.RomajiRules(1000)) {
+              rules->store(std::make_shared<const RuleExport>(std::move(*exported)));
+              return;
+            }
           }
           Sleep(250);
         }
@@ -1193,6 +1267,7 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
 }
 
 HRESULT TextService::Deactivate() {
+  FlushDebugLog();
   CancelLocalRetry();
   local_observer_retry_.reset();
   local_store_.ReleaseState();
@@ -1466,6 +1541,7 @@ void TextService::ApplyKeyboardOpenChange() {
     }
   }
   if (!open) published_composing_ = 0;
+  if (open) ApplyRequestedInlineMode();
   MaybeShowModeIndicator(nullptr, nullptr);
 }
 
@@ -1977,8 +2053,12 @@ void TextService::LoadSettings() {
                     KEY_READ, &key) == ERROR_SUCCESS) {
     RegQueryValueExW(key, L"Engine", nullptr, nullptr,
                      reinterpret_cast<BYTE*>(engine), &bytes);
-    RegQueryValueExW(key, L"DllDebug", nullptr, nullptr,
-                     reinterpret_cast<BYTE*>(&debug_log), &debug_log_bytes);
+    if (RegQueryValueExW(key, L"DebugLog", nullptr, nullptr,
+                        reinterpret_cast<BYTE*>(&debug_log), &debug_log_bytes) != ERROR_SUCCESS) {
+      debug_log_bytes = sizeof(debug_log);
+      RegQueryValueExW(key, L"DllDebug", nullptr, nullptr,
+                      reinterpret_cast<BYTE*>(&debug_log), &debug_log_bytes);
+    }
     if (RegQueryValueExW(key, L"LocalConversion", nullptr, &local_type,
         reinterpret_cast<BYTE*>(&local), &local_bytes) != ERROR_SUCCESS ||
         local_type != REG_DWORD || local_bytes != sizeof(local)) local = 0;
@@ -2026,6 +2106,7 @@ void TextService::LoadSettings() {
     wcscpy_s(engine, environment_engine);
   }
   engine_id_ = NarrowUtf8(engine);
+  fallback_rules_loaded_ = false;
   local_enabled_ = engine_id_ == "ddskk" &&
       (application_local_conversion_ >= 0 ? application_local_conversion_ == 1 : local == 1);
   if (local_enabled_) {
@@ -2044,6 +2125,7 @@ void TextService::LoadSettings() {
   provider_composition_active_ = false;
   deferred_provider_keys_.clear();
   debug_log_ = debug_log == 1;
+  if (debug_log_ && provider_window_) SetTimer(provider_window_, 5, 100, nullptr);
   // Activate runs on the application's UI thread.  Do not add a one-second
   // startup stall when the shared engine is still cold; the background
   // warm-up in Activate retries and selects the configured engine.
@@ -2139,33 +2221,72 @@ void TextService::DebugLog(const wchar_t* format, ...) {
               static_cast<unsigned long>(GetCurrentProcessId()),
               static_cast<unsigned long long>(GetTickCount64()), message);
 
-  wchar_t local_app_data[MAX_PATH]{};
-  const DWORD local_app_data_len =
-      GetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data, MAX_PATH);
-  if (local_app_data_len == 0 || local_app_data_len >= MAX_PATH) return;
-  const std::wstring log_dir = std::wstring(local_app_data) + L"\\DDSKK";
-  CreateDirectoryW(log_dir.c_str(), nullptr);
-  const std::wstring log_path = log_dir + L"\\dll-debug.log";
-
-  const int utf8_len = WideCharToMultiByte(CP_UTF8, 0, line, -1, nullptr, 0,
-                                           nullptr, nullptr);
+  const int utf8_len = WideCharToMultiByte(CP_UTF8, 0, line,
+      static_cast<int>(wcslen(line)), nullptr, 0, nullptr, nullptr);
   if (utf8_len <= 0) return;
-  std::string utf8(static_cast<size_t>(utf8_len) - 1, '\0');
-  WideCharToMultiByte(CP_UTF8, 0, line, -1, utf8.data(), utf8_len, nullptr,
-                      nullptr);
-
-  const HANDLE file = CreateFileW(
-      log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-      nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  std::string utf8(utf8_len, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, line, static_cast<int>(wcslen(line)),
+                      utf8.data(), utf8_len, nullptr, nullptr);
+  std::lock_guard lock(debug_mutex_);
+  if (debug_lines_.size() + utf8.size() <= 256 * 1024) debug_lines_ += utf8;
+}
+void TextService::FlushDebugLog() {
+  std::string lines;
+  { std::lock_guard lock(debug_mutex_); lines.swap(debug_lines_); }
+  if (lines.empty()) return;
+  wchar_t directory[MAX_PATH]{};
+  const DWORD size = GetEnvironmentVariableW(L"LOCALAPPDATA", directory, MAX_PATH);
+  if (!size || size >= MAX_PATH) return;
+  const std::wstring folder = std::wstring(directory) + L"\\DDSKK";
+  CreateDirectoryW(folder.c_str(), nullptr);
+  const HANDLE file = CreateFileW((folder + L"\\dll-debug.log").c_str(),
+      FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+      OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) return;
   DWORD written = 0;
-  WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written,
-           nullptr);
+  WriteFile(file, lines.data(), static_cast<DWORD>(lines.size()), &written, nullptr);
   CloseHandle(file);
+}
+void TextService::TracePhase(const wchar_t* phase, uint64_t sequence,
+                             const wchar_t* path, HRESULT result, DWORD flags) {
+  if (!debug_log_) return;
+  LARGE_INTEGER counter{}, frequency{};
+  QueryPerformanceCounter(&counter); QueryPerformanceFrequency(&frequency);
+  DebugLog(L"PHASE name=%ls seq=%llu path=%ls us=%llu hr=%08X flags=%lu async=%d",
+      phase, sequence, path,
+      static_cast<unsigned long long>((counter.QuadPart / frequency.QuadPart) * 1000000 +
+          (counter.QuadPart % frequency.QuadPart) * 1000000 / frequency.QuadPart),
+      static_cast<unsigned>(result), flags, result == TF_S_ASYNC);
+}
+HRESULT TextService::RequestEdit(ITfContext* context, ITfEditSession* edit,
+                                  HRESULT* result, const wchar_t* path, uint64_t sequence) {
+  if (!sequence) sequence = KeySequence();
+  // Let TSF grant the lock now or retain the session. Console hosts no longer
+  // need a failed SYNC request followed by the 50 ms local retry timer.
+  const DWORD flags = TF_ES_ASYNCDONTCARE | TF_ES_READWRITE;
+  TracePhase(L"edit-request", sequence, path, S_OK, flags);
+  HRESULT request = context->RequestEditSession(client_id_, edit, flags, result);
+  if (SUCCEEDED(request) && (*result == TF_E_SYNCHRONOUS || *result == TF_E_LOCKED)) {
+    TracePhase(L"edit-retry-async", sequence, path, *result, TF_ES_ASYNC | TF_ES_READWRITE);
+    request = context->RequestEditSession(client_id_, edit, TF_ES_ASYNC | TF_ES_READWRITE, result);
+  }
+  TracePhase(L"edit-request-return", sequence, path, request, flags);
+  TracePhase(L"edit-result", sequence, path, *result, flags);
+  return request;
+}
+void TextService::FinishStateEdit(ITfContext* context,
+                                 const ddskk::EngineState& state, HRESULT result) {
+  if (FAILED(result) || !thread_manager_) return;
+  // Text and candidate UI become visible in the same edit-session execution.
+  UpdateCandidateUI(context, state);
+  MaybeShowModeIndicator(context, &state);
+  ApplyRequestedInlineMode();
 }
 
 HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
                                BOOL* eaten) {
+  ++key_sequence_;
+  TracePhase(L"key-receipt", key_sequence_, L"key");
   FollowSettings();
   if (eaten == nullptr) return E_POINTER;
   *eaten = FALSE;
@@ -2208,6 +2329,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   // right before returning.
   const auto debug_exit = [&](BOOL final_eaten, HRESULT request_hr = S_OK,
                               HRESULT edit_hr = S_OK) {
+    TracePhase(L"key-return", key_sequence_, branch, edit_hr);
     wchar_t harness_diagnostics[2]{};
     if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS",
                                 harness_diagnostics, 2) > 0) {
@@ -2258,8 +2380,11 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     // The worker parsed and validated this rule export. Pin the table
     // through a reading/candidate episode, including offline input.
     const auto rule_index = local_index->Base() ? local_index->Base() : local_index;
-    if (local_rule_generation_ != rule_index->header().generation &&
-        !realtime_frontend_.composing() && !local_conversion_.active()) {
+    if ((!local_rule_snapshot_ || local_rule_generation_ != rule_index->header().generation) &&
+        !local_conversion_.active() &&
+        (!realtime_frontend_.composing() ||
+         (wparam == VK_SPACE && realtime_frontend_.preedit() && !provider_composition_active_ &&
+          realtime_frontend_.TrySetRulesForReading(rule_index->ParsedRules())))) {
       realtime_frontend_.SetRules(rule_index->ParsedRules());
       auto_pair_.SetRules(rule_index->ParsedRules());
       local_rule_generation_ = rule_index->header().generation;
@@ -2267,10 +2392,14 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       // cache neither recopies the table nor retains superseded overlays.
       local_rule_snapshot_ = rule_index;
     }
-  } else if (!provider_pending_.load(std::memory_order_acquire)) {
-    const auto rules = engine_.RomajiRules();
-    realtime_frontend_.SetRules(rules ? *rules : std::vector<ddskk::RomajiRule>{});
-    auto_pair_.SetRules(rules ? *rules : std::vector<ddskk::RomajiRule>{});
+  } else if (!fallback_rules_loaded_ && !realtime_frontend_.composing() &&
+             !local_conversion_.active()) {
+    const auto rules = fallback_rules_ ? fallback_rules_->load() : nullptr;
+    if (rules) {
+      realtime_frontend_.SetRules(*rules);
+      auto_pair_.SetRules(*rules);
+      fallback_rules_loaded_ = true;
+    }
   }
   const auto skk_mode_key = (!control_down && engine_id_ == "ddskk" &&
       realtime_frontend_.preedit() && !provider_composition_active_ && !local_conversion_.active())
@@ -2451,6 +2580,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
         else
           BeginProviderKeys(keys, true);
       }
+      TracePhase(L"provider-key-deferred", key_sequence_, L"engine");
+      DebugLog(L"QUEUE seq=%llu count=%zu cleanup=%d index=%d", key_sequence_,
+          deferred_provider_keys_.size(), provider_cleanup_pending_, local_index ? 1 : 0);
       branch = L"provider-queue";
       *eaten = TRUE;
       debug_exit(*eaten);
@@ -2485,6 +2617,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   }
   if (provider_composition_active_ && !ctrl_g && wparam != VK_ESCAPE &&
       !katakana_q) {
+    if (wparam == VK_SPACE)
+      DebugLog(L"LOCAL_PRECONDITION seq=%llu failed=provider-composition preedit=%d provider=1 mode=%ls",
+          key_sequence_, realtime_frontend_.preedit(), last_engine_mode_.c_str());
     std::optional<ddskk::EngineControl> control;
     if (wparam == VK_RETURN)
       control = ddskk::EngineControl::kCommit;
@@ -2713,8 +2848,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       if (realtime_frontend_.preedit() && !provider_composition_active_ &&
           last_engine_mode_ != L"candidate") {
         const auto started = GetTickCount64();
+        TracePhase(L"lookup-start", key_sequence_, L"local");
         const auto local_reading = realtime_frontend_.preview_reading();
         const auto captured = local_store_.Capture();
+        DebugLog(L"LOCAL_SNAPSHOT seq=%llu mapped=%d available=%d overlay=%llu opens=%llu handoff=%llu",
+            key_sequence_, captured.index ? 1 : 0, captured.available,
+            captured.index ? captured.index->header().overlay_sequence : 0,
+            local_store_.MappingOpensForDiagnostics(), local_handoff_requested_);
         std::vector<std::wstring> pending;
         for (const auto& item : captured.pending) if (item.key == local_reading) {
           pending.erase(std::remove(pending.begin(), pending.end(), item.candidate), pending.end());
@@ -2727,6 +2867,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
           if (provider_cleanup_pending_) CancelPendingProvider();
           provider_candidate_state_.reset();
           branch = L"local-convert";
+          TracePhase(L"lookup-end", key_sequence_, L"local");
           state = local_conversion_.State();
           const HRESULT hr = ApplyLocalState(context, *state);
           if (FAILED(hr)) ScheduleLocalRetry();
@@ -2736,6 +2877,15 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
                 GetTickCount64() - started, ++local_conversion_sequence_);
           debug_exit(*eaten, hr, hr); return S_OK;
         }
+        const wchar_t* local_failure = !local_enabled_ ? L"disabled" :
+            !captured.available ? L"snapshot-unavailable" : !captured.index ? L"index-missing" :
+            !local_rule_snapshot_ ? L"rules-unpinned" :
+            captured.index->Rules() != local_rule_snapshot_->Rules() ? L"rules-mismatch" : L"entry-uncertified-or-empty";
+        DebugLog(L"LOCAL_PRECONDITION seq=%llu failed=%ls preedit=%d provider=%d enabled=%d available=%d index=%d rules=%d capabilities=%llu reading=%ls",
+            key_sequence_, local_failure, realtime_frontend_.preedit(), provider_composition_active_,
+            local_enabled_, captured.available, captured.index ? 1 : 0, local_rule_snapshot_ ? 1 : 0,
+            captured.index ? captured.index->header().capabilities : 0, local_reading.c_str());
+        TracePhase(L"lookup-miss", key_sequence_, L"local");
         branch = L"provider-convert";
         std::optional<std::vector<std::wstring>> preview;
         const std::wstring reading = realtime_frontend_.preview_reading();
@@ -2758,6 +2908,10 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
                                     kConversionTimeoutMs);
         if (state) realtime_frontend_.Reset();
       } else {
+        DebugLog(L"LOCAL_PRECONDITION seq=%llu failed=%ls preedit=%d provider=%d mode=%ls",
+            key_sequence_, !realtime_frontend_.preedit() ? L"not-preedit" :
+                provider_composition_active_ ? L"provider-composition" : L"candidate-mode",
+            realtime_frontend_.preedit(), provider_composition_active_, last_engine_mode_.c_str());
         state = engine_.SendControl(ddskk::EngineControl::kConvert,
                                     kConversionTimeoutMs);
       }
@@ -3091,12 +3245,10 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     debug_exit(*eaten);
     return S_OK;
   }
-  UpdateCandidateUI(context, *state);
   auto* edit_session = new (std::nothrow) StateEditSession(this, context, *state);
   if (edit_session == nullptr) return E_OUTOFMEMORY;
   HRESULT edit_result = E_FAIL;
-  const HRESULT request = context->RequestEditSession(
-      client_id_, edit_session, TF_ES_SYNC | TF_ES_READWRITE, &edit_result);
+  const HRESULT request = RequestEdit(context, edit_session, &edit_result);
   edit_session->Release();
   debug_exit(*eaten, request, edit_result);
   // Covers both the Ctrl+J toggle above and every SendKey-driven mode
@@ -3129,6 +3281,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
 // OnKeyDown failure path that abandons a composition, from
 // OnCompositionTerminated(), and from Deactivate().
 void TextService::ResetAbandonedComposition() {
+  ++edit_generation_;
   CancelLocalRetry();
   local_store_.ReleaseState();
   local_conversion_.Reset();
@@ -3244,7 +3397,7 @@ void TextService::SettleContextComposition(ITfContext* context) {
     auto* edit = new (std::nothrow) StateEditSession(this, context, settled);
     if (edit) {
       HRESULT result = E_FAIL;
-      context->RequestEditSession(client_id_, edit, TF_ES_SYNC | TF_ES_READWRITE, &result);
+      RequestEdit(context, edit, &result);
       edit->Release();
     }
   }
@@ -3310,6 +3463,11 @@ bool SameComIdentity(IUnknown* left, IUnknown* right) {
   return same;
 }
 }  // namespace
+
+bool TextService::StateEditAllowed(ITfContext* context, uint64_t generation) const {
+  return thread_manager_ && generation == edit_generation_ &&
+         SameComIdentity(context, active_context_);
+}
 
 void TextService::TrackEndingComposition(ITfComposition* composition) {
   if (shim_.track_ending_composition) {
@@ -3402,6 +3560,7 @@ void TextService::UpdateCandidateUI(ITfContext* context,
   context->GetDocumentMgr(&document);
   if (candidate_ui_ != nullptr) candidate_ui_->Update(state, document, local_conversion_.active());
   if (document != nullptr) document->Release();
+  TracePhase(L"candidate-show-start", KeySequence(), state.mode.c_str());
   if (candidate_ui_ != nullptr) {
     if (candidate_ui_id_ == TF_INVALID_UIELEMENTID) {
       BOOL show = TRUE;
@@ -3418,6 +3577,7 @@ void TextService::UpdateCandidateUI(ITfContext* context,
     }
   }
   manager->Release();
+  TracePhase(L"candidate-show-end", KeySequence(), state.mode.c_str());
 }
 
 HRESULT TextService::SelectCandidate(UINT index) {
@@ -3476,11 +3636,10 @@ HRESULT TextService::AbortCandidate() {
 
 HRESULT TextService::ApplyLocalState(ITfContext* context, const ddskk::EngineState& state) {
   if (!context) return E_UNEXPECTED;
-  auto* edit = new (std::nothrow) StateEditSession(this, context, state);
+  auto* edit = new (std::nothrow) StateEditSession(this, context, state, L"local");
   if (!edit) return E_OUTOFMEMORY;
   HRESULT result = E_FAIL;
-  const HRESULT request = context->RequestEditSession(client_id_, edit,
-      TF_ES_SYNC | TF_ES_READWRITE, &result);
+  const HRESULT request = RequestEdit(context, edit, &result, L"local");
   edit->Release();
   if (FAILED(request) || FAILED(result)) {
     if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
@@ -3491,7 +3650,6 @@ HRESULT TextService::ApplyLocalState(ITfContext* context, const ddskk::EngineSta
   provider_composition_active_ = false;
   last_engine_mode_ = state.mode;
   kana_mode_ = ddskk::DeriveKanaMode(state);
-  UpdateCandidateUI(context, state);
   MaybeShowModeIndicator(context, &state);
   if (local_enabled_) PublishLocalObserver(state);
   return S_OK;
@@ -3552,6 +3710,7 @@ HRESULT TextService::CommitLocal(ITfContext* context) {
   if (FAILED(result)) { local_conversion_ = saved; return result; }
   local_okuri_snapshot_ = {};
   realtime_frontend_.Reset();
+  ApplyRequestedInlineMode();
   const bool queued = local_store_.Learn(key, word, okuri);
   if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
     std::printf("LOCAL_LEARNING queued=%d pending=%zu\n", queued ? 1 : 0, local_store_.Unsaved());
@@ -3567,7 +3726,6 @@ HRESULT TextService::RequestStateEdit(const ddskk::EngineState& state) {
   engine_pending_ = state.composition_start >= 0 || !state.pending_romaji.empty();
   provider_composition_active_ = state.composition_start >= 0 &&
       !state.candidates.empty();
-  UpdateCandidateUI(candidate_context_, state);
   auto* edit_session =
       new (std::nothrow) StateEditSession(this, candidate_context_, state);
   if (edit_session == nullptr) return E_OUTOFMEMORY;
@@ -3735,7 +3893,36 @@ void TextService::ClearInlineEpisode() {
   inline_epoch_ = 0; preedit_episode_ = false; inline_state_ = {};
 }
 
+void TextService::ApplyRequestedInlineMode() {
+  if (!requested_inline_mode_.epoch) return;
+  if (requested_inline_mode_.epoch != inline_channel_.Epoch()) {
+    requested_inline_mode_ = {}; return;
+  }
+  if (!thread_manager_ || !keyboard_open_ || !ddskk_engine_ ||
+      engine_id_ != "ddskk" || pending_state_edits_ || engine_pending_ || registration_mode_ || composition_ ||
+      realtime_frontend_.composing() || provider_pending_.load()) return;
+  const auto request = std::move(requested_inline_mode_);
+  requested_inline_mode_ = {};
+  const auto mode = request.mode == L"latin" ? L"latin" : L"hiragana";
+  realtime_frontend_.SetInputMode(mode);
+  kana_mode_ = request.mode != L"latin";
+  last_engine_mode_ = mode;
+  mode_before_close_kana_ = kana_mode_; engine_mode_before_close_ = mode;
+  engine_.MarkNeedsResync();
+  ddskk::EngineState state; state.mode = mode;
+  if (local_enabled_) PublishLocalObserver(state);
+  MaybeShowModeIndicator(nullptr, &state);
+  inline_channel_.ReplyMode(request.epoch, request.mode);
+  TracePhase(L"inline-mode-applied", key_sequence_, mode);
+  if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
+    std::printf("INLINE_MODE mode=%ls open=%d label=%ls\n", mode, keyboard_open_, CurrentModeLabel().c_str());
+    std::fflush(stdout);
+  }
+}
 void TextService::HandleInlineEvent() {
+  InlinePreedit::ModeRequest request{};
+  if (inline_channel_.TakeModeRequest(&request)) requested_inline_mode_ = std::move(request);
+  ApplyRequestedInlineMode();
   if (!inline_epoch_ || !thread_manager_) return;
   RECT caret{};
   if (inline_channel_.Caret(inline_epoch_, &caret)) {
@@ -3748,8 +3935,7 @@ void TextService::HandleInlineEvent() {
   auto* edit = new (std::nothrow) StateEditSession(this, active_context_, inline_state_);
   if (!edit) return;
   HRESULT result = E_FAIL;
-  active_context_->RequestEditSession(client_id_, edit,
-      TF_ES_SYNC | TF_ES_READWRITE, &result);
+  RequestEdit(active_context_, edit, &result);
   edit->Release();
 }
 
@@ -3852,6 +4038,7 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
   ITfRange* range = nullptr;
   if (composition_ != nullptr) {
     const HRESULT get_range = composition_->GetRange(&range);
+    TracePhase(L"composition-range", KeySequence(), L"host", get_range);
     DebugLog(L"ApplyEngineState get_range hr=%X",
              static_cast<unsigned>(get_range));
     if (FAILED(get_range)) return get_range;
@@ -3923,6 +4110,7 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
           &composition_);
       if (stable_sink) stable_sink->Release();
       composition_context->Release();
+      TracePhase(L"composition-create", KeySequence(), L"host", result);
       DebugLog(L"ApplyEngineState start_composition hr=%X",
                static_cast<unsigned>(result));
     }
@@ -3931,8 +4119,10 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       return result;
     }
   }
+  TracePhase(L"range-update-start", KeySequence(), L"host");
   const HRESULT set_text = range->SetText(
       edit_cookie, 0, display.data(), static_cast<LONG>(display.size()));
+  TracePhase(L"range-update-end", KeySequence(), L"host", set_text);
   DebugLog(L"ApplyEngineState set_text hr=%X", static_cast<unsigned>(set_text));
   if (SUCCEEDED(set_text)) {
     // SetText can shrink the display (ぼく -> 僕). Bind both composition
@@ -3976,7 +4166,10 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       selection.style.ase = TF_AE_NONE;
       selection.style.fInterimChar = FALSE;
       context->SetSelection(edit_cookie, 1, &selection);
-      CaptureCaretRect(edit_cookie, context, caret);
+      if (state.candidates.empty() || !last_caret_valid_)
+        CaptureCaretRect(edit_cookie, context, caret);
+      else
+        TracePhase(L"caret-reused", KeySequence(), L"host");
       caret->Release();
     }
   }
@@ -3995,6 +4188,7 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       composition_ != nullptr) {
     TrackEndingComposition(composition_);
     const HRESULT end = composition_->EndComposition(edit_cookie);
+    TracePhase(L"composition-end", KeySequence(), L"host", end);
     DebugLog(L"ApplyEngineState end_composition hr=%X",
              static_cast<unsigned>(end));
     if (FAILED(end)) UntrackEndingComposition(composition_);
@@ -4023,6 +4217,7 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
 // the mouse cursor position.
 void TextService::CaptureCaretRect(TfEditCookie edit_cookie, ITfContext* context,
                                    ITfRange* range) {
+  TracePhase(L"caret-start", KeySequence(), L"host");
   last_caret_valid_ = false;
   if (context == nullptr || range == nullptr) return;
   ITfContextView* view = nullptr;
@@ -4031,6 +4226,7 @@ void TextService::CaptureCaretRect(TfEditCookie edit_cookie, ITfContext* context
   BOOL clipped = FALSE;
   const HRESULT result = view->GetTextExt(edit_cookie, range, &rect, &clipped);
   view->Release();
+  TracePhase(L"caret-end", KeySequence(), L"host", result);
   if (FAILED(result)) return;
   last_caret_rect_ = rect;
   last_caret_valid_ = true;

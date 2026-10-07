@@ -889,4 +889,20 @@ charge scheduling stalls or time spent in filters against that budget."
       (should-not nelisp-ime-emacs--inline-client)
       (should-not nelisp-ime-emacs--inline-connections))))
 
+(ert-deftest nelisp-ime-emacs-inline-explicit-open-mode ()
+  (nelisp-ime-emacs-inline-test--with-server
+    (let ((client (nelisp-ime-emacs-inline-test--client))
+          (nelisp-ime-emacs-open-mode-function (lambda () 'latin))
+          (nelisp-ime-emacs--open-mode-context nil)
+          (nelisp-ime-emacs--pending-open-mode 'latin))
+      (push client test-clients)
+      (nelisp-ime-emacs-inline-test--hello client)
+      (nelisp-ime-emacs-inline-test--wait
+       (lambda () (string-match-p "MODE latin\n" (process-get client 'received))))
+      (should-not nelisp-ime-emacs--pending-open-mode)
+      (process-send-string client "MODE-APPLIED latin\nPREEDIT 1 2 ▽か\n")
+      (nelisp-ime-emacs-inline-test--sequence 1)
+      (should (process-live-p nelisp-ime-emacs--inline-client))
+      (should (overlayp nelisp-ime-emacs--inline-overlay)))))
+
 ;;; nelisp-ime-emacs-inline-test.el ends here

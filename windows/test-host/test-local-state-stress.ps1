@@ -37,7 +37,7 @@ try {
  $env:NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS='5000'
  $random=New-Object Random($Seed)
  $tokens='CTX2 a i SPACE WAIT3000 ENTER CTX1 '
- $expected=''; $candidateChecks=0; $firstChecks=0
+ $expected=''; $candidateChecks=0; $firstChecks=0; $denialChecks=0
  for($i=0;$i -lt $Episodes;$i++) {
   $choice=$random.Next(9)
   $word=@('抵抗値','抵抗値','Ω','値','漢字','書く','買った','死んだ','買う')[$choice]
@@ -47,6 +47,7 @@ try {
    $word='初語'+$i;$reading=(FirstReading $i).tokens
   }
   if($random.Next(4) -eq 0) {
+   $denialChecks++
    if($choice -lt 5 -or $choice -eq 9){$tokens+=$reading+' DENYWRITE SPACE WAIT200 '}
    else {
     $parts=$reading.Split(' ');$last=$parts[-1]
@@ -78,11 +79,12 @@ try {
  $checkpoints=@($text -split "`n" | Where-Object {$_ -match '^AFTER C\d+ BUF='})
  if($checkpoints.Count -ne $candidateChecks -or @($checkpoints | Where-Object {$_ -notmatch '▼.+\] SEL='}).Count) {throw "SPACE did not produce candidates: $log"}
  if($text -match 'SETTLE TIMEOUT|branch=provider-(queue|accept-and-queue|convert)|KEYBRANCH [^\r\n]*branch=local[^\r\n]*provider_pending=1') {throw "Local ownership stranded or replayed: $log"}
- if($text -notmatch 'EDIT_DENIED sync=1' -or $text -notmatch 'LOCAL_EDIT denied=1') {throw "Edit denial was not exercised: $log"}
+ if(@([regex]::Matches($text,'EDIT_DENIED sync=(0|1) flags=')).Count -ne $denialChecks -or
+    @([regex]::Matches($text,'LOCAL_EDIT denied=1')).Count -ne $denialChecks) {throw "Every injected write refusal must be exercised: expected=$denialChecks log=$log"}
  if($text -notmatch 'LOCAL_WORKER stalled_ms=5000' -or $text -notmatch 'LOCAL_PUBLICATION stalled_ms=5000') {throw "Stall seam not exercised: $log"}
  if(@([regex]::Matches($text,'LOCAL publication status=')).Count -lt 2){throw "No generation swap: $log"}
  $times=@([regex]::Matches($text,'KEYLAT token=\S+ .*?total_us=(\d+) claimed=1') | ForEach-Object {[int]$_.Groups[1].Value})
  $maximum=($times | Measure-Object -Maximum).Maximum
  if(-not $times.Count -or $maximum -gt 25000){throw "Callback watchdog exceeded 25000 us: $maximum log=$log"}
- Write-Output "PASS local state stress seed=$Seed episodes=$Episodes commits=$Episodes first_time=$firstChecks candidate_checks=$candidateChecks callbacks=$($times.Count) max_us=$maximum log=$log"
+ Write-Output "PASS local state stress seed=$Seed episodes=$Episodes commits=$Episodes first_time=$firstChecks candidate_checks=$candidateChecks write_refusals=$denialChecks callbacks=$($times.Count) max_us=$maximum log=$log"
 } finally {foreach($name in $saved.Keys){[Environment]::SetEnvironmentVariable($name,$saved[$name])}}

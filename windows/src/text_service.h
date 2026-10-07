@@ -92,6 +92,20 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
                            ddskk::AutoPairCaretUpdate* pair_caret = nullptr);
   void UpdateCandidateUI(ITfContext* context,
                          const ddskk::EngineState& state);
+  HRESULT RequestEdit(ITfContext* context, ITfEditSession* edit, HRESULT* result,
+                      const wchar_t* path = L"engine", uint64_t sequence = 0);
+  void StateSessionCreated() { ++pending_state_edits_; }
+  void StateSessionExecuted() { --pending_state_edits_; }
+  uint64_t EditGeneration() const { return edit_generation_; }
+  bool StateEditAllowed(ITfContext* context, uint64_t generation) const;
+  void FinishStateEdit(ITfContext* context, const ddskk::EngineState& state, HRESULT result);
+  void TracePhase(const wchar_t* phase, uint64_t sequence, const wchar_t* path,
+                  HRESULT result = S_OK, DWORD flags = 0);
+  uint64_t KeySequence() const { return edit_trace_sequence_ ? edit_trace_sequence_ : key_sequence_; }
+  uint64_t SetEditTraceSequence(uint64_t sequence) {
+    const auto saved = edit_trace_sequence_; edit_trace_sequence_ = sequence; return saved;
+  }
+  void FlushDebugLog();
   HRESULT SelectCandidate(UINT index) override;
   HRESULT FinalizeCandidate() override;
   HRESULT AbortCandidate() override;
@@ -130,6 +144,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   void QueuePublishedState(const ddskk::EngineState* state);
   void FlushPublishedState();
   void HandleInlineEvent();
+  void ApplyRequestedInlineMode();
+  InlinePreedit::ModeRequest requested_inline_mode_{};
   void ClearInlineEpisode();
   InlinePreedit inline_channel_;
   bool inline_enabled_ = false;
@@ -186,7 +202,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // for reset when focus/context loss abandons unconfirmed input.
   void ResetAbandonedComposition();
   // Appends one line to %LOCALAPPDATA%\DDSKK\dll-debug.log when
-  // debug_log_ is set (HKCU\Software\NativeIME\DllDebug == 1). No-op
+  // DebugLog (or legacy DllDebug) is 1 in the selected settings key. No-op
   // otherwise, so this is safe to call unconditionally from hot paths.
   void DebugLog(const wchar_t* format, ...);
   struct ProviderResult;
@@ -332,8 +348,20 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   RECT last_caret_rect_{};
   bool last_caret_valid_ = false;
   bool mode_indicator_enabled_ = true;
-  // HKCU\Software\NativeIME\DllDebug == 1; gates DebugLog().
+  // HKCU\Software\NativeIME\DebugLog == 1 (DllDebug remains compatible).
   bool debug_log_ = false;
+  std::mutex debug_mutex_;
+  std::string debug_lines_;
+  uint64_t key_sequence_ = 0;
+  uint64_t edit_trace_sequence_ = 0;
+  uint64_t edit_generation_ = 0;
+  unsigned pending_state_edits_ = 0;
+  bool fallback_rules_loaded_ = false;
+  // Separate client fetches the rule export off the key thread. The shared
+  // holder lets a module-leased worker finish after this service is gone.
+  using RuleExport = std::vector<ddskk::RomajiRule>;
+  std::shared_ptr<std::atomic<std::shared_ptr<const RuleExport>>> fallback_rules_;
+
 };
 
 extern HMODULE g_module;

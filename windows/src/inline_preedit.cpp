@@ -120,6 +120,18 @@ bool InlinePreedit::LastCaret(RECT* rect) {
   *rect = caret_;
   return true;
 }
+bool InlinePreedit::TakeModeRequest(ModeRequest* request) {
+  std::lock_guard lock(mutex_);
+  if (!request || !mode_request_.epoch || mode_request_.epoch != epoch_) return false;
+  *request = std::move(mode_request_); mode_request_ = {};
+  return true;
+}
+bool InlinePreedit::ReplyMode(uint64_t epoch, const std::wstring& mode) {
+  std::lock_guard lock(mutex_);
+  if (!epoch || epoch != epoch_ || updates_.size() >= 64) return false;
+  updates_.push_back({Update::ModeApplied, mode, 0, {}});
+  return true;
+}
 void InlinePreedit::Run() {
   WSADATA startup{};
   if (WSAStartup(MAKEWORD(2, 2), &startup)) return;
@@ -132,6 +144,11 @@ void InlinePreedit::Run() {
     if (!Discovery(&port, &token)) continue;
     SOCKET socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (socket == INVALID_SOCKET) continue;
+    // PREEDIT/CLEAR and CARET are small duplex messages. Nagle + delayed ACK
+    // can serialize fast typing into ~200 ms bursts even on loopback.
+    const BOOL no_delay = TRUE;
+    setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
+               reinterpret_cast<const char*>(&no_delay), sizeof(no_delay));
     u_long nonblocking = 1; ioctlsocket(socket, FIONBIO, &nonblocking);
     sockaddr_in address{}; address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -161,7 +178,9 @@ void InlinePreedit::Run() {
           if (!updates_.empty()) { update = std::move(updates_.front()); updates_.pop_front(); have = true; }
         }
         if (have) {
-          outbound = update.kind == Update::Pair
+          outbound = update.kind == Update::ModeApplied
+              ? "MODE-APPLIED " + Encode(update.text) + "\n"
+              : update.kind == Update::Pair
               ? "PAIR " + std::to_string(++sequence) + " " + Encode(update.text) +
                 " " + Encode(update.closer) + "\n"
               : update.kind == Update::Clear ? "CLEAR " + std::to_string(++sequence) + "\n"
@@ -191,6 +210,13 @@ void InlinePreedit::Run() {
           }
           authenticated = true;
         } else {
+          if (line == "MODE latin" || line == "MODE kana") {
+            { std::lock_guard lock(mutex_);
+              mode_request_ = {connection_epoch, line == "MODE latin" ? L"latin" : L"kana"};
+            }
+            PostMessageW(notify_, message_, 0, 0);
+            continue;
+          }
           std::istringstream input(line); std::string command, extra;
           long x, y, height;
           if (!(input >> command >> x >> y >> height) || command != "CARET" ||
@@ -203,7 +229,7 @@ void InlinePreedit::Run() {
         }
       }
     }
-    { std::lock_guard lock(mutex_); epoch_ = 0; updates_.clear(); caret_valid_ = false; pair_capable_ = false; }
+    { std::lock_guard lock(mutex_); epoch_ = 0; mode_request_ = {}; updates_.clear(); caret_valid_ = false; pair_capable_ = false; }
     closesocket(socket);
     if (authenticated && !stop_) PostMessageW(notify_, message_, 0, 0);
   }

@@ -301,6 +301,20 @@ void Store::Run() {
         manifest_time = time;
         next_mapping_retry = now + std::chrono::seconds(1);
         ++mapping_opens_;
+        wchar_t private_key[128]{}, delay[16]{};
+        if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0) &&
+            GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", private_key, 128) &&
+            std::wstring(private_key).starts_with(L"Software\\NativeIME-test-") &&
+            GetEnvironmentVariableW(mapped ? L"NATIVEIME_TEST_LOCAL_REMAP_DELAY_MS"
+                                          : L"NATIVEIME_TEST_LOCAL_MAP_DELAY_MS", delay, 16)) {
+          const auto ms = std::min<DWORD>(10000, wcstoul(delay, nullptr, 10));
+          std::printf("LOCAL_MAPPING delay_ms=%lu retained=%d opens=%llu\n",
+                      ms, mapped ? 1 : 0, mapping_opens_.load());
+          std::fflush(stdout);
+          // The prior published immutable index remains available to input.
+          std::unique_lock lock(wait_mutex_);
+          wake_.wait_for(lock, std::chrono::milliseconds(ms), [&] { return stopping_.load(); });
+        }
         try { mapped = OpenPublished(directory, mapped); mapping_retry = false; }
         catch (...) { mapping_retry = true; throw; }
       }

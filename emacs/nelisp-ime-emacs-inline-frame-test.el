@@ -37,7 +37,7 @@
               (run-hook-with-args 'window-selection-change-functions frame)
               (nelisp-ime-emacs-inline-test--wait
                (lambda () (equal (process-get client 'received)
-                                  "OK 1\nCARET 10 20 18\nCARET 300 400 22\n")))
+                                  "OK 1 pair\nCARET 10 20 18\nCARET 300 400 22\n")))
               (should (eq (overlay-buffer nelisp-ime-emacs--inline-overlay) (current-buffer)))
               (should (= (overlay-start nelisp-ime-emacs--inline-overlay) 4))
               (should (eq (window-frame (overlay-get nelisp-ime-emacs--inline-overlay 'window)) frame))))

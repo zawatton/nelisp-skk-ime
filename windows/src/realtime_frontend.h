@@ -22,6 +22,7 @@ class RealtimeFrontend {
   // uppercase roman key instead.
   void SetContinuousPreedit(bool enabled) { continuous_preedit_ = enabled; }
   void SetRules(const std::vector<RomajiRule>& rules);
+  bool TrySetRulesForReading(const std::vector<RomajiRule>& rules);
   void AdoptMode(const EngineState& state) {
     if (state.composition_start >= 0) return;
     katakana_ = state.mode == L"katakana";

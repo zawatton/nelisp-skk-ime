@@ -77,6 +77,20 @@ bool IsConsonant(char value) {
 
 }  // namespace
 
+bool RealtimeFrontend::TrySetRulesForReading(const std::vector<RomajiRule>& rules) {
+  if (rules == installed_rules_) return true;
+  // A late mapping may certify an already typed reading. Replay with its
+  // exact rules first; never change the reading to make a cache hit possible.
+  auto replay = *this;
+  replay.SetRules(rules);
+  if (replay.text_ != text_ || replay.pending_ != pending_ ||
+      replay.preedit_ != preedit_ || replay.okuri_started_ != okuri_started_ ||
+      replay.okuri_letter_ != okuri_letter_ || replay.katakana_ != katakana_ ||
+      replay.latin_ != latin_ || replay.wide_latin_ != wide_latin_) return false;
+  *this = std::move(replay);
+  return true;
+}
+
 void RealtimeFrontend::SetRules(const std::vector<RomajiRule>& rules) {
   if (rules == installed_rules_) return;
   installed_rules_ = rules;

@@ -236,6 +236,16 @@ int main(int argc, char** argv) {
   CHECK(state && state->text == L"▽か" && state->pending_romaji.empty());
   state = continuous.Commit();
   CHECK(state && state->text == L"か" && state->composition_start == -1);
+  ddskk::RealtimeFrontend late_rules;
+  late_rules.Feed(U'N'); late_rules.Feed(U'a'); late_rules.Feed(U'i');
+  const std::vector<ddskk::RomajiRule> published{
+      {"na", "", L"な", L"ナ", L""}, {"i", "", L"い", L"イ", L""},
+      {".", "", L"。", L"。", L""}, {",", "", L"、", L"、", L""}};
+  CHECK(late_rules.preview_reading() == L"ない");
+  CHECK(late_rules.TrySetRulesForReading(published));
+  auto changed_rules = published; changed_rules[0].hiragana = L"ぬ";
+  CHECK(!late_rules.TrySetRulesForReading(changed_rules));
+  CHECK(late_rules.preview_reading() == L"ない");
   ddskk::RealtimeFrontend cyclic;
   cyclic.SetRules({ddskk::RomajiRule{"a", "a", L"あ", L"ア", L""}});
   CHECK(cyclic.Feed(U'a').has_value());

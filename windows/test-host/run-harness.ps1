@@ -76,6 +76,8 @@ param(
   [string]$Configuration = "Release",
   [ValidateSet('restore','latin','hiragana','katakana')]
   [string]$OpenMode = 'restore',
+  [string]$InputRulesFile = "",
+  [switch]$DebugLog,
   [switch]$PublishState,
   [switch]$InlinePreedit,
   [string]$InlineDirectory = '',
@@ -223,7 +225,7 @@ $tempJisyo = Join-Path $env:TEMP "ddskk-test-jisyo-$runId.jisyo"
 # its own E2E test already rely on (see host/main.cpp PipeName()).
 $savedEnvironment = @{}
 foreach ($name in @('DDSKK_PIPE_NAME','DDSKK_USER_JISYO','NATIVEIME_REGISTRY_KEY',
-    'LOCALAPPDATA','NELISP_IME_INLINE_DIR','NATIVEIME_TEST_CARET_MAP','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH','NATIVEIME_TEST_CORE_DIRECTORY','NATIVEIME_TEST_CORE_ACTION_SCRIPT','NATIVEIME_HARNESS_TSF_OUTPUT')) {
+    'LOCALAPPDATA','APPDATA','NELISP_IME_INLINE_DIR','NATIVEIME_TEST_CARET_MAP','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH','NATIVEIME_TEST_CORE_DIRECTORY','NATIVEIME_TEST_CORE_ACTION_SCRIPT','NATIVEIME_HARNESS_TSF_OUTPUT')) {
   $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 $hostProcess = $null
@@ -256,6 +258,7 @@ New-ItemProperty -Path $regPath -Name SkkServEnable -Value 0 -PropertyType DWord
 New-ItemProperty -Path $regPath -Name InitialKanaMode -Value 1 -PropertyType DWord -Force | Out-Null
 if ($env:DDSKK_HARNESS_LOCAL_CONVERSION -eq '1') { $LocalConversion = 1 }
 New-ItemProperty -Path $regPath -Name LocalConversion -Value $LocalConversion -PropertyType DWord -Force | Out-Null
+if ($DebugLog) { New-ItemProperty -Path $regPath -Name DebugLog -Value 1 -PropertyType DWord -Force | Out-Null }
 if ($AutoPairCaret) {
   $appPath = Join-Path $regPath ('Apps\' + [IO.Path]::GetFileName($TsfHostExe).ToLowerInvariant())
   New-Item -Path $appPath -Force | Out-Null
@@ -279,6 +282,11 @@ if (-not $ArtifactDirectory) { $ArtifactDirectory = $env:NATIVEIME_HARNESS_ARTIF
 $artifactRoot = if ($ArtifactDirectory) { [IO.Path]::GetFullPath($ArtifactDirectory) } else { [IO.Path]::GetDirectoryName($TsfHostExe) }
 $env:LOCALAPPDATA = Join-Path $artifactRoot "harness-$runId"
 New-Item -ItemType Directory -Path $env:LOCALAPPDATA -Force | Out-Null
+$env:APPDATA = Join-Path $env:LOCALAPPDATA 'appdata'
+New-Item -ItemType Directory -Path (Join-Path $env:APPDATA 'NativeIME') -Force | Out-Null
+if ($InputRulesFile) {
+  Copy-Item -LiteralPath $InputRulesFile -Destination (Join-Path $env:APPDATA 'NativeIME/input-rules.conf')
+}
 $hostOutput = Join-Path $env:LOCALAPPDATA 'host.stdout.log'
 $hostError = Join-Path $env:LOCALAPPDATA 'host.stderr.log'
 $tsfOutput = Join-Path $env:LOCALAPPDATA 'tsf.stdout.log'
