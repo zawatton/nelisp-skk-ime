@@ -301,6 +301,7 @@ TextService::TextService() {
 }
 
 TextService::~TextService() {
+  fallback_rules_.reset();
   inline_channel_.Stop();
   FlushDebugLog();
   if (candidate_ui_) candidate_ui_->DetachHandler();
@@ -1238,21 +1239,24 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
   InterlockedIncrement(&g_object_count);
   try {
     fallback_rules_ = std::make_shared<std::atomic<std::shared_ptr<const RuleExport>>>();
-    std::thread([rules = fallback_rules_] {
+    // Keep refreshing after ENGINE RELOAD without putting pipe I/O on the
+    // key thread. A weak holder ends the module-leased worker on deactivation.
+    std::thread([holder = std::weak_ptr(fallback_rules_)] {
       struct WarmupLease {
         ~WarmupLease() { InterlockedDecrement(&g_object_count); }
       } lease;
       try {
         ddskk::EngineClient warm_up_client;
-        const ULONGLONG deadline = GetTickCount64() + 20000;
-        while (GetTickCount64() < deadline) {
+        while (auto rules = holder.lock()) {
           if (warm_up_client.Connect(2000)) {
             warm_up_client.CurrentEngine(1000);
             if (auto exported = warm_up_client.RomajiRules(1000)) {
-              rules->store(std::make_shared<const RuleExport>(std::move(*exported)));
-              return;
+              const auto previous = rules->load();
+              if (!previous || *previous != *exported)
+                rules->store(std::make_shared<const RuleExport>(std::move(*exported)));
             }
           }
+          rules.reset();
           Sleep(250);
         }
       } catch (...) { /* Warm-up is optional; key requests report failures. */ }
@@ -1297,6 +1301,8 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
 }
 
 HRESULT TextService::Deactivate() {
+  fallback_rules_.reset();
+  fallback_rule_snapshot_.reset();
   FlushDebugLog();
   CancelLocalRetry();
   local_observer_retry_.reset();
@@ -2136,7 +2142,7 @@ void TextService::LoadSettings() {
     wcscpy_s(engine, environment_engine);
   }
   engine_id_ = NarrowUtf8(engine);
-  fallback_rules_loaded_ = false;
+  fallback_rule_snapshot_.reset();
   local_enabled_ = engine_id_ == "ddskk" &&
       (application_local_conversion_ >= 0 ? application_local_conversion_ == 1 : local == 1);
   if (local_enabled_) {
@@ -2422,13 +2428,14 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       // cache neither recopies the table nor retains superseded overlays.
       local_rule_snapshot_ = rule_index;
     }
-  } else if (!fallback_rules_loaded_ && !realtime_frontend_.composing() &&
+  } else if (!realtime_frontend_.composing() && !provider_composition_active_ &&
+             !provider_pending_.load(std::memory_order_acquire) &&
              !local_conversion_.active()) {
     const auto rules = fallback_rules_ ? fallback_rules_->load() : nullptr;
-    if (rules) {
+    if (rules && rules != fallback_rule_snapshot_) {
       realtime_frontend_.SetRules(*rules);
       auto_pair_.SetRules(*rules);
-      fallback_rules_loaded_ = true;
+      fallback_rule_snapshot_ = rules;
     }
   }
   const auto skk_mode_key = (!control_down && engine_id_ == "ddskk" &&

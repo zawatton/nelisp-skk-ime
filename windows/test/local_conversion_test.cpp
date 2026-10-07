@@ -93,6 +93,27 @@ int main(int argc, char** argv) {
     Check(original->Base() && reused->Base() == original->Base(), "overlay swap reuses identical base mapping");
     Check(original->header().generation != reused->header().generation, "overlay has its own generation");
     Check(original->Base()->header().overlay_sequence == 0, "base has no learning sequence");
+    {
+      // A rules-only edit must replace the base, even with unchanged sources
+      // and learning revision. Retained episodes continue to own old rules.
+      const auto directory = root / "rules-reload";
+      Publish(directory, {source}, "", rules, 1, 7);
+      const auto before = OpenPublished(directory);
+      const auto replacement = rules + " 00007b:-:00ff5b:00ff5b:-";
+      Publish(directory, {source}, "", replacement, 1, 7);
+      const auto after = OpenPublished(directory, before);
+      Check(after->Base() != before->Base(), "rules-only reload replaces base");
+      Check(after->Base()->header().generation != before->Base()->header().generation,
+            "rules-only reload advances pinned generation");
+      Check(after->Rules() == replacement && after->ParsedRules().back().hiragana == L"\uff5b",
+            "rules-only reload publishes parsed width");
+      Check(before->Rules() == rules, "rules-only reload retains old episode rules");
+      Publish(directory, {source}, "", rules, 1, 7);
+      const auto restored = OpenPublished(directory, after);
+      Check(restored->Base() != after->Base() && restored->Rules() == rules,
+            "rules-only reload supports restoring prior table");
+      std::cout << "PASS rules-only publication checks=5\n";
+    }
     size_t base_files = 0;
     for (const auto& item : std::filesystem::directory_iterator(root))
       if (item.path().filename().string().starts_with("generation-") && item.path().extension() == ".index") ++base_files;

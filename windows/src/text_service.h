@@ -358,11 +358,11 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   uint64_t edit_trace_sequence_ = 0;
   uint64_t edit_generation_ = 0;
   unsigned pending_state_edits_ = 0;
-  bool fallback_rules_loaded_ = false;
   // Separate client fetches the rule export off the key thread. The shared
   // holder lets a module-leased worker finish after this service is gone.
   using RuleExport = std::vector<ddskk::RomajiRule>;
   std::shared_ptr<std::atomic<std::shared_ptr<const RuleExport>>> fallback_rules_;
+  std::shared_ptr<const RuleExport> fallback_rule_snapshot_;
 
 };
 

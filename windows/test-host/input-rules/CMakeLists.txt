@@ -3,6 +3,10 @@ project(input_rules_tests LANGUAGES CXX)
 # Reuse the existing real TSF fixture, adding only script tokens. Keep the
 # shared fixture untouched so other worker lanes can merge independently.
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../tsf_host.cpp" HOST_SOURCE)
+# TestKeyDown may pump messages while following a settings/reload change.
+# Reapply the complete synthetic event at dispatch, just as a real key's
+# keyboard state is delivered with its WM_KEYDOWN. Do not inherit live keys.
+string(REPLACE "const auto down = [&](BOOL* e) {" "const auto down = [&](BOOL* e) {\n    if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) {\n      BYTE observed[256]{}; GetKeyboardState(observed);\n      std::printf(\"INPUT_KEYSTATE token=%s shift=%d expected=%d\\n\", Utf8FromWide(token).c_str(), (observed[VK_SHIFT] & 0x80) != 0, key.shift);\n    }\n    SetKeyboardState(state);" HOST_SOURCE "${HOST_SOURCE}")
 set(HOST_SOURCE "#include \"rules.h\"\n#include \"win_io.h\"\n${HOST_SOURCE}")
 string(REPLACE "// --- Test-harness accessors" "void ApplicationEdit(const std::wstring& text, bool backspace) {\n    LONG start = sel_start_, end = sel_end_;\n    if (backspace && start == end && start > 0) --start;\n    buffer_.replace(start, end-start, text);\n    sel_start_ = sel_end_ = start + static_cast<LONG>(text.size());\n    NotifyTextChange(start, end, sel_end_); NotifySelectionChange();\n  }\n  // --- Test-harness accessors" HOST_SOURCE "${HOST_SOURCE}")
 string(REPLACE "bool TokenToKey(const std::wstring& token, KeyEvent* out) {"
