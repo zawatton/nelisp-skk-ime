@@ -115,12 +115,19 @@ Require 'KEYLAT token=a .*claimed=0' 'direct Latin pass-through'
 
 $ctrlG = @($lines | Where-Object { $_ -match '^KEYLAT token=CTRLG .*total_us=(\d+) ' } |
   ForEach-Object { if ($_ -match 'total_us=(\d+)') { [int]$Matches[1] } })
-if ($ctrlG.Count -lt 2 -or ($ctrlG | Measure-Object -Maximum).Maximum -gt 20000) {
+if ($ctrlG.Count -ne 5 -or ($ctrlG | Measure-Object -Maximum).Maximum -gt 20000) {
   throw "DDSKK behavior failed: Ctrl+G exceeded 20 ms ($($ctrlG -join ',') us)"
+}
+
+# The third sample cancels registration while its queued typing worker can
+# own EngineClient's transaction mutex. TestKeyDown must claim it locally.
+$registrationCancel = @($lines | Where-Object { $_ -match '^KEYLAT token=CTRLG ' })[2]
+if ($registrationCancel -notmatch 'test_us=(\d+)' -or [int]$Matches[1] -gt 20000) {
+  throw "DDSKK behavior failed: registration cancel claim waited for engine ($registrationCancel)"
 }
 
 [pscustomobject]@{
   Result = 'PASS'
   CtrlGMaxMs = [Math]::Round((($ctrlG | Measure-Object -Maximum).Maximum / 1000.0), 3)
-  Assertions = 45
+  Assertions = 46
 }

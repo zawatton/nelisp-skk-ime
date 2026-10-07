@@ -1742,7 +1742,11 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
     debug_exit(0, -1);
     return S_OK;
   }
-  if (realtime_claim) {
+  // Cancellation belongs to the current document even while its provider
+  // owns the transaction mutex or the engine is unavailable. In particular,
+  // registration Ctrl+G must not probe Connect on the TSF callback thread.
+  if (realtime_claim || (wparam == 'G' && tested_control_down_) ||
+      wparam == VK_ESCAPE) {
     *eaten = TRUE;
     debug_exit(1, -1);
     return S_OK;
@@ -3121,8 +3125,11 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       if (cancelled_provider) ReleaseEngineConversion();
       state = realtime_frontend_.Quit();
     } else {
-      state = engine_.SendControl(ddskk::EngineControl::kQuit,
-                                  kInteractiveTimeoutMs);
+      if (!BeginProviderControl(ddskk::EngineControl::kQuit))
+        ForceCancelComposition(context);
+      *eaten = TRUE;
+      debug_exit(*eaten);
+      return S_OK;
     }
   } else if (ctrl_g) {
     branch = L"ctrlg";
@@ -3154,9 +3161,16 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       debug_exit(*eaten);
       return S_OK;
     }
-    if (!state)
-      state = engine_.SendControl(ddskk::EngineControl::kQuit,
-                                  kInteractiveTimeoutMs);
+    if (!state) {
+      // Provider-owned states without a native reading (for example an
+      // abbrev) need DDSKK's stepwise QUIT, but only on the provider worker.
+      // A failed schedule uses local abandonment instead of synchronous I/O.
+      if (!BeginProviderControl(ddskk::EngineControl::kQuit))
+        ForceCancelComposition(context);
+      *eaten = TRUE;
+      debug_exit(*eaten);
+      return S_OK;
+    }
   } else {
     branch = L"key";
     const auto codepoint = TranslateKey(wparam, lparam);
@@ -3419,12 +3433,10 @@ void TextService::ResetAbandonedComposition() {
 void TextService::ForceCancelComposition(ITfContext* context) {
   local_conversion_.Reset();
   ClearInlineEpisode();
-  // Close this client's pipe even when the failure happened before an I/O
-  // operation was queued (Connect failure).  RESET is intentionally lazy:
-  // the engine is process-wide, and another application's live session
-  // must not be reset from this old context's cancellation callback.
+  // Cancel outstanding I/O without acquiring the transaction mutex. RESET
+  // is lazy and scoped to this client; neither disconnect nor an engine
+  // round trip may block this document's cancellation callback.
   CancelPendingProvider();
-  engine_.Disconnect();
   engine_.MarkNeedsResync();
   local_okuri_snapshot_ = {};
   realtime_frontend_.Reset();
@@ -3504,7 +3516,6 @@ void TextService::SettleContextComposition(ITfContext* context) {
   }
   ClearInlineEpisode();
   CancelPendingProvider();
-  engine_.Disconnect();
   engine_.MarkNeedsResync();
   local_okuri_snapshot_ = {};
   realtime_frontend_.Reset();

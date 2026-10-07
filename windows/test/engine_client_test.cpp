@@ -235,6 +235,16 @@ int main() {
     returned.store(true, std::memory_order_release);
   });
   assert(WaitForSingleObject(request_seen, 1000) == WAIT_OBJECT_0);
+  // UI cancellation/invalidation must finish while the provider still
+  // holds its transaction mutex and the server has not sent any reply.
+  const auto invalidate_started = std::chrono::steady_clock::now();
+  hung_client.MarkNeedsResync();
+  const auto invalidate_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - invalidate_started).count();
+  assert(hung_client.CoreNeedsResync());
+  assert(!returned.load(std::memory_order_acquire));
+  assert(invalidate_us < 20000);
+  std::printf("cancel invalidation while provider blocked: %lld us\n", invalidate_us);
   const auto cancel_started = std::chrono::steady_clock::now();
   hung_client.CancelPendingIo();
   provider.join();

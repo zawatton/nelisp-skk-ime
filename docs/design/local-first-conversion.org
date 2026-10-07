@@ -2359,3 +2359,89 @@ SPACE target remains documented-not-met, learned 57.001050 / first 70.592750 ms
 p50 with prior attribution. No new SPACE floor measurement in this task.
 Changes remain unstaged; no commit/add. All directly started native/Emacs/runtime
 processes completed; denied harnesses started no hosts. No known owned leftovers.
+
+** EG2 Ctrl+G claim mutex regression (2026-10-08)
+Base 6c611ff. Claude reports prior stress 2/2 (max 5.6 ms) and edit recovery
+2/2 passing; these supersede the preceding unresolved stress acceptance note.
+New behavior acceptance awaits Claude's registry-capable rerun.
+
+Before editing, inspected all four supplied failure logs and their detailed
+private tsf.stdout.log files. The third Ctrl+G cancels registration. Its time is
+in TestKeyDown, not in the cancellation edit or provider QUIT:
+| Detailed harness suffix | test_us | down_us | total_us |
+| 3cc3e4566997 | 40812 | 145 | 40957 |
+| 50085e8ca02c | 28578 | 165 | 28743 |
+| 4971a36cce15 | 47041 | 195 | 47236 |
+| 5509e8cd9872 | 31584 | 264 | 31848 |
+The unchanged outer gate tail is =DDSKK behavior failed: Ctrl+G exceeded
+20 ms (104,221,40957,194,78 us)=. This is existing red TSF evidence, not a
+worker rerun: the worker shell cannot create the private registry keys.
+
+OnTestKeyDown falls through to EngineClient::Connect when registration owns
+input. Connect acquires the recursive transaction mutex before even testing an
+already-open pipe. Registration typing runs on a worker and can hold that mutex
+while awaiting the engine. Thus the cancellation claim waited for that worker.
+The fix claims Ctrl+G/Escape locally after the existing ownership checks, even
+if the engine is absent. KeyDown retains the immediate native reading restore;
+provider-only QUIT fallbacks now run through BeginProviderControl, with local
+abandonment if scheduling fails. ForceCancelComposition and context settlement
+cancel pending overlapped I/O and mark resync without synchronous Disconnect.
+The next provider transaction owns RESET/rebuild. The denied-edit abandonment
+and no-keyless-SPACE-after-RESET fix remain unchanged, as do v2 restart/eviction
+fallback and old-engine negotiation. Outbox durability is unchanged.
+
+*** Change anchors
+- =windows/src/text_service.cpp:1745=: cancellation claims bypass Connect.
+- =windows/src/text_service.cpp:3128=: Escape provider-only QUIT on worker.
+- =windows/src/text_service.cpp:3164=: Ctrl+G provider-only QUIT on worker.
+- =windows/src/text_service.cpp:3436=: forced cancel without Disconnect.
+- =windows/src/text_service.cpp:3518=: context abandonment without Disconnect.
+- =windows/test/engine_client_test.cpp:237=: a server withholds its reply while
+  the provider holds its transaction mutex; invalidation must finish under
+  20000 us, preserve the dirty flag, and leave that provider blocked until
+  cancellation. Existing prepared-reading recovery regression also runs.
+- =windows/test-host/test-ddskk-behavior.ps1:118=: require all five cancellation
+  samples, preserving the existing total 20 ms watchdog. At :124 check the
+  third sample's TestKeyDown time explicitly; :132 reports 46 assertions.
+
+*** Gates actually run
+- =cmake --build build/w --config Release=: exit 0, =build/w/eg2-cancel-build.log=.
+  Verbatim final tail: =tsf-host.vcxproj -> .../build/w/Release/tsf-host.exe=.
+- Directly ran =build/w/Release/<name>.exe= for all nine non-registry suites,
+  using private DDSKK_PIPE_NAME, DDSKK_USER_JISYO, LOCALAPPDATA and
+  NATIVEIME_REGISTRY_KEY environment values. All exit 0, 9/9 executables:
+  nativeime-local-conversion-test, ddskk-engine-protocol-test,
+  ddskk-engine-client-test, ddskk-candidate-ui-test,
+  ddskk-display-attribute-test, ddskk-langbar-button-test,
+  ddskk-mode-indicator-test, ddskk-realtime-frontend-test,
+  ddskk-host-utf8-protocol-test. Logs:
+  =build/w/cancel-native-5e5f292cf11b44b09c9a563abd9f1d0e/=.
+  Verbatim result tails: =PASS rules-only publication checks=5=;
+  =PASS local conversion 178 checks (4 corrupt/source negative controls)=;
+  =cancel invalidation while provider blocked: 0 us=;
+  =commit durability reply QPC wait_ms=0.020100=;
+  =host UTF8 protocol: 128 checks, 0 failures=. Six suites are silent.
+- =emacs -Q --batch -L engine -L vendor/ddskk -l engine/test-input-rules.el
+  -l engine/test-local-conversion.el -l engine/test-eg1-cleaner.el
+  -l engine/test-learning-v2.el -f ert-run-tests-batch-and-exit=, process HOME
+  set to UserProfile, private LOCAL_LEARNING_TEST_DIR: exit 0,
+  =build/w/eg2-cancel-ert.log=:
+  =Ran 34 tests, 34 results as expected, 0 unexpected=.
+- =ctest --test-dir build/w -C Release=: exit 8,
+  =build/w/eg2-cancel-ctest.log=: =0% tests passed, 10 tests failed out of 10=.
+  Every wrapper fails private registry New-Item before invoking its executable.
+  No native failure is implied; the direct nine-suite run above is separate.
+- =windows/test-host/test-ddskk-behavior.ps1 -RepositoryPath $Root
+  -DllPath $Build/Release/ddskk-ime.dll -TsfHostExe $Build/Release/tsf-host.exe
+  -EngineHostPath $Build/Release/ddskk-engine-host.exe
+  -EngineExecutablePath $Runtime -ColdLoadSleepSec 45=: exit 1,
+  =build/w/eg2-cancel-behavior.log=. Verbatim tail:
+  =New-Item : Access to the registry key 'HKEY_CURRENT_USER\Software\NativeIME-test-a117fd9ea295' is denied.=;
+  =run-harness failed with exit code 1=. No hosts launched and no TSF latency
+  result measured here. Claude must rerun this behavior gate with these built
+  binaries in a registry-capable shell; also rerun ctest there.
+
+Changes remain unstaged. No commit/add. All started native and Emacs processes
+completed; the denied harness started no host/NeLisp/TSF-host. No known owned
+process leftovers. The 40 ms SPACE target remains documented-not-met with the
+prior 57.001050 / 70.592750 ms p50 measurements; no new floor claim.
