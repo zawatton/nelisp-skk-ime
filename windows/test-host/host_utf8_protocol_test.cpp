@@ -29,7 +29,7 @@ int main() {
   check(bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0, "fixture bind");
   check(listen(listener, 4) == 0, "fixture listen");
   std::atomic<bool> fixture_stop{false};
-  std::atomic<unsigned> fixture_requests{0};
+  std::atomic<unsigned> fixture_requests{0}, fixture_completed{0};
   std::thread fixture([&] {
     while (!fixture_stop) {
       fd_set reads; FD_ZERO(&reads); FD_SET(listener, &reads); timeval wait{0, 100000};
@@ -43,6 +43,7 @@ int main() {
       const std::string reply = count > 0 && std::string_view(request, count).find("missing") != std::string_view::npos
           ? "1/server-only/\n" : "1/file/server-extra/\n";
       send(client, reply.data(), static_cast<int>(reply.size()), 0); closesocket(client);
+      ++fixture_completed;
     }
   });
   g_dictionary_server.config_loaded = true;
@@ -54,12 +55,36 @@ int main() {
   check(LookupDictionary("missing") == "1/server-only/", "fixture server-only");
   const auto requests = fixture_requests.load();
   check(LookupDictionary("present") == "1/file/server-extra/" && fixture_requests == requests, "cache reuse");
-  auto started = GetTickCount64();
+  auto cache_started = GetTickCount64();
   check(!g_server_cache.Query("slow"), "slow request queues without waiting");
-  check(GetTickCount64() - started < 30, "slow server cannot stall cache consumer");
-  started = GetTickCount64();
+  check(GetTickCount64() - cache_started < 30, "slow server cannot stall cache consumer");
+  cache_started = GetTickCount64();
   check(LookupDictionary("slow") == "4", "slow server degrades to miss");
-  check(GetTickCount64() - started < 250, "provider server miss bounded");
+  check(GetTickCount64() - cache_started < 250, "provider server miss bounded");
+  {
+    const auto before = fixture_requests.load();
+    const auto previous_done = GetTickCount64() + 1000;
+    while (fixture_completed < before && GetTickCount64() < previous_done) Sleep(1);
+    std::promise<void> begun;
+    std::string reply;
+    std::thread provider([&] {
+      EngineTransaction transaction;
+      begun.set_value();
+      reply = LookupDictionary("slow-engine-mutex");
+    });
+    begun.get_future().wait();
+    const auto deadline = GetTickCount64() + 500;
+    while (fixture_requests == before && GetTickCount64() < deadline) Sleep(1);
+    check(fixture_requests > before, "slow provider relay reaches socket worker");
+    const bool metadata_free = g_engine_mutex.try_lock();
+    check(metadata_free, "provider cache wait releases engine metadata mutex");
+    if (metadata_free) g_engine_mutex.unlock();
+    const bool interpreter_free = g_interpreter_mutex.try_lock();
+    check(!interpreter_free, "relay retains interpreter transaction identity");
+    if (interpreter_free) g_interpreter_mutex.unlock();
+    provider.join();
+    check(reply == "4", "unlocked slow relay retains bounded miss behavior");
+  }
   SetEnvironmentVariableW(L"DDSKK_SKKSERV_ENABLE", L"0");
   check(LookupDictionary("present") == "1/file/", "config disables server and invalidates cache");
   const auto disabled_requests = fixture_requests.load();
