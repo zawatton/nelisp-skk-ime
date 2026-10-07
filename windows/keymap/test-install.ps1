@@ -28,7 +28,7 @@ try {
  # Only stop the private instance this test created, including failure paths.
  $env:NATIVEIME_REGISTRY_KEY=$settings;$env:NELISP_IME_KEYMAP_INSTANCE=$id;$env:NELISP_IME_KEYMAP_FILE=$file
  $pidValue=Get-ItemPropertyValue -LiteralPath ('HKCU:\'+$settings+'\Keymap') -Name Pid -ErrorAction SilentlyContinue
- & $Exe --stop
+ & $Exe --stop | Out-Null
  if($pidValue){$owned=Get-Process -Id $pidValue -ErrorAction SilentlyContinue;if($owned){if(-not $owned.WaitForExit(5000)){if($owned.Path.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){Stop-Process -Id $owned.Id -Force;$owned.WaitForExit()}}}}
  Remove-Item -LiteralPath ('HKCU:\Software\NativeIME-Tests\'+$id) -Recurse -Force -ErrorAction SilentlyContinue
  # Resolve and check the recursive deletion target before deleting it.

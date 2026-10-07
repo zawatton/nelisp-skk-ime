@@ -24,10 +24,10 @@ try {
   Await-Value RuleCount 2;Await-Value Status 'error';$checks+=2
  } finally {$locked.Dispose()}
  Await-Value RuleCount 3;Await-Value Status 'ok';$checks+=2
- & $Exe --stop;if($LASTEXITCODE -ne 0){throw 'stop failed'};if(-not $p.WaitForExit(5000)){throw 'graceful stop timeout'};Await-Value Pid 0;$checks+=2
+ & $Exe --stop | Out-Null;if($LASTEXITCODE -ne 0){throw 'stop failed'};if(-not $p.WaitForExit(5000)){throw 'graceful stop timeout'};Await-Value Pid 0;$checks+=2
  $p=Start-Process -FilePath $Exe -ArgumentList '--no-hook' -WindowStyle Hidden -PassThru;$processes+=$p;Await-Value Pid $p.Id;Stop-Process -Id $p.Id -Force;$p.WaitForExit();$checks++
  $p=Start-Process -FilePath $Exe -ArgumentList '--no-hook' -WindowStyle Hidden -PassThru;$processes+=$p;Await-Value Pid $p.Id;Await-Value RuleCount 3;$checks+=2
- & $Exe --stop;if(-not $p.WaitForExit(5000)){throw 'recovery stop timeout'};$checks++
+ & $Exe --stop | Out-Null;if(-not $p.WaitForExit(5000)){throw 'recovery stop timeout'};$checks++
  Write-Output "S2.3 private lifecycle: PASS checks=$checks hooks=0 SendInput=0"
 } finally {
  foreach($p in $processes){if(-not $p.HasExited){Stop-Process -Id $p.Id -Force;$p.WaitForExit()}}

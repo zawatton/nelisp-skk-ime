@@ -6,7 +6,9 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/input_rules_template.inc" "R\"rules(${IN
 add_library(keymap-core core.cpp config.cpp rules.cpp)
 target_include_directories(keymap-core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_features(keymap-core PUBLIC cxx_std_20)
-add_executable(nelisp-ime-keymap runner.cpp editor.cpp rules_editor.cpp)
+add_executable(nelisp-ime-keymap WIN32 runner.cpp editor.cpp rules_editor.cpp)
+# Keep the Unicode command-line entry point without allocating a console.
+target_link_options(nelisp-ime-keymap PRIVATE /ENTRY:wmainCRTStartup)
 add_executable(keymap-tests tests.cpp)
 add_executable(keymap-layout-test layout-test.cpp)
 foreach(t keymap-core nelisp-ime-keymap keymap-tests keymap-layout-test)

@@ -8,6 +8,10 @@ cmake --build build/keymap --config Release
 ctest --test-dir build/keymap -C Release -V
 #+end_src
 The executable is =build/keymap/Release/nelisp-ime-keymap.exe=.
+It uses the Windows GUI subsystem, so Run/Explorer starts do not create a
+console. Shell launches attach to the parent console and preserve redirected
+stdout/stderr. In Windows PowerShell, pipe CLI invocations to =Out-String= or
+=Out-Null= to wait for this GUI executable and read its exit code.
 The normal invocation starts a resident with a dedicated keyboard hook thread.
 =--editor= opens the editor; =--stop= requests graceful shutdown of the matching
 instance. Updating this process does not require restarting applications.
