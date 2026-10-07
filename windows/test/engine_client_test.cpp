@@ -160,6 +160,38 @@ int main() {
   assert(persistent.SendControl(ddskk::EngineControl::kPrevious, 1000)->candidate_index == 0);
   persistent.Disconnect(); persistent_server.join(); CloseHandle(persistent_ready);
 
+  // Abandoning a refused edit must rebuild even an already-prepared reading.
+  HANDLE recovery_ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  std::atomic<bool> recovery_matched{true};
+  std::thread recovery_server([&] {
+    HANDLE pipe = CreateNamedPipeW(kTestPipe, PIPE_ACCESS_DUPLEX,
+        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, 1, 8192, 8192, 1000, nullptr);
+    assert(pipe != INVALID_HANDLE_VALUE);
+    SetEvent(recovery_ready);
+    assert(ConnectNamedPipe(pipe, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED);
+    for (const char* expected : {"OPEN 2", "V2 PREPARE 2 75,97,110,97", "RESET",
+                                 "V2 CONVERT-LIVE 2 75,97,110,97"}) {
+      char buffer[512]{}; DWORD count = 0;
+      assert(ReadFile(pipe, buffer, sizeof(buffer), &count, nullptr));
+      const std::string request(buffer, count);
+      if (request.find(expected) == std::string::npos) {
+        recovery_matched = false;
+        std::fprintf(stderr, "Abandon recovery expected=%s actual=%s", expected, request.c_str());
+      }
+      const std::string reply = std::string(expected) == "OPEN 2" ? "OK OPEN 2"
+          : "STATE hiragana 0 -1 - - -1 -";
+      assert(WriteFile(pipe, reply.data(), static_cast<DWORD>(reply.size()), &count, nullptr));
+    }
+    FlushFileBuffers(pipe); DisconnectNamedPipe(pipe); CloseHandle(pipe);
+  });
+  assert(WaitForSingleObject(recovery_ready, 1000) == WAIT_OBJECT_0);
+  ddskk::EngineClient abandoned;
+  assert(abandoned.PrepareKeys(U"Kana", 1000));
+  abandoned.MarkNeedsResync();
+  assert(abandoned.ConvertKeys(U"Kana", 1000));
+  abandoned.Disconnect(); recovery_server.join(); CloseHandle(recovery_ready);
+  assert(recovery_matched);
+
   int failures = 0;
   client.SetConnectionFailureHandler([&failures] { ++failures; });
   assert(!client.Reset(2));

@@ -801,6 +801,10 @@ void TextService::ResolveLocalFallback() {
   // reading. No engine transaction or worker lock belongs to this callback.
   auto queued = std::move(deferred_provider_keys_);
   CancelPendingProvider();
+  // A rejected document write did not accept the provider state. Rebuild
+  // from the native reading on the next worker transaction, not its live
+  // candidate/navigation history. This flag never waits for engine I/O.
+  engine_.MarkNeedsResync();
   provider_composition_active_ = false;
   provider_candidate_state_.reset();
   local_conversion_.Reset();
@@ -2344,6 +2348,11 @@ void TextService::FinishStateEdit(ITfContext* context,
 
 HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
                                BOOL* eaten) {
+  struct CallbackTailTrace {
+    TextService* owner;
+    ~CallbackTailTrace() { owner->TracePhase(L"key-locals-released", owner->KeySequence(), L"host"); }
+  } callback_tail{this};
+
   preparation_sequence_.fetch_add(1);
   ++key_sequence_;
   TracePhase(L"key-receipt", key_sequence_, L"key");
@@ -2435,7 +2444,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   // before a locally composed reading has entered its session. SetRules
   // rebuilds that reading only when the effective table actually changed.
   if (!realtime_frontend_.okuri_started()) local_okuri_snapshot_ = {};
+  TracePhase(L"native-index-start", key_sequence_, L"local");
   const auto local_index = local_enabled_ ? local_store_.Current() : nullptr;
+  TracePhase(L"native-index-end", key_sequence_, L"local");
   if (local_index) {
     // The worker parsed and validated this rule export. Pin the table
     // through a reading/candidate episode, including offline input.
@@ -3177,9 +3188,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     if (realtime_path) {
       std::optional<ddskk::RealtimeFrontend> frontend_before;
       ddskk::local::Selection okuri_before;
+      TracePhase(L"native-snapshot-start", key_sequence_, L"local");
       if (local_enabled_) { frontend_before = realtime_frontend_; okuri_before = local_okuri_snapshot_; }
+      TracePhase(L"native-snapshot-end", key_sequence_, L"local");
+      TracePhase(L"native-feed-start", key_sequence_, L"local");
       state = realtime_frontend_.Feed(*codepoint);
       record_okuri();
+      TracePhase(L"native-feed-end", key_sequence_, L"local");
       // Hand off at the marker, including uppercase vowels that complete
       // okuri immediately. Subsequent keys stay ordered on the provider
       // worker; DDSKK decides when n/sokuon rules start conversion.
@@ -3213,7 +3228,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
             } else local_okuri_snapshot_ = {};
           }
           if (local_okuri_snapshot_.index) {
+            TracePhase(L"native-okuri-edit-start", key_sequence_, L"local");
             const HRESULT hr = ApplyLocalState(context, *state);
+            TracePhase(L"native-okuri-edit-end", key_sequence_, L"local");
             if (FAILED(hr)) {
               local_conversion_.Reset();
               realtime_frontend_ = *frontend_before;
@@ -3740,6 +3757,7 @@ HRESULT TextService::ApplyLocalState(ITfContext* context, const ddskk::EngineSta
 }
 
 void TextService::PublishLocalObserver(const ddskk::EngineState& state) {
+  TracePhase(L"native-observer-start", key_sequence_, L"local");
   if (local_store_.PublishState(state)) {
     local_observer_retry_.reset(); if (provider_window_) KillTimer(provider_window_, 4);
   } else {
@@ -3747,6 +3765,7 @@ void TextService::PublishLocalObserver(const ddskk::EngineState& state) {
     local_observer_deadline_ = GetTickCount64() + 5000;
     if (provider_window_) SetTimer(provider_window_, 4, 50, nullptr);
   }
+  TracePhase(L"native-observer-end", key_sequence_, L"local");
 }
 void TextService::CancelLocalRetry() {
   local_conversion_retry_.reset(); local_retry_deadline_ = 0;

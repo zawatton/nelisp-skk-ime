@@ -3151,3 +3151,91 @@ Final merge workspace check: no conflict markers, whitespace exit 0; original
 six conflict-stage entries unchanged, no git add/commit. Owned-process audit:
 135 ids, zero matching owned processes remaining; fixture exited. No known
 owned leftovers. Claude must stage resolutions and run the deferred TSF gates.
+
+** EG2 refused-write recovery and stress investigation (2026-10-08)
+Base 5207611. Acceptance is INCOMPLETE: the 107443 us stress callback has
+not been reproduced or fixed in the registry-restricted worker shell.
+Claude must rerun both large-dictionary TSF scripts and inspect the private
+DDSKK/dll-debug.log phase timestamps if the watchdog still fails.
+
+The supplied unchanged stress log places the outlier on token d, branch
+local-okuri-preedit, provider_pending=0, after rendering the native state.
+That branch calls no EngineClient method, provider outbox append or ACK wait.
+The existing mirror writer uses a zero-timeout try-acquire. These observations
+do not establish where the 107 ms went. New debug phases bracket Current,
+frontend rollback snapshot, Feed, okuri edit and observer publication; the
+key-locals-released phase runs after key-local destructors, allowing expensive
+snapshot reclamation to be distinguished from an engine wait. The stress
+harness enables DebugLog into its private artifact directory. No threshold
+was changed and no speculative scheduling/locking fix is claimed.
+
+The supplied provider-denied log shows the second candidate applied BEFORE
+REFUSEWRITE: its pending refusal instead rejects the following retry SPACE.
+Arm REFUSEWRITE before the second SPACE, and assert the denied checkpoint is
+reading text and retry checkpoint is the first candidate, in addition to the
+existing final committed text and denial/fallback requirements. This removes
+a timing-dependent injection without reducing coverage.
+
+ResolveLocalFallback now marks this client's persistent session abandoned
+without I/O or locking. Its next worker transaction resets and rebuilds the
+native reading. ConvertKeys must also ignore prepared_keys when resync is
+pending: otherwise it selects SPACE before Transact performs RESET, sending a
+keyless conversion to an empty session. A real private-pipe regression proves
+this ordering. Old-engine negotiation and eviction/restart replay are retained.
+
+Change anchors (line numbers at delivery): engine_client.cpp:338;
+text_service.cpp:804 (abandon fallback), :2351 (tail phase), :2447 (index),
+:3191 (snapshot/feed), :3231 (edit), :3760 (observer);
+engine_client_test.cpp:163; test-local-edit-recovery.ps1:23,38;
+test-local-state-stress.ps1:72. All files are under windows/src, windows/test
+or windows/test-host. No changes to host learning/outbox durability.
+
+*** Gates actually run and verbatim result tails
+- Before production edits, build only the new regression with
+  =cmake --build build/w --config Release --target ddskk-engine-client-test=,
+  then run =build/w/Release/ddskk-engine-client-test.exe= with a unique private
+  DDSKK_PIPE_NAME. Red exit -1073740791, =eg2-recovery-red.log=:
+  =Abandon recovery expected=V2 CONVERT-LIVE 2 75,97,110,97 actual=SESSION ... V2 SPACE 2=.
+- =cmake --build build/w --config Release=: exit 0, =eg2-recovery-build.log=.
+  Final rebuild after diagnostic additions: exit 0, =eg2-recovery-final-build.log=;
+  final tail =tsf-host.vcxproj -> .../build/w/Release/tsf-host.exe=.
+- Direct private-environment invocation of all nine non-registry executables:
+  =nativeime-local-conversion-test=, =ddskk-engine-protocol-test=,
+  =ddskk-engine-client-test=, =ddskk-candidate-ui-test=,
+  =ddskk-display-attribute-test=, =ddskk-langbar-button-test=,
+  =ddskk-mode-indicator-test=, =ddskk-realtime-frontend-test=,
+  =ddskk-host-utf8-protocol-test=. All exit 0, 9/9 executables. Logs in
+  =build/w/recovery-native-d50f3d8641114ef48f9597f932311a49/=.
+  Local tail: =PASS rules-only publication checks=5=;
+  =PASS local conversion 178 checks (4 corrupt/source negative controls)=.
+  Host tail: =commit durability reply QPC wait_ms=0.017500=;
+  =host UTF8 protocol: 128 checks, 0 failures=. Seven are silent on success.
+- =emacs -Q --batch -L engine -L vendor/ddskk -l engine/test-input-rules.el
+  -l engine/test-local-conversion.el -l engine/test-eg1-cleaner.el
+  -l engine/test-learning-v2.el -f ert-run-tests-batch-and-exit=,
+  process HOME set to UserProfile, private LOCAL_LEARNING_TEST_DIR: exit 0,
+  =eg2-recovery-ert.log=: =Ran 34 tests, 34 results as expected, 0 unexpected=.
+- Caller-supplied =$Runtime --load engine/test-conversion-round2.el --load
+  engine/test-session-v2.el --load engine/test-conversion-cache.el=, private
+  DDSKK_USER_JISYO: exit 0, =eg2-recovery-runtime.log=:
+  =Host LIST reader: 6 checks PASS=; =EG1 candidate sanitation: 8 checks PASS=;
+  =Replay full checkpoint/snapshot: 38/38 sequences PASS=;
+  =Checkpoint unbound/marker parity: 2 checks PASS=;
+  =EG2 sessions: 28 checks PASS=; =PASS conversion-cache checked=528=.
+- =ctest --test-dir build/w -C Release=: exit 8, 0/10 launched through their
+  registry wrapper, =eg2-recovery-ctest.log=: =0% tests passed, 10 tests failed
+  out of 10=. All ten fail before executable invocation: =New-Item : Access
+  to the registry key 'HKEY_CURRENT_USER\Software\NativeIME-test-...' is denied.=
+  This is a sandbox prerequisite failure, not ten native test failures.
+- =windows/test-host/test-local-state-stress.ps1 -Runtime $Runtime
+  -LargeDictionary $LargeDictionary= and =windows/test-host/test-local-edit-recovery.ps1
+  -Runtime $Runtime -LargeDictionary $LargeDictionary -Only provider-denied=:
+  both exit 1 before host launch, private registry New-Item denied at
+  run-harness.ps1:247. Logs =eg2-recovery-stress.log= / =eg2-recovery-edit.log=.
+  TSF acceptance not measured. Claude must run these with SKK-JISYO.L and the
+  full ctest in a registry-capable shell; stress phase evidence is still needed.
+
+SPACE target remains documented-not-met, learned 57.001050 / first 70.592750 ms
+p50 with prior attribution. No new SPACE floor measurement in this task.
+Changes remain unstaged; no commit/add. All directly started native/Emacs/runtime
+processes completed; denied harnesses started no hosts. No known owned leftovers.

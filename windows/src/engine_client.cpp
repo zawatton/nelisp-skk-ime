@@ -335,7 +335,8 @@ std::optional<EngineState> EngineClient::ConvertKeys(
   if (request.empty()) return std::nullopt;
   if (!sessions_checked_ && !OpenPersistentSession(timeout_ms)) return std::nullopt;
   if (sessions_v2_) request.replace(0, 21, "CONVERT-LIVE 2 ");
-  auto response = Transact(sessions_v2_ && prepared_keys_ == keys ? "SPACE 2" : request, timeout_ms);
+  auto response = Transact(sessions_v2_ && !needs_resync_.load() && prepared_keys_ == keys
+      ? "SPACE 2" : request, timeout_ms);
   if (response && *response == "ERR SESSION NOT PREPARED") response = Transact(request, timeout_ms);
   prepared_keys_.clear();
   return response ? ParseStateResponse(*response) : std::nullopt;

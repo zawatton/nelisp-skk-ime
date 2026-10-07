@@ -20,7 +20,7 @@ try {
  $cases=@(
   @{name='denied'; failure='none'; script='CTX2 a i SPACE WAIT3000 ENTER CTX1 T e i k o u c h i REFUSEWRITE SPACE WAIT200 SETTLE8000:DENIED SETTLE8000:RETRY ENTER SETTLE8000:END'; expected='抵抗値'},
   @{name='swap'; failure='none'; script='CTX2 a i SPACE WAIT3000 ENTER CTX1 T e i k o u c h i SPACE CORE:B ENTER WAIT100 T e i k o u t i SPACE ENTER WAIT6500 CORE:production WAIT1000 T e i k o u c h i SPACE ENTER WAIT6500 CORE:bad-init WAIT1500 T e i k o u t i SPACE ENTER WAIT6500 SETTLE8000:END'; expected='抵抗値抵抗値抵抗値抵抗値'},
-  @{name='provider-denied'; failure='corrupt'; script='CTX2 a i SPACE WAIT3000 ENTER CTX1 A t a i SPACE SETTLE8000:FIRST SPACE REFUSEWRITE SETTLE8000:DENIED SPACE SETTLE8000:RETRY ENTER SETTLE8000:END'; expected='値'},
+  @{name='provider-denied'; failure='corrupt'; script='CTX2 a i SPACE WAIT3000 ENTER CTX1 A t a i SPACE SETTLE8000:FIRST REFUSEWRITE SPACE SETTLE8000:DENIED SPACE SETTLE8000:RETRY ENTER SETTLE8000:END'; expected='値'},
   @{name='registration-loss'; failure='none'; script='CTX2 a i SPACE WAIT3000 ENTER CTX1 T e i k o u c h i SPACE SPACE SETTLE8000:REG KILLHOST ENTER SETTLE8000:RESOLVED CTRLG K a n j i SPACE ENTER SETTLE8000:END'; expected='漢字'},
   @{name='focus-swap'; failure='none'; script='CTX2 a i SPACE WAIT3000 ENTER CTX1 T e i k o u c h i SPACE CTX2 K a n j i SPACE ENTER CTX1 SETTLE8000:END'; expected='抵抗値'})
  foreach($case in @($cases | Where-Object {$Only -eq 'all' -or $_.name -eq $Only})) {
@@ -35,7 +35,7 @@ try {
   if($text -match 'SETTLE TIMEOUT' -or $text -notmatch ('AFTER END BUF=\['+[regex]::Escape($case.expected)+'\] SEL=.* COMP=-')){throw "Conversion did not commit: $log"}
   if($case.name -eq 'denied' -and ($text -notmatch 'EDIT_REFUSED flags=' -or $text -notmatch 'AFTER DENIED BUF=\[▼抵抗値\]' -or $text -notmatch 'LOCAL_EDIT recovered=1' -or $text -notmatch 'AFTER RETRY BUF=\[▼抵抗値\]')){throw "Denied edit stranded controller ownership: $log"}
   if($case.name -eq 'swap' -and ($text -notmatch 'LOCAL_WORKER stalled_ms=5000' -or $text -notmatch 'CORE swapped version=B' -or $text -notmatch 'CORE swapped version=production' -or $text -notmatch 'CORE reject-init')){throw "Pending-learning core swap not exercised: $log"}
-  if($case.name -eq 'provider-denied' -and ($text -notmatch 'EDIT_REFUSED flags=' -or $text -notmatch 'LOCAL_FALLBACK resolved=reading pending=0')){throw "Provider edit denial not resolved: $log"}
+  if($case.name -eq 'provider-denied' -and ($text -notmatch 'EDIT_REFUSED flags=' -or $text -notmatch 'LOCAL_FALLBACK resolved=reading pending=0' -or $text -notmatch 'AFTER DENIED BUF=\[▽あたい\]' -or $text -notmatch 'AFTER RETRY BUF=\[▼値\]')){throw "Provider edit denial not resolved: $log"}
   if($case.name -eq 'registration-loss' -and ($text -notmatch 'branch=registration-async-control' -or $text -notmatch 'LOCAL_FALLBACK resolved=reading pending=0')){throw "Registration ownership not recovered: $log"}
   if($case.name -eq 'focus-swap' -and $text -notmatch 'AFTER ENTER BUF=\[あい漢字\] SEL=4,4 COMP=-'){throw "Focus commit lost/duplicated text: $log"}
   $times=@([regex]::Matches($text,'KEYLAT token=\S+ .*?total_us=(\d+) claimed=1') | ForEach-Object {[int]$_.Groups[1].Value})
