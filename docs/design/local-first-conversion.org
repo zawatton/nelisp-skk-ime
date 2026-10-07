@@ -979,3 +979,313 @@ TSF startup. Eight direct miss warm-ups/resets passed; the intermittent
 warm-up error's root cause is not established. DebugLog now enables host
 transaction logging. Hot swap, inline Emacs and async-space require a
 coordinator rerun with the new diagnostics before being declared fixed.
+
+** SK1 / EG1 merge validation (2026-10-07)
+
+The merge preserves SK1's asynchronous skkserv cache and EG1's engine,
+relay, mutex and response-write QPC diagnostics. Builtin lookup retains
+=dictionary-source name=builtin-index=; actual send/receive in the async
+worker retains =name=skkserv-query=. New =name=skkserv-connect= and
+=name=skkserv-cache= records distinguish connection work from cache access.
+Cache timing covers LOCAL SERVER polls, hits, disabled sources and bounded
+provider waits, and logs after releasing the cache lock. The worker logs
+connect failures as well as successes. Timeout/scheduling clocks and wire
+replies are unchanged. EG1's measurements below remain baseline measurements;
+the merged host enriches file hits through SK1 instead of stopping there.
+
+Release build passed; native host 66 and local conversion 173 checks passed.
+Engine ERT 30/30, framework 31/31 and lattice 14/14 passed. The host fixture
+emitted all four source timing records. No tests were weakened. Claude will
+stage the resolved files and rerun TSF gates; no staging or commit was done
+by this merge-resolution worker.
+
+* EG1: engine conversion latency investigation (2026-10-07)
+Base =8e022fa=; changes are unstaged. All runtime invocations receive =Runtime=
+from the caller. Measurements use private LOCALAPPDATA/user dictionaries,
+GUID pipes and a synthetic seven-entry dictionary in =build/w/eg1-jisyo.utf8=.
+The TCP fixture uses only loopback port 31181. No deployment, live registry,
+live pipe, personal dictionary or other checkout was modified.
+
+** Findings and measurement limits
+The 100--300 ms delay reproduces without a real skkserv or a large dictionary:
+raw replay, interpreter work, synchronous relay/wakeups and shared-engine
+serialization account for it. An in-memory dictionary hit is cheap. A fast
+dictionary server alone cannot make this path equivalent to local conversion.
+
+QPC now measures host phases, dispatch, engine mutex wait, dictionary-index
+lookup, TCP request and reply, and response WriteFile. Client Stopwatch
+measures encode/write/flush, response wait and UTF-8 decode separately.
+No wire protocol changed. Original integer diagnostic records are preserved;
+separate =engine-phase-qpc= / =dictionary-relay-qpc= records and =qpc_ms= /
+=qpc_wait_ms= / =qpc_total_ms= / =qpc_write_ms= fields carry high resolution
+timing. The new summarizer prefers QPC records, falling back to the earlier
+EG1 decimal-only traces used for the measurements below. This preserves
+existing report-script consumers outside the permitted file scope.
+The phase profiler includes learning update/save/flush in addition to search,
+snapshot, raw-state encoding and explicit GC. =profile-eg1.py= computes nested
+inclusive/self observations and begin/end spans. These are host-observed
+intervals including PHASE I/O and scheduler delays, not pure interpreter CPU.
+Profiling noticeably raises total latency; do not subtract its medians from
+unprofiled medians as if they were independent additive costs.
+
+The supplied runtime exposes =nl-unix-time-usec= but returned zero elapsed time
+for every parser batch. The benchmark records that limitation and uses the
+external high-resolution stopwatch instead. Automatic runtime GC is internal:
+the Lisp =garbage-collect= wrapper measures explicit GC only. No automatic-GC
+pause attribution or GC tuning was possible within this lane's file scope.
+Core response parsing and TSF presentation were not instrumented: =windows/src=
+is forbidden. Client UTF-8 decode is not core STATE parsing. The previous LF1
+Space-minus-host ~15 ms remains prior evidence, not a new measurement here.
+No private registry could be created; all CTest wrappers were denied before
+their executables ran. Direct pipe/batch measurements and direct executables
+were used instead. Timing runs were not quiet-machine threshold gates.
+
+** Safe quick win and before/after
+=ddskk-user-jisyo--clean-candidate= now computes length once, stops rechecking
+visibility after finding substantive text, and allocates a character list only
+when CR/LF must actually be removed. It preserves annotations, Unicode,
+control-only rejection, whitespace classification, identity of unchanged
+strings and match data. It does not cache mutable candidate lists or suppress
+dictionary sources. The unchanged sanitation algorithm is retained only in
+the A/B benchmark and independent regression oracle.
+
+Alternating original/optimized batches in ONE runtime, five samples of 100
+parses per format (=parser-ab.json=), gave these median milliseconds per parse:
+| Reply fixture | Original | Optimized | Improvement |
+| long slash reply | 17.354 | 11.798 | 32.0% |
+| equivalent negotiated LIST reply | 13.677 | 8.393 | 38.6% |
+Earlier separate-process samples were 14.684 -> 11.562 and 10.145 -> 7.651 ms.
+A discarded regexp sanitation experiment regressed to ~55--62 ms per parse;
+the final implementation has no regexp. No threshold or test was weakened.
+
+Unprofiled host conversion, three iterations, 12 plain / 6 okuri warm samples:
+| Warm request | Unchanged p50 / p90 | Final p50 / p90 |
+| plain raw CONVERT-KEYS | 111.407 / 126.757 | 127.153 / 144.344 |
+| okuri raw CONVERT-KEYS | 127.331 / 288.228 | 112.465 / 128.009 |
+The small unquiet samples do NOT establish an overall latency improvement.
+The long annotated parser benchmark establishes a narrower, reproducible win.
+Cold observations (excluded above) were 196--605 ms and source/profile cold
+observations reached ~736 ms. Cold load and first conversion are distinct.
+
+** Phase attribution and contention
+After rebuilding successfully, =source-profile.json= used the synthetic TCP
+server with an empty host dictionary to force the server tier (plain only).
+| QPC observation | n | p50 ms | p90 ms |
+| replay begin/end | 21 | 49.644 | 65.362 |
+| convert begin/end | 37 | 62.076 | 93.065 |
+| DDSKK skk-henkan inclusive | 37 | 47.854 | 64.813 |
+| DDSKK skk-search inclusive | 37 | 16.488 | 32.819 |
+| snapshot inclusive | 194 | 0.419 | 14.668 |
+| raw-state-line inclusive | 130 | 0.239 | 0.539 |
+| server-reply parsing (short LIST) | 21 | 0.341 | 0.449 |
+| host empty built-in index lookup | 21 | 0.0008 | 0.0014 |
+| host fixture TCP query/reply | 21 | 0.131 | 0.226 |
+| entire host dictionary relay | 21 | 0.368 | 0.738 |
+The earlier combined plain/okuri profile recorded user-jisyo search p50
+0.441 ms (n=50), engine SERVER round trip p50 14.245 ms (n=32), and learning
+update p50 23.739 ms (n=24). Query latency from the synthetic server is NOT a
+measurement of production skkserv, Google/Mecab sources or a full L load.
+The L tier in this runtime resides in the host's preloaded index, not DDSKK's
+buffer-search implementation. Reply parsing now depends heavily on reply
+format/length; the old LF1 282 ms total is not a universal current cost.
+
+The source profile measured candidate-next p50 88.256 ms (n=4), learning commit
+72.444 ms (n=4), and a second client's HELLO queued behind explicit GC
+158.957 ms (n=1). Engine mutex wait normally had p50 0.0033 ms; maximum wait
+was 143.629 ms. Two explicit GCs were 142.678 and 205.636 ms. An earlier
+combined profile had four GCs p50 181.780 / max 371.347 ms and two queued
+HELLOs p50 176.053 ms. One serialized engine makes an unrelated app inherit
+an in-flight learning/GC/conversion stall. Idle scheduling avoids starting
+some GCs during typing but cannot preempt a GC already holding the mutex.
+
+** Ranked fixes and floor estimates
+The final unprofiled =floor-final.json= separates metadata from session
+switching: ten =WIRE UTF8 1= round trips had p50 15.781 / p90 16.716 ms;
+ten same-session HELLOs had p50 15.882 / p90 30.204 ms. This is the measured
+minimal current dispatch path, not a theoretical IPC lower bound.
+Four first persistent Spaces were p50 87.966 ms and eight subsequent learned
+Spaces 86.955 ms. In this run candidate-next was 87.340 ms (n=4), learning
+commit 63.422 ms (n=4), ordinary persistent commit 62.558 ms (n=12), and HELLO
+behind another client's GC 192.277 ms (mutex wait 178.807 ms). Client writes
+were usually ~0.03 ms and UTF-8 decode ~0.03--0.05 ms; read-wait dominates.
+Built-in dictionary hits were p50 0.0113 ms (n=21), host relay p50 0.8542 ms.
+This distinguishes actual index work from a synchronous interpreter relay.
+
+Persistent Space in the initial unprofiled run was p50 63.911 ms (n=24
+combined Space/candidate-next); HELLO after changing session was 31.504 ms
+(n=18). HELLO includes a session checkpoint switch and is not a pure IPC hop.
+Repeated persistent commits learn candidates, so later Space can avoid the
+server tier; this must not be credited entirely to replay elimination.
+The host's =ReadLine= and =ReadEngineResponse= poll with =Sleep(2)=. High
+resolution timestamps still show ~16 ms wakeup-sized gaps. QPC removes
+timestamp quantization; it does not remove those actual waiting costs.
+
+| Priority / fix | Evidence and conditional floor estimate |
+| 1. Preserve fed state instead of raw replay | Replay ~50 ms; current warm Space roughly 60--95 ms. This moves replay work to typing and requires correct per-client ownership/handoff. |
+| 2. Avoid synchronous relay where semantically redundant | Engine SERVER round trip ~14 ms despite sub-ms host lookup; potentially another ~10--15 ms off a server-dependent Space. Stock DDSKK already stops after user hits; host already returns built-in hits without querying skkserv. |
+| 3. Optimize parsing | Long replies save ~5 ms; short negotiated replies cost ~0.34 ms here. No universal double-digit Space improvement. |
+| 4. Avoid per-key snapshots/encoding | Snapshot/raw-state medians below 1 ms, with ~15 ms tails; batching can reduce typing/IPC work. Do not remove the final authoritative snapshot or checkpoint. |
+| 5. GC tuning / isolation | Typical Space floor may barely change; 140--370 ms explicit-GC stalls matter to tails and other clients. No tuning results claimed. |
+| 6. AOT hot interpreter functions | Target feed-string, kana-input, henkan, search and encoding after eliminating replay/round trips. No AOT experiment or speedup factor measured in this lane. |
+With replay removed and an actually redundant server round trip removed, a
+rough 45--65 ms current-implementation Space budget is plausible; it is an
+estimate, not a measured new implementation. Further AOT/serialization work
+cannot be assigned a reliable numeric floor from these overlapping samples.
+Event-driven IPC could lower the wakeup component, but host changes here are
+instrumentation only. Cross-process IPC is not inherently a 31 ms physical
+minimum. Low single-digit milliseconds would require measuring a different
+dispatch/wait/interpreter implementation; it is not established by EG1.
+
+** Gates and reproducible commands
+=$Runtime= and =$Dictionary= are caller-supplied paths; dictionary fixture
+copies and HOME-related artifacts remain private. Every Emacs command below
+was prefixed with =$env:HOME=[Environment]::GetFolderPath('UserProfile');=.
+Logs and JSON live under =build/w=, with per-run traces linked by =traceDir=.
+
+- Unchanged tree: =emacs -Q --batch -L engine -L vendor/ddskk -l
+  engine/test-input-rules.el -l engine/test-local-conversion.el -l
+  engine/test-local-conversion-oracle.el -f ert-run-tests-batch-and-exit=.
+  Verbatim tail: =Ran 37 tests, 13 results as expected, 24 unexpected=.
+  Missing private variables caused this failure. With LOCAL_LEARNING_TEST_DIR
+  corrected it was =Ran 37 tests, 28 results as expected, 9 unexpected=;
+  the oracle also requires LOCAL_ORACLE_DIR and LOCAL_ORACLE_BINARY. Accidental
+  baseline fixture outputs in the repository root were removed individually.
+- =cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64=;
+  =cmake --build build/w --config Release=. Initial configure/build succeeded.
+  One later build failed with =LINK : fatal error LNK1104= while the benchmark
+  held the host executable open. Final =verified-build.log= ends
+  =BUILD_EXIT=0=. All source instrumentation was linked before source-profile.
+- =ctest --test-dir build/w -C Release=, baseline and final:
+  =0% tests passed, 10 tests failed out of 10=; =Total Test time (real) = 2.75 sec=
+  in final-ctest.log. All fail on private HKCU creation, before test entry.
+- Under private NATIVEIME_REGISTRY_KEY/DDSKK_PIPE_NAME/LOCALAPPDATA, invoked
+  each Release executable directly: engine-protocol, engine-client,
+  candidate-ui, display-attribute, langbar-button, mode-indicator,
+  realtime-frontend, host-utf8-protocol and nativeime-local-conversion tests.
+  All nine exited 0. Verbatim substantive tails: =host UTF8 protocol: 43 checks,
+  0 failures= and =PASS local conversion 154 checks (4 corrupt/source negative
+  controls)=. Registry-settings executable not bypassed; it needs registry.
+- Engine ERT: =emacs -Q --batch -L engine -L vendor/ddskk -l
+  engine/test-input-rules.el -l engine/test-local-conversion.el -l
+  engine/test-eg1-cleaner.el -f ert-run-tests-batch-and-exit=, with private
+  LOCAL_LEARNING_TEST_DIR. Tail: =Ran 30 tests, 30 results as expected,
+  0 unexpected= (=final-engine-ert.log=).
+- Oracle helper compiled from unchanged =windows/test/local_index_portable_test.cpp=
+  with =cl /nologo /std:c++20 /EHsc /utf-8 /Iwindows/src ...
+  /Febuild/w/local-index-portable.exe /Fobuild/w/local-index-portable.obj=.
+  GCC attempt exited 1 without diagnostics; MSVC compile exited 0.
+  With private LOCAL_ORACLE_DIR, DDSKK_USER_JISYO and LOCAL_ORACLE_BINARY:
+  =emacs -Q --batch -L engine -L vendor/ddskk -l
+  engine/test-local-conversion-oracle.el -f ert-run-tests-batch-and-exit=.
+  Tail: =Ran 9 tests, 9 results as expected, 0 unexpected=.
+- Stock ERT: =emacs -Q --batch -L engine -L vendor/ddskk -l
+  engine/test-okuri-input.el -l engine/test-live-input.el -l
+  engine/test-q-reading.el -f ert-run-tests-batch-and-exit=, with private
+  OKURI_DICTIONARY and OKURI_ARTIFACT_DIRECTORY. Tail: =Ran 6 tests,
+  6 results as expected, 0 unexpected=. Reload ERT used a private bootstrap
+  supplying the GNU Emacs file-reader shim (same implementation as the
+  existing local-conversion tests), then =-l engine/test-okuri-reload.el=:
+  =Ran 1 tests, 1 results as expected, 0 unexpected=. The first bundled
+  attempt was 5/7 due to the missing artifact variable and file-reader shim.
+- Framework stateline/conformance command from the task brief: =Ran 31 tests,
+  31 results as expected, 0 unexpected=. Lattice command: =Ran 14 tests,
+  14 results as expected, 0 unexpected=.
+- =$Runtime --load engine/test-conversion-round2.el=, baseline/final, with
+  private DDSKK_USER_JISYO: =Host LIST reader: 6 checks PASS=,
+  =Replay full checkpoint/snapshot: 38/38 sequences PASS=,
+  =Checkpoint unbound/marker parity: 2 checks PASS=. Final additionally:
+  =EG1 candidate sanitation: 8 checks PASS=. Separate =--load
+  engine/test-conversion-cache.el= run: =PASS conversion-cache checked=528=.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File
+  windows/test-host/bench-eg1-parser.ps1 -Runtime $Runtime -Output
+  build/w/parser-ab.json=: 20 batches, each 100 parses; exit 0. Last tail:
+  =READY list-optimized 4 n=100 wall_ms=803.6295 DONE parser=list sample=4
+  n=100 total_us=0=.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File
+  windows/test-host/bench-conversion.ps1 -Runtime $Runtime -Dictionary
+  $Dictionary -Output build/w/conversion-final.json -Iterations 3
+  -ColdLoadSleepSec 45 -Learning -PersistentIterations 3=; 18 warm conversion
+  samples, exit 0, tails recorded in the before/after table. Profile runs add
+  =-Profile=; combined server run adds =-ServerOnly -Contention
+  -FixtureServerPython $Python -Port 31181= (same 18 warm samples).
+  Source-profile uses =-Kinds plain=, 12 warm samples; tail:
+  =plain wallMs n=12 p50=142.796 p90=160.864 max=179.120=.
+  =python windows/test-host/profile-eg1.py build/w/source-profile.json=
+  produces =source-summary.log=. A production skkserv/full-L benchmark,
+  private TSF harness, automatic-GC attribution, core parsing, GC tuning and
+  AOT validation remain unrun; no results for those are claimed.
+- The final floor command adds =-Kinds plain -ProbeIterations 10 -Contention=
+  to the unprofiled persistent benchmark, output =build/w/floor-final.json=.
+  Exit 0; conversion tail: =plain wallMs n=12 p50=143.344 p90=173.667
+  max=174.472=. It produces ten metadata and ten same-session probes,
+  four first Spaces, eight learned Spaces and one GC contention sample.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File
+  windows/test-host/bench-wire.ps1 -Runtime $Runtime -Output build/w/eg1-wire.json=
+  exited 0. Verbatim sample tail (100 iterations each):
+  #+begin_example
+  legacy-reply           100 16078.125 16247.7489
+  cached-reply           100       125   123.4216
+  utf8-reply             100   171.875   169.1388
+  decimal-request        100      1125  1166.9573
+  utf8-request           100    46.875    44.2134
+  #+end_example
+  Last two columns are CPU ms / wall ms. This supports preserving the
+  existing cached/UTF-8 wire optimizations; it is not a new EG1 speedup.
+- Exact framework commands:
+  =emacs -Q --batch -L framework/src -L engines/lattice/src -l
+  framework/test/nelisp-ime-stateline-test.el -l
+  framework/test/nelisp-ime-stateline-conformance-test.el -f
+  ert-run-tests-batch-and-exit= and =emacs -Q --batch -L framework/src
+  -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el
+  -f ert-run-tests-batch-and-exit=. Their verbatim counts are above.
+- =git diff --check= (with a process-local safe.directory option): exit 0,
+  no whitespace errors. =git diff --cached --name-only= was empty. No commit,
+  staging, push, stash, reset or live installation operation was performed.
+- Final compatibility build: =cmake --build build/w --config Release=,
+  =compat-build.log= tail =BUILD_EXIT=0=. Direct
+  =build/w/Release/ddskk-host-utf8-protocol-test.exe= tail
+  =host UTF8 protocol: 43 checks, 0 failures=; exit 0.
+  The final profile repeats the conversion command with =-Iterations 1
+  -Kinds plain -Learning -PersistentIterations 1 -ProbeIterations 2 -Profile
+  -ColdLoadSleepSec 45=, output =build/w/compat-profile.json=. Exit 0;
+  =plain wallMs n=4 p50=144.273 p90=158.294 max=158.294=.
+  The QPC summarizer read all 13 short replies; its tail includes
+  =self ddskk-engine--parse-server-reply n=13 p50=0.481700 p90=0.703300
+  max=1.034300 ms=.
+- Original-consumer compatibility: =powershell -NoProfile -ExecutionPolicy
+  Bypass -File windows/test-host/summarize-conversion-profile.ps1 -Trace $Trace=
+  exited 0: =Profile requests=13 functions=15; host timestamp resolution
+  about 16 ms; tracing overhead included=. =python
+  tools/ai/summarize-conversion-round2.py $Trace --warm 4= exited 0;
+  tail =warm total-wall n=4 p50=141 p90=156 max=156 ms=.
+- PowerShell syntax: =[Management.Automation.Language.Parser]::ParseFile=
+  on bench-conversion.ps1 and bench-eg1-parser.ps1, with errors inspected;
+  =ParseInput('(')= as a negative control. Tail: =Syntax gate: 2 scripts PASS;
+  invalid-input control rejected=. Both scripts had =syntax_errors=0=.
+  Old-trace fallback was verified by rerunning profile-eg1.py on
+  source-profile.json and =Compare-Object= against its original summary:
+  no differences.
+
+** Change inventory and cleanup
+File:line anchors refer to this lane's final working tree:
+| File:line | Change |
+| engine/skk-user-jisyo.el:402 | Allocation-free unchanged candidate sanitation; visibility checks only until first visible character. |
+| engine/conversion-profile.el:25 | Opt-in learning update/flush/save phase wrappers. |
+| engine/test-server-reader.el:13 | Eight runtime sanitation checks. |
+| engine/test-eg1-cleaner.el:1 | GNU Emacs sanitation reference, whitespace/Unicode coverage, identity and match-data regression tests. |
+| engine/bench-eg1.el:1 | Alternating parser A/B batches, parity check and attempted runtime timer. |
+| windows/host/main.cpp:50 | QPC helper; dictionary tier timing at 1121/1156, dispatch/phase timing at 1356/1386, client mutex wait and response write later in ServeClient. Original integer records preserved. Instrumentation only. |
+| windows/test-host/bench-conversion.ps1:1 | Client phase rows, tagged persistent/learning/probe operations, two-client GC contention and private fixture-server option. |
+| windows/test-host/bench-eg1-parser.ps1:1 | External high-resolution batch timing with private process environment and guaranteed process cleanup. |
+| windows/test-host/profile-eg1.py:1 | Nested phase and operation summaries. |
+| windows/test-host/profile-eg1-server.py:1 | Read-only synthetic skkserv protocol fixture restricted to loopback 31100--31199. |
+| docs/design/local-first-conversion.org:891 | EG1 evidence, limits, ranked fixes, estimates and gate ledger. |
+| tools/ai/local-first-conversion-notes.org:2268 | Short user answer and recommendation. |
+
+All launched PowerShell/tool sessions completed. Fifteen recorded owned
+engine/server PIDs from private trace/readiness logs were checked: zero remain.
+Parser/wire/batch runtime processes exited and their runners reap/kill on
+failure. No host executable from this workspace remains. Existing live host
+PID 19412 was only observed during cleanup and left untouched. WMI command
+line inventory was denied, so cleanup used owned PID records and process paths.
+No owned-process leftovers are known. The git index remains unchanged.

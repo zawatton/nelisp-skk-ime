@@ -2867,3 +2867,141 @@ PROVIDER_TSF_LAT mode=disabled space_us=540
 PROVIDER_TSF_LAT mode=unreachable space_us=498
 #+end_example
 These are provider-mode callbacks, not a new local opt-in latency gate.
+
+** SK1 / EG1 merge resolution (2026-10-07)
+
+Working tree resolution only; Claude started the merge and will stage it.
+Kept the complete SK1 sections followed by the complete EG1 sections in both
+documents. Both original conflict blocks were retained byte-for-byte before
+adding this validation note. The host conflicts kept SK1's async cache,
+worker, source merging and bounded replies; EG1's builtin/query timings were
+ported to the new execution sites. Incoming engine sanitation and profiling
+files were not edited by this worker.
+
+Host integration changes:
+- windows/host/main.cpp:53: incoming QPC clock helper.
+- windows/host/main.cpp:1117: cache scope timing on every return, including
+  nonwaiting LOCAL SERVER polls and disabled/cache-hit paths; outside lock.
+- windows/host/main.cpp:1171: background connection timing (including failure).
+- windows/host/main.cpp:1178: preserved skkserv-query timing around worker TCP
+  send/receive, rather than the removed synchronous socket path.
+- windows/host/main.cpp:1223: preserved builtin-index timing in merged lookup.
+- windows/host/main.cpp:1423,1459,1506,1517: incoming dispatch/phase/relay QPC
+  records, with all original integer diagnostics retained.
+- windows/host/main.cpp:2255,2321,2412: incoming receive/mutex/write timing.
+- docs/design/local-first-conversion.org:983: merge validation before EG1.
+- tools/ai/local-first-conversion-notes.org:2871: this merge record before EG1.
+
+Commands and verbatim tails (all exit 0):
+
+#+begin_example
+cmake --build build/w --config Release
+#+end_example
+Ran twice, including the final cache instrumentation. Final log:
+build/w/sk1-eg1-merge-build.log. Build, no assertion count. Verbatim tail:
+#+begin_example
+  register-categories.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-sk1\build\w\Release\register-categories.exe
+  set-profile-icon.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-sk1\build\w\Release\set-profile-icon.exe
+  tsf-host.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-sk1\build\w\Release\tsf-host.exe
+#+end_example
+
+#+begin_example
+$env:DDSKK_HOST_DEBUG='1'; & build/w/Release/ddskk-host-utf8-protocol-test.exe
+#+end_example
+Log: build/w/sk1-eg1-merge-host.log. Verbatim test tail:
+#+begin_example
+host UTF8 protocol: 66 checks, 0 failures
+#+end_example
+Checked the emitted debug log using the exact decimal format regex
+=dictionary-source name=<phase> ms=(\d+\.\d{6})=; all four phases present:
+#+begin_example
+QPC_PHASE name=builtin-index records=11
+QPC_PHASE name=skkserv-cache records=14
+QPC_PHASE name=skkserv-connect records=9
+QPC_PHASE name=skkserv-query records=5
+#+end_example
+These use the production worker against a loopback fixture in the test-port
+range. Cache hits, disabled replies, okuri keys, slow/unreachable servers,
+source append/order and invalidation assertions remain enabled.
+
+#+begin_example
+& build/w/Release/nativeime-local-conversion-test.exe $FreshPrivateRoot
+#+end_example
+Fresh GUID root and private registry/pipe/user/data environment. No registry
+creation needed. Log: build/w/sk1-eg1-merge-local.log. Verbatim tail:
+#+begin_example
+PASS local conversion 173 checks (4 corrupt/source negative controls)
+#+end_example
+
+#+begin_example
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L engine -L vendor/ddskk -l engine/test-input-rules.el -l engine/test-local-conversion.el -l engine/test-eg1-cleaner.el -f ert-run-tests-batch-and-exit
+#+end_example
+Private LOCAL_LEARNING_TEST_DIR, DDSKK_USER_JISYO and LOCALAPPDATA under
+build/w. Log: build/w/sk1-eg1-merge-engine-ert.log. Verbatim tail:
+#+begin_example
+Ran 30 tests, 30 results as expected, 0 unexpected (2026-10-07 20:04:12+0900, 0.530478 sec)
+#+end_example
+
+#+begin_example
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+#+end_example
+Log: build/w/sk1-eg1-merge-stateline.log. Verbatim tail:
+#+begin_example
+Ran 31 tests, 31 results as expected, 0 unexpected (2026-10-07 20:04:11+0900, 0.040308 sec)
+#+end_example
+
+#+begin_example
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+#+end_example
+Log: build/w/sk1-eg1-merge-lattice.log. Verbatim tail:
+#+begin_example
+Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-07 20:04:54+0900, 0.040690 sec)
+#+end_example
+
+Conflict-marker scan and git diff --check passed. No add/commit command was
+run: the index retains its three unmerged paths until Claude stages these
+resolved working files. Native test fixtures/threads joined and all test
+executables and batch Emacs processes exited; no owned leftovers. Ctest and
+TSF gates were not rerun in this merge turn; Claude will run those outside
+the sandbox. No live IME settings, pipe, server, Google or personal dictionary
+was touched.
+
+* EG1: can a fast engine replace local conversion? (2026-10-07)
+Keep local conversion for the certified dictionary cases, and improve the
+engine for fallback, full DDSKK behavior and learning. A faster engine would
+reduce fallback latency; it does not currently remove the value of local.
+
+On base 8e022fa, private raw-key replay reproduced plain p50 111 ms and okuri
+127 ms. The final unprofiled run measured a minimal metadata round trip at
+15.8 ms, same-session no-op at 15.9 ms, and already-fed Space at 88.0 ms
+(first four) / 87.0 ms (eight learned). An earlier run was ~64 ms for the
+combined persistent-Space/candidate-next group. These are implementation
+floors/observations, not a physical lower limit for cross-process IPC.
+Host polling, interpreter work and synchronous relay still cost time even
+when actual indexed lookup is ~0.01 ms. A synthetic loopback TCP query took
+~0.13 ms; engine-side relay observation was ~14 ms in the earlier profile.
+
+The shared engine also exposes every app to another app's transaction:
+explicit GC took roughly 143--371 ms in profiled runs, and a second client's
+otherwise small request waited 159--192 ms behind GC. Learning commit was
+~63--79 ms across measured runs. Fast average search does not bound those tails.
+Local conversion's existing ~1 ms path avoids that cross-process/shared-mutex
+barrier for certified hits, while retaining the engine as the authority.
+
+Safe sanitation optimization improved a long-reply parser by 32% (slash)
+and 39% (LIST) in alternating A/B samples. It did not establish an overall
+plain conversion speedup. Prioritize eliminating replay, unnecessary relay
+round trips and per-key state encoding, then interpreter/AOT and GC isolation.
+Existing stock search already defers the server after a user-dictionary hit;
+the host already skips skkserv after a built-in hit. Do not sacrifice candidate
+coverage by globally disabling sources. Reconsider removing local only after
+measuring low single-digit Space and bounded tails under multiple apps with
+learning and GC active. That engine has not been demonstrated here.
+
+Full phase tables, changes, exact commands, tails and limitations are in
+[[file:../../docs/design/local-first-conversion.org::*EG1: engine conversion latency investigation (2026-10-07)][EG1 design report]].
+Engine ERT: 30/30 plus stock oracle 9/9, stock input 6/6 and reload 1/1;
+framework/lattice: 31/31 and 14/14. NeLisp reader/sanitation/replay/checkpoint
+and encoding-cache checks pass. CTest: all ten wrappers blocked by sandbox
+private-registry denial; nine applicable direct executables passed. No live
+settings, personal dictionary, ABI or core files changed; changes unstaged.

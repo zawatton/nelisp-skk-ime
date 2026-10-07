@@ -49,6 +49,17 @@
 #include <vector>
 
 namespace {
+// Diagnostics only; scheduling and timeout clocks retain GetTickCount64.
+double ProfileMilliseconds() {
+  static const double frequency = [] {
+    LARGE_INTEGER value{};
+    QueryPerformanceFrequency(&value);
+    return static_cast<double>(value.QuadPart);
+  }();
+  LARGE_INTEGER value{};
+  QueryPerformanceCounter(&value);
+  return 1000.0 * static_cast<double>(value.QuadPart) / frequency;
+}
 std::atomic<bool> g_stopping{false};
 HANDLE g_child_job = nullptr;
 std::wstring g_log_path;
@@ -1101,6 +1112,18 @@ class ServerCache {
     changed_.notify_all(); if (worker_.joinable()) worker_.join();
   }
   std::optional<std::string> Query(const std::string& reading, const std::string& okuri = {}, DWORD wait_ms = 0) {
+    // Profile every cache exit, including LOCAL SERVER polls, disabled
+    // sources, hits and the provider's bounded wait. Log after unlocking.
+    struct CacheProfile {
+      bool enabled; double started;
+      ~CacheProfile() {
+        if (enabled)
+          std::fprintf(stderr, "dictionary-source name=skkserv-cache ms=%.6f\n",
+                       ProfileMilliseconds()-started);
+      }
+    };
+    const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
+    const CacheProfile profile{debug, debug ? ProfileMilliseconds() : 0};
     DictionaryServerConfig config; LoadDictionaryServerConfig(&config);
     const auto identity = WideToUtf8(config.host) + ":" + std::to_string(config.port) + ":" +
         std::to_string(config.enabled) + ":" + WideToUtf8(config.dictionary_files) + ":" + WideToUtf8(config.start_command);
@@ -1144,10 +1167,20 @@ class ServerCache {
         if (stop_) break; job = std::move(jobs_.front()); jobs_.pop_front(); }
       std::string reply = "4";
       if (winsock) {
+        const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
+        const double connect_started = debug ? ProfileMilliseconds() : 0;
         SOCKET socket = ConnectDictionaryServer(job.config);
+        if (debug)
+          std::fprintf(stderr, "dictionary-source name=skkserv-connect ms=%.6f\n",
+                       ProfileMilliseconds()-connect_started);
         if (socket != INVALID_SOCKET) {
           std::string response;
-          if (SendAndReceive(socket, "1" + job.reading + " ", &response) &&
+          const double server_started = debug ? ProfileMilliseconds() : 0;
+          const bool found = SendAndReceive(socket, "1" + job.reading + " ", &response);
+          if (debug)
+            std::fprintf(stderr, "dictionary-source name=skkserv-query ms=%.6f\n",
+                         ProfileMilliseconds()-server_started);
+          if (found &&
               !response.empty() && (response[0] == '1' || response[0] == '4')) reply = std::move(response);
           closesocket(socket);
         } else if (!job.config.start_command.empty()) TrySpawnSkkServ(job.config.start_command);
@@ -1186,7 +1219,15 @@ std::string MergeServerReply(std::string_view files, std::string_view server) {
   return result;
 }
 std::string LookupDictionary(const std::string& midasi) {
+  const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
+  const double lookup_started = debug ? ProfileMilliseconds() : 0;
   const std::string files = g_builtin_dictionary.ready.load(std::memory_order_acquire) ? MergeBuiltinCandidates(midasi) : "";
+  if (debug) {
+    std::fprintf(stderr, "dictionary-source name=builtin-index ms=%.6f\n",
+                 ProfileMilliseconds()-lookup_started);
+    std::fprintf(stderr, "ddskk-engine-host: lookup [%s]\n", midasi.c_str());
+    std::fprintf(stderr, "ddskk-engine-host: builtin [%s]\n", files.c_str());
+  }
   // Provider keys already run off the input thread. Give a miss at most 200ms
   // before registration; local hits do not use this waiting path.
   const auto server = g_server_cache.Query(midasi, {}, 200);
@@ -1379,6 +1420,7 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
     }
   }
   const ULONGLONG started = GetTickCount64();
+  const double profile_started = ProfileMilliseconds();
   const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
   PROCESS_MEMORY_COUNTERS memory{};
   const auto cpu_time = [&child]() {
@@ -1400,16 +1442,23 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
   // able to wedge this loop (and thus the whole host) forever.
   constexpr int kMaxServerExchangesPerRequest = 64;
   int server_exchanges = 0;
-  ULONGLONG phase_started = started;
+  double phase_started = profile_started;
+  ULONGLONG legacy_phase_started = started;
   ULONGLONG phase_cpu_started = cpu_started;
   std::string phase = "dispatch";
   for (;;) {
     std::string line;
     if (!ReadEngineResponse(child.output, &line)) return false;
     if (line.starts_with("PHASE ")) {
-      const ULONGLONG now = GetTickCount64();
-      if (debug) std::fprintf(stderr, "engine-phase name=%s ms=%llu next=%s\n",
-          phase.c_str(), now - phase_started, line.c_str() + 6);
+      const double now = ProfileMilliseconds();
+      if (debug) {
+        const ULONGLONG tick = GetTickCount64();
+        std::fprintf(stderr, "engine-phase name=%s ms=%llu next=%s\n",
+            phase.c_str(), tick - legacy_phase_started, line.c_str() + 6);
+        legacy_phase_started = tick;
+        std::fprintf(stderr, "engine-phase-qpc name=%s ms=%.6f next=%s\n",
+            phase.c_str(), now - phase_started, line.c_str() + 6);
+      }
       if (debug) {
         const ULONGLONG now_cpu = cpu_time();
         std::fprintf(stderr, "engine-phase-cpu name=%s ms=%llu next=%s\n",
@@ -1448,10 +1497,14 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
       // Out-of-band dictionary lookup: answer it and keep reading for the
       // real response. The engine blocks on its stdin until this arrives.
       if (++server_exchanges > kMaxServerExchangesPerRequest) return false;
-      const ULONGLONG relay_started = GetTickCount64();
+      const double relay_started = ProfileMilliseconds();
+      const ULONGLONG legacy_relay_started = GetTickCount64();
       const std::string found = LookupDictionary(line.substr(7));
       const std::string reply = child.utf8_wire ? EngineDictionaryReply(found) : found;
-      if (debug) std::fprintf(stderr, "dictionary-relay ms=%llu\n", GetTickCount64()-relay_started);
+      if (debug) {
+        std::fprintf(stderr, "dictionary-relay ms=%llu\n", GetTickCount64()-legacy_relay_started);
+        std::fprintf(stderr, "dictionary-relay-qpc ms=%.6f\n", ProfileMilliseconds()-relay_started);
+      }
       if (!WriteAll(child.input, reply + "\n")) return false;
       continue;
     }
@@ -1461,10 +1514,11 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
     if (debug) {
       PROCESS_MEMORY_COUNTERS after{};
       K32GetProcessMemoryInfo(child.process, &after, sizeof(after));
-      std::fprintf(stderr, "dispatch done pid=%lu ms=%llu cpu_ms=%llu ws_mb=%llu faults_delta=%lu relay_count=%d\n",
+      std::fprintf(stderr, "dispatch done pid=%lu ms=%llu cpu_ms=%llu ws_mb=%llu faults_delta=%lu relay_count=%d qpc_ms=%.6f\n",
           GetProcessId(child.process), GetTickCount64()-started,
           (cpu_time()-cpu_started)/10000, after.WorkingSetSize/1048576,
-          after.PageFaultCount-memory.PageFaultCount, server_exchanges);
+          after.PageFaultCount-memory.PageFaultCount, server_exchanges,
+          ProfileMilliseconds()-profile_started);
     }
     return true;
   }
@@ -2198,6 +2252,7 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     // block comment above IdleGcLoop().
     NoteActivity();
     const ULONGLONG received = GetTickCount64();
+    const double profile_received = ProfileMilliseconds();
     std::string request(request_buffer.data(), read);
     while (!request.empty() && (request.back() == '\n' || request.back() == '\r'))
       request.pop_back();
@@ -2263,8 +2318,9 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
       // above.
       std::lock_guard<std::mutex> lock(g_engine_mutex);
       if (GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0))
-        std::fprintf(stderr, "request-lock tick=%llu wait_ms=%llu request=%s\n",
-            received, GetTickCount64()-received, request.c_str());
+        std::fprintf(stderr, "request-lock tick=%llu wait_ms=%llu qpc_wait_ms=%.6f request=%s\n",
+            received, GetTickCount64()-received,
+            ProfileMilliseconds()-profile_received, request.c_str());
       const std::string session_id = SessionIdFromRequest(request);
       const bool scoped_session = !session_id.empty();
       if (scoped_session) {
@@ -2349,11 +2405,13 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
       }
     }
     DWORD written = 0;
+    const double profile_write = ProfileMilliseconds();
     connected = WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()),
                           &written, nullptr) && written == response.size();
     if (GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0))
-      std::fprintf(stderr, "request-done tick=%llu total_ms=%llu request=%s\n",
-          received, GetTickCount64()-received, request.c_str());
+      std::fprintf(stderr, "request-done tick=%llu total_ms=%llu qpc_total_ms=%.6f qpc_write_ms=%.6f request=%s\n",
+          received, GetTickCount64()-received, ProfileMilliseconds()-profile_received,
+          ProfileMilliseconds()-profile_write, request.c_str());
     if (is_shutdown) {
       connected = false;
       g_stop_reason.store("SHUTDOWN");
