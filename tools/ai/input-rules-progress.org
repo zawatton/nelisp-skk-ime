@@ -407,3 +407,168 @@ candidate or tested buffer. All existing assertions/waits/thresholds remain.
   =PASS tracked IR1 process cleanup ids=165 host_runtime_resident_alive=0=
   (build/round3-cleanup.log). No recorded IR1 host/runtime/resident remains;
   live/other-worker processes were not stopped.
+
+* IR3 (2026-10-08): watcher reload on main 4da84de
+
+** Reproduction and attribution
+- Before edits, configured/built windows into build/w, input-rules into
+  build/input-rules, and keymap into build/keymap (VS 2022 x64 Release).
+- Unchanged gate command (exit 1, zero assertions reached):
+  #+begin_src powershell
+  powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/input-rules/test-input-rules.ps1 -BuildDirectory build/w/Release -RulesBuildDirectory build/input-rules/Release -KeymapExe build/keymap/Release/nelisp-ime-keymap.exe -EngineExecutablePath $Runtime -ColdLoadSleepSec 45
+  #+end_src
+  Error tail (paths normalized):
+  #+begin_example
+  powershell.exe : New-Item : Access to the registry key 'HKEY_CURRENT_USER\Software\NativeIME-test-fb3f312d3f2c' is
+  denied.
+      + FullyQualifiedErrorId : NativeCommandError
+  #+end_example
+  The runtime argument above is abbreviated as $Runtime; no
+  production or test source hard-codes it. Harness registry setup failed
+  before starting any host/runtime/TSF/resident process.
+- Read the provided coordinator assertion log and its saved
+  build/input-rules-results/tsf.log. The latter has the checkpoint:
+  =AFTER CURLY BUF=[(. {「」}」)] SEL=5,5 COMP=-=, followed by
+  =AFTER PERIOD BUF=[(. {「。」}」)] SEL=6,6 COMP=-= and a final
+  =AFTER PAREN BUF=[(. {「。EDIT 9」}」)] SEL=12,12 COMP=-=.
+  Thus this saved run did reload period/custom rules. The wrong bracket
+  and literal 9 strongly indicate lost synthetic Shift, rather than a
+  missing AFTER CURLY line. TestKeyDown took 29485 us on that CURLY;
+  ordinary keys took microseconds. This is inference from the trace,
+  not a locally reproduced keyboard-state observation.
+- Code-level bisect: 55a9428 has parent 1f94359. Its diff replaces
+  per-key engine_.RomajiRules() with a one-shot activation export and
+  fallback_rules_loaded_. Once set, that latch ignores every subsequent
+  engine reload. This is a definite production defect introduced by TL1,
+  but cannot explain the earlier reported failure at its parent 1f94359.
+- At 1f94359 the engine path still fetches current rules on each key.
+  LF2 352bcd2 adds the local-index path but retains that engine fallback;
+  LF5 090216a pins rules to the base, whose identity includes the complete
+  rule export. LocalPublicationLoop includes rules in base_identity, and
+  Publish hashes rules and rebuilds the base for rules-only changes.
+  No local publication change is needed based on this analysis and the
+  new passing rules-only publication checks. The first commit exposing
+  the earlier synthetic modifier drift is NOT established in this sandbox.
+
+** Changes (unstaged; no commit)
+- windows/src/text_service.cpp:304,1241,1304,2145,2430 and
+  windows/src/text_service.h:361: replace the one-shot/latch with a
+  continuously refreshed immutable export and last-adopted pointer.
+  Pipe I/O stays on a separate client/thread; unchanged tables preserve
+  identity. Adopt only outside native/provider/local episodes. A weak
+  holder stops refresh after deactivation/destruction while a module
+  lease protects the worker until it exits (bounded pending I/O remains).
+- windows/test-host/input-rules/CMakeLists.txt:6: reapply each synthetic
+  token's complete keyboard state between TestKeyDown and KeyDown.
+  INPUT_KEYSTATE diagnostics record observed/expected Shift before the
+  repair, allowing Claude to confirm or refute the inferred drift.
+  No assertions, thresholds, live settings, shared harness, ABI or shim
+  were changed.
+- windows/test-host/input-rules/test-reload.ps1:1: focused integration
+  regression: keep one context/app alive through watcher width reload,
+  custom symbol explicit reload, and pair-off reload; assert all five
+  exact buffer/caret checkpoints with LocalConversion=0 and =1.
+  Expected success: =PASS input rules reload assertions=12 paths=2 hooks=0 SendInput=0=.
+- windows/test/local_conversion_test.cpp:96: five checks prove unchanged
+  dictionaries/learning plus changed rules rebuild the base, expose the
+  new parsed width, preserve pinned old rules, and allow restoring rules.
+- This ledger records findings, commands, limits, and coordinator follow-up.
+
+** Executed validation
+- =cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64=,
+  =cmake --build build/w --config Release=; exit 0. Final build tail (paths normalized):
+  #+begin_example
+  tsf-host.vcxproj -> <worker>\build\w\Release\tsf-host.exe
+  #+end_example
+  Existing MSVC C4244 warnings in engine_protocol.cpp remain.
+- =cmake -S windows/test-host/input-rules -B build/input-rules -G "Visual Studio 17 2022" -A x64=,
+  =cmake --build build/input-rules --config Release=; exit 0. Final tail:
+  #+begin_example
+  input-rules-probe.vcxproj -> <worker>\build\input-rules\Release\input-rules-probe.exe
+  #+end_example
+- =cmake -S windows/keymap -B build/keymap -G "Visual Studio 17 2022" -A x64=,
+  =cmake --build build/keymap --config Release=; exit 0. Keymap built,
+  no keymap tests or installation scripts were run.
+- =ctest --test-dir build/w -C Release=; blocked in run-isolated-test.ps1
+  at private New-Item for every test (test binaries never launched).
+  Verbatim summary tail:
+  #+begin_example
+  0% tests passed, 10 tests failed out of 10
+  Total Test time (real) =   2.91 sec
+  #+end_example
+  Evidence: build/ir3-ctest.log and build/w/Testing/Temporary/LastTest.log.
+- Rebuilt the focused unit executable:
+  =cmake --build build/w --config Release --target nativeime-local-conversion-test=,
+  exit 0. Ran it directly with private env paths/key/pipe:
+  #+begin_src powershell
+  $env:NATIVEIME_REGISTRY_KEY='Software\NativeIME-test-ir3-direct'
+  $env:DDSKK_PIPE_NAME='\\.\pipe\nativeime-test-ir3-direct'
+  $env:LOCALAPPDATA=(Join-Path (Get-Location) 'build/ir3-direct-data')
+  $env:DDSKK_USER_JISYO=(Join-Path $env:LOCALAPPDATA 'user.jisyo')
+  build/w/Release/nativeime-local-conversion-test.exe build/ir3-local-unit
+  #+end_src
+  Exit 0, verbatim complete output (build/ir3-local-unit.log):
+  #+begin_example
+  PASS rules-only publication checks=5
+  PASS local conversion 178 checks (4 corrupt/source negative controls)
+  #+end_example
+  =build/w/Release/ddskk-realtime-frontend-test.exe= with the same private
+  environment also exited 0, stdout empty (it has no success count).
+- ERT commands, each prefixed with the required HOME assignment:
+  #+begin_src powershell
+  $env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+  $env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+  #+end_src
+  Both exit 0. Verbatim tails (build/ir3-ert-*.log):
+  #+begin_example
+  Ran 31 tests, 31 results as expected, 0 unexpected (2026-10-08 00:16:56+0900, 0.051539 sec)
+  Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-08 00:16:56+0900, 0.033610 sec)
+  #+end_example
+- New TSF gate attempted with the same parameters as reproduction, replacing
+  test-input-rules.ps1 by test-reload.ps1; exit 1, zero assertions reached:
+  #+begin_example
+  powershell.exe : New-Item : Access to the registry key 'HKEY_CURRENT_USER\Software\NativeIME-test-fa33a5a3e822' is
+  denied.
+      + FullyQualifiedErrorId : NativeCommandError
+  #+end_example
+  This attempt preceded the final diagnostic-only fixture addition.
+- =git -c safe.directory=<worker> diff --check=:
+  exit 0, no diff errors. Git warns that the user's global ignore file is
+  unreadable. The index is empty. No hosts/runtime/residents were started;
+  both batch Emacs commands and all direct tests exited. No owned process
+  remains. Existing user/other-worker processes were not stopped.
+
+** Exactly what Claude must run
+Use a registry-capable coordinator shell, from this worker checkout, with
+the runtime supplied as a variable. The harness owns private registry,
+pipe, dictionary and process cleanup. No live deployment is required.
+#+begin_src powershell
+${Runtime}=$env:IR3_ENGINE_EXECUTABLE
+cmake --build build/w --config Release
+cmake --build build/input-rules --config Release
+ctest --test-dir build/w -C Release
+$env:DDSKK_HARNESS_DIAGNOSTICS='1'
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/input-rules/test-input-rules.ps1 -BuildDirectory build/w/Release -RulesBuildDirectory build/input-rules/Release -KeymapExe build/keymap/Release/nelisp-ime-keymap.exe -EngineExecutablePath $Runtime -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/input-rules/test-reload.ps1 -BuildDirectory build/w/Release -RulesBuildDirectory build/input-rules/Release -KeymapExe build/keymap/Release/nelisp-ime-keymap.exe -EngineExecutablePath $Runtime -ColdLoadSleepSec 45
+#+end_src
+Expected existing gate: assertions=17 widths=2; focused gate: assertions=12
+paths=2; CTest: 10/10. These results have NOT been observed here.
+
+For historical attribution, Claude should build 1f94359 and 55a9428 in
+separate coordinator-owned isolated worktrees and build directories,
+without applying this production patch. Use the current patched fixture
+for both to remove the modifier confound:
+#+begin_src powershell
+# Set $RevisionRoot to each isolated historical worktree in turn.
+# Set $RevisionBuild to its dedicated build directory.
+cmake -S "$RevisionRoot/windows" -B $RevisionBuild -G 'Visual Studio 17 2022' -A x64
+cmake --build $RevisionBuild --config Release
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/input-rules/test-reload.ps1 -BuildDirectory "$RevisionBuild/Release" -RulesBuildDirectory build/input-rules/Release -KeymapExe build/keymap/Release/nelisp-ime-keymap.exe -EngineExecutablePath $Runtime -ColdLoadSleepSec 45
+#+end_src
+Prediction: 1f94359 engine path adopts watcher rules; 55a9428 engine path
+fails because its one-shot export stays stale. Inspect INPUT_KEYSTATE on
+post-reload shifted keys for shift=0 expected=1. To locate the earlier
+timing-dependent fixture failure, run the ORIGINAL fixture/gate with
+diagnostics at fda22d8 (S1), 87618f6 / 352bcd2 (LF2 boundary),
+1a48fa4 (LF3/4 fixes), 630b122 / 090216a (LF5 boundary), and 1f94359.
+Do not attribute that earlier failure to TL1 without these runs.
