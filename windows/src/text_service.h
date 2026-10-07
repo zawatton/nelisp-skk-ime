@@ -214,6 +214,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   bool BeginProviderConversion(const std::u32string& keys, bool registration = false);
   bool BeginProviderControl(ddskk::EngineControl control, bool apply_state = true);
   bool BeginProviderKey(char32_t key, bool may_convert = false);
+  void PrepareProviderReading();
   bool BeginProviderKeys(const std::u32string& keys, bool sync = false);
   void CancelPendingProvider();
   void ReleaseEngineConversion();
@@ -259,6 +260,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   HWND provider_window_ = nullptr;
   std::mutex provider_engine_mutex_;
   std::atomic<uint64_t> provider_sequence_{0};
+  std::atomic<uint64_t> preparation_sequence_{0};
   std::atomic<bool> provider_pending_{false};
   // Retain a failed lookup's identity until cancellation or a new request,
   // so Ctrl+G restores its reading even after the worker has timed out.

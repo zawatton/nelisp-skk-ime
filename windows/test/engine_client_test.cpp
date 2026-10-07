@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 #include <string>
 #include <thread>
 #include <windows.h>
@@ -55,6 +56,7 @@ int main() {
              std::pair{"ENGINE RELOAD\n", "OK RELOADING"},
              std::pair{"RESET\n", "STATE hiragana 0 -1 - - -1 -"},
              std::pair{"KEY 107\n", "STATE hiragana 0 -1 - 00006b -1 -"},
+             std::pair{"OPEN 2\n", "ERR REQUEST"},
              std::pair{"CONTROL CONVERT-KEYS 75,97,110,97\n",
                        "STATE candidate 2 0 0025bc004eee00540d - 0 004eee00540d"}}) {
       read = 0;
@@ -115,10 +117,55 @@ int main() {
   server.join();
   CloseHandle(ready);
 
+  // Version 2 on a real private pipe: eviction recovery and old-engine
+  // replacement preserve the uncommitted candidate navigation history.
+  HANDLE persistent_ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  std::thread persistent_server([=] {
+    HANDLE pipe = CreateNamedPipeW(kTestPipe, PIPE_ACCESS_DUPLEX,
+        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, 1, 8192, 8192, 1000, nullptr);
+    assert(pipe != INVALID_HANDLE_VALUE);
+    SetEvent(persistent_ready);
+    assert(ConnectNamedPipe(pipe, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED);
+    for (const auto& exchange : std::array{
+        std::pair{"OPEN 2\n", "OK OPEN 2"},
+        std::pair{"V2 PREPARE 2 75,97,110,97\n", "STATE hiragana 3 0 0025bd00304b00306a - -1 -"},
+        std::pair{"V2 SPACE 2\n", "STATE candidate 2 0 0025bc004eee00540d - 0 004eee00540d,004f73004808"},
+        std::pair{"V2 CONTROL CONVERT\n", "ERR SESSION LOST"},
+        std::pair{"OPEN 2\n", "OK OPEN 2"},
+        std::pair{"V2 PREPARE 2 75,97,110,97\n", "STATE hiragana 3 0 0025bd00304b00306a - -1 -"},
+        std::pair{"V2 SPACE 2\n", "STATE candidate 2 0 0025bc004eee00540d - 0 004eee00540d,004f73004808"},
+        std::pair{"V2 CONTROL CONVERT\n", "STATE candidate 2 0 0025bc004f73004808 - 1 004eee00540d,004f73004808"},
+        std::pair{"V2 CONTROL PREVIOUS\n", "ERR REQUEST"},
+        std::pair{"RESET", "STATE hiragana 0 -1 - - -1 -"},
+        std::pair{"SYNC-KEYS 75,97,110,97\n", "STATE candidate 2 0 0025bc004eee00540d - 0 004eee00540d,004f73004808"},
+        std::pair{"CONTROL CONVERT", "STATE candidate 2 0 0025bc004eee00540d - 0 004eee00540d,004f73004808"},
+        std::pair{"CONTROL CONVERT\n", "STATE candidate 2 0 0025bc004f73004808 - 1 004eee00540d,004f73004808"},
+        std::pair{"CONTROL PREVIOUS\n", "STATE candidate 2 0 0025bc004eee00540d - 0 004eee00540d,004f73004808"}}) {
+      char buffer[512]{}; DWORD read = 0, written = 0;
+      assert(ReadFile(pipe, buffer, sizeof(buffer), &read, nullptr));
+      const std::string request(buffer, read);
+      if (!request.starts_with("SESSION ") || request.find(exchange.first) == std::string::npos)
+        std::fprintf(stderr, "Persistent request mismatch expected=%s actual=%s\n", exchange.first, request.c_str());
+      assert(request.starts_with("SESSION ") && request.find(exchange.first) != std::string::npos);
+      const std::string response(exchange.second);
+      assert(WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr));
+    }
+    FlushFileBuffers(pipe); DisconnectNamedPipe(pipe); CloseHandle(pipe);
+  });
+  assert(WaitForSingleObject(persistent_ready, 1000) == WAIT_OBJECT_0);
+  ddskk::EngineClient persistent;
+  assert(persistent.PrepareKeys(U"Kana", 1000));
+  assert(persistent.ConvertKeys(U"Kana", 1000)->candidate_index == 0);
+  assert(persistent.SendControl(ddskk::EngineControl::kConvert, 1000)->candidate_index == 1);
+  assert(persistent.SendControl(ddskk::EngineControl::kPrevious, 1000)->candidate_index == 0);
+  persistent.Disconnect(); persistent_server.join(); CloseHandle(persistent_ready);
+
   int failures = 0;
   client.SetConnectionFailureHandler([&failures] { ++failures; });
   assert(!client.Reset(2));
   assert(failures == 1);
+  assert(!client.ConvertKeys(U"Ka", 2));
+  assert(failures == 2);  // Negotiation preserves host-start notification.
   client.SetConnectionFailureHandler({});
 
   // A provider timeout must never trap the UI behind the full transaction

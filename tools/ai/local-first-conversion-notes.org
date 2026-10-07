@@ -2304,3 +2304,116 @@ framework/lattice: 31/31 and 14/14. NeLisp reader/sanitation/replay/checkpoint
 and encoding-cache checks pass. CTest: all ten wrappers blocked by sandbox
 private-registry denial; nine applicable direct executables passed. No live
 settings, personal dictionary, ABI or core files changed; changes unstaged.
+
+* EG2 worker handoff (1914d9f; unstaged; acceptance open)
+Persistent provider reading preparation, keyless versioned Space, 64-session LRU,
+explicit loss/recovery, old-engine fallback, and a native FIFO checkpoint worker
+are implemented. Local conversion retains its existing path. Client transactions
+are serialized; cancellation remains lock-free. Confirmed text is excluded from
+replay recovery. Replacement-created empty records cannot hide engine restart.
+
+The native worker owns learning file I/O and atomic publication. Complete changed
+rows and the changed operation watermark preserve DDSKK order and durable retries.
+Fresh legacy journals survive a v2 checkpoint and native cache reload. Storage
+fences are outside the engine mutex; shutdown drains the queue. The host still
+waits for a durability barrier before replying, so the requested immediate commit
+and concurrent-ACK isolation remain incomplete. Overlay snapshot CPU still shares
+the interpreter. No ABI/shim/settings/live dictionary/deployment changes were made.
+
+Engine ERT 32/32; runtime replay 38/38 plus 24 new session checks; cache 528;
+stock DDSKK 6/6; stock oracle 9/9; reload/local-learning 16/16; framework 31/31;
+lattice 14/14. Native protocol/worker suite 67 checks, 0 failures; nine direct
+native executables exit 0 (local conversion 154 checks, four negative controls).
+CTest and all registry-dependent TSF/local/integration/hot-swap gates are blocked
+before assertions by sandbox private-HKCU creation. Claude must run them privately.
+
+Comparable QPC plain first SPACE p50 140.725 -> 93.498 ms; ordinary plain commit
+84.884 -> 49.001 ms. Unprofiled plain first/learned SPACE 78.743 / 72.981 ms;
+20-commit burst p50 45.205 ms. Plain SPACE <= 40 ms is not achieved. Okuri Space
+preserves automatic conversion; its low post-feed cost excludes typing conversion.
+A measured whole-table serialization regression was replaced by changed rows and
+one watermark, reducing checkpoint capture to ~4.3 ms p50. Later storage hardening
+is tested separately; consult the EG2 gate ledger in local-first-conversion.org
+for command tails, limits, the real restart probe and final cleanup evidence.
+
+Do not mark EG2 accepted or deploy until immediate/durable reply semantics, plain
+Space latency, overlay contention and the blocked integration gates are resolved.
+
+Final direct-pipe delivery gate: 17/17 (actual child restart, LRU eviction,
+interleaving, durable retry). Final QPC plain/okuri wall Space p50 72.431 / 9.145 ms;
+checkpoint capture 60 events p50 3.407 ms; combined 40 learning-burst commits
+p50 43.392 ms. Final build, engine ERT 32/32 and native protocol 67/67 passed.
+No known owned process remains; index empty; changes unstaged. Full per-file
+anchors and command/tail/count ledger are in the EG2 design section.
+
+** EG2 follow-up handoff: immediate STATE and native publication
+This follow-up supersedes the preceding delivery summary. STATE replies no
+longer wait for learning storage; LOCAL ACK remains durable outside the engine
+mutex. FIFO retries and validated, flushed checkpoint recovery preserve complete
+rows/order/revision/operation ids. Shutdown drains. Native overlay publication
+no longer scans/serializes the interpreter state; spool recovery has its own
+maintenance thread. Candidates publish promptly; durable watermarks republish
+after storage at the same revision. The current client also requires the pipe
+ACK before retiring its replay spool. Old-engine and session-loss fallback remain.
+
+The real held-I/O two-client gate passes 16/16; second-client already-fed SPACE
+QPC mutex wait is 0.006800 ms. Real owned-host crash after durable staging passes
+15/15, including operation-id replay twice. Native protocol/worker suite 79/79;
+engine ERT 34/34; runtime session 28 plus replay 38/38 and cache 528; stock oracle
+9/9, stock input 6/6, reload/local learning 16/16. Private session/restart 17/17.
+Nine applicable direct native executable gates exit 0. Registry-dependent gates
+remain Claude's work; no credit is taken for their earlier prerequisite failures.
+
+Prepared modal checkpoint/state caching and a NeLisp literal marker predicate
+reduce hot-path work. Observed plain learned SPACE floor is 57.001050 ms p50
+(28 events); first/miss SPACE 70.592750 ms (4). Okuri post-feed learned SPACE
+6.807600 ms excludes automatic conversion while typing. Plain next/previous/
+commit p50 are 43.224 / 37.578 / 37.7997 ms; 20 plain burst commits 39.27615 ms.
+Remaining keyless QPC costs: marker self 10.2585, dispatch self 8.20725,
+start-henkan self 6.9772, search self 3.6935; relay 0.2182, raw state 0.4663,
+one snapshot 1.5130 ms. No keyless SPACE checkpoint. <=40 ms is not achieved.
+
+Acceptance is still open: abrupt host loss after a provider STATE reply but
+before the worker's first durable write can lose that learning. Provider commits
+have no durable producer outbox/opid. Durable LOCAL spool replay and recovery
+after staging do not prove that window safe. Do not claim full requirement B
+or EG2 acceptance. A producer outbox/protocol change remains necessary for the
+strict at-least-once guarantee. No commits or staging; scope remains unchanged.
+
+Exact commands, verbatim tails/counts, corrected failed invocations, per-file
+anchors and cleanup are in
+[[file:../../docs/design/local-first-conversion.org::*EG2 follow-up: immediate state, independent publication, SPACE floor][the EG2 follow-up design ledger]].
+
+
+** EG2 durable provider outbox: crash gap closed (2026-10-08)
+Supersedes the earlier pre-worker-write learning-loss limitation. Provider STATE
+is sent only after a small idempotent-id/row record is appended with write-through
+and FlushFileBuffers. Append happens outside the engine mutex. FIFO reservations
+prevent later clients overtaking an unsealed commit. Startup replays before
+interpreter loading; checkpoint and independent cursor watermarks prevent repeat
+learning, including after old-engine dictionary rewriting. Worker retirement,
+cursor writes and full dictionary I/O remain off the conversion mutex. LOCAL's
+existing durable spool/ACK route and legacy engine fallback remain unchanged.
+
+Final real provider reply-before-first-write host crash: 18/18, single learned
+row/candidate/revision, retired outbox, second restart without duplication.
+Held-I/O two-client/overlay gate 16/16, second SPACE QPC mutex wait 0.007200 ms.
+Native host/protocol 101/101; other eight applicable native executables exit 0.
+Engine ERT 34/34; runtime replay 38/38, sessions 28, cache 528; stock oracle 9/9,
+stock input 6/6, local/reload 16/16. Final existing restart/staged gates and cleanup
+are in the design ledger. Registry-dependent gates remain Claude's responsibility.
+
+53 durable provider appends: QPC p50 1.650900, p90 2.158300, max 2.766700 ms
+(107--125-byte payloads plus framing). Forty burst appends p50 1.621000 ms;
+commit STATE wall p50 34.854200 ms. Plain SPACE <=40 ms remains documented as
+not met: retain the earlier 57.001050 learned / 70.592750 first/miss p50 and
+its DDSKK interpreter/buffer-edit attribution. The small new benchmark measures
+commit durability, not a replacement floor. No commit or deployment; unstaged.
+
+Exact commands, verbatim tails/counts, corrected test failures and change anchors:
+[[file:../../docs/design/local-first-conversion.org::*EG2 durability closure: durable provider outbox (2026-10-08)][EG2 durable-outbox design ledger]].
+
+Final outbox delivery: existing real child restart/eviction/durable retry 17/17;
+existing staged LOCAL host-crash recovery 15/15. Scope/whitespace pass, index
+empty (15 modified + 10 new in scope), no commit. Owned-process audit: 120 ids,
+0 matching owned processes remaining; no known host/runtime/native leftovers.

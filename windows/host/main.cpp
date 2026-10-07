@@ -27,6 +27,7 @@
 #include <psapi.h>
 #include "../src/registry_settings.h"
 #include "../src/local_index.h"
+#include "learning_queue.h"
 
 #include <algorithm>
 #include <array>
@@ -293,6 +294,8 @@ struct Child {
   bool exit_logged = false;
   bool wire_checked = false;
   bool utf8_wire = false;
+  bool learning_worker = false;
+  std::string local_status;
 };
 
 void LogChildExit(Child& child, bool expected) {
@@ -337,6 +340,21 @@ bool WriteAll(HANDLE handle, const std::string& text) {
   return true;
 }
 
+// A high resolution timer keeps pipe polling independent of the system's
+// roughly 16 ms clock tick. No machine-wide timer resolution is changed.
+void WaitForEngineData() {
+  struct Timer {
+    HANDLE handle = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002, TIMER_ALL_ACCESS);
+    ~Timer() { if (handle) CloseHandle(handle); }
+  };
+  thread_local Timer timer;
+  LARGE_INTEGER due; due.QuadPart = -10000;  // one millisecond
+  if (!timer.handle || !SetWaitableTimer(timer.handle, &due, 0, nullptr, nullptr, FALSE)) {
+    Sleep(2); return;
+  }
+  WaitForSingleObject(timer.handle, 10);
+}
+
 bool ReadLine(HANDLE handle, std::string* line) {
   line->clear();
   const ULONGLONG deadline = GetTickCount64() + 90000;
@@ -344,7 +362,7 @@ bool ReadLine(HANDLE handle, std::string* line) {
     DWORD available = 0;
     if (g_stopping.load() || GetTickCount64() >= deadline ||
         !PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr)) return false;
-    if (available == 0) { Sleep(2); continue; }
+    if (available == 0) { WaitForEngineData(); continue; }
     char value = 0;
     DWORD read = 0;
     if (!ReadFile(handle, &value, 1, &read, nullptr) || read != 1) return false;
@@ -1276,20 +1294,51 @@ bool DecodeState2(const std::string& header, ReadByte read_byte,
   return true;
 }
 
+// Raw UTF-8 checkpoint framing avoids interpreted per-character hex encoding.
+template <class ReadByte>
+bool DecodeLearning2(const std::string& header, ReadByte read_byte, std::string* response) {
+  std::istringstream input(header);
+  std::string tag, extra, content;
+  size_t count = 0;
+  if (!(input >> tag >> count) || (input >> extra) || tag != "LEARNING2" ||
+      count > 1048576) return false;
+  for (size_t i = 0; i < count; ++i) {
+    unsigned char ch = 0;
+    if (!read_byte(&ch)) return false;
+    content.push_back(static_cast<char>(ch));
+    int following = ch < 0x80 ? 0 : ch >= 0xc2 && ch <= 0xdf ? 1 :
+        ch >= 0xe0 && ch <= 0xef ? 2 : ch >= 0xf0 && ch <= 0xf4 ? 3 : -1;
+    if (following < 0) return false;
+    for (int j = 0; j < following; ++j) {
+      if (!read_byte(&ch) || (ch & 0xc0) != 0x80) return false;
+      content.push_back(static_cast<char>(ch));
+    }
+  }
+  unsigned char end = 0;
+  if (!read_byte(&end) || end != '\n' || content.empty() ||
+      !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, content.data(),
+                          static_cast<int>(content.size()), nullptr, 0)) return false;
+  *response = "LEARNING2 " + content;
+  return true;
+}
+
 bool ReadEngineResponse(HANDLE pipe, std::string* response) {
   std::string header;
   if (!ReadLine(pipe, &header)) return false;
-  if (!header.starts_with("STATE2 ")) { *response = std::move(header); return true; }
+  if (!header.starts_with("STATE2 ") && !header.starts_with("LEARNING2 ")) { *response = std::move(header); return true; }
   const ULONGLONG deadline = GetTickCount64() + 90000;
-  return DecodeState2(header, [&](unsigned char* ch) {
+  const auto read_byte = [&](unsigned char* ch) {
     for (;;) {
       DWORD available = 0, read = 0;
       if (g_stopping.load() || GetTickCount64() >= deadline ||
           !PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr)) return false;
-      if (!available) { Sleep(2); continue; }
+      if (!available) { WaitForEngineData(); continue; }
       return ReadFile(pipe, ch, 1, &read, nullptr) && read == 1;
     }
-  }, response);
+  };
+  return header.starts_with("LEARNING2 ")
+      ? DecodeLearning2(header, read_byte, response)
+      : DecodeState2(header, read_byte, response);
 }
 
 std::string Utf8KeyRequest(const std::string& request) {
@@ -1336,9 +1385,34 @@ std::string Utf8KeyRequest(const std::string& request) {
   return request;
 }
 
-// Only completed durable learning ACKs wake the overlay publisher. Idle
+// In-memory learning revisions wake the overlay publisher. Idle
 // capability/recovery probes retain the previous one-second cadence.
 std::atomic<uint64_t> g_local_ack_activity{0};
+std::unique_ptr<ddskk::LearningQueue> g_learning_queue;
+thread_local std::shared_future<bool> g_learning_barrier;
+thread_local std::vector<std::shared_ptr<ddskk::LearningQueue::ProducerOperation>> g_learning_producers;
+thread_local bool g_learning_producer_capture = false;
+
+std::string LearningReply(std::string response, const std::shared_future<bool>& barrier) {
+  bool appended = true;
+  for (const auto& operation : g_learning_producers)
+    if (!g_learning_queue->SealProducer(operation)) appended = false;
+  g_learning_producers.clear();
+  if (!appended) return "ERR LOCAL STORAGE";
+  // LOCAL ACK retires an existing durable client spool; STATE is volatile session state.
+  if (response.starts_with("ACK ") && barrier.valid() && !barrier.get())
+    return "ERR LOCAL STORAGE";
+  return response;
+}
+
+std::wstring LearningTarget() {
+  wchar_t value[32768]{};
+  DWORD size = GetEnvironmentVariableW(L"DDSKK_USER_JISYO", value, _countof(value));
+  if (size && size < _countof(value)) return std::wstring(value, size);
+  size = GetEnvironmentVariableW(L"LOCALAPPDATA", value, _countof(value));
+  return size && size < _countof(value)
+      ? std::wstring(value, size) + L"/DDSKK/user-jisyo.utf8" : L"";
+}
 
 bool Dispatch(Child& child, const std::string& request, std::string* response) {
   if (!child.wire_checked) {
@@ -1350,6 +1424,21 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
         if (!ReadLine(child.output, &reply)) return false;
       } while (reply.starts_with("PHASE "));
       child.utf8_wire = reply == "OK WIRE UTF8 1";
+      if (!WriteAll(child.input, "WIRE LEARNING 2\n")) return false;
+      do {
+        if (!ReadLine(child.output, &reply)) return false;
+      } while (reply.starts_with("PHASE "));
+      child.learning_worker = reply == "OK WIRE LEARNING 2";
+      if (child.learning_worker) {
+        if (!g_learning_queue)
+          g_learning_queue = std::make_unique<ddskk::LearningQueue>(LearningTarget());
+        if (!WriteAll(child.input, "LOCAL STATUS\n")) return false;
+        do { if (!ReadLine(child.output, &reply)) return false; } while (reply.starts_with("PHASE "));
+        child.local_status = reply;
+      }
+      // Old engines answer ERR REQUEST and retain their original writer.
+      // New engines publish immutable checkpoints to the native worker.
+
     }
   }
   const ULONGLONG started = GetTickCount64();
@@ -1424,6 +1513,22 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
       if (published) published = MoveFileExW(temporary.c_str(), target.c_str(),
                                             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
       if (!WriteAll(child.input, published ? "LOCAL-PUBLISHED\n" : "ERR LOCAL STORAGE\n")) return false;
+      continue;
+    }
+    if (line.starts_with("LEARNING2 ")) {
+      if (!g_learning_queue)
+        g_learning_queue = std::make_unique<ddskk::LearningQueue>(LearningTarget());
+      const auto content = line.substr(10);
+      if (content.empty()) return false;
+      if (request.starts_with("LOCAL LEARN ") || !g_learning_producer_capture) {
+        g_learning_barrier = g_learning_queue->Submit(content);
+      } else {
+        auto operation = g_learning_queue->ReserveProducer(content);
+        if (!operation) return false;
+        g_learning_barrier = operation->done;
+        g_learning_producers.push_back(std::move(operation));
+      }
+      g_local_ack_activity.fetch_add(1, std::memory_order_release);
       continue;
     }
     if (line.rfind("SERVER ", 0) == 0) {
@@ -1530,6 +1635,11 @@ bool DispatchConvertKeys(Child& child, const std::string& request,
 // ---------------------------------------------------------------------------
 Child g_child;
 std::mutex g_engine_mutex;
+std::atomic<uint64_t> g_pending_requests{0};
+struct PendingRequest {
+  PendingRequest() { g_pending_requests.fetch_add(1, std::memory_order_acq_rel); }
+  ~PendingRequest() { g_pending_requests.fetch_sub(1, std::memory_order_acq_rel); }
+};
 std::wstring g_executable, g_repository;
 std::string g_current_engine;
 std::mutex g_switch_mutex;
@@ -1724,6 +1834,18 @@ void ReplacementLoop() {
       LogEvent("respawn engine=" + id);
     }
     if (GetTickCount64() < retry_at) continue;
+    std::pair<uint64_t, std::shared_future<bool>> learning_fence;
+    {
+      std::lock_guard lock(g_engine_mutex);
+      if (g_learning_queue) learning_fence = g_learning_queue->Fence();
+    }
+    // A replacement must load a durable dictionary. Waiting for storage here
+    // never holds the active engine's transaction mutex.
+    if (learning_fence.second.valid() && !learning_fence.second.get()) {
+      // The failed operation was never acknowledged. Respawn from the last
+      // durable checkpoint so its existing operation-id spool can retry.
+      LogEvent("replacement-learning-storage-failed engine=" + id);
+    }
     Child next;
     std::string reply;
     const std::wstring wide_id(id.begin(), id.end());
@@ -1781,9 +1903,17 @@ void ReplacementLoop() {
         std::lock_guard<std::mutex> engine_lock(g_engine_mutex);
         std::unique_lock<std::mutex> switch_lock(g_switch_mutex);
         if (generation != g_switch_generation) break; // superseded
+        if (id == "ddskk" && g_learning_queue &&
+            g_learning_queue->Fence().first != learning_fence.first) {
+          // A confirmation arrived during cold loading. Retry from the next
+          // durable checkpoint, including for an old engine without v2.
+          LogEvent("replacement-learning-raced engine=" + id);
+          break;
+        }
         if (g_composing_sessions.empty() || GetTickCount64() >= deadline) {
           old = g_child;
           g_child = next;
+          if (g_learning_queue) g_learning_queue->Submit("");
           { std::lock_guard<std::mutex> rules_lock(g_romaji_mutex);
             g_romaji_rules = std::move(next_rules); }
           SetPriorityClass(g_child.process, NORMAL_PRIORITY_CLASS);
@@ -1893,9 +2023,11 @@ void IdleGcLoop() {
     if (GetTickCount64() - last < idle_ms) continue;
     if (!g_gc_pending.load(std::memory_order_acquire)) continue;
     if (g_session_composing.load(std::memory_order_acquire)) continue;
+    if (g_pending_requests.load(std::memory_order_acquire)) continue;
 
     {
-      std::lock_guard<std::mutex> lock(g_engine_mutex);
+      std::unique_lock<std::mutex> lock(g_engine_mutex, std::try_to_lock);
+      if (!lock.owns_lock() || g_pending_requests.load(std::memory_order_acquire)) continue;
       // Re-validate now that the lock is held: a real request may have
       // been dispatched -- and thus called NoteActivity() -- while this
       // thread was waiting to acquire g_engine_mutex.
@@ -1973,6 +2105,7 @@ HANDLE CreatePipeInstance(bool first_instance) {
 // before it would block again -- see the loop in wmain.
 void RequestStop() {
   g_stopping.store(true, std::memory_order_relaxed);
+  if (g_learning_queue) g_learning_queue->BeginDrain();
   HANDLE wake = CreateFileW(g_pipe_name.c_str(), GENERIC_READ | GENERIC_WRITE,
                             0, nullptr, OPEN_EXISTING, 0, nullptr);
   if (wake != INVALID_HANDLE_VALUE) CloseHandle(wake);
@@ -1985,6 +2118,11 @@ void RequestStop() {
 // g_pipe_name) is shared with other worker threads and the main thread,
 // and is only ever touched through the synchronization documented above.
 bool LocalConversionRequested() {
+  wchar_t registry[256]{}, test_enabled[2]{};
+  if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0) &&
+      GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", registry, 256) &&
+      std::wstring(registry).starts_with(L"Software\\NativeIME-test-") &&
+      GetEnvironmentVariableW(L"NATIVEIME_TEST_LOCAL_CONVERSION", test_enabled, 2)) return test_enabled[0] == L'1';
   HKEY key = nullptr;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ, &key) != ERROR_SUCCESS)
     return false;
@@ -2067,13 +2205,35 @@ void RecoverLocalSpools(const std::filesystem::path& directory) {
         row >> okuri;
         std::string response;
         const auto request = "LOCAL LEARN " + id + " " + key + " " + word + (okuri.empty() || okuri == "-" ? "" : " " + okuri);
-        std::lock_guard lock(g_engine_mutex);
-        acknowledged = g_current_engine == "ddskk" && Dispatch(g_child, request, &response) && response.starts_with("ACK " + id + " ");
+        g_learning_barrier = {};
+        {
+          PendingRequest pending_request;
+          NoteActivity();
+          std::lock_guard lock(g_engine_mutex);
+          acknowledged = g_current_engine == "ddskk" && Dispatch(g_child, request, &response) && response.starts_with("ACK " + id + " ");
+        }
+        if (acknowledged && g_learning_barrier.valid())
+          acknowledged = g_learning_barrier.get();
       }
     }
     if (acknowledged) DeleteFileW(item.path().c_str());
     CloseHandle(lease);
     if (acknowledged) DeleteFileW(lease_path.c_str());
+  }
+}
+
+void LocalSpoolRecoveryLoop() {
+  ULONGLONG next = 0;
+  while (!g_stopping.load()) {
+    if (GetTickCount64() >= next) {
+      try {
+        if (LocalConversionRequested()) RecoverLocalSpools(ddskk::local::Directory());
+      } catch (const std::exception& error) {
+        std::fprintf(stderr, "LOCAL spool recovery unavailable: %s\n", error.what());
+      }
+      next = GetTickCount64() + 1000;
+    }
+    Sleep(50);
   }
 }
 
@@ -2086,10 +2246,21 @@ void LocalPublicationLoop() {
   uint64_t observed_acks = 0;
   while (!g_stopping.load()) {
     try {
-      if (LocalConversionRequested()) {
+      if (!LocalConversionRequested()) {
+        // Keep pending mirror fragments bounded even while local conversion
+        // is disabled. No full-table serialization or interpreter request.
+        if (GetTickCount64() >= next_probe) {
+          ddskk::LearningQueue* native = nullptr;
+          { std::unique_lock lock(g_engine_mutex, std::try_to_lock);
+            if (lock.owns_lock() && g_child.learning_worker) native = g_learning_queue.get(); }
+          if (native) native->UpdateOverlay();
+          next_probe = GetTickCount64() + 1000;
+        }
+        Sleep(50); continue;
+      }
+      {
         const auto directory = ddskk::local::Directory();
         if (GetTickCount64() >= next_cleanup) {
-          RecoverLocalSpools(directory);
           try {
             auto current = ddskk::local::OpenPublished(directory, mapped);
             ddskk::local::Cleanup(directory, current);
@@ -2100,7 +2271,8 @@ void LocalPublicationLoop() {
           next_cleanup = GetTickCount64() + 1000;
         }
         const auto now = GetTickCount64();
-        const auto acks = g_local_ack_activity.load(std::memory_order_acquire);
+        const auto acks = g_local_ack_activity.load(std::memory_order_acquire) +
+            (g_learning_queue ? g_learning_queue->OverlayGeneration() : 0);
         if (acks != observed_acks) { observed_acks = acks; window.Changed(now); }
         if (now < next_probe && !window.Ready(now)) {
           Sleep(50); continue;
@@ -2108,25 +2280,35 @@ void LocalPublicationLoop() {
         next_probe = now + 1000;
         DictionaryServerConfig config;
         std::string status, snapshot, rules, source_identity, base_identity;
+        ddskk::LearningQueue* native = nullptr;
         {
-          std::lock_guard<std::mutex> lock(g_engine_mutex);
-          // Match the provider's active source plan. Registry source changes
-          // take effect when the host reloads, just as its built-in maps do.
+          // Metadata copy only for v2. Never scan, serialize or read dictionary
+          // files with interpreter ownership. Legacy engines retain SNAPSHOT.
+          std::unique_lock<std::mutex> lock(g_engine_mutex, std::try_to_lock);
+          if (!lock.owns_lock() || (g_pending_requests.load() && !g_child.learning_worker)) {
+            if (lock.owns_lock()) lock.unlock(); Sleep(1); continue;
+          }
           config = g_dictionary_server.config;
           if (g_current_engine == "ddskk") {
-            Dispatch(g_child, "LOCAL STATUS", &status);
             { std::lock_guard<std::mutex> rules_lock(g_romaji_mutex); rules = g_romaji_rules; }
-            source_identity = LocalSourceIdentity(config);
-            const auto identity = status + rules + source_identity;
-            base_identity = status.substr(0, status.rfind(' ')) + rules + source_identity;
-            if (!rules.empty() && status.starts_with("LOCAL ") && window.Due(identity, base_identity, GetTickCount64()) &&
-                Dispatch(g_child, "LOCAL SNAPSHOT", &snapshot) && snapshot.starts_with("OVERLAY ")) {
-              // The snapshot is complete before releasing engine ownership.
-              // Parsing, hashing, flushing and full mapping validation below
-              // never hold the engine transaction mutex.
-            } else snapshot.clear();
+            if (g_child.learning_worker) { native = g_learning_queue.get(); status = g_child.local_status; }
+            else { Dispatch(g_child, "LOCAL STATUS", &status); }
           }
+          if (!native && !rules.empty() && status.starts_with("LOCAL "))
+            Dispatch(g_child, "LOCAL SNAPSHOT", &snapshot);
         }
+        source_identity = LocalSourceIdentity(config);
+        std::string native_overlay;
+        if (native && status.starts_with("LOCAL ")) {
+          native_overlay = native->OverlaySnapshot();
+          status = status.substr(0, status.rfind(' ') + 1) + std::to_string(native->OverlayRevision());
+          snapshot = "NATIVE";
+        }
+        const auto overlay_generation = native ? std::to_string(native->SnapshotGeneration()) : "";
+        const auto identity = status + rules + source_identity + overlay_generation;
+        base_identity = status.substr(0, status.rfind(' ')) + rules + source_identity;
+        if (rules.empty() || !status.starts_with("LOCAL ") ||
+            !window.Due(identity, base_identity, GetTickCount64())) snapshot.clear();
         if (!snapshot.empty()) {
           std::vector<std::filesystem::path> files;
           size_t start = 0;
@@ -2136,7 +2318,10 @@ void LocalPublicationLoop() {
             if (end > start) files.emplace_back(config.dictionary_files.substr(start, end - start));
             start = end + 1;
           }
-          const auto overlay = ddskk::local::Utf8(ddskk::local::Unhex(snapshot.substr(8)));
+          const auto overlay = native
+              ? native_overlay + (status.starts_with("LOCAL 0 ") ? "" :
+                  ";; local-literal-profile 1 879b04a00ff3ffa629025a330ece9b65488fc9494e9b883d4dda104f0751edc8\n")
+              : ddskk::local::Utf8(ddskk::local::Unhex(snapshot.substr(8)));
           std::istringstream metadata(status);
           std::string label; uint64_t flags = 0, revision = 0;
           if (!(metadata >> label >> flags >> revision) || label != "LOCAL" || flags > 3)
@@ -2154,7 +2339,7 @@ void LocalPublicationLoop() {
             Sleep(ms); // Snapshot obtained above; engine mutex is released.
           }
           ddskk::local::Publish(ddskk::local::Directory(), files, overlay, rules, capabilities, revision);
-          previous = status + rules + source_identity;
+          previous = identity;
           window.Published(previous, base_identity);
           std::fprintf(stderr, "LOCAL publication status=%s capabilities=%llu\n", status.c_str(), capabilities);
         }
@@ -2182,7 +2367,10 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     // what lets IdleGcLoop() always see fresh activity ahead of trying to
     // acquire that same mutex itself; see the ordering argument in the
     // block comment above IdleGcLoop().
+    PendingRequest pending_request;
     NoteActivity();
+    g_learning_barrier = {};
+    g_learning_producer_capture = true;
     const ULONGLONG received = GetTickCount64();
     const double profile_received = ProfileMilliseconds();
     std::string request(request_buffer.data(), read);
@@ -2324,6 +2512,11 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
         }
       }
     }
+    // Session STATE waits only for its small durable producer append. LOCAL ACK remains
+    // durable so the existing asynchronous client outbox is safe to retire.
+    // Its wait is outside the engine mutex.
+    response = LearningReply(std::move(response), g_learning_barrier);
+    g_learning_producer_capture = false;
     DWORD written = 0;
     const double profile_write = ProfileMilliseconds();
     connected = WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()),
@@ -2435,6 +2628,14 @@ int wmain(int argc, wchar_t** argv) {
   const std::wstring initial_registry_engine = ConfiguredEngineId(false);
   g_current_engine = NarrowEngineId(configured);
   g_published_engine = g_current_engine;
+  ApplyEngineEnvFromRegistry();
+  if (!ddskk::LearningQueue::RecoverPending(LearningTarget()))
+    LogEvent("learning-pending-recovery-failed");
+  if (!ddskk::LearningQueue::RecoverOutbox(LearningTarget())) {
+    LogEvent("learning-outbox-recovery-failed");
+    return 1; // fail closed rather than discard acknowledged learning
+  }
+  g_learning_queue = std::make_unique<ddskk::LearningQueue>(LearningTarget());
   if (!StartChild(argv[1], repository, &g_child, configured)) {
     g_stop_reason.store("initial-child-start-failed");
     StopChild(g_child);
@@ -2528,6 +2729,7 @@ int wmain(int argc, wchar_t** argv) {
   std::thread replacement_worker(ReplacementLoop);
   std::thread registry_worker(WatchEngineRegistry, initial_registry_engine);
   std::thread local_worker(LocalPublicationLoop);
+  std::thread spool_worker(LocalSpoolRecoveryLoop);
   // Accept loop: each iteration blocks in ConnectNamedPipe() on `pipe` (the
   // one spare, not-yet-connected instance), then immediately opens the next
   // spare instance before handing the newly connected one to its own
@@ -2579,6 +2781,7 @@ int wmain(int argc, wchar_t** argv) {
   replacement_worker.join();
   registry_worker.join();
   local_worker.join();
+  spool_worker.join();
   // Holding g_engine_mutex here waits for any worker thread currently
   // mid-transaction to finish first, so the child's pipes are never closed
   // out from under an in-flight read/write. A worker that acquires the
@@ -2588,6 +2791,7 @@ int wmain(int argc, wchar_t** argv) {
     std::lock_guard<std::mutex> lock(g_engine_mutex);
     StopChild(g_child);
   }
+  if (g_learning_queue) g_learning_queue->Drain();
   ShutdownDictionaryServer();
   return 0;
 }

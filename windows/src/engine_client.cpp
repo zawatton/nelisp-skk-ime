@@ -31,8 +31,13 @@ std::wstring PipeName() {
 
 EngineClient::EngineClient() {
   static std::atomic<uint64_t> next_session{1};
+  LARGE_INTEGER nonce{};
+  QueryPerformanceCounter(&nonce);
+  // A core reload can reuse the module address and restart its counter.
+  // Preserve logical identities through RestoreCoreSession, never by reuse.
   session_id_ = std::to_string(GetCurrentProcessId()) + "-" +
                 std::to_string(reinterpret_cast<uintptr_t>(&next_session)) + "-" +
+                std::to_string(nonce.QuadPart) + "-" +
                 std::to_string(next_session.fetch_add(1));
 }
 
@@ -46,6 +51,7 @@ std::string EngineClient::SessionRequest(const std::string& request) const {
 EngineClient::~EngineClient() { Disconnect(); }
 
 bool EngineClient::Connect(DWORD timeout_ms) {
+  std::lock_guard<std::recursive_mutex> transaction_lock(transaction_mutex_);
   if (pipe_.load(std::memory_order_acquire) != INVALID_HANDLE_VALUE) return true;
   const std::wstring pipe_name = PipeName();
   if (!WaitNamedPipeW(pipe_name.c_str(), timeout_ms)) return false;
@@ -67,9 +73,13 @@ bool EngineClient::Connect(DWORD timeout_ms) {
 }
 
 void EngineClient::Disconnect() {
+  std::lock_guard<std::recursive_mutex> transaction_lock(transaction_mutex_);
   const HANDLE pipe = pipe_.exchange(INVALID_HANDLE_VALUE,
                                      std::memory_order_acq_rel);
   if (pipe != INVALID_HANDLE_VALUE) CloseHandle(pipe);
+  sessions_checked_ = false;
+  sessions_v2_ = false;
+  prepared_keys_.clear();
 }
 
 void EngineClient::CancelPendingIo() {
@@ -77,9 +87,10 @@ void EngineClient::CancelPendingIo() {
   if (pipe != INVALID_HANDLE_VALUE) CancelIoEx(pipe, nullptr);
 }
 
-void EngineClient::MarkNeedsResync() { needs_resync_ = true; }
+void EngineClient::MarkNeedsResync() { abandon_context_ = true; needs_resync_ = true; }
 
 HRESULT EngineClient::ExportCorePipe(HANDLE* duplicate) const {
+  std::lock_guard<std::recursive_mutex> transaction_lock(transaction_mutex_);
   *duplicate = INVALID_HANDLE_VALUE;
   const HANDLE pipe = pipe_.load(std::memory_order_acquire);
   if (pipe == INVALID_HANDLE_VALUE) return S_OK;
@@ -87,6 +98,7 @@ HRESULT EngineClient::ExportCorePipe(HANDLE* duplicate) const {
       0, FALSE, DUPLICATE_SAME_ACCESS) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
 }
 HRESULT EngineClient::RestoreCoreSession(const char* session, bool resync, HANDLE borrowed_pipe) {
+  std::lock_guard<std::recursive_mutex> transaction_lock(transaction_mutex_);
   std::string id(session);
   HANDLE duplicate = INVALID_HANDLE_VALUE;
   if (borrowed_pipe != INVALID_HANDLE_VALUE && !DuplicateHandle(GetCurrentProcess(),
@@ -101,6 +113,7 @@ HRESULT EngineClient::RestoreCoreSession(const char* session, bool resync, HANDL
 
 std::optional<std::string> EngineClient::Transact(const std::string& request,
                                                   DWORD timeout_ms) {
+  std::lock_guard<std::recursive_mutex> transaction_lock(transaction_mutex_);
   last_response_.clear();
   if (!Connect(timeout_ms)) {
     needs_resync_ = true;
@@ -118,17 +131,100 @@ std::optional<std::string> EngineClient::Transact(const std::string& request,
     // is confirmed to have gone through -- if it fails too, RawTransact()
     // has already disconnected us again and the flag stays set for the
     // next attempt.
+    if (!sessions_checked_ && !OpenPersistentSession(timeout_ms)) return std::nullopt;
     const auto reset = RawTransact(SessionRequest("RESET"), timeout_ms);
-    if (!reset) return std::nullopt;
+    if (!reset || !ParseStateResponse(*reset)) return std::nullopt;
+    if (!abandon_context_.exchange(false) && recovery_safe_) {
+      for (auto previous : recovery_requests_) {
+        if (!sessions_v2_) {
+          if (previous.starts_with("PREPARE 2 ")) previous.replace(0, 10, "CONTROL SYNC-KEYS ");
+          else if (previous.starts_with("CONVERT-LIVE 2 ")) previous.replace(0, 15, "CONTROL CONVERT-KEYS ");
+          else if (previous.starts_with("SPACE 2")) previous = "CONTROL CONVERT";
+        }
+        const auto restored = RawTransact(SessionRequest(sessions_v2_ ? "V2 " + previous : previous), timeout_ms);
+        if (!restored || !ParseStateResponse(*restored)) return std::nullopt;
+      }
+    } else { recovery_requests_.clear(); }
     needs_resync_ = false;
   }
-  auto response = RawTransact(SessionRequest(request), timeout_ms);
+  const bool editing = request.starts_with("KEY ") || request.starts_with("CONTROL ") ||
+      request.starts_with("PREPARE 2 ") || request.starts_with("CONVERT-LIVE 2 ") ||
+      request.starts_with("RESET") || request.starts_with("SPACE 2");
+  auto response = RawTransact(SessionRequest(sessions_v2_ && editing ? "V2 " + request : request), timeout_ms);
+  if (response && *response == "ERR SESSION LOST") {
+    if (!OpenPersistentSession(timeout_ms)) return std::nullopt;
+    // Only uncommitted requests are retained. Never repeat an acknowledged
+    // commit or learning operation when an engine/session disappears.
+    const bool full_reading = request.starts_with("PREPARE 2 ") ||
+                              request.starts_with("CONVERT-LIVE 2 ");
+    if (!full_reading && !recovery_safe_) {
+      MarkNeedsResync();
+      return std::nullopt;  // Never replay an acknowledged implicit commit.
+    }
+    if (!full_reading) {
+      for (const auto& previous : recovery_requests_) {
+        const auto restored = RawTransact(SessionRequest("V2 " + previous), timeout_ms);
+        if (!restored || !ParseStateResponse(*restored)) return std::nullopt;
+      }
+    }
+    response = RawTransact(SessionRequest("V2 " + request), timeout_ms);
+  }
+  if (response && *response == "ERR REQUEST" && sessions_v2_) {
+    // An old engine can be published behind an existing pipe during hot swap.
+    // Version 1 does not understand V2; use the complete reading fallback.
+    sessions_v2_ = false;
+    if (!recovery_safe_ && !request.starts_with("PREPARE 2 ") && !request.starts_with("CONVERT-LIVE 2 ")) {
+      MarkNeedsResync(); return std::nullopt;
+    }
+    std::string fallback = request.starts_with("SPACE 2") ? "CONTROL CONVERT" : request;
+    if (fallback.starts_with("CONVERT-LIVE 2 "))
+      fallback.replace(0, 15, "CONTROL CONVERT-KEYS ");
+    else if (fallback.starts_with("PREPARE 2 "))
+      fallback.replace(0, 10, "CONTROL SYNC-KEYS ");
+    if (!request.starts_with("PREPARE 2 ") && !request.starts_with("CONVERT-LIVE 2 ")) {
+      const auto reset = RawTransact(SessionRequest("RESET"), timeout_ms);
+      if (!reset || !ParseStateResponse(*reset)) return std::nullopt;
+      for (auto previous : recovery_requests_) {
+        if (previous.starts_with("PREPARE 2 ")) previous.replace(0, 10, "CONTROL SYNC-KEYS ");
+        else if (previous.starts_with("CONVERT-LIVE 2 ")) previous.replace(0, 15, "CONTROL CONVERT-KEYS ");
+          else if (previous.starts_with("SPACE 2")) previous = "CONTROL CONVERT";
+        const auto restored = RawTransact(SessionRequest(previous), timeout_ms);
+        if (!restored || !ParseStateResponse(*restored)) return std::nullopt;
+      }
+    }
+    response = RawTransact(SessionRequest(fallback), timeout_ms);
+    recovery_requests_.clear();
+  }
+  if (response && editing && sessions_v2_) {
+    const auto state = ParseStateResponse(*response);
+    if (state) {
+      if (request.starts_with("RESET") || request.starts_with("PREPARE 2 ") ||
+          request.starts_with("CONVERT-LIVE 2 ")) { recovery_requests_.clear(); recovery_safe_ = true; }
+      if (recovery_requests_.size() >= 4096) {
+        needs_resync_ = true;
+        return std::nullopt;
+      }
+      recovery_requests_.push_back(request);
+      if ((state->composition_start > 0) ||
+          (state->composition_start < 0 && !state->text.empty() && state->mode != L"registration")) {
+        // A DDSKK key can confirm a candidate and begin another word at once.
+        // The core's full-reading fallback must recover that new word; replay
+        // of the old history would learn/commit acknowledged text twice.
+        recovery_requests_.clear();
+        recovery_safe_ = state->composition_start < 0 && state->pending_romaji.empty();
+      }
+      if (state->composition_start < 0 && state->mode != L"registration" && state->pending_romaji.empty()) {
+        recovery_requests_.clear(); recovery_safe_ = true;
+      }
+    }
+  }
   if (response) last_response_ = *response;
   return response;
 }
 
 std::optional<std::string> EngineClient::RawTransact(const std::string& request,
                                                       DWORD timeout_ms) {
+  std::lock_guard<std::recursive_mutex> transaction_lock(transaction_mutex_);
   const HANDLE pipe = pipe_.load(std::memory_order_acquire);
   if (pipe == INVALID_HANDLE_VALUE) return std::nullopt;
   OVERLAPPED overlapped{};
@@ -206,11 +302,42 @@ std::optional<EngineState> EngineClient::SendKey(char32_t codepoint,
   return response ? ParseStateResponse(*response) : std::nullopt;
 }
 
+bool EngineClient::OpenPersistentSession(DWORD timeout_ms) {
+  if (!Connect(timeout_ms)) {
+    needs_resync_ = true;
+    if (connection_failure_) connection_failure_();
+    return false;
+  }
+  const auto response = RawTransact(SessionRequest("OPEN 2"), timeout_ms);
+  if (!response) return false;
+  sessions_checked_ = true;
+  sessions_v2_ = *response == "OK OPEN 2";
+  return true;
+}
+
+bool EngineClient::PrepareKeys(const std::u32string& keys, DWORD timeout_ms) {
+  std::lock_guard<std::recursive_mutex> transaction_lock(transaction_mutex_);
+  if (keys.empty()) return false;
+  if (!sessions_checked_ && !OpenPersistentSession(timeout_ms)) return false;
+  if (!sessions_v2_) return false;  // An old engine keeps its replay path.
+  auto request = EncodeConvertKeysRequest(keys);
+  request.replace(0, 21, "PREPARE 2 ");
+  const auto response = Transact(request, timeout_ms);
+  const bool prepared = response && ParseStateResponse(*response).has_value();
+  if (prepared) prepared_keys_ = keys;
+  return prepared;
+}
+
 std::optional<EngineState> EngineClient::ConvertKeys(
     const std::u32string& keys, DWORD timeout_ms) {
-  const std::string request = EncodeConvertKeysRequest(keys);
+  std::lock_guard<std::recursive_mutex> transaction_lock(transaction_mutex_);
+  std::string request = EncodeConvertKeysRequest(keys);
   if (request.empty()) return std::nullopt;
-  const auto response = Transact(request, timeout_ms);
+  if (!sessions_checked_ && !OpenPersistentSession(timeout_ms)) return std::nullopt;
+  if (sessions_v2_) request.replace(0, 21, "CONVERT-LIVE 2 ");
+  auto response = Transact(sessions_v2_ && prepared_keys_ == keys ? "SPACE 2" : request, timeout_ms);
+  if (response && *response == "ERR SESSION NOT PREPARED") response = Transact(request, timeout_ms);
+  prepared_keys_.clear();
   return response ? ParseStateResponse(*response) : std::nullopt;
 }
 

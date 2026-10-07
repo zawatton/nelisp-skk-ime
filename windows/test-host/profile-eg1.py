@@ -1,4 +1,5 @@
 """Summarize private bench-conversion JSON and nested QPC PHASE logs."""
+import argparse
 import json
 import re
 import statistics
@@ -11,10 +12,15 @@ def summary(label, values):
         print(f"{label} n={len(values)} p50={statistics.median(values):.6f} "
               f"p90={values[max(0, (9*len(values)+9)//10-1)]:.6f} max={values[-1]:.6f} ms")
 
-data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8-sig"))
+arguments = argparse.ArgumentParser(description=__doc__)
+arguments.add_argument("json")
+arguments.add_argument("--request-suffix", default="", help="Filter client and QPC records to one request suffix")
+options = arguments.parse_args()
+data = json.loads(Path(options.json).read_text(encoding="utf-8-sig"))
 groups = {}
 for row in data.get("transactions", []):
     request = row["request"]
+    if options.request_suffix and not request.endswith(options.request_suffix): continue
     if request.startswith("SESSION "):
         request = request.split(" ", 2)[2]
     label = row.get("operation") or (" ".join(request.split()[:2]) if request.startswith("CONTROL ") else request.split()[0])
@@ -31,7 +37,15 @@ for path in Path(data["traceDir"]).glob("*-host.log"):
     qpc = any(line.startswith("engine-phase-qpc ") for line in lines)
     phase_prefix = "engine-phase-qpc" if qpc else "engine-phase"
     relay_prefix = "dictionary-relay-qpc" if qpc else "dictionary-relay"
+    active = not options.request_suffix
     for line in lines:
+        if options.request_suffix:
+            if line.startswith("request-lock "):
+                active = line.split("request=", 1)[-1].endswith(options.request_suffix)
+                if not active: stack.clear(); boundaries.clear()
+            elif line.startswith("request-done "):
+                active = False
+            if not active: continue
         match = re.search(rf"^{phase_prefix} name=(\S+) ms=([\d.]+) next=(\S+)", line)
         if match:
             clock += float(match[2])
@@ -52,7 +66,8 @@ for path in Path(data["traceDir"]).glob("*-host.log"):
         for pattern, label in ((r"request-lock .* qpc_wait_ms=([\d.]+)" if qpc else r"request-lock .* wait_ms=([\d.]+)", "host mutex-wait"),
                                (rf"^{relay_prefix} ms=([\d.]+)", "host dictionary-relay"),
                                (r"dictionary-source name=builtin-index ms=([\d.]+)", "host builtin-index"),
-                               (r"dictionary-source name=skkserv-query ms=([\d.]+)", "host skkserv-query")):
+                               (r"dictionary-source name=skkserv-query ms=([\d.]+)", "host skkserv-query"),
+                               (r"LEARNING_OUTBOX append .* qpc_ms=([\d.]+) ok=1", "host producer-outbox")):
             match = re.search(pattern, line)
             if match:
                 segments.setdefault(label, []).append(float(match[1]))

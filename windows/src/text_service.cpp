@@ -402,7 +402,29 @@ bool TextService::CreateProviderWindow() {
   return provider_window_ != nullptr;
 }
 
+void TextService::PrepareProviderReading() {
+  if (engine_id_ != "ddskk" || local_enabled_ ||
+      !realtime_frontend_.preedit() || realtime_frontend_.okuri_started()) return;
+  auto keys = realtime_frontend_.raw_keys();
+  if (realtime_frontend_.katakana()) keys.insert(keys.begin(), U'q');
+  const auto sequence = preparation_sequence_.fetch_add(1) + 1;
+  AddRef();
+  try {
+    std::thread([this, keys = std::move(keys), sequence] {
+      {
+        std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+        // Coalesce typing bursts. Conversion/focus cancellation invalidates
+        // queued preparation before it can modify the live context.
+        if (preparation_sequence_.load() == sequence)
+          engine_.PrepareKeys(keys, kConversionTimeoutMs);
+      }
+      Release();
+    }).detach();
+  } catch (...) { Release(); }
+}
+
 bool TextService::BeginProviderConversion(const std::u32string& keys, bool registration) {
+  preparation_sequence_.fetch_add(1);
   CancelLocalRetry();
   local_observer_retry_.reset();
   local_store_.ReleaseState();
@@ -764,6 +786,7 @@ void TextService::ResolveLocalFallback() {
 }
 
 void TextService::CancelPendingProvider() {
+  preparation_sequence_.fetch_add(1);
   provider_deadline_ = 0;
   okuri_conversion_started_qpc_ = 0;
   if (provider_window_) KillTimer(provider_window_, 1);
@@ -2285,6 +2308,7 @@ void TextService::FinishStateEdit(ITfContext* context,
 
 HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
                                BOOL* eaten) {
+  preparation_sequence_.fetch_add(1);
   ++key_sequence_;
   TracePhase(L"key-receipt", key_sequence_, L"key");
   FollowSettings();
@@ -3161,6 +3185,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
           return S_OK;
         }
       }
+      if (state) PrepareProviderReading();
     } else
       state = engine_.SendKey(*codepoint, kInteractiveTimeoutMs);
   }

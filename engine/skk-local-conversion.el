@@ -112,6 +112,8 @@ functions can change plain lookup results and must run in the provider."
 The runtime's rename-file is not usable on Windows. No ACK is issued
 until the native host has flushed the checkpoint and atomically replaced
 the configured personal dictionary. The engine still owns its contents."
+  (if ddskk-engine--learning-worker
+      (progn (setq ddskk-engine--learning-dirty t) t)
   (condition-case err
       (let* ((path (ddskk-user-jisyo-path))
              (temporary (concat path ".local-checkpoint"))
@@ -124,7 +126,7 @@ the configured personal dictionary. The engine still owns its contents."
         (unless (equal (ddskk-engine-read-stdio-line) "LOCAL-PUBLISHED")
           (error "Local checkpoint publication failed"))
         t)
-    (error (setq ddskk-user-jisyo--last-save-error err) nil)))
+    (error (setq ddskk-user-jisyo--last-save-error err) nil))))
 
 (defun ddskk-local-learn (line)
   "Handle an idempotent ordinary confirmation; ACK only verified storage."

@@ -543,6 +543,12 @@ itself, same contract as the base file."
           (ignore-errors
             (ddskk-user-jisyo--parse-into-table text ddskk-user-jisyo--table)))))))
 
+(defun ddskk-user-jisyo--journal-signature (text)
+  "Return the scalar count and exact journal identity for checkpoint v2."
+  (concat (number-to-string (length text)) " "
+          (if (= (length text) 0) "-"
+            (mapconcat (lambda (char) (format "%06x" char)) text ""))))
+
 (defun ddskk-user-jisyo-load ()
   "Populate the in-memory personal dictionary from disk.
 Called once at engine start.  A missing or unreadable file is NOT an
@@ -561,13 +567,24 @@ since the last compaction is not lost across a restart -- see the
   (clrhash ddskk-user-jisyo--okuri-blocks)
   (clrhash ddskk-user-jisyo--sections)
   (setq ddskk-user-jisyo--load-dirty nil)
-  (let ((path (ddskk-user-jisyo-path)))
+  (let ((path (ddskk-user-jisyo-path)) checkpoint-v2)
     (when (stringp path)
       (let ((text (ignore-errors (nelisp--syscall-read-file path))))
         (when (stringp text)
+          (dolist (line (split-string text "\n" t))
+            (when (and (> (length line) 16) (equal (substring line 0 16) ";; EG2 revision "))
+              (setq ddskk-user-jisyo-local-revision
+                    (max ddskk-user-jisyo-local-revision (string-to-number (substring line 16))))))
+          (let ((journal (ignore-errors
+                           (nelisp--syscall-read-file (concat path ".journal")))))
+            (when (stringp journal)
+              (setq checkpoint-v2
+                    (member (concat ";; EG2 journal "
+                                    (ddskk-user-jisyo--journal-signature journal))
+                            (split-string text "\n" t)))))
           (ignore-errors
-            (ddskk-user-jisyo--parse-into-table text ddskk-user-jisyo--table t))))))
-  (ddskk-user-jisyo--replay-journal)
+            (ddskk-user-jisyo--parse-into-table text ddskk-user-jisyo--table t)))))
+    (unless checkpoint-v2 (ddskk-user-jisyo--replay-journal)))
   ;; Replay first: only a verified base save may discard the journal.
   (when ddskk-user-jisyo--load-dirty (ddskk-user-jisyo-flush))
   t)
@@ -614,6 +631,11 @@ tools) regardless of which kind of word was learned first."
             ";; okuri-nasi entries.\n"
             (ddskk-user-jisyo--serialize-entries nasi))))
 
+(defvar ddskk-engine--learning-worker nil
+  "Non-nil only after the native host negotiates checkpoint worker v2.")
+(defvar ddskk-engine--learning-dirty nil)
+(defvar ddskk-engine--learning-keys nil)
+
 (defun ddskk-user-jisyo-save ()
   "Write the whole in-memory personal dictionary to disk in one call.
 `write-region' on this runtime truncate-writes only (it signals on
@@ -641,6 +663,8 @@ dictionary save must not turn an otherwise-normal keystroke
 confirmation into an ERR response.  Sets
 `ddskk-user-jisyo--last-save-error' to nil on success or to the
 signalled error on failure; never signals itself."
+  (if ddskk-engine--learning-worker
+      (progn (setq ddskk-engine--learning-dirty t) t)
   (setq ddskk-user-jisyo--last-save-error nil)
   (condition-case err
       (let ((path (ddskk-user-jisyo-path))
@@ -662,7 +686,7 @@ signalled error on failure; never signals itself."
         t)
     (error
      (setq ddskk-user-jisyo--last-save-error err)
-     nil)))
+     nil))))
 
 (defun ddskk-user-jisyo--journal-append (midasi)
   "Append MIDASI's complete current candidate list to the journal.
@@ -681,6 +705,11 @@ must not turn an otherwise-normal keystroke confirmation into an ERR
 response -- the word is still correct in `ddskk-user-jisyo--table' and
 will be captured by the next successful append or by the next
 compaction/flush regardless."
+  (if ddskk-engine--learning-worker
+      (progn
+        (setq ddskk-engine--learning-dirty t)
+        (unless (member midasi ddskk-engine--learning-keys)
+          (push midasi ddskk-engine--learning-keys)))
   (let ((path (ddskk-user-jisyo--journal-path)))
     (when (stringp path)
       (let ((coding-system-for-write 'utf-8-unix))
@@ -689,7 +718,7 @@ compaction/flush regardless."
              (ddskk-user-jisyo--serialize-entries
               (list (cons midasi (gethash midasi ddskk-user-jisyo--table))))
              nil path t)
-          (error nil))))))
+          (error nil)))))))
 
 (defun ddskk-user-jisyo--truncate-journal ()
   "Empty the journal file, if one is configured.
@@ -706,9 +735,10 @@ either -- truncating through the same `write-region' path this module
 already relies on for byte-accurate writes is the more conservative
 choice.  A failure here is caught and never propagated, same as every
 other disk operation in this module."
-  (let ((path (ddskk-user-jisyo--journal-path)))
-    (when (stringp path)
-      (condition-case nil (write-region "" nil path) (error nil)))))
+  (unless ddskk-engine--learning-worker
+    (let ((path (ddskk-user-jisyo--journal-path)))
+      (when (stringp path)
+        (condition-case nil (write-region "" nil path) (error nil))))))
 
 (defun ddskk-user-jisyo-flush ()
   "Save the whole table immediately, then empty the journal.
@@ -837,6 +867,9 @@ dictionary, so gating it here is sufficient on its own."
   (unless ddskk-user-jisyo-learning-disabled
     (setq word (ddskk-user-jisyo--clean-candidate word))
     (when (and (boundp 'skk-henkan-key) (stringp skk-henkan-key) word)
+      (when ddskk-engine--learning-worker
+        (unless (member skk-henkan-key ddskk-engine--learning-keys)
+          (push skk-henkan-key ddskk-engine--learning-keys)))
       (if purge
           (progn
             (ddskk-user-jisyo-purge skk-henkan-key word)
