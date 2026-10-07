@@ -9,7 +9,7 @@ Six-reading profile: 18 warm + 2 cold candidate states. Source-derived feature
 split, generation/learning consistency and named parity tests documented in
 docs/design/local-first-conversion.org. Real Emacs inline rendering timing
 remains unmeasured; explicitly reserved for S2.3. No stock-parity claim.
-evidence: docs/design/local-first-conversion.org sha256=0fd936a78ae2ba3b5b60dc9033a8a25ee680819a38c8b0d5f54edeeaf5f6715d
+evidence: docs/design/local-first-conversion.org sha256=5840e5c6a1e69264f100291d2f140d2488807cf1b30c7b5f885b29cfe706a5b1
 ** S1.2 Prototype measurement: a memory-mapped dictionary index built from SKK-JISYO.L plus the user jisyo answers candidate lookups in the core process (p50/p99 per lookup, build time, memory), compared with today's Space-to-candidate time on the same machine
 LF1 standalone prototype completed; deliberately not wired into the core.
 Full L + private synthetic user jisyo copy: 175774 entries, 14239252 mapped
@@ -21,53 +21,20 @@ evidence: windows/proto/README.org sha256=72473b42cb59147a481f1884ef77b0d1fa82b6
 
 * S2 Local conversion in the core
 ** S2.1 Plain and okuri conversions, candidate traversal and commit are answered locally with results identical to stock DDSKK on a fixed reading corpus (oracle comparison)
-pending
+#+NOTE: LF3 okuri, LF4 navigation, LFD1 stock order and certification; ctest includes the stock oracle (309 checks); two-source and navigation TSF checks from Claude's run on the LF5 tree.
+evidence: build/validation/release-f5097a5-lf5/test-local-two-source.log sha256=4fc73282d4216acf59a70d46cc16d29f770d7b8763abd7499ffb812656e693cf
+evidence: build/validation/release-f5097a5-lf5/test-local-navigation.log sha256=d603dd2755f79d24d0732fd158b66a4a03f0a446883f28810afb0eedc26e6d6d
 ** S2.2 Learning reaches the user jisyo through the engine asynchronously without blocking input; the local index reflects it; registration still uses the engine
-pending
+#+NOTE: LF5 overlay publication (380 bytes per learned word), HF1 idle spool 0 writes/s, recovery with SKK-JISYO.L.
+evidence: build/validation/release-f5097a5-lf5/test-local-overlay.log sha256=f8000fbb10bc520a9ab9b1cf00fb11bbd52e541564b1e9e19ccb2a537e5d9bd9
+evidence: build/validation/release-f5097a5-lf5/test-local-idle-spool.log sha256=19546f0c76ebb1feb3f69d1527716266ad33fb055b6bfbafcb1eb5305ca22bb3
+evidence: build/validation/release-f5097a5-lf5/test-local-edit-recovery.log sha256=c0838571b7220bc2acfddfbfb25f65eb5930c272c1bcc4b62d633f706575560a
 ** S2.3 End to end: TSF harness and real-Emacs inline cases pass; Space-to-candidate p50 <= 30 ms and typing ahead never replays keys one by one
-pending
+#+NOTE: Local TSF matrix 9 cases/31 checks (typing ahead without provider replay), emacs inline case, SKK-JISYO.L stress max callback 4.5 ms.
+evidence: build/validation/release-f5097a5-lf5/test-local-conversion.log sha256=e9fc3ad6c05d1c8050774cdaeb1a9496d7f4f6cdd8ada973109ab8695fd28302
+evidence: build/validation/release-f5097a5-lf5/inline-emacs.log sha256=32ced5987f4b9529c4c6ea49cb8452e0dd1185c2cefc146cbf789018cbcd8b5c
+evidence: build/validation/release-f5097a5-lf5/stress-L.log sha256=c1d1968b6203a9505c1dac958bae00bee3cce53d623dea731df78457324af93e
 
 * S3 Live
 ** S3.1 Deployed; the user confirms conversion in Emacs (inline) and other applications feels like Emacs DDSKK
 pending
-
-* LF2 worker note (2026-10-06; no check lines changed)
-Ordinary production slice implemented behind default-off LocalConversion,
-including per-app overrides. Host-built immutable validated mmap generations;
-native SPACE/x/cancel/commit and typing ahead; asynchronous idempotent engine
-learning, durable pending spool and sequence-aware overlay retirement.
-Okuri-ari and unsupported source plans remain provider-owned in this slice.
-No shim/ABI change, live settings, deployment, staging or commit.
-
-Unchanged-tree reproduction: engine TSF n=20 p50=109/p90=125/max=125 ms,
-failed the existing p50 <=100 ms gate. Final paired full-dictionary runs:
-engine n=20 109/110/265 ms (still fails p50); local n=20 0/0/0 coarse timer
-readings (passes <=30 ms). These zeros are timer buckets, not zero work;
-same twenty local SPACE callbacks measured 693/1039/1774 us p50/p90/max.
-Production generation: 175774 entries, 14252556 bytes, bad_lines=0.
-
-Final CTest with NELISP_EXECUTABLE: 11/11. Stock DDSKK four-reading corpus
-before/after learning: eight rows, 61 local checks, four negative controls.
-Learning ERT 7/7; stateline 31/31; lattice 14/14; input rules ERT 13/13.
-Local TSF matrix 9 cases/31 checks; post-review ordinary/offline 2 cases/11
-checks. Default-off DDSKK suite 45 assertions; host hot swap passed; core
-hot swap 19 assertions; Emacs integration 5 cases/33 assertions; input rules
-17 assertions plus two 525-check parity passes; okuri handoff 3 cases/19
-assertions; all nine default-off inline cases passed. Local real-Emacs main
-and typing-ahead passed; typing ahead asserted no provider replay.
-
-Commands, verbatim gate tails, changed-file locations, limits and cleanup
-are recorded in docs/design/local-first-conversion.org, LF2 sections.
-S2 check lines stay pending: this does not ship local okuri or complete the
-broader parity corpus. Persistent user-facing unsaved status and extended
-crash/storage stress verification remain follow-up work. No S3 claim.
-
-* LF3 worker note (2026-10-06; check lines remain pending)
-Certified complete-kana okuri implemented in the core. Priority instability
-work reproduces a denied-edit ownership mismatch for synthetic ていこうち,
-and fixes bounded fallback, mapping/learning publication and open-generation
-consistency. Synthetic unsorted two-source fixtures cover six duplicate keys,
-annotations, shared candidate identities and both chi/ti spellings; no live
-personal dictionary was read. Detailed red/green evidence, gate commands,
-verbatim tails, changed-file locations and limits are recorded in
-tools/ai/local-first-conversion-notes.org. No live change, ABI change or commit.

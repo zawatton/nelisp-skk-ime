@@ -1931,3 +1931,23 @@ of 45 seconds. No live settings, shim/ABI, personal dictionary or other
 checkout was modified. These private gates do not establish live latency.
 The final ownership audit checks logged harness PIDs, start times and host
 child relationships; no owned host, TSF host or runtime remains running.
+
+* Ledger notes moved from local-first-conversion-progress.org (2026-10-07)
+** LF2 worker note (2026-10-06)
+Ordinary production slice behind default-off LocalConversion with per-app
+overrides; host-built immutable validated mmap generations; native
+SPACE/x/cancel/commit and typing ahead; asynchronous idempotent engine
+learning, durable pending spool and sequence-aware overlay retirement.
+Paired full-dictionary runs: engine n=20 109/110/265 ms; local SPACE
+callbacks 693/1039/1774 us p50/p90/max. Production generation 175774
+entries, 14252556 bytes. Full gate list in the LF2 sections of
+docs/design/local-first-conversion.org.
+** LF3 worker note (2026-10-06)
+Certified complete-kana okuri in the core; denied-edit ownership mismatch
+(synthetic ていこうち) fixed with bounded fallback and publication
+consistency; synthetic unsorted two-source fixtures. Details above.
+** Ledger update (Claude, 2026-10-07)
+S1.1 hash refreshed after LF3-LF5 design-doc edits. S2.1-S2.3 evidence is
+Claude's verification of the LF5 worktree (worker/lf5-overlay, merged into
+main as f5097a5; deployed 2026-10-07 04:52), logs copied to
+build/validation/release-f5097a5-lf5/.
