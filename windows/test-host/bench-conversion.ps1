@@ -12,6 +12,8 @@ param(
   [ValidateRange(1,1000)][int]$Iterations = 20,
   [switch]$Profile,
   [switch]$Learning,
+  [switch]$PersistentSessions,
+  [ValidateRange(0,100)][int]$LearningBurstIterations = 0,
   [switch]$ServerOnly,
   [switch]$RequireQuiet,
   [ValidateRange(0,100)][int]$PersistentIterations = 0,
@@ -160,6 +162,7 @@ try {
     $pidReply=Request 'DIAG CHILD-PID'
     if ($pidReply -notmatch '^PID (\d+)$') { throw "Invalid PID response: $pidReply" }
     $engine=Get-Process -Id ([int]$Matches[1])
+    if ($PersistentSessions) { [void](Request "SESSION bench OPEN 2") }
     $items=@($corpus | Where-Object kind -eq $kind)
     for ($attempt=0; $attempt -lt 10; $attempt++) {
       $coldLoad=Load-Snapshot
@@ -176,7 +179,14 @@ try {
         $encoded=([int[]][char[]]$item.keys) -join ','
         $engine.Refresh(); $cpu=$engine.TotalProcessorTime.TotalMilliseconds
         $timer=[Diagnostics.Stopwatch]::StartNew()
-        $reply=Request "SESSION bench CONTROL CONVERT-KEYS $encoded"
+        if ($PersistentSessions) {
+          [void](Request 'SESSION bench RESET')
+          [void](Request "SESSION bench V2 PREPARE 2 $encoded" 'prepare-reading')
+          $timer.Restart(); $engine.Refresh(); $cpu=$engine.TotalProcessorTime.TotalMilliseconds
+        }
+        $reply=if ($PersistentSessions) {
+          Request "SESSION bench V2 SPACE 2" 'prepared-space'
+        } else { Request "SESSION bench CONTROL CONVERT-KEYS $encoded" }
         $timer.Stop(); $engine.Refresh()
         if ($reply -notmatch '^STATE candidate ') { throw "Conversion failed $($item.name): $reply" }
         $rows.Add([pscustomobject]@{kind=$kind; name=$item.name; cold=($i -eq 0); iteration=$i;
@@ -201,12 +211,21 @@ try {
     for ($iteration=0; $iteration -lt $PersistentIterations; $iteration++) {
       foreach ($item in $items) {
         [void](Request 'SESSION bench RESET')
+        $prefix=''
         foreach ($key in [char[]]$item.keys) {
-          [void](Request ('SESSION bench KEY '+[int]$key))
+          $prefix+=$key
+          if ($PersistentSessions) {
+            $encodedPrefix=([int[]][char[]]$prefix) -join ','
+            [void](Request "SESSION bench V2 PREPARE 2 $encodedPrefix" 'prepare-suffix')
+          } else { [void](Request ('SESSION bench KEY '+[int]$key)) }
         }
         $operation=if($iteration -eq 0){'persistent-space-new'}else{'persistent-space-learned'}
-        $reply=Request 'SESSION bench CONTROL CONVERT' $operation
+        $encoded=([int[]][char[]]$item.keys) -join ','
+        $reply=if ($PersistentSessions) { Request "SESSION bench V2 SPACE 2" $operation }
+               else { Request 'SESSION bench CONTROL CONVERT' $operation }
         if ($reply -notmatch '^STATE candidate ') {throw "Persistent conversion failed: $reply"}
+        [void](Request 'SESSION bench CONTROL CONVERT' 'persistent-next')
+        [void](Request 'SESSION bench CONTROL PREVIOUS' 'persistent-previous')
         [void](Request 'SESSION bench CONTROL COMMIT' 'persistent-commit')
         [void](Request 'HELLO 1')
       }
@@ -220,6 +239,21 @@ try {
       $other=[IO.Pipes.NamedPipeClientStream]::new('.', $env:DDSKK_PIPE_NAME.Substring(9),[IO.Pipes.PipeDirection]::InOut)
       try {
         $other.Connect(10000)
+        if ($PersistentSessions) {
+          [void](Request 'SESSION second OPEN 2')
+          [void](Request 'SESSION second V2 PREPARE 2 75,97,110,97')
+          [void](Request 'SESSION learning OPEN 2')
+          [void](Request 'SESSION learning V2 CONVERT-LIVE 2 75,97,110,97')
+          $commit=[Text.Encoding]::UTF8.GetBytes('SESSION learning V2 CONTROL COMMIT')
+          $other.Write($commit,0,$commit.Length); $other.Flush()
+          [void](Request 'SESSION second V2 CONVERT-LIVE 2 75,97,110,97' 'commit-then-second-conversion')
+          $buffer=New-Object byte[] 65536
+          $pending=$other.ReadAsync($buffer,0,$buffer.Length)
+          if (-not $pending.Wait(30000)) {throw 'Learning contention response timeout'}
+          $commitReply=[Text.Encoding]::UTF8.GetString($buffer,0,$pending.Result)
+          if ($commitReply -notmatch '^STATE ') {throw "Learning commit failed: $commitReply"}
+          [void](Request 'SESSION second CONTROL CANCEL')
+        }
         $bytes=[Text.Encoding]::UTF8.GetBytes('GC')
         $other.Write($bytes,0,$bytes.Length); $other.Flush()
         Start-Sleep -Milliseconds 20
@@ -242,11 +276,21 @@ try {
         [void](Request 'SESSION bench CONTROL CANCEL')
       }
     }
+    if ($LearningBurstIterations) {
+      [void](Request 'SESSION burst OPEN 2')
+      for ($burst=0; $burst -lt $LearningBurstIterations; $burst++) {
+        [void](Request 'SESSION burst V2 PREPARE 2 75,97,110,97' 'burst-prepare')
+        $converted=Request 'SESSION burst V2 SPACE 2' 'burst-space'
+        if ($converted -notmatch '^STATE candidate ') {throw "Burst conversion failed: $converted"}
+        $committed=Request 'SESSION burst V2 CONTROL COMMIT' 'burst-commit'
+        if ($committed -notmatch '^STATE ') {throw "Burst commit state failed: $committed"}
+      }
+    }
     [void](Request 'SHUTDOWN'); $pipe.Dispose(); $pipe=$null
     if (-not $hostProcess.WaitForExit(5000)) { Stop-Process -Id $hostProcess.Id -Force }
     $hostProcess=$null
   }
-  $result=[pscustomobject]@{schema=1; runtimeHash=(Get-FileHash $Runtime).Hash;
+  $result=[pscustomobject]@{schema=1; persistentSessions=[bool]$PersistentSessions; runtimeHash=(Get-FileHash $Runtime).Hash;
     dictionaryHash=(Get-FileHash $copy).Hash; corpusHash=(Get-FileHash (Join-Path $PSScriptRoot 'conversion-corpus.json')).Hash;
     server=[bool]($SkkServExecutable -or $FixtureServerPython); fixtureServer=[bool]$FixtureServerPython; serverOnly=[bool]$ServerOnly; quietRequired=[bool]$RequireQuiet;
     load=$load; loadAfter=(Load-Snapshot);

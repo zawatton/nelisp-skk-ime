@@ -3005,3 +3005,323 @@ framework/lattice: 31/31 and 14/14. NeLisp reader/sanitation/replay/checkpoint
 and encoding-cache checks pass. CTest: all ten wrappers blocked by sandbox
 private-registry denial; nine applicable direct executables passed. No live
 settings, personal dictionary, ABI or core files changed; changes unstaged.
+
+* EG2 worker handoff (1914d9f; unstaged; acceptance open)
+Persistent provider reading preparation, keyless versioned Space, 64-session LRU,
+explicit loss/recovery, old-engine fallback, and a native FIFO checkpoint worker
+are implemented. Local conversion retains its existing path. Client transactions
+are serialized; cancellation remains lock-free. Confirmed text is excluded from
+replay recovery. Replacement-created empty records cannot hide engine restart.
+
+The native worker owns learning file I/O and atomic publication. Complete changed
+rows and the changed operation watermark preserve DDSKK order and durable retries.
+Fresh legacy journals survive a v2 checkpoint and native cache reload. Storage
+fences are outside the engine mutex; shutdown drains the queue. The host still
+waits for a durability barrier before replying, so the requested immediate commit
+and concurrent-ACK isolation remain incomplete. Overlay snapshot CPU still shares
+the interpreter. No ABI/shim/settings/live dictionary/deployment changes were made.
+
+Engine ERT 32/32; runtime replay 38/38 plus 24 new session checks; cache 528;
+stock DDSKK 6/6; stock oracle 9/9; reload/local-learning 16/16; framework 31/31;
+lattice 14/14. Native protocol/worker suite 67 checks, 0 failures; nine direct
+native executables exit 0 (local conversion 154 checks, four negative controls).
+CTest and all registry-dependent TSF/local/integration/hot-swap gates are blocked
+before assertions by sandbox private-HKCU creation. Claude must run them privately.
+
+Comparable QPC plain first SPACE p50 140.725 -> 93.498 ms; ordinary plain commit
+84.884 -> 49.001 ms. Unprofiled plain first/learned SPACE 78.743 / 72.981 ms;
+20-commit burst p50 45.205 ms. Plain SPACE <= 40 ms is not achieved. Okuri Space
+preserves automatic conversion; its low post-feed cost excludes typing conversion.
+A measured whole-table serialization regression was replaced by changed rows and
+one watermark, reducing checkpoint capture to ~4.3 ms p50. Later storage hardening
+is tested separately; consult the EG2 gate ledger in local-first-conversion.org
+for command tails, limits, the real restart probe and final cleanup evidence.
+
+Do not mark EG2 accepted or deploy until immediate/durable reply semantics, plain
+Space latency, overlay contention and the blocked integration gates are resolved.
+
+Final direct-pipe delivery gate: 17/17 (actual child restart, LRU eviction,
+interleaving, durable retry). Final QPC plain/okuri wall Space p50 72.431 / 9.145 ms;
+checkpoint capture 60 events p50 3.407 ms; combined 40 learning-burst commits
+p50 43.392 ms. Final build, engine ERT 32/32 and native protocol 67/67 passed.
+No known owned process remains; index empty; changes unstaged. Full per-file
+anchors and command/tail/count ledger are in the EG2 design section.
+
+** EG2 follow-up handoff: immediate STATE and native publication
+This follow-up supersedes the preceding delivery summary. STATE replies no
+longer wait for learning storage; LOCAL ACK remains durable outside the engine
+mutex. FIFO retries and validated, flushed checkpoint recovery preserve complete
+rows/order/revision/operation ids. Shutdown drains. Native overlay publication
+no longer scans/serializes the interpreter state; spool recovery has its own
+maintenance thread. Candidates publish promptly; durable watermarks republish
+after storage at the same revision. The current client also requires the pipe
+ACK before retiring its replay spool. Old-engine and session-loss fallback remain.
+
+The real held-I/O two-client gate passes 16/16; second-client already-fed SPACE
+QPC mutex wait is 0.006800 ms. Real owned-host crash after durable staging passes
+15/15, including operation-id replay twice. Native protocol/worker suite 79/79;
+engine ERT 34/34; runtime session 28 plus replay 38/38 and cache 528; stock oracle
+9/9, stock input 6/6, reload/local learning 16/16. Private session/restart 17/17.
+Nine applicable direct native executable gates exit 0. Registry-dependent gates
+remain Claude's work; no credit is taken for their earlier prerequisite failures.
+
+Prepared modal checkpoint/state caching and a NeLisp literal marker predicate
+reduce hot-path work. Observed plain learned SPACE floor is 57.001050 ms p50
+(28 events); first/miss SPACE 70.592750 ms (4). Okuri post-feed learned SPACE
+6.807600 ms excludes automatic conversion while typing. Plain next/previous/
+commit p50 are 43.224 / 37.578 / 37.7997 ms; 20 plain burst commits 39.27615 ms.
+Remaining keyless QPC costs: marker self 10.2585, dispatch self 8.20725,
+start-henkan self 6.9772, search self 3.6935; relay 0.2182, raw state 0.4663,
+one snapshot 1.5130 ms. No keyless SPACE checkpoint. <=40 ms is not achieved.
+
+Acceptance is still open: abrupt host loss after a provider STATE reply but
+before the worker's first durable write can lose that learning. Provider commits
+have no durable producer outbox/opid. Durable LOCAL spool replay and recovery
+after staging do not prove that window safe. Do not claim full requirement B
+or EG2 acceptance. A producer outbox/protocol change remains necessary for the
+strict at-least-once guarantee. No commits or staging; scope remains unchanged.
+
+Exact commands, verbatim tails/counts, corrected failed invocations, per-file
+anchors and cleanup are in
+[[file:../../docs/design/local-first-conversion.org::*EG2 follow-up: immediate state, independent publication, SPACE floor][the EG2 follow-up design ledger]].
+
+
+** EG2 durable provider outbox: crash gap closed (2026-10-08)
+Supersedes the earlier pre-worker-write learning-loss limitation. Provider STATE
+is sent only after a small idempotent-id/row record is appended with write-through
+and FlushFileBuffers. Append happens outside the engine mutex. FIFO reservations
+prevent later clients overtaking an unsealed commit. Startup replays before
+interpreter loading; checkpoint and independent cursor watermarks prevent repeat
+learning, including after old-engine dictionary rewriting. Worker retirement,
+cursor writes and full dictionary I/O remain off the conversion mutex. LOCAL's
+existing durable spool/ACK route and legacy engine fallback remain unchanged.
+
+Final real provider reply-before-first-write host crash: 18/18, single learned
+row/candidate/revision, retired outbox, second restart without duplication.
+Held-I/O two-client/overlay gate 16/16, second SPACE QPC mutex wait 0.007200 ms.
+Native host/protocol 101/101; other eight applicable native executables exit 0.
+Engine ERT 34/34; runtime replay 38/38, sessions 28, cache 528; stock oracle 9/9,
+stock input 6/6, local/reload 16/16. Final existing restart/staged gates and cleanup
+are in the design ledger. Registry-dependent gates remain Claude's responsibility.
+
+53 durable provider appends: QPC p50 1.650900, p90 2.158300, max 2.766700 ms
+(107--125-byte payloads plus framing). Forty burst appends p50 1.621000 ms;
+commit STATE wall p50 34.854200 ms. Plain SPACE <=40 ms remains documented as
+not met: retain the earlier 57.001050 learned / 70.592750 first/miss p50 and
+its DDSKK interpreter/buffer-edit attribution. The small new benchmark measures
+commit durability, not a replacement floor. No commit or deployment; unstaged.
+
+Exact commands, verbatim tails/counts, corrected test failures and change anchors:
+[[file:../../docs/design/local-first-conversion.org::*EG2 durability closure: durable provider outbox (2026-10-08)][EG2 durable-outbox design ledger]].
+
+Final outbox delivery: existing real child restart/eviction/durable retry 17/17;
+existing staged LOCAL host-crash recovery 15/15. Scope/whitespace pass, index
+empty (15 modified + 10 new in scope), no commit. Owned-process audit: 120 ids,
+0 matching owned processes remaining; no known host/runtime/native leftovers.
+
+
+** EG2 merge with SK1/TL1/KM2: working-tree resolution (2026-10-08)
+HEAD 5bafa89 + MERGE_HEAD 4da84de conflicts are resolved on disk. Both shutdown
+operations remain; PrepareProviderReading/invalidation coexist with SK1 skip
+navigation and incoming core/local changes. No git add/commit: Git deliberately
+still reports two UU entries (six conflict stages) until Claude stages them.
+
+The async skkserv socket worker, cache and candidate union remain. Provider cache
+waits now release engine metadata ownership; a separate interpreter transaction
+gate prevents byte/session interleaving while SERVER is pending. Native overlay
+publication stays outside both locks, and outbox/learning I/O stays outside them.
+Legacy snapshots try the gate. Other interpreter RPCs still serialize; this is
+not concurrent execution of one NeLisp process. Native slow-network probes cover
+metadata availability and transaction identity. The auto-merged native timer/
+worker-promise name collision is fixed without changing thresholds.
+
+Merged build passes. Nine direct native gates pass: host 128 checks, local 173
+(includes four corruption/source negative controls). Engine ERT 34/34, replay
+38/38, sessions 28, cache 528; stock oracle 9/9, behavior 6/6, reload 16/16;
+framework 31/31, lattice 14/14. Provider crash 18/18, real session restart 17/17,
+held-learning-I/O/overlay 16/16; second SPACE QPC mutex wait 0.006900 ms. SK1
+private provider relay 20 checks (disabled/unreachable) and network stock oracle
+four rows/two readings/one learning pass. Claude must run TSF/hot-swap/integration/
+registry gates and SK1 TSF merge cases. Prior SPACE floor remains documented-not-met.
+
+Commands/tails/counts and file anchors:
+[[file:../../docs/design/local-first-conversion.org::*EG2 merge resolution with SK1/TL1/KM2 (2026-10-08)][EG2 merge ledger]].
+
+Final merge workspace check: no conflict markers, whitespace exit 0; original
+six conflict-stage entries unchanged, no git add/commit. Owned-process audit:
+135 ids, zero matching owned processes remaining; fixture exited. No known
+owned leftovers. Claude must stage resolutions and run the deferred TSF gates.
+
+** EG2 refused-write recovery and stress investigation (2026-10-08)
+Base 5207611. Acceptance is INCOMPLETE: the 107443 us stress callback has
+not been reproduced or fixed in the registry-restricted worker shell.
+Claude must rerun both large-dictionary TSF scripts and inspect the private
+DDSKK/dll-debug.log phase timestamps if the watchdog still fails.
+
+The supplied unchanged stress log places the outlier on token d, branch
+local-okuri-preedit, provider_pending=0, after rendering the native state.
+That branch calls no EngineClient method, provider outbox append or ACK wait.
+The existing mirror writer uses a zero-timeout try-acquire. These observations
+do not establish where the 107 ms went. New debug phases bracket Current,
+frontend rollback snapshot, Feed, okuri edit and observer publication; the
+key-locals-released phase runs after key-local destructors, allowing expensive
+snapshot reclamation to be distinguished from an engine wait. The stress
+harness enables DebugLog into its private artifact directory. No threshold
+was changed and no speculative scheduling/locking fix is claimed.
+
+The supplied provider-denied log shows the second candidate applied BEFORE
+REFUSEWRITE: its pending refusal instead rejects the following retry SPACE.
+Arm REFUSEWRITE before the second SPACE, and assert the denied checkpoint is
+reading text and retry checkpoint is the first candidate, in addition to the
+existing final committed text and denial/fallback requirements. This removes
+a timing-dependent injection without reducing coverage.
+
+ResolveLocalFallback now marks this client's persistent session abandoned
+without I/O or locking. Its next worker transaction resets and rebuilds the
+native reading. ConvertKeys must also ignore prepared_keys when resync is
+pending: otherwise it selects SPACE before Transact performs RESET, sending a
+keyless conversion to an empty session. A real private-pipe regression proves
+this ordering. Old-engine negotiation and eviction/restart replay are retained.
+
+Change anchors (line numbers at delivery): engine_client.cpp:338;
+text_service.cpp:804 (abandon fallback), :2351 (tail phase), :2447 (index),
+:3191 (snapshot/feed), :3231 (edit), :3760 (observer);
+engine_client_test.cpp:163; test-local-edit-recovery.ps1:23,38;
+test-local-state-stress.ps1:72. All files are under windows/src, windows/test
+or windows/test-host. No changes to host learning/outbox durability.
+
+*** Gates actually run and verbatim result tails
+- Before production edits, build only the new regression with
+  =cmake --build build/w --config Release --target ddskk-engine-client-test=,
+  then run =build/w/Release/ddskk-engine-client-test.exe= with a unique private
+  DDSKK_PIPE_NAME. Red exit -1073740791, =eg2-recovery-red.log=:
+  =Abandon recovery expected=V2 CONVERT-LIVE 2 75,97,110,97 actual=SESSION ... V2 SPACE 2=.
+- =cmake --build build/w --config Release=: exit 0, =eg2-recovery-build.log=.
+  Final rebuild after diagnostic additions: exit 0, =eg2-recovery-final-build.log=;
+  final tail =tsf-host.vcxproj -> .../build/w/Release/tsf-host.exe=.
+- Direct private-environment invocation of all nine non-registry executables:
+  =nativeime-local-conversion-test=, =ddskk-engine-protocol-test=,
+  =ddskk-engine-client-test=, =ddskk-candidate-ui-test=,
+  =ddskk-display-attribute-test=, =ddskk-langbar-button-test=,
+  =ddskk-mode-indicator-test=, =ddskk-realtime-frontend-test=,
+  =ddskk-host-utf8-protocol-test=. All exit 0, 9/9 executables. Logs in
+  =build/w/recovery-native-d50f3d8641114ef48f9597f932311a49/=.
+  Local tail: =PASS rules-only publication checks=5=;
+  =PASS local conversion 178 checks (4 corrupt/source negative controls)=.
+  Host tail: =commit durability reply QPC wait_ms=0.017500=;
+  =host UTF8 protocol: 128 checks, 0 failures=. Seven are silent on success.
+- =emacs -Q --batch -L engine -L vendor/ddskk -l engine/test-input-rules.el
+  -l engine/test-local-conversion.el -l engine/test-eg1-cleaner.el
+  -l engine/test-learning-v2.el -f ert-run-tests-batch-and-exit=,
+  process HOME set to UserProfile, private LOCAL_LEARNING_TEST_DIR: exit 0,
+  =eg2-recovery-ert.log=: =Ran 34 tests, 34 results as expected, 0 unexpected=.
+- Caller-supplied =$Runtime --load engine/test-conversion-round2.el --load
+  engine/test-session-v2.el --load engine/test-conversion-cache.el=, private
+  DDSKK_USER_JISYO: exit 0, =eg2-recovery-runtime.log=:
+  =Host LIST reader: 6 checks PASS=; =EG1 candidate sanitation: 8 checks PASS=;
+  =Replay full checkpoint/snapshot: 38/38 sequences PASS=;
+  =Checkpoint unbound/marker parity: 2 checks PASS=;
+  =EG2 sessions: 28 checks PASS=; =PASS conversion-cache checked=528=.
+- =ctest --test-dir build/w -C Release=: exit 8, 0/10 launched through their
+  registry wrapper, =eg2-recovery-ctest.log=: =0% tests passed, 10 tests failed
+  out of 10=. All ten fail before executable invocation: =New-Item : Access
+  to the registry key 'HKEY_CURRENT_USER\Software\NativeIME-test-...' is denied.=
+  This is a sandbox prerequisite failure, not ten native test failures.
+- =windows/test-host/test-local-state-stress.ps1 -Runtime $Runtime
+  -LargeDictionary $LargeDictionary= and =windows/test-host/test-local-edit-recovery.ps1
+  -Runtime $Runtime -LargeDictionary $LargeDictionary -Only provider-denied=:
+  both exit 1 before host launch, private registry New-Item denied at
+  run-harness.ps1:247. Logs =eg2-recovery-stress.log= / =eg2-recovery-edit.log=.
+  TSF acceptance not measured. Claude must run these with SKK-JISYO.L and the
+  full ctest in a registry-capable shell; stress phase evidence is still needed.
+
+SPACE target remains documented-not-met, learned 57.001050 / first 70.592750 ms
+p50 with prior attribution. No new SPACE floor measurement in this task.
+Changes remain unstaged; no commit/add. All directly started native/Emacs/runtime
+processes completed; denied harnesses started no hosts. No known owned leftovers.
+
+** EG2 Ctrl+G claim mutex regression (2026-10-08)
+Base 6c611ff. Claude reports prior stress 2/2 (max 5.6 ms) and edit recovery
+2/2 passing; these supersede the preceding unresolved stress acceptance note.
+New behavior acceptance awaits Claude's registry-capable rerun.
+
+Before editing, inspected all four supplied failure logs and their detailed
+private tsf.stdout.log files. The third Ctrl+G cancels registration. Its time is
+in TestKeyDown, not in the cancellation edit or provider QUIT:
+| Detailed harness suffix | test_us | down_us | total_us |
+| 3cc3e4566997 | 40812 | 145 | 40957 |
+| 50085e8ca02c | 28578 | 165 | 28743 |
+| 4971a36cce15 | 47041 | 195 | 47236 |
+| 5509e8cd9872 | 31584 | 264 | 31848 |
+The unchanged outer gate tail is =DDSKK behavior failed: Ctrl+G exceeded
+20 ms (104,221,40957,194,78 us)=. This is existing red TSF evidence, not a
+worker rerun: the worker shell cannot create the private registry keys.
+
+OnTestKeyDown falls through to EngineClient::Connect when registration owns
+input. Connect acquires the recursive transaction mutex before even testing an
+already-open pipe. Registration typing runs on a worker and can hold that mutex
+while awaiting the engine. Thus the cancellation claim waited for that worker.
+The fix claims Ctrl+G/Escape locally after the existing ownership checks, even
+if the engine is absent. KeyDown retains the immediate native reading restore;
+provider-only QUIT fallbacks now run through BeginProviderControl, with local
+abandonment if scheduling fails. ForceCancelComposition and context settlement
+cancel pending overlapped I/O and mark resync without synchronous Disconnect.
+The next provider transaction owns RESET/rebuild. The denied-edit abandonment
+and no-keyless-SPACE-after-RESET fix remain unchanged, as do v2 restart/eviction
+fallback and old-engine negotiation. Outbox durability is unchanged.
+
+*** Change anchors
+- =windows/src/text_service.cpp:1745=: cancellation claims bypass Connect.
+- =windows/src/text_service.cpp:3128=: Escape provider-only QUIT on worker.
+- =windows/src/text_service.cpp:3164=: Ctrl+G provider-only QUIT on worker.
+- =windows/src/text_service.cpp:3436=: forced cancel without Disconnect.
+- =windows/src/text_service.cpp:3518=: context abandonment without Disconnect.
+- =windows/test/engine_client_test.cpp:237=: a server withholds its reply while
+  the provider holds its transaction mutex; invalidation must finish under
+  20000 us, preserve the dirty flag, and leave that provider blocked until
+  cancellation. Existing prepared-reading recovery regression also runs.
+- =windows/test-host/test-ddskk-behavior.ps1:118=: require all five cancellation
+  samples, preserving the existing total 20 ms watchdog. At :124 check the
+  third sample's TestKeyDown time explicitly; :132 reports 46 assertions.
+
+*** Gates actually run
+- =cmake --build build/w --config Release=: exit 0, =build/w/eg2-cancel-build.log=.
+  Verbatim final tail: =tsf-host.vcxproj -> .../build/w/Release/tsf-host.exe=.
+- Directly ran =build/w/Release/<name>.exe= for all nine non-registry suites,
+  using private DDSKK_PIPE_NAME, DDSKK_USER_JISYO, LOCALAPPDATA and
+  NATIVEIME_REGISTRY_KEY environment values. All exit 0, 9/9 executables:
+  nativeime-local-conversion-test, ddskk-engine-protocol-test,
+  ddskk-engine-client-test, ddskk-candidate-ui-test,
+  ddskk-display-attribute-test, ddskk-langbar-button-test,
+  ddskk-mode-indicator-test, ddskk-realtime-frontend-test,
+  ddskk-host-utf8-protocol-test. Logs:
+  =build/w/cancel-native-5e5f292cf11b44b09c9a563abd9f1d0e/=.
+  Verbatim result tails: =PASS rules-only publication checks=5=;
+  =PASS local conversion 178 checks (4 corrupt/source negative controls)=;
+  =cancel invalidation while provider blocked: 0 us=;
+  =commit durability reply QPC wait_ms=0.020100=;
+  =host UTF8 protocol: 128 checks, 0 failures=. Six suites are silent.
+- =emacs -Q --batch -L engine -L vendor/ddskk -l engine/test-input-rules.el
+  -l engine/test-local-conversion.el -l engine/test-eg1-cleaner.el
+  -l engine/test-learning-v2.el -f ert-run-tests-batch-and-exit=, process HOME
+  set to UserProfile, private LOCAL_LEARNING_TEST_DIR: exit 0,
+  =build/w/eg2-cancel-ert.log=:
+  =Ran 34 tests, 34 results as expected, 0 unexpected=.
+- =ctest --test-dir build/w -C Release=: exit 8,
+  =build/w/eg2-cancel-ctest.log=: =0% tests passed, 10 tests failed out of 10=.
+  Every wrapper fails private registry New-Item before invoking its executable.
+  No native failure is implied; the direct nine-suite run above is separate.
+- =windows/test-host/test-ddskk-behavior.ps1 -RepositoryPath $Root
+  -DllPath $Build/Release/ddskk-ime.dll -TsfHostExe $Build/Release/tsf-host.exe
+  -EngineHostPath $Build/Release/ddskk-engine-host.exe
+  -EngineExecutablePath $Runtime -ColdLoadSleepSec 45=: exit 1,
+  =build/w/eg2-cancel-behavior.log=. Verbatim tail:
+  =New-Item : Access to the registry key 'HKEY_CURRENT_USER\Software\NativeIME-test-a117fd9ea295' is denied.=;
+  =run-harness failed with exit code 1=. No hosts launched and no TSF latency
+  result measured here. Claude must rerun this behavior gate with these built
+  binaries in a registry-capable shell; also rerun ctest there.
+
+Changes remain unstaged. No commit/add. All started native and Emacs processes
+completed; the denied harness started no host/NeLisp/TSF-host. No known owned
+process leftovers. The 40 ms SPACE target remains documented-not-met with the
+prior 57.001050 / 70.592750 ms p50 measurements; no new floor claim.

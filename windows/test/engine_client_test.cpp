@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 #include <string>
 #include <thread>
 #include <windows.h>
@@ -55,6 +56,7 @@ int main() {
              std::pair{"ENGINE RELOAD\n", "OK RELOADING"},
              std::pair{"RESET\n", "STATE hiragana 0 -1 - - -1 -"},
              std::pair{"KEY 107\n", "STATE hiragana 0 -1 - 00006b -1 -"},
+             std::pair{"OPEN 2\n", "ERR REQUEST"},
              std::pair{"CONTROL CONVERT-KEYS 75,97,110,97\n",
                        "STATE candidate 2 0 0025bc004eee00540d - 0 004eee00540d"}}) {
       read = 0;
@@ -115,10 +117,87 @@ int main() {
   server.join();
   CloseHandle(ready);
 
+  // Version 2 on a real private pipe: eviction recovery and old-engine
+  // replacement preserve the uncommitted candidate navigation history.
+  HANDLE persistent_ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  std::thread persistent_server([=] {
+    HANDLE pipe = CreateNamedPipeW(kTestPipe, PIPE_ACCESS_DUPLEX,
+        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, 1, 8192, 8192, 1000, nullptr);
+    assert(pipe != INVALID_HANDLE_VALUE);
+    SetEvent(persistent_ready);
+    assert(ConnectNamedPipe(pipe, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED);
+    for (const auto& exchange : std::array{
+        std::pair{"OPEN 2\n", "OK OPEN 2"},
+        std::pair{"V2 PREPARE 2 75,97,110,97\n", "STATE hiragana 3 0 0025bd00304b00306a - -1 -"},
+        std::pair{"V2 SPACE 2\n", "STATE candidate 2 0 0025bc004eee00540d - 0 004eee00540d,004f73004808"},
+        std::pair{"V2 CONTROL CONVERT\n", "ERR SESSION LOST"},
+        std::pair{"OPEN 2\n", "OK OPEN 2"},
+        std::pair{"V2 PREPARE 2 75,97,110,97\n", "STATE hiragana 3 0 0025bd00304b00306a - -1 -"},
+        std::pair{"V2 SPACE 2\n", "STATE candidate 2 0 0025bc004eee00540d - 0 004eee00540d,004f73004808"},
+        std::pair{"V2 CONTROL CONVERT\n", "STATE candidate 2 0 0025bc004f73004808 - 1 004eee00540d,004f73004808"},
+        std::pair{"V2 CONTROL PREVIOUS\n", "ERR REQUEST"},
+        std::pair{"RESET", "STATE hiragana 0 -1 - - -1 -"},
+        std::pair{"SYNC-KEYS 75,97,110,97\n", "STATE candidate 2 0 0025bc004eee00540d - 0 004eee00540d,004f73004808"},
+        std::pair{"CONTROL CONVERT", "STATE candidate 2 0 0025bc004eee00540d - 0 004eee00540d,004f73004808"},
+        std::pair{"CONTROL CONVERT\n", "STATE candidate 2 0 0025bc004f73004808 - 1 004eee00540d,004f73004808"},
+        std::pair{"CONTROL PREVIOUS\n", "STATE candidate 2 0 0025bc004eee00540d - 0 004eee00540d,004f73004808"}}) {
+      char buffer[512]{}; DWORD read = 0, written = 0;
+      assert(ReadFile(pipe, buffer, sizeof(buffer), &read, nullptr));
+      const std::string request(buffer, read);
+      if (!request.starts_with("SESSION ") || request.find(exchange.first) == std::string::npos)
+        std::fprintf(stderr, "Persistent request mismatch expected=%s actual=%s\n", exchange.first, request.c_str());
+      assert(request.starts_with("SESSION ") && request.find(exchange.first) != std::string::npos);
+      const std::string response(exchange.second);
+      assert(WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()), &written, nullptr));
+    }
+    FlushFileBuffers(pipe); DisconnectNamedPipe(pipe); CloseHandle(pipe);
+  });
+  assert(WaitForSingleObject(persistent_ready, 1000) == WAIT_OBJECT_0);
+  ddskk::EngineClient persistent;
+  assert(persistent.PrepareKeys(U"Kana", 1000));
+  assert(persistent.ConvertKeys(U"Kana", 1000)->candidate_index == 0);
+  assert(persistent.SendControl(ddskk::EngineControl::kConvert, 1000)->candidate_index == 1);
+  assert(persistent.SendControl(ddskk::EngineControl::kPrevious, 1000)->candidate_index == 0);
+  persistent.Disconnect(); persistent_server.join(); CloseHandle(persistent_ready);
+
+  // Abandoning a refused edit must rebuild even an already-prepared reading.
+  HANDLE recovery_ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  std::atomic<bool> recovery_matched{true};
+  std::thread recovery_server([&] {
+    HANDLE pipe = CreateNamedPipeW(kTestPipe, PIPE_ACCESS_DUPLEX,
+        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, 1, 8192, 8192, 1000, nullptr);
+    assert(pipe != INVALID_HANDLE_VALUE);
+    SetEvent(recovery_ready);
+    assert(ConnectNamedPipe(pipe, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED);
+    for (const char* expected : {"OPEN 2", "V2 PREPARE 2 75,97,110,97", "RESET",
+                                 "V2 CONVERT-LIVE 2 75,97,110,97"}) {
+      char buffer[512]{}; DWORD count = 0;
+      assert(ReadFile(pipe, buffer, sizeof(buffer), &count, nullptr));
+      const std::string request(buffer, count);
+      if (request.find(expected) == std::string::npos) {
+        recovery_matched = false;
+        std::fprintf(stderr, "Abandon recovery expected=%s actual=%s", expected, request.c_str());
+      }
+      const std::string reply = std::string(expected) == "OPEN 2" ? "OK OPEN 2"
+          : "STATE hiragana 0 -1 - - -1 -";
+      assert(WriteFile(pipe, reply.data(), static_cast<DWORD>(reply.size()), &count, nullptr));
+    }
+    FlushFileBuffers(pipe); DisconnectNamedPipe(pipe); CloseHandle(pipe);
+  });
+  assert(WaitForSingleObject(recovery_ready, 1000) == WAIT_OBJECT_0);
+  ddskk::EngineClient abandoned;
+  assert(abandoned.PrepareKeys(U"Kana", 1000));
+  abandoned.MarkNeedsResync();
+  assert(abandoned.ConvertKeys(U"Kana", 1000));
+  abandoned.Disconnect(); recovery_server.join(); CloseHandle(recovery_ready);
+  assert(recovery_matched);
+
   int failures = 0;
   client.SetConnectionFailureHandler([&failures] { ++failures; });
   assert(!client.Reset(2));
   assert(failures == 1);
+  assert(!client.ConvertKeys(U"Ka", 2));
+  assert(failures == 2);  // Negotiation preserves host-start notification.
   client.SetConnectionFailureHandler({});
 
   // A provider timeout must never trap the UI behind the full transaction
@@ -156,6 +235,16 @@ int main() {
     returned.store(true, std::memory_order_release);
   });
   assert(WaitForSingleObject(request_seen, 1000) == WAIT_OBJECT_0);
+  // UI cancellation/invalidation must finish while the provider still
+  // holds its transaction mutex and the server has not sent any reply.
+  const auto invalidate_started = std::chrono::steady_clock::now();
+  hung_client.MarkNeedsResync();
+  const auto invalidate_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - invalidate_started).count();
+  assert(hung_client.CoreNeedsResync());
+  assert(!returned.load(std::memory_order_acquire));
+  assert(invalidate_us < 20000);
+  std::printf("cancel invalidation while provider blocked: %lld us\n", invalidate_us);
   const auto cancel_started = std::chrono::steady_clock::now();
   hung_client.CancelPendingIo();
   provider.join();

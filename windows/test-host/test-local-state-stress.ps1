@@ -69,7 +69,7 @@ try {
   -Script $tokens -EngineHostPath (Join-Path $build 'Release/ddskk-engine-host.exe') `
   -EngineExecutablePath $Runtime -RepositoryPath $root -DllPath (Join-Path $build 'Release/ddskk-ime.dll') `
   -CoreDllPath $CoreDll -TsfHostExe (Join-Path $build 'Release/tsf-host.exe') `
-  -LocalConversion 1 -ColdLoadSleepSec $ColdLoadSleepSec -TsfHostTimeoutSec 180 -ArtifactDirectory $run *> $log
+  -LocalConversion 1 -DebugLog -ColdLoadSleepSec $ColdLoadSleepSec -TsfHostTimeoutSec 180 -ArtifactDirectory $run *> $log
  if($LASTEXITCODE -ne 0){Get-Content $log -Tail 12; throw "Stress harness failed: $log"}
  $text=[IO.File]::ReadAllText($log)
  $after=@($text -split "`n" | Where-Object {$_ -match '^AFTER END BUF='})[-1]

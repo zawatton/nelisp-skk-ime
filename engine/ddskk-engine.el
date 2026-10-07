@@ -354,8 +354,11 @@ rules in force."
   "Shared [TEXT CURSOR] state for the modal registration editor.")
 (defvar ddskk-engine--sessions (make-hash-table :test 'equal)
   "Client-scoped DDSKK states used by SESSION-prefixed native requests.")
+(load "engine/session-v2.el")
+(load "engine/conversion-hot-path.el")
 (defvar ddskk-engine--active-session-id nil
   "Session whose native DDSKK globals are currently installed.")
+(defvar ddskk-engine--active-session-prefix nil)
 (defvar native-ime-engine-id "ddskk")
 
 (defvar ddskk-engine--debug-errors (getenv "DDSKK_ENGINE_DEBUG")
@@ -696,14 +699,14 @@ leaves remain engine-owned; punctuation is resolved in the current buffer."
     (skk-ime-session--with-buffer ddskk-engine--session
       (skk-input-rules-export (ddskk-engine--rule-tree)))))
 
-(defun ddskk-engine--convert-or-register (&optional before-state)
+(defun ddskk-engine--convert-or-register (&optional before-state prepared-checkpoint)
   "Convert once, preserving a zero-result reading for native registration."
   (let* ((before (or before-state
                      (skk-ime-session-snapshot ddskk-engine--session)))
-         (checkpoint (progn
+         (checkpoint (or prepared-checkpoint (progn
                        (ddskk-engine--phase "checkpoint-begin")
                        (prog1 (skk-ime-session-checkpoint ddskk-engine--session)
-                         (ddskk-engine--phase "checkpoint-end"))))
+                         (ddskk-engine--phase "checkpoint-end")))))
          (start (plist-get before :composition-start))
          (text (plist-get before :text))
          (reading (if (and (numberp start) (>= start 0)
@@ -714,6 +717,7 @@ leaves remain engine-owned; punctuation is resolved in the current buffer."
                   (ddskk-engine--phase "convert-begin")
                   (prog1 (skk-ime-session-control ddskk-engine--session 'convert)
                     (ddskk-engine--phase "convert-end")))))
+    (setq ddskk-engine--prepared-state state)
     ;; Current DDSKK cleans a missing first conversion back to an empty
     ;; hiragana state after the noninteractive minibuffer stub returns nil.
     ;; Older builds left a candidate state with an empty list, which
@@ -1209,15 +1213,17 @@ The data carries the missing symbol name for `void-variable' /
 (defun ddskk-engine--session-record (session-id)
   "Return SESSION-ID's mutable state record, creating it when absent."
   (or (gethash session-id ddskk-engine--sessions)
-      (let* ((session (skk-ime-session-create))
+      (progn
+        (ddskk-engine--evict-session)
+        (let* ((session (skk-ime-session-create))
              ;; NeLisp's current buffer-local table is process-wide.  Keep a
              ;; full DDSKK checkpoint per client and restore it whenever the
              ;; active client changes; separate buffer objects alone do not
              ;; isolate the mode/prefix/marker variables in this runtime.
              (record (vector session nil "" nil (vector "" 0)
-                             (skk-ime-session-checkpoint session))))
+                             (skk-ime-session-checkpoint session) nil 0 nil nil nil)))
         (puthash session-id record ddskk-engine--sessions)
-        record)))
+        record))))
 
 (defun ddskk-engine--dispatch-session-line (session-id line)
   "Dispatch LINE with every mutable DDSKK field scoped to SESSION-ID."
@@ -1242,21 +1248,55 @@ The data carries the missing symbol name for `void-variable' /
             (aset old 5 (skk-ime-session-checkpoint (aref old 0))))))
       (let ((next (ddskk-engine--session-record session-id)))
         (skk-ime-session-restore (aref next 0) (aref next 5)))
-      (setq ddskk-engine--active-session-id session-id))
+      (setq ddskk-engine--active-session-id session-id
+            ddskk-engine--active-session-prefix (concat "SESSION " session-id " ")))
     (let* ((record (ddskk-engine--session-record session-id))
            (ddskk-engine--session (aref record 0))
            (ddskk-engine--registration-checkpoint (aref record 1))
            (ddskk-engine--registration-reading (aref record 2))
            (ddskk-engine--registration-had-candidates (aref record 3))
            (ddskk-engine--registration-editor (aref record 4))
+           (ddskk-engine--prepared-keys (aref record 6))
+           (ddskk-engine--prepared-state (aref record 10))
            response)
+      (setq ddskk-engine--session-clock (1+ ddskk-engine--session-clock))
+      (aset record 7 ddskk-engine--session-clock)
       (unwind-protect
-          (setq response (ddskk-engine--dispatch-line-1 line))
+          (setq response
+                (cond
+                 ((equal line "OPEN 2") (aset record 8 t) "OK OPEN 2")
+                 ((equal line "SPACE 2")
+                  (if (ddskk-engine--registration-active-p)
+                      (ddskk-engine--registration-state-line)
+                  (if (not ddskk-engine--prepared-keys) "ERR SESSION NOT PREPARED"
+                    (let ((state (or ddskk-engine--prepared-state
+                                     (skk-ime-session-snapshot ddskk-engine--session))))
+                      (if (memq (plist-get state :mode) '(candidate registration))
+                          (ddskk-engine--state-line state)
+                        (ddskk-engine--convert-or-register state (aref record 9)))))))
+                 ((or (and (> (length line) 10)
+                           (equal (substring line 0 10) "PREPARE 2 "))
+                      (and (> (length line) 15)
+                           (equal (substring line 0 15) "CONVERT-LIVE 2 ")))
+                  (prog1 (ddskk-engine--dispatch-v2 line)
+                    ;; Preparation pays for the modal recovery checkpoint once.
+                    ;; SPACE consumes it without recapturing 50+ native globals.
+                    (aset record 9 (skk-ime-session-checkpoint ddskk-engine--session))))
+                 (t
+                  ;; Commands after preparation own the authoritative live
+                  ;; state. Do not mistake a later identical raw reading for
+                  ;; an unchanged prepared state after cancel/commit/edit.
+                  (unless (member line '("HELLO 1" "STATUS"))
+                    (setq ddskk-engine--prepared-keys nil ddskk-engine--prepared-state nil)
+                    (aset record 9 nil))
+                  (ddskk-engine--dispatch-line-1 line))))
         (aset record 0 ddskk-engine--session)
         (aset record 1 ddskk-engine--registration-checkpoint)
         (aset record 2 ddskk-engine--registration-reading)
         (aset record 3 ddskk-engine--registration-had-candidates)
-        (aset record 4 ddskk-engine--registration-editor))
+        (aset record 4 ddskk-engine--registration-editor)
+        (aset record 6 ddskk-engine--prepared-keys)
+        (aset record 10 ddskk-engine--prepared-state))
       response)))
 
 (defun ddskk-engine-dispatch-line (line)
@@ -1264,6 +1304,9 @@ The data carries the missing symbol name for `void-variable' /
   ;; Metadata must not create or activate a legacy editing session. The
   ;; host fetches this once at startup and after replacement publication.
   (cond
+   ((equal line "WIRE LEARNING 2")
+    (setq ddskk-engine--learning-worker t)
+    "OK WIRE LEARNING 2")
    ((equal line "WIRE UTF8 1")
     (setq ddskk-engine--utf8-wire t)
     "OK WIRE UTF8 1")
@@ -1275,7 +1318,13 @@ The data carries the missing symbol name for `void-variable' /
     (ddskk-local-dispatch line))
    ((and (> (length line) 8)
          (equal (substring line 0 8) "SESSION "))
-      (let ((separator (string-match " " line 8)))
+      (let ((separator
+             (if (and ddskk-engine--active-session-prefix
+                      (>= (length line) (length ddskk-engine--active-session-prefix))
+                      (equal ddskk-engine--active-session-prefix
+                             (substring line 0 (length ddskk-engine--active-session-prefix))))
+                 (1- (length ddskk-engine--active-session-prefix))
+               (string-match " " line 8))))
         (if (not separator)
             "ERR SESSION"
           (let ((session-id (substring line 8 separator))
@@ -1284,7 +1333,14 @@ The data carries the missing symbol name for `void-variable' /
                              (ddskk-engine--session-id-valid-p session-id)))
                     (= (length request) 0))
                 "ERR SESSION"
-              (ddskk-engine--dispatch-session-line session-id request))))))
+              (if (and (> (length request) 3)
+                       (equal (substring request 0 3) "V2 "))
+                  (if (and (gethash session-id ddskk-engine--sessions)
+                           (aref (gethash session-id ddskk-engine--sessions) 8))
+                      (ddskk-engine--dispatch-session-line
+                       session-id (substring request 3))
+                    "ERR SESSION LOST")
+                (ddskk-engine--dispatch-session-line session-id request)))))))
    (t (ddskk-engine--dispatch-session-line "legacy" line))))
 
 (defun ddskk-engine-write-response (response)
@@ -1324,8 +1380,50 @@ raw keystroke into the user's document."
                 (ddskk-engine--error-token "ERR KEY" err)
               (ddskk-engine--safe-state-line))))))
 
+(defun ddskk-engine--learning-metadata (line)
+  "Serialize only the operation identity changed by this transaction."
+  (if (and (> (length line) 12) (equal (substring line 0 12) "LOCAL LEARN "))
+      (let* ((id (nth 2 (split-string line " " t)))
+             (client (car (split-string id "\\.")))
+             (watermark (gethash client ddskk-local-operations)))
+        (if watermark
+            (concat ";; local-ack " client " " (number-to-string (car watermark))
+                    " " (number-to-string (cdr watermark)) "\n")
+          ""))
+    ""))
+
 (defun ddskk-engine-dispatch-line-to-stdout (line)
-  (ddskk-engine-write-response (ddskk-engine-dispatch-line line)))
+  (let ((response (ddskk-engine-dispatch-line line)))
+    ;; Duplicate LOCAL operation ids must retry a failed native publication.
+    (when (and ddskk-engine--learning-worker
+               (or ddskk-engine--learning-dirty
+                   (and (> (length line) 12)
+                        (equal (substring line 0 12) "LOCAL LEARN ")
+                        (equal (substring response 0 (min 4 (length response))) "ACK "))))
+      (when (and (not ddskk-engine--learning-keys)
+                 (> (length line) 12) (equal (substring line 0 12) "LOCAL LEARN "))
+        (let ((key (ddskk-engine--unhex (nth 3 (split-string line " " t)))))
+          (when key (setq ddskk-engine--learning-keys (list key)))))
+      (ddskk-engine--phase "learning-checkpoint-begin")
+      (let ((content
+             (if ddskk-engine--learning-keys
+                 (let (ari nasi)
+                   (dolist (key ddskk-engine--learning-keys)
+                     (if (eq (or (gethash key ddskk-user-jisyo--sections)
+                                 (if (ddskk-user-jisyo--okuri-ari-p key) 'ari 'nasi)) 'ari)
+                         (push (cons key (gethash key ddskk-user-jisyo--table)) ari)
+                       (push (cons key (gethash key ddskk-user-jisyo--table)) nasi)))
+                   (concat ";; EG2 delta v2\n;; EG2 revision "
+                           (number-to-string ddskk-user-jisyo-local-revision) "\n"
+                           (ddskk-engine--learning-metadata line)
+                           ";; okuri-ari entries.\n" (ddskk-user-jisyo--serialize-entries ari)
+                           ";; okuri-nasi entries.\n" (ddskk-user-jisyo--serialize-entries nasi)))
+               (concat ";; EG2 checkpoint v2\n" (ddskk-user-jisyo--serialize)))))
+        (nelisp--write-stdout-bytes
+         (concat "LEARNING2 " (number-to-string (length content)) "\n" content "\n")))
+      (ddskk-engine--phase "learning-checkpoint-end")
+      (setq ddskk-engine--learning-dirty nil ddskk-engine--learning-keys nil))
+    (ddskk-engine-write-response response)))
 
 (defun ddskk-engine--server-request (midasi)
   "Ask the native host for MIDASI and return its raw reply line.

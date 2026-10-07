@@ -20,6 +20,7 @@
 #include <atomic>
 #include <functional>
 #include <optional>
+#include <mutex>
 #include <string>
 #include <windows.h>
 
@@ -50,6 +51,7 @@ class EngineClient {
   }
   std::optional<EngineState> Reset(DWORD timeout_ms = 25);
   std::optional<EngineState> SendKey(char32_t codepoint, DWORD timeout_ms = 25);
+  bool PrepareKeys(const std::u32string& keys, DWORD timeout_ms = 1500);
   std::optional<EngineState> ConvertKeys(const std::u32string& keys,
                                          DWORD timeout_ms = 1500);
   std::optional<EngineState> SendKeys(const std::u32string& keys,
@@ -79,6 +81,12 @@ class EngineClient {
   const std::string& last_response() const { return last_response_; }
 
  private:
+  bool OpenPersistentSession(DWORD timeout_ms);
+  std::vector<std::string> recovery_requests_;
+  bool sessions_v2_ = false;
+  bool recovery_safe_ = true;
+  std::u32string prepared_keys_;
+  bool sessions_checked_ = false;
   std::string SessionRequest(const std::string& request) const;
   std::optional<std::string> Transact(const std::string& request,
                                       DWORD timeout_ms);
@@ -93,12 +101,14 @@ class EngineClient {
                                          DWORD timeout_ms);
   std::atomic<HANDLE> pipe_{INVALID_HANDLE_VALUE};
   std::string session_id_;
+  mutable std::recursive_mutex transaction_mutex_;
   // Set whenever a transaction is abandoned mid-flight, or when this
   // client abandons a document composition. RESET is sent for this client's
   // scoped engine checkpoint only when it next becomes active and transacts.
   // Focus/cancellation callbacks can mark the session while its cancelled
   // provider transaction is still unwinding on the worker.
   std::atomic<bool> needs_resync_{false};
+  std::atomic<bool> abandon_context_{false};
   std::function<void()> connection_failure_;
   // Raw reply retained for diagnostics when a version/protocol mismatch
   // makes ParseStateResponse fail. Never used to drive behavior.

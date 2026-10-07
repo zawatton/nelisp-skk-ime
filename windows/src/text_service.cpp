@@ -431,7 +431,29 @@ bool TextService::CreateProviderWindow() {
   return provider_window_ != nullptr;
 }
 
+void TextService::PrepareProviderReading() {
+  if (engine_id_ != "ddskk" || local_enabled_ ||
+      !realtime_frontend_.preedit() || realtime_frontend_.okuri_started()) return;
+  auto keys = realtime_frontend_.raw_keys();
+  if (realtime_frontend_.katakana()) keys.insert(keys.begin(), U'q');
+  const auto sequence = preparation_sequence_.fetch_add(1) + 1;
+  AddRef();
+  try {
+    std::thread([this, keys = std::move(keys), sequence] {
+      {
+        std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+        // Coalesce typing bursts. Conversion/focus cancellation invalidates
+        // queued preparation before it can modify the live context.
+        if (preparation_sequence_.load() == sequence)
+          engine_.PrepareKeys(keys, kConversionTimeoutMs);
+      }
+      Release();
+    }).detach();
+  } catch (...) { Release(); }
+}
+
 bool TextService::BeginProviderConversion(const std::u32string& keys, bool registration, size_t skip) {
+  preparation_sequence_.fetch_add(1);
   CancelLocalRetry();
   local_observer_retry_.reset();
   local_store_.ReleaseState();
@@ -779,6 +801,10 @@ void TextService::ResolveLocalFallback() {
   // reading. No engine transaction or worker lock belongs to this callback.
   auto queued = std::move(deferred_provider_keys_);
   CancelPendingProvider();
+  // A rejected document write did not accept the provider state. Rebuild
+  // from the native reading on the next worker transaction, not its live
+  // candidate/navigation history. This flag never waits for engine I/O.
+  engine_.MarkNeedsResync();
   provider_composition_active_ = false;
   provider_candidate_state_.reset();
   local_conversion_.Reset();
@@ -795,6 +821,7 @@ void TextService::ResolveLocalFallback() {
 }
 
 void TextService::CancelPendingProvider() {
+  preparation_sequence_.fetch_add(1);
   provider_deadline_ = 0;
   okuri_conversion_started_qpc_ = 0;
   if (provider_window_) KillTimer(provider_window_, 1);
@@ -1715,7 +1742,11 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
     debug_exit(0, -1);
     return S_OK;
   }
-  if (realtime_claim) {
+  // Cancellation belongs to the current document even while its provider
+  // owns the transaction mutex or the engine is unavailable. In particular,
+  // registration Ctrl+G must not probe Connect on the TSF callback thread.
+  if (realtime_claim || (wparam == 'G' && tested_control_down_) ||
+      wparam == VK_ESCAPE) {
     *eaten = TRUE;
     debug_exit(1, -1);
     return S_OK;
@@ -2321,6 +2352,12 @@ void TextService::FinishStateEdit(ITfContext* context,
 
 HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
                                BOOL* eaten) {
+  struct CallbackTailTrace {
+    TextService* owner;
+    ~CallbackTailTrace() { owner->TracePhase(L"key-locals-released", owner->KeySequence(), L"host"); }
+  } callback_tail{this};
+
+  preparation_sequence_.fetch_add(1);
   ++key_sequence_;
   TracePhase(L"key-receipt", key_sequence_, L"key");
   FollowSettings();
@@ -2411,7 +2448,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   // before a locally composed reading has entered its session. SetRules
   // rebuilds that reading only when the effective table actually changed.
   if (!realtime_frontend_.okuri_started()) local_okuri_snapshot_ = {};
+  TracePhase(L"native-index-start", key_sequence_, L"local");
   const auto local_index = local_enabled_ ? local_store_.Current() : nullptr;
+  TracePhase(L"native-index-end", key_sequence_, L"local");
   if (local_index) {
     // The worker parsed and validated this rule export. Pin the table
     // through a reading/candidate episode, including offline input.
@@ -3086,8 +3125,11 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       if (cancelled_provider) ReleaseEngineConversion();
       state = realtime_frontend_.Quit();
     } else {
-      state = engine_.SendControl(ddskk::EngineControl::kQuit,
-                                  kInteractiveTimeoutMs);
+      if (!BeginProviderControl(ddskk::EngineControl::kQuit))
+        ForceCancelComposition(context);
+      *eaten = TRUE;
+      debug_exit(*eaten);
+      return S_OK;
     }
   } else if (ctrl_g) {
     branch = L"ctrlg";
@@ -3119,9 +3161,16 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       debug_exit(*eaten);
       return S_OK;
     }
-    if (!state)
-      state = engine_.SendControl(ddskk::EngineControl::kQuit,
-                                  kInteractiveTimeoutMs);
+    if (!state) {
+      // Provider-owned states without a native reading (for example an
+      // abbrev) need DDSKK's stepwise QUIT, but only on the provider worker.
+      // A failed schedule uses local abandonment instead of synchronous I/O.
+      if (!BeginProviderControl(ddskk::EngineControl::kQuit))
+        ForceCancelComposition(context);
+      *eaten = TRUE;
+      debug_exit(*eaten);
+      return S_OK;
+    }
   } else {
     branch = L"key";
     const auto codepoint = TranslateKey(wparam, lparam);
@@ -3153,9 +3202,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     if (realtime_path) {
       std::optional<ddskk::RealtimeFrontend> frontend_before;
       ddskk::local::Selection okuri_before;
+      TracePhase(L"native-snapshot-start", key_sequence_, L"local");
       if (local_enabled_) { frontend_before = realtime_frontend_; okuri_before = local_okuri_snapshot_; }
+      TracePhase(L"native-snapshot-end", key_sequence_, L"local");
+      TracePhase(L"native-feed-start", key_sequence_, L"local");
       state = realtime_frontend_.Feed(*codepoint);
       record_okuri();
+      TracePhase(L"native-feed-end", key_sequence_, L"local");
       // Hand off at the marker, including uppercase vowels that complete
       // okuri immediately. Subsequent keys stay ordered on the provider
       // worker; DDSKK decides when n/sokuon rules start conversion.
@@ -3189,7 +3242,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
             } else local_okuri_snapshot_ = {};
           }
           if (local_okuri_snapshot_.index) {
+            TracePhase(L"native-okuri-edit-start", key_sequence_, L"local");
             const HRESULT hr = ApplyLocalState(context, *state);
+            TracePhase(L"native-okuri-edit-end", key_sequence_, L"local");
             if (FAILED(hr)) {
               local_conversion_.Reset();
               realtime_frontend_ = *frontend_before;
@@ -3220,6 +3275,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
           return S_OK;
         }
       }
+      if (state) PrepareProviderReading();
     } else
       state = engine_.SendKey(*codepoint, kInteractiveTimeoutMs);
   }
@@ -3377,12 +3433,10 @@ void TextService::ResetAbandonedComposition() {
 void TextService::ForceCancelComposition(ITfContext* context) {
   local_conversion_.Reset();
   ClearInlineEpisode();
-  // Close this client's pipe even when the failure happened before an I/O
-  // operation was queued (Connect failure).  RESET is intentionally lazy:
-  // the engine is process-wide, and another application's live session
-  // must not be reset from this old context's cancellation callback.
+  // Cancel outstanding I/O without acquiring the transaction mutex. RESET
+  // is lazy and scoped to this client; neither disconnect nor an engine
+  // round trip may block this document's cancellation callback.
   CancelPendingProvider();
-  engine_.Disconnect();
   engine_.MarkNeedsResync();
   local_okuri_snapshot_ = {};
   realtime_frontend_.Reset();
@@ -3462,7 +3516,6 @@ void TextService::SettleContextComposition(ITfContext* context) {
   }
   ClearInlineEpisode();
   CancelPendingProvider();
-  engine_.Disconnect();
   engine_.MarkNeedsResync();
   local_okuri_snapshot_ = {};
   realtime_frontend_.Reset();
@@ -3715,6 +3768,7 @@ HRESULT TextService::ApplyLocalState(ITfContext* context, const ddskk::EngineSta
 }
 
 void TextService::PublishLocalObserver(const ddskk::EngineState& state) {
+  TracePhase(L"native-observer-start", key_sequence_, L"local");
   if (local_store_.PublishState(state)) {
     local_observer_retry_.reset(); if (provider_window_) KillTimer(provider_window_, 4);
   } else {
@@ -3722,6 +3776,7 @@ void TextService::PublishLocalObserver(const ddskk::EngineState& state) {
     local_observer_deadline_ = GetTickCount64() + 5000;
     if (provider_window_) SetTimer(provider_window_, 4, 50, nullptr);
   }
+  TracePhase(L"native-observer-end", key_sequence_, L"local");
 }
 void TextService::CancelLocalRetry() {
   local_conversion_retry_.reset(); local_retry_deadline_ = 0;
