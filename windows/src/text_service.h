@@ -211,7 +211,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   bool CreateProviderWindow();
   void ResolveLocalFallback();
   ULONGLONG provider_deadline_ = 0;
-  bool BeginProviderConversion(const std::u32string& keys, bool registration = false);
+  bool BeginProviderConversion(const std::u32string& keys, bool registration = false, size_t skip = 0);
   bool BeginProviderControl(ddskk::EngineControl control, bool apply_state = true);
   bool BeginProviderKey(char32_t key, bool may_convert = false);
   void PrepareProviderReading();
@@ -232,6 +232,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   ULONGLONG local_observer_deadline_ = 0;
   std::optional<ddskk::local::Conversion> local_conversion_retry_;
   ULONGLONG local_retry_deadline_ = 0;
+  bool local_server_next_ = false, local_server_menu_ = false;
+  ULONGLONG local_server_deadline_ = 0;
   mutable ddskk::local::Store local_store_;
   mutable ULONGLONG local_handoff_requested_ = 0;
   ddskk::local::Conversion local_conversion_;

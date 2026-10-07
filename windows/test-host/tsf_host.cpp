@@ -948,6 +948,29 @@ unsigned long long EpochMicroseconds() {
 void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
                      ITfContext* context, const KeyEvent& key,
                      const std::wstring& token) {
+  // SetKeyboardState below isolates thread state, but the real TIP also
+  // consults GetAsyncKeyState for hosts that dispatch before thread state
+  // updates. A physical modifier would turn this scripted event into a
+  // different chord. Wait before starting callback measurements; never
+  // synthesize a release into the user's desktop or change TIP key claiming.
+  const auto physical_modifiers = [] {
+    unsigned mask = 0;
+    for (const auto vk : {VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN})
+      if (GetAsyncKeyState(vk) & 0x8000) mask |= 1u << (vk == VK_SHIFT ? 0 :
+          vk == VK_CONTROL ? 1 : vk == VK_MENU ? 2 : vk == VK_LWIN ? 3 : 4);
+    return mask;
+  };
+  if (const unsigned mask = physical_modifiers()) {
+    std::printf("SCRIPTKEY physical-modifiers token=%s mask=%u waiting=1\n",
+                Utf8FromWide(token).c_str(), mask);
+    const auto deadline = GetTickCount64() + 10000;
+    while (physical_modifiers() && GetTickCount64() < deadline) PumpMessages(5);
+    if (physical_modifiers()) {
+      std::printf("SCRIPTKEY FAIL physical modifier still held token=%s\n",
+                  Utf8FromWide(token).c_str());
+      std::fflush(stdout); std::exit(1);
+    }
+  }
   BYTE state_before[256]{};
   GetKeyboardState(state_before);
   // Script tokens describe the complete key event. Inheriting a physical
@@ -958,9 +981,11 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   if (key.ctrl) state[VK_CONTROL] |= 0x80;
   SetKeyboardState(state);
   if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
-    std::printf("SCRIPTKEY token=%s inherited_shift=%d shift=%d control=%d tick=%llu utc_us=%llu\n",
+    std::printf("SCRIPTKEY token=%s inherited_shift=%d shift=%d control=%d tick=%llu utc_us=%llu async_shift=%d async_control=%d\n",
                 Utf8FromWide(token).c_str(), (state_before[VK_SHIFT] & 0x80) != 0,
-                key.shift, key.ctrl, GetTickCount64(), EpochMicroseconds());
+                key.shift, key.ctrl, GetTickCount64(), EpochMicroseconds(),
+                (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0,
+                (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0);
   }
 
   const UINT scan = MapVirtualKeyW(key.vk, MAPVK_VK_TO_VSC);
@@ -1251,6 +1276,17 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   size_t active = 0;
   bool alias_next = false;
   while (stream >> token) {
+    if (token == L"SKKSERV0" || token == L"SKKSERV1") {
+      wchar_t key_name[256]{}; GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", key_name, 256);
+      HKEY key = nullptr; LONG status = ERROR_ACCESS_DENIED;
+      if (std::wstring(key_name).starts_with(L"Software\\NativeIME-test-") &&
+          RegOpenKeyExW(HKEY_CURRENT_USER, key_name, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        DWORD enabled = token == L"SKKSERV1" ? 1 : 0;
+        status = RegSetValueExW(key, L"SkkServEnable", 0, REG_DWORD, reinterpret_cast<BYTE*>(&enabled), sizeof(enabled));
+        RegCloseKey(key);
+      }
+      std::printf("SKKSERV toggle status=%ld\n", status); continue;
+    }
     if (token == L"MIRRORUNLOCK") { held.Clear(); std::printf("MIRROR unlocked=1\n"); continue; }
     if (token == L"MIRRORLOCK") {
       wchar_t pipe[256]{}; const DWORD n = GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", pipe, 256);

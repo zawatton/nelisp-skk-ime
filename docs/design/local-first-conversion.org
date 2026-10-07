@@ -888,6 +888,117 @@ seam accepting both explicitly scripted keys; the seven extra characters match
 those inputs. The resumed sandbox blocks private registry creation, so the
 new refusal fixtures still require execution in the coordinator environment.
 
+* SK1: asynchronous external skkserv sources
+
+File and user candidates retain the local input path. Enabling SkkServ no
+longer removes the certified local capability. SPACE (or completed okuri)
+queues an immutable reading+okuri request in the core Store. A separate
+core worker polls a host-only LOCAL SERVER message; no engine session,
+shim ABI, socket operation, file scan or provider transaction is involved
+in the input callback.
+
+The host ServerCache owns external sockets on one joined worker. It holds
+at most 256 entries and queued requests, with replies capped at 64 KiB.
+The key includes reading and okuri. Host, port, enable, dictionary source
+paths and start command form a configuration generation; config changes
+clear queued/cache entries and reject old in-flight results. Hits expire
+in 60 seconds, misses in 2 seconds. Connect is nonblocking with a 150 ms
+bound per resolved address; send+receive share a 150 ms deadline. DNS
+resolution stays on this worker (OS resolver latency is not bounded by
+the socket deadline).
+
+The core polls every 50 ms with overlapped pipe transfers bounded to
+100 ms per transfer. It merges certified literal server replies after
+all user/pending/file candidates, using existing stock union semantics.
+The open candidate list updates without changing the selected word.
+Disabling the server removes its appended tier and clamps a removed
+selection to a remaining file candidate. Pending traversal retains the
+last file candidate for at most 250 ms; the UI timer advances with the
+original next/menu operation or invokes the existing provider registration
+barrier. Any intervening input cancels pending advancement.
+
+A reading without local candidates uses the existing asynchronous provider
+conversion. Its relay enqueues the external lookup and waits at most 200 ms
+before returning a miss for stock registration. Provider lookup now unions
+files and external candidates instead of short-circuiting on file hits.
+Provider merging retains opaque expressions, annotations, okuri blocks
+and long lists; local certification limits do not truncate provider data.
+Unsafe local replies transfer to the provider at the source frontier.
+Server selections use the unchanged local learning queue/ACK/overlay path,
+so a learned server word moves to the user tier on the next conversion.
+
+** SK1 validation status
+
+Production relay reproduction before edits: fixture on 127.0.0.1:31101,
+file hit plus extra server candidate failed; server-only reading passed.
+The native regression emitted: FAIL fixture file plus server;
+host UTF8 protocol: 47 checks, 1 failures.
+
+The real stock DDSKK network fixture on 31102 produced:
+- before learning: かな = user, 仮名, 哉, serverExtra; なぞ = serverOnly.
+- after learning: かな = serverExtra, user, 仮名, 哉; なぞ = serverOnly.
+The native local oracle matches all four source/order/learning rows. The
+file-empty row checks the provider barrier, not a measured TSF conversion.
+A full NeLisp/TSF engine result and ~1 ms SPACE timing are NOT established
+in this sandbox: private registry creation is denied. Ctest, local TSF,
+navigation, DDSKK behavior, Emacs inline and new SK1 TSF checks require
+coordinator rerun. See the SK1 section in tools/ai/local-first-conversion-notes.org
+for commands, verbatim tails and counts. No live source or Google was used.
+
+** SK1 regression follow-up (2026-10-07)
+
+The disabled provider relay retains the existing file merge, including its
+okuri-block filtering. New native checks exercise disabled misses, okuri
+keys, no external requests while disabled, and unreachable async queries.
+The connect worker observes Winsock's exception fd set as well as its write
+fd set; refused connections may be reported through the former.
+
+The SK1 TSF latency assertion now uses steady-clock microseconds, keeping
+the original 5000 us bound. A coordinator log recorded a 4894 us callback
+as 15 ms with GetTickCount64's coarse tick; that was a false failure.
+
+Scripted TSF events isolate thread keyboard state, but production also
+consults asynchronous physical modifier state. The harness now waits at
+most ten seconds for physical modifiers to be released before dispatch,
+and records async Shift/Ctrl. The wait precedes callback measurement and
+does not synthesize desktop input or alter production shortcuts.
+
+test-sk1-provider-relay.ps1 uses a nonexistent private registry branch,
+private data/pipe, and explicit runtime parameter without registry writes.
+With actual SKK-JISYO.L, disabled and unreachable configurations passed
+20 provider checks: warm-up/reset, okuri marker/vowel/commit, file ordering,
+and absent-reading registration/reset. Its hosts and runtimes exited.
+With -Tsf, both configurations also pass the real TSF kaku sequence
+(28 total checks): u is claimed, 書く appears, SPACE selects 掛く, and ENTER
+commits it. This uses default kana/provider settings and does not validate
+registry-driven local opt-in, core swapping, or inline rendering.
+
+Coordinator logs also show keys rejected before engine dispatch in the
+failed kaku/inline cases, and an async-space failure during warm-up before
+TSF startup. Eight direct miss warm-ups/resets passed; the intermittent
+warm-up error's root cause is not established. DebugLog now enables host
+transaction logging. Hot swap, inline Emacs and async-space require a
+coordinator rerun with the new diagnostics before being declared fixed.
+
+** SK1 / EG1 merge validation (2026-10-07)
+
+The merge preserves SK1's asynchronous skkserv cache and EG1's engine,
+relay, mutex and response-write QPC diagnostics. Builtin lookup retains
+=dictionary-source name=builtin-index=; actual send/receive in the async
+worker retains =name=skkserv-query=. New =name=skkserv-connect= and
+=name=skkserv-cache= records distinguish connection work from cache access.
+Cache timing covers LOCAL SERVER polls, hits, disabled sources and bounded
+provider waits, and logs after releasing the cache lock. The worker logs
+connect failures as well as successes. Timeout/scheduling clocks and wire
+replies are unchanged. EG1's measurements below remain baseline measurements;
+the merged host enriches file hits through SK1 instead of stopping there.
+
+Release build passed; native host 66 and local conversion 173 checks passed.
+Engine ERT 30/30, framework 31/31 and lattice 14/14 passed. The host fixture
+emitted all four source timing records. No tests were weakened. Claude will
+stage the resolved files and rerun TSF gates; no staging or commit was done
+by this merge-resolution worker.
+
 * EG1: engine conversion latency investigation (2026-10-07)
 Base =8e022fa=; changes are unstaged. All runtime invocations receive =Runtime=
 from the caller. Measurements use private LOCALAPPDATA/user dictionaries,
@@ -1984,3 +2095,179 @@ The producer learning-loss window is closed by the flushed pre-reply outbox.
 The <=40 ms plain SPACE target remains documented-not-met by user instruction;
 registry-dependent acceptance gates remain Claude's work. No other known failing
 registry-independent gate remains after the corrected runs above.
+
+
+** EG2 merge resolution with SK1/TL1/KM2 (2026-10-08)
+Resolved working-tree conflicts for HEAD 5bafa89 and MERGE_HEAD 4da84de
+(fix/lattice-segments-and-cancel). No git add or commit was run. The two source
+files have no conflict markers; the index deliberately retains their six
+stage-1/2/3 entries until Claude stages the resolved files. Existing auto-merged
+index entries were not reset or rewritten. Incoming TL1/SK1/KM2 changes remain.
+
+Host shutdown retains both the EG2 learning-worker drain and SK1 server-cache
+stop. Core resolution retains EG2's background PrepareProviderReading and its
+preparation-sequence invalidation while adopting SK1's BeginProviderConversion
+skip argument, lambda capture and candidate-navigation loop. Existing incoming
+local/server merge, terminal Latin, retry, cancellation and keymap code was not
+replaced with the older EG2 version.
+
+SK1's socket worker/cache/union implementation remains intact. Its provider
+cache wait was still inside the old engine mutex. EngineTransaction now reserves
+interpreter request/reply identity with a separate gate, while
+RelayMetadataRelease drops/reacquires the engine metadata mutex around the
+bounded 200-ms cache wait. Replacement/publication of the active child, cleanup,
+spool replay, idle GC and client dispatch obey that gate. DIAG CHILD-PID remains
+a metadata-only read. A legacy overlay snapshot uses a nonblocking gate check;
+the native v2 overlay remains independent of the interpreter gate and encodes
+outside the engine mutex. The separate gate is necessary because an interpreter
+awaiting SERVER input cannot consume another client's command bytes. Other
+interpreter transactions still serialize on it; host-only polls and native
+publication can proceed. This does not claim concurrent interpreter execution.
+Socket I/O never acquires the engine mutex, and the provider's cache wait now
+releases it as well. Outbox append/flush and full learning I/O remain outside
+both interpreter locks. Session ownership, restart/LRU recovery, old-engine
+negotiation, durable replay and overlay watermark publication are preserved.
+
+The combined native test additionally probes the metadata mutex from another
+thread while a fresh slow server lookup waits, verifies that the interpreter
+gate is still held, and checks the existing bounded-miss behavior. Fixture
+completion accounting isolates that observation from the preceding slow request.
+Auto-merging both native suites also collided on the variable name started
+(timer versus worker promise); only the SK1 timer was renamed cache_started.
+No test threshold was relaxed.
+
+*** Merge gate ledger
+All runtime arguments and dictionaries are caller-supplied/private, Release
+products come from build/w, and every Emacs shell command retains the prefix
+=$env:HOME=[Environment]::GetFolderPath('UserProfile');=.
+
+- Unchanged reproduction: =cmake --build build/w --config Release --parallel 4=,
+  exit 1 (=eg2-merge-red-build.log=). Verbatim failing tail excerpt:
+  =text_service.cpp(455,90): error C1075: '{': 一致するトークンが見つかりませんでした=.
+  Conflict markers caused parse errors; the full localized tail is preserved.
+- First resolved build, same command: exit 1 (=eg2-merge-build.log=);
+  =host_utf8_protocol_test.cpp(162,22): error C2371: 'started': 再定義されています。異なる基本型です。=.
+  The auto-merge variable collision was corrected. Final same build command:
+  exit 0 (=eg2-merge-final-build.log=). Product-line tail excerpt:
+  =ddskk-host-utf8-protocol-test.exe=.
+- Private direct =$Release/<stem>.exe= gates all exit 0, nine of nine
+  (=eg2-merge-<stem>.log=): ddskk-engine-protocol-test,
+  ddskk-engine-client-test, ddskk-candidate-ui-test,
+  ddskk-display-attribute-test, ddskk-langbar-button-test,
+  ddskk-mode-indicator-test, ddskk-realtime-frontend-test,
+  ddskk-host-utf8-protocol-test, nativeime-local-conversion-test.
+  Seven are silent. Verbatim host tail:
+  =commit durability reply QPC wait_ms=0.034900=;
+  =host UTF8 protocol: 128 checks, 0 failures=.
+  Verbatim local tail:
+  =PASS local conversion 173 checks (4 corrupt/source negative controls)=.
+- Engine ERT command: =emacs -Q --batch -L engine -L vendor/ddskk -l
+  engine/test-input-rules.el -l engine/test-local-conversion.el -l
+  engine/test-eg1-cleaner.el -l engine/test-learning-v2.el -f
+  ert-run-tests-batch-and-exit=: exit 0 (=eg2-merge-ert.log=);
+  =Ran 34 tests, 34 results as expected, 0 unexpected=.
+- Runtime: =$Runtime --load engine/test-conversion-round2.el --load
+  engine/test-session-v2.el --load engine/test-conversion-cache.el=, private
+  DDSKK_USER_JISYO: exit 0 (=eg2-merge-runtime.log=). Verbatim result lines:
+  =Host LIST reader: 6 checks PASS=;
+  =EG1 candidate sanitation: 8 checks PASS=;
+  =Replay full checkpoint/snapshot: 38/38 sequences PASS=;
+  =Checkpoint unbound/marker parity: 2 checks PASS=;
+  =EG2 sessions: 28 checks PASS=; =PASS conversion-cache checked=528=.
+- =emacs -Q --batch -L engine -L vendor/ddskk -l
+  engine/test-local-conversion-oracle.el -f ert-run-tests-batch-and-exit=,
+  private LOCAL_ORACLE_DIR and LOCAL_ORACLE_BINARY: exit 0
+  (=eg2-merge-oracle.log=);
+  =Ran 9 tests, 9 results as expected, 0 unexpected=.
+- Stock command: =emacs -Q --batch -L engine -L vendor/ddskk -l
+  engine/test-okuri-input.el -l engine/test-live-input.el -l
+  engine/test-q-reading.el -f ert-run-tests-batch-and-exit=, private
+  OKURI_DICTIONARY=windows/test-host/data/okuri-jisyo.utf8 and artifact directory:
+  exit 0 (=eg2-merge-stock.log=);
+  =Ran 6 tests, 6 results as expected, 0 unexpected=.
+- Reload: =emacs -Q --batch -L engine -L vendor/ddskk -l
+  engine/test-local-conversion.el -l engine/test-okuri-reload.el -f
+  ert-run-tests-batch-and-exit=, private LOCAL_LEARNING_TEST_DIR:
+  exit 0 (=eg2-merge-reload.log=);
+  =Ran 16 tests, 16 results as expected, 0 unexpected=.
+- Framework: =emacs -Q --batch -L framework/src -L engines/lattice/src -l
+  framework/test/nelisp-ime-stateline-test.el -l
+  framework/test/nelisp-ime-stateline-conformance-test.el -f
+  ert-run-tests-batch-and-exit=: exit 0 (=eg2-merge-framework.log=);
+  =Ran 31 tests, 31 results as expected, 0 unexpected=.
+  Lattice: same load paths, =-l engines/lattice/test/nelisp-ime-lattice-test.el
+  -f ert-run-tests-batch-and-exit=: exit 0 (=eg2-merge-lattice.log=);
+  =Ran 14 tests, 14 results as expected, 0 unexpected=.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File
+  windows/test-host/test-engine-provider-outbox-v2.ps1 -Runtime $Runtime
+  -ColdLoadSleepSec 45=: exit 0 (=eg2-merge-provider-crash.log=).
+  Verbatim tails: =provider commit reply wall_ms=42.469400=;
+  =EG2 provider outbox: 18 checks PASS (reply-before-write crash, exactly once, retirement)=.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File
+  windows/test-host/test-engine-learning-v2.ps1 -Runtime $Runtime
+  -ColdLoadSleepSec 45=: exit 0 (=eg2-merge-learning-pipe.log=).
+  =second-client SPACE QPC mutex_wait_ms=0.006900=;
+  =EG2 learning: 16 checks PASS (reply, second client, overlay, shutdown)=.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File
+  windows/test-host/test-engine-session-v2.ps1 -Runtime $Runtime
+  -BuildDir build/w -ColdLoadSleepSec 45=: exit 0 (=eg2-merge-sessions.log=);
+  =EG2 private sessions: 17 checks PASS (real restart, eviction, durable retry)=.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File
+  windows/test-host/test-sk1-provider-relay.ps1 -Runtime $Runtime
+  -BuildDir build/w -ColdLoadSleepSec 45=: exit 0 (=eg2-merge-sk1-provider.log=).
+  Verbatim tails: =OWNED_HOST_EXITED=True=; =OWNED_CHILD_EXITED=True=;
+  =PASS SK1 provider modes=2 checks=20 artifacts=...= (artifact path in full log).
+  Modes are disabled and unreachable, ten assertions each; -Tsf was not used.
+- Owned =python windows/test-host/sk1-skkserv-fixture.py --port 31103=,
+  then =emacs -Q --batch -L engine -L vendor/ddskk -l
+  windows/test-host/sk1-stock-oracle.el= with private LOCAL_ORACLE_DIR and
+  SK1_FIXTURE_PORT=31103: exit 0 (=eg2-merge-sk1-stock.log=).
+  =PASS SK1 stock oracle rows=4 readings=2 learning=1=;
+  =OWNED_FIXTURE_EXITED=True=. The fixture was stopped in finally.
+
+TSF, actual core/host hot swap, SK1 TSF candidate-merge cases, local harness,
+Emacs/inline integration and registry-dependent CTest remain Claude's gates.
+They were not rerun or counted green here. The previous 57/70.6 ms plain SPACE
+floor remains a documented-not-met measurement, not a new merged-tree claim.
+
+*** Merge change anchors
+| File:line | Working-tree resolution/change |
+| windows/host/main.cpp:1245 | Separate interpreter gate and engine metadata ownership. |
+| windows/host/main.cpp:1259 | Release metadata during bounded server cache wait (1278). |
+| windows/host/main.cpp:1921 | Replacement metadata and active-child publication use the gate (1994). |
+| windows/host/main.cpp:2034 | Replacement session cleanup uses the gate. |
+| windows/host/main.cpp:2120 | Idle work tries the gate without blocking requests. |
+| windows/host/main.cpp:2304 | Spool replay uses gate; durability wait remains outside it. |
+| windows/host/main.cpp:2386 | Legacy snapshot try-gate; native overlay stays independent. |
+| windows/host/main.cpp:2537 | Client interpreter transaction; cache waits free metadata. |
+| windows/host/main.cpp:2650 | Disconnect/session cleanup cannot interleave SERVER input. |
+| windows/host/main.cpp:2902 | Teardown waits for transaction; retain drain and cache stop (2905, 2906). |
+| windows/src/text_service.cpp:433 | Keep persistent reading preparation. |
+| windows/src/text_service.cpp:454 | Keep invalidation with incoming skip signature and loop. |
+| windows/test-host/host_utf8_protocol_test.cpp:31 | Fixture completion accounting for relay probe. |
+| windows/test-host/host_utf8_protocol_test.cpp:58 | Resolve timer/promise name collision. |
+| windows/test-host/host_utf8_protocol_test.cpp:64 | Slow-network metadata/gate regression checks. |
+
+Workspace checks and final owned-process audit follow below. No git add/commit.
+
+
+*** Merge workspace and cleanup result
+- =git -c safe.directory=$Root diff --check=: exit 0, no whitespace errors
+  (=eg2-merge-whitespace.log=; only existing Git profile/line-ending warnings).
+- =rg -n '^(<<<<<<<|=======|>>>>>>>)' windows/host/main.cpp
+  windows/src/text_service.cpp=: exit 1, zero matches (no conflict markers).
+- =git -c safe.directory=$Root ls-files -u=: six original stage entries;
+  comparison with =eg2-merge-index-stages.txt= shows zero changes. No git add,
+  reset or commit. Git UU status is expected until Claude stages the resolutions.
+- Owned host/runtime audit: 135 recorded ids, 0 matching names/start timestamps
+  remaining (=eg2-merge-owned-process-check.json=). All native/batch/direct-host
+  commands completed; the SK1 Python fixture exited in finally. Known owned
+  host, runtime, TSF-host, native test or fixture leftovers: none.
+- Documentation change anchors: this merge section at
+  docs/design/local-first-conversion.org:2100 and coordinator handoff at
+  tools/ai/local-first-conversion-notes.org:3123. These are unstaged additions
+  alongside the pre-existing auto-merged staged documentation changes.
+
+All registry-independent merge gates above pass after fixing the compiler name
+collision. Claude must stage the resolved files and run the deferred TSF gates
+before completing the merge. This worker performed neither action.

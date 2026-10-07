@@ -88,6 +88,8 @@ param(
   [ValidateRange(-1,1)][int]$ApplicationLocalConversion = -1,
   [ValidateSet('none','missing','corrupt')][string]$LocalIndexFailure = 'none',
   [switch]$StopEngineAfterWarmup,
+  [ValidateRange(0,1)][int]$SkkServEnable=0,
+  [ValidateRange(31100,31199)][int]$SkkServPort=31101,
 
   # Engine cold load has been measured anywhere from 3.4s (quiet machine)
   # to ~12s (loaded machine); a 6s default let the first scripted keys race
@@ -225,7 +227,7 @@ $tempJisyo = Join-Path $env:TEMP "ddskk-test-jisyo-$runId.jisyo"
 # its own E2E test already rely on (see host/main.cpp PipeName()).
 $savedEnvironment = @{}
 foreach ($name in @('DDSKK_PIPE_NAME','DDSKK_USER_JISYO','NATIVEIME_REGISTRY_KEY',
-    'LOCALAPPDATA','APPDATA','NELISP_IME_INLINE_DIR','NATIVEIME_TEST_CARET_MAP','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH','NATIVEIME_TEST_CORE_DIRECTORY','NATIVEIME_TEST_CORE_ACTION_SCRIPT','NATIVEIME_HARNESS_TSF_OUTPUT')) {
+    'LOCALAPPDATA','APPDATA','NELISP_IME_INLINE_DIR','NATIVEIME_TEST_CARET_MAP','NELISP_IME_ENGINE','NATIVEIME_TEST_HOST_PID','NATIVEIME_TEST_ENGINE_NAME','DDSKK_HARNESS_DLL_PATH','NATIVEIME_TEST_CORE_DIRECTORY','NATIVEIME_TEST_CORE_ACTION_SCRIPT','NATIVEIME_HARNESS_TSF_OUTPUT','DDSKK_HOST_DEBUG')) {
   $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
 }
 $hostProcess = $null
@@ -254,11 +256,16 @@ foreach ($entry in @{
 if ($CoreDllPath) {
   New-ItemProperty -Path $regPath -Name CoreDll -Value ([IO.Path]::GetFullPath($CoreDllPath)) -PropertyType String -Force | Out-Null
 }
-New-ItemProperty -Path $regPath -Name SkkServEnable -Value 0 -PropertyType DWord -Force | Out-Null
+New-ItemProperty -Path $regPath -Name SkkServEnable -Value $SkkServEnable -PropertyType DWord -Force | Out-Null
+New-ItemProperty -Path $regPath -Name SkkServHost -Value "127.0.0.1" -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $regPath -Name SkkServPort -Value $SkkServPort -PropertyType DWord -Force | Out-Null
 New-ItemProperty -Path $regPath -Name InitialKanaMode -Value 1 -PropertyType DWord -Force | Out-Null
 if ($env:DDSKK_HARNESS_LOCAL_CONVERSION -eq '1') { $LocalConversion = 1 }
 New-ItemProperty -Path $regPath -Name LocalConversion -Value $LocalConversion -PropertyType DWord -Force | Out-Null
-if ($DebugLog) { New-ItemProperty -Path $regPath -Name DebugLog -Value 1 -PropertyType DWord -Force | Out-Null }
+if ($DebugLog) {
+  New-ItemProperty -Path $regPath -Name DebugLog -Value 1 -PropertyType DWord -Force | Out-Null
+  $env:DDSKK_HOST_DEBUG = '1'
+}
 if ($AutoPairCaret) {
   $appPath = Join-Path $regPath ('Apps\' + [IO.Path]::GetFileName($TsfHostExe).ToLowerInvariant())
   New-Item -Path $appPath -Force | Out-Null

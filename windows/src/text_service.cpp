@@ -17,6 +17,7 @@
 #include "registry_settings.h"
 
 #include <cstdarg>
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <new>
@@ -340,6 +341,33 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
     service->FlushModeIndicator();
     return 0;
   }
+  if (message == WM_TIMER && wparam == 6 && service != nullptr) {
+    if (!service->local_conversion_.active() || !service->active_context_) {
+      if (service->local_conversion_retry_ && service->active_context_) return 0;
+      service->local_store_.CancelServer();
+      service->local_server_next_ = false; KillTimer(window, 6); return 0;
+    }
+    auto& conversion = service->local_conversion_;
+    auto reply = service->local_store_.Server(conversion.reading(), conversion.okuri());
+    const auto before_update = conversion;
+    if (reply && reply->ready && reply->supported && conversion.UpdateServer(reply->candidates) &&
+        FAILED(service->ApplyLocalState(service->active_context_, conversion.State()))) {
+      conversion = before_update; return 0; // Retain the authoritative selection and retry on the next tick.
+    }
+    if (service->local_server_next_ && ((reply && reply->ready) || GetTickCount64() >= service->local_server_deadline_)) {
+      service->local_server_next_ = false;
+      if (service->local_server_menu_ ? conversion.NextMenu() : conversion.Next()) {
+        if (FAILED(service->ApplyLocalState(service->active_context_, conversion.State()))) service->ScheduleLocalRetry();
+      }
+      else {
+        const auto saved = conversion; conversion.Reset(); service->provider_composition_active_ = false;
+        const bool unsafe = reply && reply->ready && !reply->supported;
+        if (!service->BeginProviderConversion(service->realtime_frontend_.raw_keys(), !unsafe,
+            unsafe ? saved.State().candidates.size() : 0)) conversion = saved;
+      }
+    }
+    return 0;
+  }
   if (message == WM_TIMER && wparam == 5 && service != nullptr) {
     service->FlushDebugLog();
     return 0;
@@ -423,7 +451,7 @@ void TextService::PrepareProviderReading() {
   } catch (...) { Release(); }
 }
 
-bool TextService::BeginProviderConversion(const std::u32string& keys, bool registration) {
+bool TextService::BeginProviderConversion(const std::u32string& keys, bool registration, size_t skip) {
   preparation_sequence_.fetch_add(1);
   CancelLocalRetry();
   local_observer_retry_.reset();
@@ -446,7 +474,7 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
   const bool retry_okuri = okuri_handoff_active_ && okuri_handoff_retry_;
   AddRef();
   try {
-    std::thread([this, keys, sequence, key_sequence, destination, retry_okuri, registration] {
+    std::thread([this, keys, sequence, key_sequence, destination, retry_okuri, registration, skip] {
       if (retry_okuri) Sleep(100);
       DelayTestProvider();
       TracePhase(L"engine-lookup-start", key_sequence, L"engine");
@@ -457,6 +485,8 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
         state = registration ? engine_.RegisterLocal(keys, kModeReplayTimeoutMs)
                              : engine_.ConvertKeys(keys, kConversionTimeoutMs);
+        for (size_t n = 0; n < skip && state && state->mode == L"candidate"; ++n)
+          state = engine_.SendControl(ddskk::EngineControl::kConvert, kConversionTimeoutMs);
       }
       TracePhase(L"engine-lookup-end", key_sequence, L"engine", state ? S_OK : E_FAIL);
       DebugLog(L"Provider convert done seq=%llu state=%d raw=%hs",
@@ -2454,6 +2484,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   };
   bool cancelled_provider = false;
   if (local_conversion_.active()) {
+    local_server_next_ = false;
+    const auto reply = local_store_.Server(local_conversion_.reading(), local_conversion_.okuri());
+    if (reply && reply->ready && reply->supported) local_conversion_.UpdateServer(reply->candidates);
     const auto saved_conversion = local_conversion_;
     const auto saved_frontend = realtime_frontend_;
     auto apply = [&](const ddskk::EngineState& next) {
@@ -2502,11 +2535,20 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
         state = local_conversion_.State();
         apply(*state);
       } else {
+        if (!reply || !reply->ready) {
+          // Keep input responsive while the last file candidate is visible.
+          local_server_menu_ = wparam == VK_SPACE;
+          local_server_next_ = true; local_server_deadline_ = GetTickCount64() + 250;
+          if (provider_window_) SetTimer(provider_window_, 6, 50, nullptr);
+          debug_exit(*eaten); return S_OK;
+        }
         // Registration is an explicit provider barrier. Ordinary local
         // keys never enter a provider queue or an engine shadow stream.
         local_conversion_.Reset();
         provider_composition_active_ = false;
-        if (!BeginProviderConversion(realtime_frontend_.raw_keys(), true))
+        const bool unsafe = reply && reply->ready && !reply->supported;
+        if (!BeginProviderConversion(realtime_frontend_.raw_keys(), !unsafe,
+            unsafe ? saved_conversion.State().candidates.size() : 0))
           local_conversion_ = saved_conversion;
       }
       debug_exit(*eaten); return S_OK;
@@ -2871,7 +2913,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       }
       if (realtime_frontend_.preedit() && !provider_composition_active_ &&
           last_engine_mode_ != L"candidate") {
-        const auto started = GetTickCount64();
+        const auto started = std::chrono::steady_clock::now();
         TracePhase(L"lookup-start", key_sequence_, L"local");
         const auto local_reading = realtime_frontend_.preview_reading();
         const auto captured = local_store_.Capture();
@@ -2890,15 +2932,22 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
           // Cleanup replies have no ownership over this new local episode.
           if (provider_cleanup_pending_) CancelPendingProvider();
           provider_candidate_state_.reset();
+          local_store_.RequestServer(local_reading);
+          local_server_next_ = false;
+          if (provider_window_) SetTimer(provider_window_, 6, 50, nullptr);
           branch = L"local-convert";
           TracePhase(L"lookup-end", key_sequence_, L"local");
           state = local_conversion_.State();
           const HRESULT hr = ApplyLocalState(context, *state);
           if (FAILED(hr)) ScheduleLocalRetry();
           *eaten = TRUE;
-          if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
-            std::printf("SPACE-CANDIDATE ms=%llu seq=%llu path=local\n",
-                GetTickCount64() - started, ++local_conversion_sequence_);
+          if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
+            const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - started).count();
+            std::printf("SPACE-CANDIDATE ms=%lld seq=%llu path=local us=%lld\n",
+                static_cast<long long>(us / 1000), ++local_conversion_sequence_,
+                static_cast<long long>(us));
+          }
           debug_exit(*eaten, hr, hr); return S_OK;
         }
         const wchar_t* local_failure = !local_enabled_ ? L"disabled" :
@@ -3150,6 +3199,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
               if (provider_cleanup_pending_) CancelPendingProvider();
               provider_candidate_state_.reset();
               branch = L"local-okuri-convert";
+              local_store_.RequestServer(reading, realtime_frontend_.okuri_text());
+              local_server_next_ = false;
+              if (provider_window_) SetTimer(provider_window_, 6, 50, nullptr);
               state = local_conversion_.State();
             } else local_okuri_snapshot_ = {};
           }
