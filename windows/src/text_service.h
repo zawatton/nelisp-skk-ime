@@ -222,8 +222,9 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   void ReplayDeferredProviderKeys();
   void ShowProviderBusy(ITfContext* context);
   void RenderLocalOkuri(ITfContext* context);
-  HRESULT ApplyLocalState(ITfContext* context, const ddskk::EngineState& state);
-  HRESULT CommitLocal(ITfContext* context);
+  HRESULT ApplyLocalState(ITfContext* context, const ddskk::EngineState& state,
+                          std::optional<ddskk::EngineState> preceding = std::nullopt);
+  HRESULT CommitLocal(ITfContext* context, const ddskk::EngineState* following = nullptr);
   void CancelLocalRetry();
   void ScheduleLocalRetry();
   void RetryLocalConversion();

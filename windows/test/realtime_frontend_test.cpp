@@ -242,6 +242,30 @@ int main(int argc, char** argv) {
       {"na", "", L"な", L"ナ", L""}, {"i", "", L"い", L"イ", L""},
       {".", "", L"。", L"。", L""}, {",", "", L"、", L"、", L""}};
   CHECK(late_rules.preview_reading() == L"ない");
+  // A confirmed provider candidate is a separate episode. Feeding mapped
+  // punctuation must use the retained rules with an empty reading.
+  size_t punctuation_checks = 0;
+  for (const char32_t key : {U'.', U','}) {
+    for (const std::u32string reading : {U"Nai", U"NaI"}) {
+      ddskk::RealtimeFrontend following;
+      following.SetRules(published);
+      for (const auto ch : reading) CHECK(following.Feed(ch));
+      following.Reset();
+      const auto symbol = following.Feed(key);
+      CHECK(symbol && symbol->text == (key == U'.' ? L"。" : L"、"));
+      CHECK(symbol->composition_start == -1 && symbol->pending_romaji.empty());
+      CHECK(!following.composing() && following.raw_keys().empty());
+      ++punctuation_checks;
+    }
+  }
+  ddskk::RealtimeFrontend punctuation_preedit;
+  punctuation_preedit.SetRules(published);
+  for (const auto ch : U"Nai") { if (ch) CHECK(punctuation_preedit.Feed(ch)); }
+  const auto punctuated = punctuation_preedit.Feed(U'.');
+  CHECK(!punctuated);
+  CHECK(punctuation_preedit.raw_keys() == U"Nai.");
+  CHECK(punctuation_preedit.RestorePreedit().text == L"▽ない");
+  std::printf("Punctuation frontend cases=%zu preedit=1 PASS\n", punctuation_checks);
   CHECK(late_rules.TrySetRulesForReading(published));
   auto changed_rules = published; changed_rules[0].hiragana = L"ぬ";
   CHECK(!late_rules.TrySetRulesForReading(changed_rules));
