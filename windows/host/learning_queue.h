@@ -31,8 +31,9 @@ class LearningQueue {
     bool ready = false, accepted = false; // guarded by queue mutex
   };
   explicit LearningQueue(std::wstring target,
-      std::function<bool(const std::string&)> publisher = {})
-      : target_(std::move(target)), publisher_(std::move(publisher)),
+      std::function<bool(const std::string&)> publisher = {},
+      std::function<bool(bool, bool)> schedule = {})
+      : target_(std::move(target)), publisher_(std::move(publisher)), schedule_(std::move(schedule)),
         outbox_(target_), next_provider_(ProviderOutbox::Watermark(target_)),
         worker_([this] { Run(); }) {}
   ~LearningQueue() { Drain(); }
@@ -252,6 +253,7 @@ class LearningQueue {
     std::filesystem::create_directories(std::filesystem::path(target_).parent_path(), error);
     if (error) return false;
     const auto temporary = target_ + L".eg2-checkpoint";
+    host_fault::Point(L"stage-before");
     HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
@@ -260,6 +262,7 @@ class LearningQueue {
         static_cast<DWORD>(content.size()), &written, nullptr) &&
         written == content.size() && FlushFileBuffers(file);
     CloseHandle(file);
+    if (ok) host_fault::Point(L"stage-flushed");
     // Fault injection is confined to explicitly diagnostic private harnesses.
     wchar_t registry[256]{}, hold[32768]{};
     if (ok && GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0) &&
@@ -274,6 +277,7 @@ class LearningQueue {
     }
     if (ok) ok = MoveFileExW(temporary.c_str(), target_.c_str(),
         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+    if (ok) host_fault::Point(L"checkpoint-replaced");
     if (ok) {
       // New engines recognize the checkpoint marker if a crash happens
       // between atomic replacement and clearing the superseded journal.
@@ -297,6 +301,10 @@ class LearningQueue {
         wake_.wait(lock, [this] { return closing_ || (!jobs_.empty() &&
             (!jobs_.front().producer || jobs_.front().producer->ready)); });
         if (jobs_.empty()) return;
+        const bool ready = !jobs_.front().producer || jobs_.front().producer->ready;
+        if (schedule_ && !schedule_(ready, closing_) && !closing_) {
+          wake_.wait_for(lock, std::chrono::milliseconds(50)); continue;
+        }
         job = std::move(jobs_.front()); jobs_.pop_front();
         if (job.producer && (!job.producer->ready || !job.producer->accepted)) {
           job.done.set_value(false); continue;
@@ -343,6 +351,7 @@ class LearningQueue {
   std::atomic<uint64_t> overlay_generation_{0};
   uint64_t overlay_snapshot_generation_ = 0;
   std::function<bool(const std::string&)> publisher_;
+  std::function<bool(bool, bool)> schedule_;
   ProviderOutbox outbox_;
   uint64_t next_provider_ = 0;
   std::mutex mutex_;

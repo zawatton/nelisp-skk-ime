@@ -16,7 +16,7 @@ inputs, errors, deadlines, commands, hashes = [], [], [], [], {}
 for p in sources:
     data = p.read_bytes()
     name = p.relative_to(ROOT).as_posix()
-    hashes[name] = hashlib.sha256(data).hexdigest()
+    hashes[name] = hashlib.sha256(data.replace(b'\r\n', b'\n')).hexdigest()
     for n, line in enumerate(data.decode('utf-8-sig', errors='replace').splitlines(), 1):
         anchor = f'{name}:{n}'
         for token in re.findall(r'\b(?:DDSKK|NATIVEIME|NELISP_IME)_[A-Z0-9_]+\b', line):
@@ -30,9 +30,9 @@ for p in sources:
         if p.parent.name == 'host' or p.name in ('ddskk-engine.el', 'skk-local-conversion.el', 'nelisp-ime-stateline.el'):
             for token in re.findall(r'"((?:CONTROL|LOCAL|ENGINE|WIRE|SESSION|PREVIEW|ROMAJI|HELLO|DIAG|KEY|REGISTER|STATE|LEARNING|PHASE|SERVER|OK)[^"\n]*)"', line):
                 commands.append(dict(literal=token, source=anchor))
-output = dict(version=1, source_sha256=hashes, inputs=inputs, error_tokens=errors,
+output = dict(version=2, text_hash='sha256-crlf-to-lf', source_sha256=hashes, inputs=inputs, error_tokens=errors,
               command_literals=commands, caller_deadline_sites=deadlines,
               note='Sites include declarations and test callers. Semantic caller summary is deadlines-v1.json; unbounded sites remain explicit.')
-path = ROOT / 'docs/contracts/source-inventory-v1.json'
+path = ROOT / 'docs/contracts/source-inventory-v2.json'
 path.write_text(json.dumps(output, indent=2, ensure_ascii=True) + '\n', encoding='utf-8')
 print(f'PASS inventory sources={len(hashes)} inputs={len(inputs)} errors={len(errors)} deadlines={len(deadlines)} commands={len(commands)}')

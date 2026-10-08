@@ -1,0 +1,103 @@
+#+TITLE: EH4 private S4 qualification handoff
+#+DATE: 2026-10-08
+
+* Build and runtime inputs
+Base is main 75d9ed0. Changes remain unstaged; no commit or live operation is
+authorized. Use the supplied runtime through EH4_RUNTIME and a real, read-only
+SKK-JISYO.L through EH4_LARGE_DICTIONARY. No machine-specific path is embedded
+in repository recipes. Run from the repository root:
+
+#+begin_src powershell
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+cmake -S windows/test-host/s3 -B build/policy-control -G "Visual Studio 17 2022" -A x64
+cmake --build build/policy-control --config Release
+python windows/test-host/verify-host-contracts.py
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -Stage Equivalence
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -MatrixWorkers 3 -Stage Recovery
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -Stage EndToEnd -LargeDictionary $env:EH4_LARGE_DICTIONARY
+ctest --test-dir build/w -C Release --output-on-failure
+#+end_src
+
+The worker cannot create private HKCU keys. CTest failed 10/10 at the
+run-isolated-test.ps1 New-Item barrier, before reaching test bodies. The new
+TSF callback gate also failed at run-harness.ps1:247 before starting its host.
+These are actual failures, not passing skips. Coordinator execution of the
+complete EndToEnd stage remains required, including the real callback wait
+negative control and the large dictionary. Do not infer zero callback waits
+from pipe results or the standalone import-probe control.
+
+* Authority and failure behavior
+The five environment switches are DDSKK_HOST_POLICY_SOURCES, _CACHE,
+_RESTART, _PUBLICATION and _LEARNING. Each defaults OFF; environment 1
+enables, environment 0 overrides a selected-key registry DWORD. Corresponding
+registry names are HostPolicySOURCES, HostPolicyCACHE, HostPolicyRESTART,
+HostPolicyPUBLICATION and HostPolicyLEARNING. Restart the private host after
+changing switches. No live settings were changed.
+
+The worker uses a bounded, nonblocking native memo of pure managed answers.
+Cold, stale, contended, saturated, oversized and failed decisions immediately
+use the native fallback. The worker logs authoritative/fallback counts by kind
+and exact timeout/discard IPC IDs. Timed-out signatures are invalidated;
+crash/retirement invalidates all answers. Context is a fixed audit fingerprint,
+not a semantic identity. The original source labels remain bounded native data.
+One native transaction owner and one native storage pipeline remain in place.
+
+Publication intent and payload decisions can publish base+overlay or overlay;
+the existing native writer validates files and durable watermarks. The managed
+policy returns SK1 hit/miss TTL durations and admission decisions. Native IO,
+cache mutation, source byte loading/union, queue barriers, flush/replace,
+outbox/FIFO, process jobs and mmap publication remain native.
+
+* Worker evidence and limits
+The unchanged-tree verifier passed 140 responses, eight disk fixtures and
+239 sources. Alternate CRLF/LF bytes failed all 239 raw source hashes. The
+additive source-inventory-v2.json normalizes CRLF to LF for text source hashes;
+the verifier checks both EOL forms and rejects source corruption. Every
+pre-existing docs/contracts file, including source-inventory-v1.json, remains
+untouched and byte-exact. The new numeric corpus has its own raw-byte checksum.
+
+Worker logs, exact commands, verbatim tails, counts, binary hashes and change
+anchors are collected in build/w/EH4-validation.md. Do not promote an
+interrupted or pre-fix run to acceptance. Relevant logs include:
+- build/w/s4-equivalence-memo.log and its 22 per-gate logs (final adapter).
+- build/w/s4-publication-authority.log and build/w/s4-recovery.log
+  (the latter was interrupted to strengthen provider-ID capture).
+- build/w/s4-matrix-qualified.log: the final active-child-at-rendezvous matrix.
+- build/w/s4-managed-pause.log and build/w/s4-memo-crash.log.
+- build/w/s4-clients-final.log: eight clients, 80 conversions and 80 ACKs.
+- build/w/s4-learning-crash.log and build/w/s4-provider-outbox.log.
+- build/w/s4-callback-attempt.log and build/w/ctest-s4.log: registry denials.
+- build/w/ert-stateline.log and build/w/ert-lattice.log: 31/31 and 14/14.
+
+Publication was measured on behavior-jisyo.utf8. The isolated authority run
+recorded 21 intents (p99/max 31 ms), 20 learns (p99/max 393.5304 ms), seven
+source, 19 learning, 54 intent and 54 payload authoritative decisions. The
+subsequent recovery-stage publication run recorded p99/max 16 ms and
+393.3252 ms. The real 1500 ms stall produced p99/max 1516 ms and was rejected
+by the identical timing gate. No timing threshold was relaxed.
+
+The first matrix run was interrupted to strengthen ID capture; 72 recorded
+owned PIDs were subsequently verified reaped. A later run failed at
+stage-before/policy/pause because supervision replaced the setup-time policy
+PID. The final runner resolves a live, job-owned child at the rendezvous and
+fails on any other ownership error. Failed/interrupted logs are retained.
+
+The 54 individual crash/pause cases passed before the final memo-only guard
+which prevents shadow diagnostic replies from evicting authority. With that
+guard, nine simultaneous policy+engine pauses and three stage-before crashes
+(policy/engine/adapter) passed. This is split 63-case coverage, not a single
+completed final-binary Recovery stage. The complete Recovery command above
+still needs coordinator evidence. Final authority unit coverage is 29 checks;
+the import-probe control is two checks. EndToEnd remains unqualified here.
+
+The standalone callback probe control detected two real pipe transfers and
+one blocking wait, while ignoring the same APIs outside callback scope. This
+proves the probe can reject an actual wait; it does not prove TSF callback
+acceptance in this sandbox. The EndToEnd stage requires warmed local callback
+probes with actual EngineClient import coverage, zero pipe IO/nonzero waits,
+the unchanged 20 ms watchdog, and a real 1 ms blocking-wait negative control.
+
+The ledger's three S4 lines are executable stage commands. Claude should
+record complete logs/hashes after required qualification; no unrun behavioral
+evidence is asserted in the ledger.

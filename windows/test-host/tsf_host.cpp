@@ -66,6 +66,7 @@
 // CMakeLists.txt's target_compile_definitions(tsf-host ...), matching the
 // rest of this project's targets.
 #include <windows.h>
+#include "callback_io_probe.h"
 #include <tlhelp32.h>
 
 #include <objidl.h>
@@ -991,6 +992,7 @@ unsigned long long EpochMicroseconds() {
 void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
                      ITfContext* context, const KeyEvent& key,
                      const std::wstring& token) {
+  callback_io_probe::Record io_record;
   // SetKeyboardState below isolates thread state, but the real TIP also
   // consults GetAsyncKeyState for hosts that dispatch before thread state
   // updates. A physical modifier would turn this scripted event into a
@@ -1038,11 +1040,13 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   // needs no TSF-side routing); fall back to ITfKeystrokeMgr when TSF's
   // own instance already owns the key sink registration.
   const auto test_down = [&](BOOL* e) {
+    callback_io_probe::Scope scope;
     return key_sink != nullptr
         ? key_sink->OnTestKeyDown(context, key.vk, lparam_down, e)
         : keystroke_mgr->TestKeyDown(key.vk, lparam_down, e);
   };
   const auto down = [&](BOOL* e) {
+    callback_io_probe::Scope scope;
     return key_sink != nullptr
         ? key_sink->OnKeyDown(context, key.vk, lparam_down, e)
         : keystroke_mgr->KeyDown(key.vk, lparam_down, e);
@@ -1071,9 +1075,12 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
     const LPARAM lparam_up = lparam_down | (static_cast<LPARAM>(1) << 30) |
                              (static_cast<LPARAM>(1) << 31);
     BOOL eaten_up = FALSE;
-    hr = key_sink != nullptr
-        ? key_sink->OnKeyUp(context, key.vk, lparam_up, &eaten_up)
-        : keystroke_mgr->KeyUp(key.vk, lparam_up, &eaten_up);
+    {
+      callback_io_probe::Scope scope;
+      hr = key_sink != nullptr
+          ? key_sink->OnKeyUp(context, key.vk, lparam_up, &eaten_up)
+          : keystroke_mgr->KeyUp(key.vk, lparam_up, &eaten_up);
+    }
     if (FAILED(hr)) PrintHr("KeyUp", hr);
     PumpMessages(PerKeyPumpMs());
     SetKeyboardState(state_before);
@@ -1122,9 +1129,12 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
     PrintHr("TestKeyUp", hr);
   } else if (eaten_up) {
     eaten_up = FALSE;
-    hr = key_sink != nullptr
-        ? key_sink->OnKeyUp(context, key.vk, lparam_up, &eaten_up)
-        : keystroke_mgr->KeyUp(key.vk, lparam_up, &eaten_up);
+    {
+      callback_io_probe::Scope scope;
+      hr = key_sink != nullptr
+          ? key_sink->OnKeyUp(context, key.vk, lparam_up, &eaten_up)
+          : keystroke_mgr->KeyUp(key.vk, lparam_up, &eaten_up);
+    }
     if (FAILED(hr)) PrintHr("KeyUp", hr);
   }
   PumpMessages(PerKeyPumpMs());

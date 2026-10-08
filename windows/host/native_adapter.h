@@ -1,9 +1,10 @@
-// Native ownership boundary: copied shadow observations only. No policy reply
-// is a capability to publish, learn, dispatch an engine request or answer IO.
+// Native ownership boundary: copied decisions only. Policy has no OS handles,
+// storage writers or engine transaction capability. Callers never wait on IPC.
 #pragma once
 
 namespace native_adapter {
-enum class PolicyKind { Config = 1, Sources = 2, Restart = 3, Cache = 4, Publication = 5 };
+inline std::atomic<uint64_t> next_engine_epoch{0}, engine_epoch{0}, publication_generation{0};
+enum class PolicyKind { Config = 1, Sources = 2, Restart = 3, Cache = 4, Publication = 5, Learning = 6, Replacement = 7, Capacity = 8, Intent = 9, Order = 10, Payload = 11, CacheTtl = 12 };
 struct Observation {
   PolicyKind kind;
   uint64_t engine_epoch, publication_generation, a, b, c, native_decision;
@@ -21,6 +22,18 @@ class ShadowPolicy {
   void Start(const std::wstring& runtime, const std::wstring& repository, HANDLE job) {
     wchar_t enabled[8]{};
     enabled_ = GetEnvironmentVariableW(L"DDSKK_HOST_POLICY_SHADOW", enabled, 8) == 1 && enabled[0] == L'1';
+    const wchar_t* names[] = {L"SOURCES", L"CACHE", L"RESTART", L"PUBLICATION", L"LEARNING"};
+    for (size_t i = 0; i < 5; ++i) {
+      const auto env = std::wstring(L"DDSKK_HOST_POLICY_") + names[i];
+      wchar_t value[16]{};
+      const DWORD length = GetEnvironmentVariableW(env.c_str(), value, 16);
+      DWORD flag = 0, bytes = sizeof(flag);
+      const auto registry = std::wstring(L"HostPolicy") + names[i];
+      if (!length) RegGetValueW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(),
+          registry.c_str(), RRF_RT_REG_DWORD, nullptr, &flag, &bytes);
+      switches_[i] = length ? length == 1 && value[0] == L'1' : flag == 1;
+      enabled_ = enabled_ || switches_[i];
+    }
     if (!enabled_) return;
     runtime_ = runtime; repository_ = repository; job_ = job;
     worker_ = std::thread([this] { Run(); });
@@ -33,7 +46,40 @@ class ShadowPolicy {
     std::unique_lock lock(mutex_, std::try_to_lock);
     if (!lock.owns_lock() || queue_.size() >= kRequests ||
         (queue_.size() + 1) * sizeof(Observation) > kBytes) { ++dropped_; return; }
+    if (Authoritative(value.kind) && std::any_of(queue_.begin(), queue_.end(),
+        [&](const Observation& queued) { return Key(queued) == Key(value); })) return;
     queue_.push_back(value); changed_.notify_one();
+  }
+  bool Authoritative(PolicyKind kind) const {
+    switch (kind) {
+      case PolicyKind::Sources: case PolicyKind::Order: return switches_[0];
+      case PolicyKind::CacheTtl: case PolicyKind::Capacity: return switches_[1];
+      case PolicyKind::Restart: case PolicyKind::Replacement: return switches_[2];
+      case PolicyKind::Publication: case PolicyKind::Intent: case PolicyKind::Payload: return switches_[3];
+      case PolicyKind::Learning: return switches_[4];
+      default: return false;
+    }
+  }
+  // Exact input memoization, not speculative replay. A miss schedules copied
+  // work and returns native immediately. try_lock also makes contention a miss.
+  uint64_t Decide(const Observation& value) {
+    if (!Authoritative(value.kind)) { Observe(value); return value.native_decision; }
+    const auto key = Key(value);
+    uint64_t result = value.native_decision;
+    bool used = false;
+    {
+      std::unique_lock lock(mutex_, std::try_to_lock);
+      if (lock.owns_lock() && healthy_) {
+        const auto found = decisions_.find(key);
+        if (found != decisions_.end() && GetTickCount64() - found->second.at <= 30000) {
+          result = found->second.value; used = true;
+        }
+      }
+    }
+    Observe(value);
+    const auto kind = static_cast<unsigned>(value.kind);
+    if (kind < used_.size()) ++(used ? used_[kind] : fallback_[kind]);
+    return result;
   }
   void Stop() {
     stop_ = true; changed_.notify_all();
@@ -52,6 +98,69 @@ class ShadowPolicy {
   }
  private:
   bool enabled_ = false;
+  std::array<bool, 5> switches_{};
+  std::array<std::atomic<uint64_t>, 13> used_{}, fallback_{};
+  void LogDecisions() {
+    // Only the policy worker writes diagnostics; caller paths increment counters.
+    for (size_t i = 1; i < used_.size(); ++i) {
+      const auto used = used_[i].exchange(0), fallback = fallback_[i].exchange(0);
+      if (used) LogEvent("policy-authoritative kind=" + std::to_string(i) + " count=" + std::to_string(used));
+      if (fallback) LogEvent("policy-fallback native reason=unavailable-or-stale kind=" +
+          std::to_string(i) + " count=" + std::to_string(fallback));
+    }
+  }
+  bool healthy_ = false; // guarded by mutex_; cleared on timeout/crash/retirement
+  struct Decision { uint64_t value, at; };
+  std::map<std::string, Decision> decisions_;
+  static std::string Key(const Observation& v) {
+    // HP1 algorithms are pure numeric functions: context is an audit label,
+    // publication generation is an envelope guard, not a decision input.
+    // c is relevant only to replacement/intent/payload. Engine changes discard rules.
+    const auto c = v.kind == PolicyKind::Replacement || v.kind == PolicyKind::Intent || v.kind == PolicyKind::Payload ? v.c : 0;
+    return std::to_string(static_cast<unsigned>(v.kind)) + ":" + std::to_string(v.engine_epoch) + ":" +
+        std::to_string(v.a) + ":" + std::to_string(v.b) + ":" + std::to_string(c);
+  }
+  void Seed(uint64_t engine) {
+    auto seed = [&](PolicyKind kind, uint64_t a, uint64_t b, uint64_t c, uint64_t expected) {
+      if (Authoritative(kind)) Observe({kind, engine, 0, a, b, c, expected});
+    };
+    for (uint64_t a = 0; a <= 1; ++a) for (uint64_t b = 0; b <= 1; ++b) {
+      seed(PolicyKind::Sources, a, b, 0, !a ? 0 : (b ? 1 : 2));
+      seed(PolicyKind::Order, a, b, 0, a ? (b ? 1 : 0) : (b ? 2 : 0));
+      seed(PolicyKind::Cache, a, b ? (a ? 60000 : 2000) : 0, 0, b);
+      seed(PolicyKind::Capacity, a ? 256 : 0, b, 0, !a || b);
+      for (uint64_t c = 0; c <= 1; ++c) {
+        seed(PolicyKind::Replacement, a, b, c, a && (!b || c));
+        seed(PolicyKind::Payload, a, b, c, a ? (b ? 2 : (c ? 1 : 0)) : 0);
+      }
+      for (uint64_t c = 0; c <= 2; ++c) seed(PolicyKind::Intent, a, b, c, a && b && c);
+    }
+    seed(PolicyKind::CacheTtl, 0, 0, 0, 2000); seed(PolicyKind::CacheTtl, 1, 0, 0, 60000);
+    seed(PolicyKind::Learning, 0, 1, 0, 0); seed(PolicyKind::Learning, 1, 1, 0, 1);
+    for (uint64_t a : {1000, 2000, 4000, 8000, 16000, 30000}) {
+      seed(PolicyKind::Restart, a, 0, 0, (std::min)(uint64_t{30000}, a * 2));
+      seed(PolicyKind::Restart, a, 1, 0, 1000);
+    }
+  }
+  static bool ValidDecision(PolicyKind kind, uint64_t value) {
+    if (kind == PolicyKind::CacheTtl) return value >= 100 && value <= 60000;
+    if (kind == PolicyKind::Restart) return value >= 1000 && value <= 30000;
+    if (kind == PolicyKind::Sources || kind == PolicyKind::Order || kind == PolicyKind::Payload) return value <= 2;
+    return value <= 1;
+  }
+  void Remember(const Observation& value, uint64_t decision) {
+    if (!Authoritative(value.kind)) return;
+    std::lock_guard lock(mutex_);
+    if (decisions_.size() >= kRequests && !decisions_.contains(Key(value)))
+      decisions_.erase(decisions_.begin());
+    decisions_[Key(value)] = {decision, GetTickCount64()};
+  }
+  void Timeout(const Observation& value) {
+    std::lock_guard lock(mutex_); decisions_.erase(Key(value));
+  }
+  void Invalidate() {
+    std::lock_guard lock(mutex_); healthy_ = false; decisions_.clear();
+  }
   std::atomic<bool> stop_{false};
   std::atomic<uint64_t> dropped_{0};
   std::atomic<uint64_t> completed_{0};
@@ -68,6 +177,7 @@ class ShadowPolicy {
   }
 
   void Retire() {
+    Invalidate();
     if (process_) {
       TerminateProcess(process_, 1); WaitForSingleObject(process_, 5000);
       LogEvent("policy-retire pid=" + std::to_string(GetProcessId(process_)) +
@@ -134,18 +244,26 @@ class ShadowPolicy {
     return false;
   }
   void Run() {
+    uint64_t seeded_engine = ~uint64_t{0};
     DWORD backoff = 1000;
     while (!stop_ && !g_stopping) {
       const auto start = GetTickCount64(); std::string reply;
       if (!Launch() || !Line(reply, 60000) || reply != "HP1 READY") {
-        LogEvent("policy-start-failed"); Retire();
+        LogDecisions(); LogEvent("policy-start-failed"); Retire();
         const auto until = GetTickCount64() + backoff;
         while (!stop_ && !g_stopping && GetTickCount64() < until) Sleep(10);
         backoff = (std::min)(DWORD{30000}, backoff * 2); continue;
       }
-      backoff = 1000;
+      backoff = 1000; seeded_engine = ~uint64_t{0};
+      { std::lock_guard lock(mutex_); healthy_ = true; }
       LogEvent("policy-ready startup_ms=" + std::to_string(GetTickCount64() - start));
       while (!stop_ && !g_stopping) {
+        LogDecisions();
+        const auto current_engine = engine_epoch.load();
+        if (seeded_engine != current_engine) {
+          { std::lock_guard lock(mutex_); decisions_.clear(); }
+          seeded_engine = current_engine; Seed(current_engine);
+        }
         Observation v{};
         {
           std::unique_lock lock(mutex_);
@@ -162,9 +280,14 @@ class ShadowPolicy {
             std::to_string(static_cast<unsigned>(v.kind));
         std::string context;
         constexpr char hex[] = "0123456789abcdef";
-        for (size_t i = 0; i < v.context_size; ++i) {
-          const auto ch = static_cast<unsigned char>(v.context[i]);
-          context += hex[ch >> 4]; context += hex[ch & 15];
+        // Context is a nonsemantic audit label. Sending its fixed fingerprint
+        // avoids interpreting up to 2048 unused hex characters in the child.
+        if (v.context_size) {
+          uint64_t fingerprint = 14695981039346656037ull;
+          for (size_t i = 0; i < v.context_size; ++i) {
+            fingerprint ^= static_cast<unsigned char>(v.context[i]); fingerprint *= 1099511628211ull;
+          }
+          for (int shift = 60; shift >= 0; shift -= 4) context += hex[(fingerprint >> shift) & 15];
         }
         const auto frame = "HP1 Q " + prefix + " " + std::to_string(v.a) + " " +
             std::to_string(v.b) + " " + std::to_string(v.c) + " " +
@@ -173,12 +296,16 @@ class ShadowPolicy {
         // A timed-out channel is retired before another write; no blocked
         // policy can accumulate writes and stall this worker's shutdown.
         if (frame.size() > kFrame || !WriteAll(input_, frame) || !Line(reply, 200)) {
+          // A slow refresh invalidates its signature, not independently
+          // validated pure answers. Crash/retirement still clears everything.
+          Timeout(v);
           ++completed_; changed_.notify_all();
           LogEvent("policy-timeout-discard request=" + std::to_string(id));
           // Keep one outstanding ID while the paused child resumes; discard
           // its late response before writing anything else. Hard limit 5 s.
           if (Line(reply, 5000) && ValidReply(reply, "HP1 R " + prefix + " ")) {
             LogEvent("policy-late-discard request=" + std::to_string(id));
+            { std::lock_guard lock(mutex_); healthy_ = true; }
             continue;
           }
           break;
@@ -186,6 +313,11 @@ class ShadowPolicy {
         if (!ValidReply(reply, "HP1 R " + prefix + " ")) {
           LogEvent("policy-invalid-reply request=" + std::to_string(id)); break;
         }
+        uint64_t decision = 0;
+        try { decision = std::stoull(reply.substr(("HP1 R " + prefix + " ").size())); }
+        catch (...) { LogEvent("policy-invalid-decision"); break; }
+        if (!ValidDecision(v.kind, decision)) { LogEvent("policy-invalid-decision"); break; }
+        Remember(v, decision);
         const auto expected = "HP1 R " + prefix + " " + std::to_string(v.native_decision);
         ++completed_; changed_.notify_all();
         LogEvent(std::string("policy-compare ") + (reply == expected ? "match" : "mismatch") +
@@ -197,13 +329,23 @@ class ShadowPolicy {
       while (!stop_ && !g_stopping && GetTickCount64() < until) Sleep(10);
     }
     Retire();
+    LogDecisions();
     LogEvent("policy-stop dropped=" + std::to_string(dropped_.load()));
   }
 };
 // Detached native clients can finish during CRT teardown. Keep the value
 // queue/mutex alive for process lifetime; wmain explicitly joins supervision.
 inline ShadowPolicy& shadow = *new ShadowPolicy;
-inline std::atomic<uint64_t> next_engine_epoch{0}, engine_epoch{0}, publication_generation{0};
+inline uint64_t Decide(PolicyKind kind, uint64_t a, uint64_t b, uint64_t c, uint64_t decision,
+                       const std::string& context = {}, uint64_t observed_epoch = 0) {
+  if (!shadow.Enabled()) return decision;
+  if (context.size() > 1024) { shadow.Reject(); return decision; }
+  Observation value{kind, observed_epoch ? observed_epoch : engine_epoch.load(),
+      publication_generation.load(), a, b, c, decision};
+  value.context_size = context.size();
+  std::copy(context.begin(), context.end(), value.context.begin());
+  return shadow.Decide(value);
+}
 inline void Observe(PolicyKind kind, uint64_t a, uint64_t b, uint64_t c, uint64_t decision,
                     const std::string& context = {}, uint64_t observed_epoch = 0) {
   // Oversized diagnostic inputs are rejected whole, never truncated into a

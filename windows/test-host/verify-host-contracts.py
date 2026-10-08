@@ -47,6 +47,8 @@ for name in ('native-v1', 'native-legacy-v1', 'native-disk-v1'):
         base = base64.b64decode(fixture['files']['base']['bytes_base64'], validate=True)
         config = disk['index_config'](base, plan, captured=True)
         canonical(base64.b64decode(fixture['files']['overlay']['bytes_base64'], validate=True), config)
+policy_fixture = contracts / 'host-policy-inputs-v2.json'
+assert sha(policy_fixture.read_bytes()) == policy_fixture.with_suffix('.sha256').read_text().split()[0]
 record = json.loads((contracts / 'native-v1.json').read_text())['records'][0]
 record['response_base64'] = base64.b64encode(b'wrong').decode()
 try:
@@ -55,7 +57,13 @@ except ValueError:
     pass
 else:
     raise AssertionError('bad response control passed')
-inventory = json.loads((contracts / 'source-inventory-v1.json').read_text())
+inventory = json.loads((contracts / 'source-inventory-v2.json').read_text())
+assert inventory['version'] == 2 and inventory['text_hash'] == 'sha256-crlf-to-lf'
 for name, frozen in inventory['source_sha256'].items():
-    assert sha((ROOT / name).read_bytes()) == frozen, 'source changed: ' + name
-print(f'PASS integrity transcripts=2 responses={count} disk_files={len(fixture["files"])} sources={len(inventory["source_sha256"])} bad_response_rejected=1')
+    data = (ROOT / name).read_bytes()
+    normalized = data.replace(b'\r\n', b'\n')
+    assert sha(normalized) == frozen, 'source changed: ' + name
+    assert sha(normalized.replace(b'\n', b'\r\n').replace(b'\r\n', b'\n')) == frozen
+    assert sha(normalized + b'changed-source') != frozen, 'source corruption control passed'
+
+print(f'PASS integrity transcripts=2 responses={count} disk_files={len(fixture["files"])} sources={len(inventory["source_sha256"])} bad_response_rejected=1 eol_controls=2 source_corruption_rejected=1')

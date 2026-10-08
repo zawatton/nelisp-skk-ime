@@ -50,7 +50,7 @@ if($Stage -eq 'Boundary') {
 } else {
   if(-not $LargeDictionary -or -not (Test-Path -LiteralPath $LargeDictionary)){throw 'EndToEnd requires real SKK-JISYO.L via -LargeDictionary'}
   $env:DDSKK_HOST_POLICY_SHADOW='1'
-  $env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='5'
+  if(-not $env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND){$env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='5'}
   $env:DDSKK_HARNESS_DIAGNOSTICS='1'
   $env:HOME=[Environment]::GetFolderPath('UserProfile')
   Gate 'ctest' 'ctest' @('--test-dir',(Join-Path $root $BuildDir),'-C','Release')

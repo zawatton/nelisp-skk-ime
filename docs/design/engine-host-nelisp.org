@@ -434,6 +434,121 @@ selected, with no host wait on key callbacks and no loss of acknowledged
 learning through crash/restart. Failed policy reverts to native policy only
 after epoch/cursor reconciliation; never two writers or parallel engine relay.
 
+*** S4 implementation and switches (EH4, 2026-10-08)
+The five startup switches are independent and OFF when unset. Environment
+values take precedence over DWORDs in the selected NativeImeRegistryKey:
+
+| Environment | Registry DWORD | Numeric policy decisions |
+|-------------+----------------+--------------------------|
+| DDSKK_HOST_POLICY_SOURCES | HostPolicySOURCES | enabled file/server tier (2), file-first candidate union (10) |
+| DDSKK_HOST_POLICY_CACHE | HostPolicyCACHE | hit/miss duration (12), 256-entry admission/eviction eligibility (8) |
+| DDSKK_HOST_POLICY_RESTART | HostPolicyRESTART | 1--30 s backoff/reset (3), composition/deadline replacement eligibility (7) |
+| DDSKK_HOST_POLICY_PUBLICATION | HostPolicyPUBLICATION | changed/ready intent (9), base+overlay versus overlay payload (11) |
+| DDSKK_HOST_POLICY_LEARNING | HostPolicyLEARNING | ready FIFO head scheduling (6) |
+
+Only the literal environment value 1 or DWORD 1 enables a responsibility.
+Explicit environment 0 disables a registry-enabled responsibility. These
+settings are read at host startup; changing them requires private host restart.
+S3 DDSKK_HOST_POLICY_SHADOW remains independently available for comparisons.
+No live settings or personal dictionary are modified by these runners.
+
+host-policy.el computes pure numeric answers on a separate managed heap.
+HP1 preserves request ID, policy epoch, engine epoch, publication generation,
+and bounded framing. S4 sends a fixed 16-hex audit fingerprint of context,
+which the numeric algorithms never inspect; the adapter keeps the bounded
+source label. Fingerprint collisions cannot alter a semantic decision. Kinds 6--12 extend the private numeric vocabulary;
+there is no additional public protocol, engine exchange, or storage writer.
+The native worker validates the complete reply envelope and decision range.
+The adapter consumes a managed answer, including an answer differing from the
+native branch, when that responsibility is enabled. Authority is exercised
+by a production-queue unit control which injects a valid differing answer.
+
+Calling Decide never waits for policy: it tries the queue mutex, looks up an
+answer, schedules copied work and immediately returns. Decisions are memoized
+by kind, engine epoch and numeric semantic inputs; context is an audit label,
+and publication generation remains an IPC envelope guard. Policy algorithms
+have no context-dependent branches. c participates in replacement, publication
+intent and payload decisions; other kinds ignore it. The managed policy returns the hit/miss TTL duration; the adapter measures
+elapsed time and applies expiry. Cache capacity is represented by its
+admission region; the native ordered cache retains the completed victim scan. Each policy/engine epoch
+prewarms the small finite domains once. Duplicate queued authority observations
+are coalesced; the original 64-request/128 KiB queue bounds remain unchanged.
+Shadow-only diagnostic replies never occupy authoritative memo slots; a unit
+control floods 100 diagnostic answers and verifies the authority survives.
+Managed answer lifetime is 30 s; retirement, malformed replies or crash
+clear all answers. A timed-out request invalidates only its numeric signature;
+independently validated signatures remain usable during a managed pause. Late replies are drained and discarded, never reused.
+Cold, expired, contended, saturated and failed requests use their native
+fallback independently. The policy worker logs timeout/late-discard and
+policy-fallback native reason=unavailable-or-stale counts by kind, plus
+policy-authoritative counts. Callers only increment atomic counters; they
+perform no policy diagnostic file IO. Startup/GC can reduce fresh authority
+coverage without making a client or TSF callback wait for policy.
+
+The adapter retains process jobs, pipes, TCP/file IO, engine transaction
+serialization, source bytes, index validation and mmap publication, flush and
+replace barriers, durable IDs, outbox retirement, FIFO and shutdown drain.
+Source policy selects the file/server tiers and file-first union; individual
+file paths and their configured order remain copied configuration inputs.
+Policy can defer a ready FIFO head; it cannot acknowledge an unsealed producer,
+reorder the FIFO, bypass a learning fence, or skip the storage barrier. Closing
+the queue drains native work. Replacement readiness/generation/fence checks
+remain mandatory even if policy requests a swap. Publication policy selects
+a typed intent/payload; one existing native Publish call verifies and publishes
+it. No moving Lisp data enters native callbacks or mapped indices.
+
+*** S4 gates, negative controls and remaining qualification
+run-engine-host-s4.ps1 has three fail-fast stages; it restores its environment
+and retains separate command logs under the selected build directory:
+- Equivalence: authority/queue controls, exact-runtime IPC on the additive
+  host-policy-inputs-v2 numeric boundary corpus, policy ERT, byte-exact frozen
+  fixtures and EOL-normalized source integrity; S2 ddskk/legacy replay with
+  all switches OFF, each switch separately ON, and all ON (14 replay gates).
+- Recovery: 20 real learning/publication samples on behavior-jisyo.utf8,
+  measured intent-to-publication p99 <=500 ms/max <=1 s, learn-to-publication
+  distribution, and a real 1500 ms publication-stall negative control. Nine
+  durable boundary rendezvous points times three owned processes times
+  crash/pause yield 54 cases; nine simultaneous policy+engine pauses bring the total to 63. Existing staged-crash and provider-outbox gates
+  remain required. Callback behavior during adapter suspension belongs to
+  the TSF end-to-end gate, not to pipe availability assertions.
+- EndToEnd: the entire existing S3 end-to-end stage with every authority
+  switch ON and kind-9 Lisp pauses; eight concurrent clients perform 80
+  conversions and 80 acknowledged local learning operations; stateline and
+  lattice ERT run separately. test-lattice-behavior is also required. The private
+  TSF callback IO probe hooks the IME modules' pipe and wait imports and
+  counts only OnTestKeyDown/OnKeyDown/OnKeyUp on the calling thread, excluding
+  worker IO and message pumps. It requires actual import coverage, zero
+  pipe IO/nonzero-time waits on warmed local keys and a real 1 ms blocking-wait
+  negative control. Its coverage is the named-pipe/wait APIs used by EngineClient,
+  not an assertion about arbitrary uninstrumented APIs. Existing 20 ms callback watchdogs and local
+  SPACE thresholds remain unchanged. The real large dictionary is required.
+
+policy_fault.h enables rendezvous only for diagnostics=1, an explicitly
+private NativeIME-test key, selected point and marker root. Points are
+outbox-before/outbox-flushed, stage-before/stage-flushed,
+checkpoint-replaced, cursor-flushed/cursor-replaced, ack-before/ack-written.
+The marker is bounded to 10 s; the test manipulates only verified processes
+in its own Job Object. The matrix records client-received ACK/STATE, restarts
+on the same private data, checks recovered provider rows/watermarks and local
+IDs, and checks idempotent local retry. It never retries provider COMMIT.
+Both lost and reversed acknowledged-ID controls must fail; corrupted expected
+policy output must fail the same IPC equivalence check. Existing malformed
+framing, index corruption, stage/outbox/storage-refusal controls remain in use.
+
+The unchanged-tree source verifier passed 140 responses/8 disk files/239
+sources. An in-memory alternate-EOL reproduction then failed all 239 raw source
+hashes. Source inventory v2 hashes CRLF normalized to LF for text sources;
+verification checks both EOL forms and rejects source corruption. Existing
+source-inventory-v1 and every frozen fixture stay byte-exact and unedited.
+The generator now emits the additive v2 inventory. It does not normalize
+response bytes, disk bytes or fixture hashes.
+
+Worker execution is distinct from full acceptance: CTest reached zero of ten
+bodies because private HKCU creation was denied. Claude must run registry/TSF
+checks and retain full evidence before marking S4 accepted. Exact commands,
+verbatim worker tails, failures and cleanup are in docs/contracts/CLAUDE-S4.org.
+The S4 ledger uses executable stage commands; no unrun evidence is hashed.
+
 ** S5: private deploy, rollback and hot swap
 Package adapter, policy runtime/image, engine and repository as one versioned
 snapshot; preserve host CLI and EngineHost launcher contract. Prewarm new policy
