@@ -3833,3 +3833,141 @@ $env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/
 powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-engine-session-v2.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
 ctest --test-dir build/w -C Release
 #+end_src
+
+
+* KR1: known-red key refusal fixture (2026-10-08)
+
+** Decision and evidence
+
+The fixture is wrong; no product or text-store changes are justified by the
+available evidence. Keep the original final strings (REFUSED: 無い書く値買う;
+ACCEPTED: 無い書く値買う書くう値) and the 25000 us watchdog.
+
+Stock DDSKK was executed under Emacs with a private dictionary and HOME by
+=build/w/kr1-stock.el=. Its three assertions passed: =KaKu= selects =▼書く=;
+an accepted next =u= commits that candidate and inserts =う=, leaving mode
+=hiragana=; =KaU= then selects =▼買う=. Source:
+=vendor/ddskk/skk.el:1249= confirms an active candidate before ordinary kana
+input; =vendor/ddskk/skk.el:2453= makes =x= previous-candidate only in candidate
+mode. Current native design: =TextService::CommitLocal= defaults confirmation
+to true (=windows/src/text_service.h:237=), queues fresh keys behind it
+(=windows/src/text_service.cpp:2628=), and restores the frontend/okuri snapshot
+when the final okuri edit is refused (=windows/src/text_service.cpp:3389=).
+This implements accepted-key preservation and pre-mutation rollback.
+
+Claude's supplied =build/claude-key-refusal-keys.log= shows the old script
+arming both DENYWRITEs while the corresponding keys have branch
+=confirmation-queue=. They overwrite one pending boolean on the store,
+instead of refusing the two intended final okuri writes. On draining, one
+accepted =u= commits the candidate; the subsequent SPACE and x reach ordinary
+input. REFUSED is actually =無い書く x値買う= followed by a newline and
+=う▽う= (COMP=11,13). Enter after the accepted repeated u is also a fresh
+application key once the candidate and kana have committed; it must not be
+expected to disappear. This log is evidence of the mistargeted fixture, not
+proof that a correctly targeted refusal loses or duplicates a key.
+
+** Scoped changes
+
+=windows/test-host/test-local-key-refusal.ps1= retains the late-rule mapping,
+KEYGAP0 async commit/next-reading burst, both lower/uppercase final okuri
+refusals, candidate navigation, and immediate accepted repeat. It flushes and
+settles before arming each denial. READY/DENIED checkpoints assert unchanged
+preedit and each bounded episode must contain exactly one actual denial,
+one local rollback, and the final-okuri key branch. The next scripted key
+retries that refusal once. The accepted repeat flows directly into the next
+reading without an application Enter. Final buffers/caret/ended composition
+are checked on unique, anchored lines.
+
+The common validator also supports =-LogPath= (no runtime or registry) and
+=-SelfTest= (synthetic checker evidence only). Three negative controls mutate
+the refused output to duplicate a kana, drop the accepted repeated kana, and
+duplicate that accepted kana. The same full validator must reject each at
+the buffer assertion; unchanged input or an unrelated error cannot pass the
+control. They run on actual logs too, after all positive assertions pass.
+
+** Gates actually run in this worker
+
+All commands ran from the worker checkout. Runtime was supplied externally
+as =$Runtime=; no absolute runtime path is stored in repository files.
+
+- Before editing, the unchanged command below failed first because this
+  fresh checkout had no tsf-host binary. After building, it failed at private
+  registry creation, before starting hosts. =build/w/kr1-before.log=, exit 1,
+  verbatim relevant tail:
+  =New-Item : Access to the registry key 'HKEY_CURRENT_USER\Software\NativeIME-test-b95f336b8b24' is denied.=
+  =+ FullyQualifiedErrorId : NativeCommandError=
+
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-key-refusal.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+#+end_src
+
+- =cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64=,
+  exit 0. Tail: =-- Generating done (0.2s)= and
+  The final build-directory line is recorded in the tool output (worker build/w).
+- =cmake --build build/w --config Release=, exit 0. Tail:
+  =tsf_host.cpp= followed by the worker tsf-host.exe output path and the
+  CMake custom-rule line (see tool output).
+  Existing MSVC C4244 warnings remain; no product source was edited.
+- =ctest --test-dir build/w -C Release=, exit 8. All 10 isolated wrappers
+  failed at private HKCU key creation; no test body ran. Verbatim summary:
+  =0% tests passed, 10 tests failed out of 10=.
+  Tail: =Errors while running CTest=;
+  =Use "--rerun-failed --output-on-failure" to re-run the failed cases verbosely.=.
+- Stock probe (initial probe incorrectly expected mode direct; corrected to
+  stock's hiragana and reran), exit 0, 3/3 assertions. Command:
+  =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L vendor/ddskk -L engine -l build/w/kr1-stock.el=.
+  Verbatim final tail: =PASS KR1 stock checks=3 accepted_repeat=preserved=.
+- Framework/stateline command below, exit 0, 31/31. Verbatim tail:
+  =Ran 31 tests, 31 results as expected, 0 unexpected (2026-10-08 19:07:15+0900, 0.080700 sec)=.
+- Lattice command below, exit 0, 14/14. Verbatim tail:
+  =Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-08 19:07:15+0900, 0.045378 sec)=.
+
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+- =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-key-refusal.ps1 -SelfTest=,
+  exit 0. Tail: =PASS key-refusal checker checks=14 negative_controls=3 harness_run=0=.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-key-refusal.ps1 -LogPath build/claude-key-refusal-keys.log=,
+  exit 1 as expected: the old log lacks the new LOWER_READY checkpoint. Tail:
+  =+ FullyQualifiedErrorId : Missing or repeated (?m)^AFTER LOWER_READY BUF=\[無い▽か\*k\] SEL=\d+,\d+ COMP=\d+,\d+\r?$=
+  =: build/claude-key-refusal-keys.log=.
+- The revised live command was attempted once, exit 1 at the same private
+  registry setup barrier (=build/w/kr1-after.log=):
+  =New-Item : Access to the registry key 'HKEY_CURRENT_USER\Software\NativeIME-test-1c4e30795f6c' is denied.=
+  =+ FullyQualifiedErrorId : NativeCommandError=.
+- =git diff --check= (with per-command safe.directory for the worker), exit 0,
+  no whitespace errors. Changes remain unstaged.
+
+** Required coordinator run; S2.3 remains unverified
+
+Run in this worker checkout, outside the worker's registry sandbox, with the
+provided runtime in =$Runtime=. The harness generates its own disposable
+NativeIME-test key and pipe, warms the engine, and cleans up only its children.
+No live deployment or registration is needed.
+
+#+begin_src powershell
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+ctest --test-dir build/w -C Release
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-key-refusal.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+# Optional independent audit of the log path printed by that PASS:
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-key-refusal.ps1 -LogPath $KeyRefusalLog
+#+end_src
+
+Do not mark S2.3 green from the synthetic checker, stock probe, or ERT alone.
+This worker cannot claim a successful revised TSF harness run. The registry
+barrier prevents confirming the new checkpoint snapshots and real callback
+maximum. No live IME settings, shared pipe, or other checkout were changed.
+
+Process check: all Emacs batch invocations and the build finished; harness
+registry failure occurred before host/runtime launch. No worker-started host,
+runtime, tsf-host, or Emacs process remains. Existing engine/Emacs/runtime
+processes were observed and left untouched.
+
+Final PowerShell parser gate used
+=[Management.Automation.Language.Parser]::ParseFile= on the revised script;
+verbatim tail: =PowerShell parser errors=0=. Final =git diff --check= exited
+0 with no whitespace findings; =git diff --cached --stat= was empty (0 staged
+files). These are source/checker checks, not TSF harness passes.

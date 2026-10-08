@@ -97,8 +97,11 @@ evidence: build/validation/eh2-s2/Soak.log sha256=7e6d44b8a41280ef8c71f9c4b7c8c3
 ** S2.3 End to end: native reference passes frozen corpus through TSF and Emacs plus SK1 and real session restart
 #+NOTE: Existing DDSKK behavior, Emacs/inline, session-v2 and skkserv runners; ctest is necessary but insufficient.
 #+NOTE: EH2: registry/TSF end-to-end handed to Claude, not passed in worker sandbox. CTest exit=8, 0/10 bodies reached because private HKCU creation denied. Pipe-only session restart=17, learning=16, crash=15, provider-outbox=18, SK1 provider=20 passed. Exact commands and binary paths in docs/contracts/CLAUDE-S2.org. EH2_RUNTIME and EH2_LARGE_DICTIONARY must be supplied; command remains executable/uncached until coordinator runs it.
-#+NOTE: Claude ran EndToEnd (build/validation/eh2-s2/EndToEnd-2.log): ctest, DDSKK behavior, Emacs integration, inline, session v2 and learning/crash/outbox, SK1, local conversion/two-source/navigation/overlay PASS; it stops at test-local-key-refusal, a known-red TL1 test-host test (fails on main since 55a9428, unrelated to EH2). The remaining runners (fallback, idle-spool, cleanup, host contracts, SKK-JISYO.L edit recovery and stress) were run separately and PASS. Stays not-done until key-refusal is fixed.
-pending
+#+NOTE: Native host unchanged across these runs (EH2 tree; KR1 changed only the key-refusal test script). EndToEnd-2.log: ctest, DDSKK behavior, Emacs integration, inline, session v2, learning/crash/outbox, SK1, local conversion/two-source/navigation/overlay PASS, stopping at the then-wrong key-refusal fixture. KR1 fixed the fixture (92d6e9e); key-refusal.log PASS. The remaining runners were run separately and PASS (tail-*.log).
+evidence: build/validation/eh2-s2/EndToEnd-2.log sha256=2949ae50d832edbb2cc7c0ae9341df126ff220ed5535e6c0a9c656ba0bd07cab
+evidence: build/validation/eh2-s2/key-refusal.log sha256=037288087baff6f8e25fa9de8bb8878c2946a17b493c7f977642a7f5eba3f537
+evidence: build/validation/eh2-s2/tail-test-host-contracts.log sha256=1c1fbcf87fb80ee15bf600e23e862e04e28e053d6535bf342ed063fe380c8704
+evidence: build/validation/eh2-s2/tail-test-local-state-stress.log sha256=4096bf287a2faf0559b961fc42c02c871f586854f433c2909afaecc40b1ff7ad
 
 * S3 Adapter and shadow policy
 ** S3.1 Native adapter preserves endpoint, IO, publication, storage and process contracts with versioned bounded policy IPC
