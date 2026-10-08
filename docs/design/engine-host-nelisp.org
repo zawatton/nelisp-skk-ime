@@ -1,0 +1,364 @@
+#+TITLE: Moving the DDSKK engine host to NeLisp
+#+DATE: 2026-10-08
+#+STATUS: DESIGN ONLY; implementation and qualification pending
+
+* Decision and evidence boundary
+Recommend option C: a separate NeLisp host-policy process behind a native
+Windows adapter, continuing to supervise the existing engine as a separate
+child. Keep the public host executable entry point and protocols compatible.
+Move policy by responsibility, rather than replacing main.cpp in one step.
+The adapter initially retains the existing native publication and durable
+learning workers as well as transport and process ownership. This is a
+strangler architecture, not a claim that the first adapter will be tiny.
+
+Source baseline: main 96f1ecfdf25fc29b142df912f567f976c8155a4a. Source anchors
+below refer to this checkout. Runtime anchors refer to the read-only sibling
+../nelisp-ime; that tree and the specified runtime were not built or tested.
+Source availability is distinct from availability in the deployed image.
+No implementation, live deployment, registry update, or runtime experiment
+is part of EH1. All numeric acceptance budgets below are proposed unless
+explicitly identified as existing contracts or historical observations.
+
+build/NC1-report.org:180 records Debian stop-the-world GC evidence; its
+work-item table and ordered migration plan are the basis for this decision.
+Reported pauses around 0.5--2.3 seconds and raw AOT kernels around 5--30 us
+versus C around 0.3--6 us are not Windows measurements. Faster raw kernels
+do not remove allocation, rooting, IO, or GC from general Lisp policy.
+docs/design/local-first-conversion.org:1859 describes the durable provider
+outbox closure; :2100 describes the interpreter/metadata lock split.
+The historical provider plain SPACE <=40 ms target remains not met
+(:2095); this design does not relabel that path as local or accepted.
+
+* Responsibility inventory
+In this table H means windows/host/main.cpp. Other paths are repository
+relative. C = TSF core; E = Emacs integration; S = Sumi/settings/indicator;
+D = deployment/rollback and launchers; T = tests. Latency describes existing
+mechanisms, not an assertion of measured percentiles. Durability applies to
+acknowledged learning, not volatile composition/session state.
+
+| Responsibility and source anchor | Latency / ordering contract | Durability / failure contract | Dependents |
+|----------------------------------+-----------------------------+-------------------------------+------------|
+| Logging, rotation, QPC and child CPU/memory diagnostics, H:53, :69, :100, :304, :1538, :2629 | QPC measures phases; scheduling uses GetTickCount64; diagnostics must not become callback IO | Best effort log, not a learning journal | D,T |
+| Shared state and owner mirror, H:111, :122, :160 | Native writer mutex and versioned map; local owner must retain precedence; publish accepted state with input PID | Volatile named mappings; never recovery authority | C,E,S,T |
+| Pipe/env naming and per-pipe singleton, H:181, :206, :2700 | One public endpoint owner; loser exits success; first instance guards ownership | OS lifetime releases mutex; current mutex creation failure logs and continues, an explicit risk | C,E,S,D,T |
+| Engine choice, runner path and registry/environment bridge, H:210, :229, :278, :395 | Resolve selection and settings before child spawn; preserve env precedence and engine-specific entry | Configuration authority is registry/env, not heap snapshot | C,E,S,D,T |
+| Child stdio, UTF-8 command line/env, job and start/stop, H:291, :320, :334, :348, :361, :465, :2727 | Synchronous engine reader; waitable timer/2 ms polling; Job Object owns active and warming children | Kill-on-job-close prevents orphan engine; inherited handles must be bounded | D,C,E,T |
+| Dictionary config and source ordering, H:561, :608, :694, :718, :743, :800, :846 | Background built-in loading; built-in hits avoid TCP; preserve source/candidate order and annotations | Source files authoritative; failed/not-ready tier may fall through | C,E,S,T |
+| Dictionary preview and encoding, H:905, :925, :942, :1219, :1313 | PREVIEW uses immutable built-ins without interpreter lock; provider expressions stay opaque | Preview never mutates sessions or certifies provider expressions as local literals | S,C,E,T |
+| skkserv TCP connect/exchange and optional spawn, H:953, :970, :1041, :1087 | 150 ms connect per resolved address; 150 ms exchange, 64 KiB response bound; DNS not bounded by these timers | Socket failure is miss/retry; spawn command is configuration, never wire input | C,E,S,T |
+| SK1 cache/job generation, H:1124, :1264, :1286 | LOCAL SERVER Query wait=0 returns PENDING; provider miss waits <=200 ms; 256 entries; hit TTL 60 s, miss 2 s; stale config generations discarded | Cache ephemeral; source identity changes invalidate pending/completed jobs | C,E,T |
+| Interpreter transaction versus metadata ownership, H:1242, :1245, :1259 | One outstanding engine exchange; SERVER wait releases metadata, not interpreter ownership; no reply interleaving | Child failure disconnects transaction; no accidental retry of non-idempotent edits | C,E,T |
+| Protocol negotiation/framing/relay, H:1332, :1395, :1421, :1440, :1513 | WIRE UTF8 1 / LEARNING 2; STATE2 and LEARNING2 byte lengths; PHASE, SERVER, LOCAL-PUBLISH intermediates; <=64 exchanges | Old engine negotiation fallback retains legacy writer; malformed frames fail closed | C,E,D,T |
+| CONVERT-KEYS replay and keyless convert, H:1661 | Preserve existing preparation/replay semantics; do not advance candidate twice | State volatile; restart restores client state through existing session protocol | C,E,T |
+| Legacy input ownership, scoped sessions and client death, H:1743, :1751, :1844, :1875, :2535, :2648 | Suppress delayed RESET stealing another composition; track composing sessions and owner; close only owned sessions | Sessions not durable; persistent v2 lost/prepared state rules belong to engine | C,E,T |
+| Replacement, reload/switch, registry watch, H:1861, :1903, :2047 | Warm replacement outside active transaction; learning fence and generation recheck before swap; defer active composition; restart backoff 1--30 s | Replacement loads durable jisyo; failed warmup preserves old child; discard stale switch generation | C,E,S,D,T |
+| Idle engine GC and activity accounting, H:1729, :1829, :1851, :2106 | Pending requests/activity/composition inhibit idle GC; explicit GC still serializes engine | GC is not a readiness/ping guarantee; keep outside core callback | C,E,T |
+| Local enablement/source identity and LF5 publication, H:2211, :2244, :2332 | Metadata-only copy for v2, native mirror scan outside lock; 50 ms poll, 200 ms coalescing; legacy SNAPSHOT requires interpreter gate | Candidate revision and durable watermark separate; immutable base plus overlay; keep old mapping until new valid publication | C,E,T |
+| Local index format/security/publication/cleanup, windows/src/local_index.cpp:31, :47, :87, :187, :288, :329, :378, :387 | Bounded mapped views; publish current after index files; core retains base/overlay generation leases; cleanup off input path | Flush files, replace current with WRITE_THROUGH; enforce ACLs/validate mapping; do not remove leased generations | C,E,D,T |
+| LOCAL spool recovery/leases, H:2263, :2317 | Separate recovery thread; exclusive lease distinguishes dead producer from live owner; ACK wait cannot stall publication | Replay operation IDs idempotently; remove spool only after durable ACK; reject torn records | C,T |
+| FIFO learning mirror/checkpoint/stage recovery, windows/host/learning_queue.h:25, :45, :60, :100, :115, :121, :243, :292 | Reserve/seal producer; worker FIFO, overlay generation and fence; waits outside engine metadata lock; drain on stop | Flush staged/checkpoint data before replace; reflush recovered stages; durable metadata/cursor precedes retirement | C,E,T |
+| Provider durable outbox, windows/host/provider_outbox.h:16, :31, :58, :75, :105, :127, :157; H:1492, :1614 | STATE waits for small sealed producer append, not full checkpoint; local ACK still waits for worker barrier | Append+flush before STATE; ERR LOCAL STORAGE on failure; replay ordered IDs; durable cursor before truncation; torn append cannot be silently accepted | C,E,T |
+| Pipe server, host-local commands and reply barrier, H:2176, :2197, :2456, :2483, :2623 | Current server is blocking message-mode IO, one detached thread/client; cached rules/current/preview bypass interpreter; shutdown wake connection | Disconnect/session cleanup; pipe flush is transport behavior, not disk durability; never ACK failed storage | C,E,S,D,T |
+| Startup recovery/readiness and shutdown lifetime, H:2670, :2743, :2814, :2836, :2890 | Recover outbox before accepting requests; start background workers; join maintenance, stop child under transaction gate, drain learning | Outbox recovery failure refuses startup; squatting clients must not hold process exit hostage | C,E,S,D,T |
+
+Important external boundaries: windows/src/engine_client.cpp:53, :226 uses
+overlapped client IO with caller timeouts and cancellation. The server is
+not currently overlapped (H:2176). windows/src/local_conversion.cpp:214
+runs skkserv pipe polls on a worker (100 ms transfer waits), not the key
+callback. windows/src/text_service.cpp:2365 launches the configured host.
+engine/ddskk-engine.el:1228, :1302, :1395 owns v2 session dispatch, negotiation
+and learning emission; engine/skk-local-conversion.el:110, :131 owns save
+and idempotent LOCAL LEARN semantics. Preserve these ownership boundaries.
+windows/scripts/deploy-live.ps1:361, :465 and rollback-live.ps1:39 expect
+EngineHost/Repository selection and the host CLI. They were read, not run.
+
+* Architecture options and GC isolation
+| Option | Advantages | Costs and reason for disposition |
+|--------+------------+----------------------------------|
+| A: host logic inside existing engine | One managed heap/process; internal calls can avoid host-to-engine IPC | GC stops policy and engine together; engine replacement also replaces transport; storage/network failures share DDSKK state. Reject as first move. |
+| B: separate all-NeLisp host | Isolates engine from policy GC; simplest ownership in Lisp | Still needs qualified named-pipe/security/durability/job bindings; cached host commands and publication pause with host GC. Useful eventual target, not established today. |
+| C: separate NeLisp policy plus native adapter | Isolates both managed heaps; preserves proven external OS boundaries and unchanged clients; permits per-responsibility rollback | Extra IPC, two managed startup/heap costs, initially substantial adapter. Recommended until OS1 and VAL1 qualify replacements. |
+
+Topology (proposed): TSF core -> mapped base/overlay on local SPACE; TSF
+provider worker or Emacs -> native public pipe adapter -> NeLisp policy ->
+existing NeLisp DDSKK engine. Adapter owns both children in its Job Object.
+Policy selects sources, cache/restart decisions and publication intents;
+adapter owns handles, verified immutable bytes, stable generation/epoch
+numbers, journal IDs, flush/replace barriers, cached public replies and
+bounded queues. Initially the adapter also owns the SK1 worker and learning
+FIFO; moving those algorithms requires independent qualification.
+
+No native IO callback enters Lisp. Exchange copied, bounded messages with
+explicit request ID, child epoch and publication generation over a private
+channel. Never share moving Lisp pointers or Lisp-owned mutexes with native
+IO/publication workers. Retain one interpreter transaction at a time; a
+policy event loop is sufficient, and concurrent Lisp execution is unnecessary.
+Cap queue bytes and requests; isolate maintenance from relay scheduling.
+On policy pause, the adapter serves immutable cached replies and keeps old
+mapping generations. It does not synchronously consult policy for local
+conversion, publication of an already validated intent, durable append or
+timeout/cancel. Uncomputed policy results can be stale, not magically fresh.
+After timeout, drain/discard the matching reply or replace that channel;
+never let a late response satisfy a later request. Reconcile durable IDs
+before replay. Non-idempotent session editing is not blindly retried.
+
+The local guarantee is conditional on an already published valid dictionary
+and supported/certified local feature. SPACE, candidate navigation, local
+commit/cancel and reading edits use core state and mapped bytes. Learning
+enters the core's background durable spool. Mapping refresh/publication and
+network enrichment are background work. No host/engine lock, pipe wait, TCP,
+flush, GC or policy allocation may occur in the TSF key callback. If a mapping
+is absent or a feature needs DDSKK (registration, expressions, complex edits),
+the provider worker handles it asynchronously; this is a different latency
+class. Ordinary keys must continue while that worker waits. Preserve callback
+ownership and stale-result guards, rather than invoking a synchronous fallback.
+Emacs provider conversion can wait for its worker/service; it does not inherit
+the core's local guarantee merely because the host was rewritten.
+
+** Request budgets and failure semantics
+Budgets cover adapter receipt through reply, with queue wait included; measure
+cold/warm separately and publish sample count, p50/p99/max, not averages alone.
+These are stage acceptance targets, not edits to existing client deadlines.
+Inventory every actual caller timeout in S2 before wiring a new implementation.
+
+| Request/path class | Proposed target and deadline | Behavior during pause / durable boundary |
+|--------------------+------------------------------+-------------------------------------------|
+| Local core SPACE/navigation/cancel/edit | Existing local Space-to-candidate p50 <=30 ms; retain existing total callback watchdog <=20 ms | Zero synchronous host requests; pinned generation works throughout 3 s GC injection |
+| ENGINE CURRENT, ROMAJI RULES 1, PREVIEW, DIAG CHILD-PID | Warm adapter p99 <=10 ms, max <=50 ms on specified unloaded fixture | Serve cached/native state; not-ready rules retain existing ERR; preview need not wait for engine |
+| LOCAL SERVER | Cache reply/PENDING p99 <=10 ms, max <=50 ms | No TCP wait in request; worker retry retains 100 ms client transfer limit; never block local SPACE |
+| ENGINE SET/SWITCH/RELOAD, SHUTDOWN acknowledgement | p99 <=10 ms, max <=50 ms to accept, completion separate | Existing OK SWITCHING/RELOADING is intent, not readiness; shutdown durability drain is separately observed |
+| SESSION OPEN/CLOSE/RESET, HELLO/STATUS, WIRE, KEY/CONTROL, CONVERT/SYNC/FEED/REGISTER, PREPARE/SPACE v2 and legacy CONVERT-KEYS | Warm host overhead p99 <=10 ms above native reference; end-to-end distributions must meet each existing gate; overall worker deadline <=30 s or smaller caller limit | Serialized engine/policy can pause; callback never waits. Cancel/disconnect on expiry with existing client recovery; no invented success or automatic edit replay |
+| Provider SERVER relay | Preserve <=200 ms cache wait and <=64 intermediate exchanges | Metadata released while waiting; interpreter remains reserved; TCP/DNS on independent worker |
+| LOCAL LEARN / LOCAL ACK | Worker deadline <=30 s or smaller caller limit; never a callback budget | ACK only after existing checkpoint/barrier; timeout retains producer spool and idempotent ID |
+| Provider STATE carrying LEARNING2 | Producer append p99 <=10 ms on defined storage fixture, measure full STATE separately | Durable outbox append precedes STATE; failure returns ERR LOCAL STORAGE. No claim of durable checkpoint at STATE |
+| GC / legacy snapshot / maintenance requests | Worker-only <=30 s deadline; no key-path latency promise | Explicit GC may delay engine sessions; retain existing idle rules; adapter caches/publication stay independent |
+| Initial ready / replacement complete | Cold 45 s allowance plus warmup; proposed 60 s readiness deadline, then backoff | Keep old ready engine; cold time never charged to core local callback; no ready signal before replay/fence |
+| Overlay publication | p99 <=500 ms after a validated native intent, max <=1 s on fixed local fixture | Existing 200 ms coalescing/50 ms poll retained. Intent acquisition during GC may be delayed by pause; report both intent-to-publish and learn-to-publish |
+| Durable watermark publication | <=1 s after successful durable checkpoint on fixture | Never advance beyond durable storage; same learning revision can republish watermark |
+
+DNS resolution, slow disks, hostile clients and queue saturation are explicitly
+outside the unloaded percentile fixture but inside cancellation/recovery tests.
+Native supervision must enforce finite work deadlines despite Lisp pause. Under
+saturation use existing PENDING/miss/error semantics where defined; otherwise
+close a failed transport and let existing recovery handle it. Any new BUSY or
+capability reply requires explicit version negotiation, not a silent wire edit.
+
+* Windows runtime capability assessment and NC1 mapping
+These are source findings, not Windows execution receipts. The supplied engine
+runtime must be passed as Runtime/EngineExecutablePath or an environment
+variable, never embedded as an absolute repository path. Loading a helper in
+GNU Emacs is not proof that it is linked into the Windows NeLisp image.
+
+| Contract | Existing source in ../nelisp-ime | Still needs / initial adapter ownership | NC1 |
+|----------+---------------------------------+----------------------------------------+-----|
+| File IO and anonymous child pipes | lisp/nelisp-stdlib-os.el:1550, :1589, :1615, :2165 implement CreateFile/ReadFile/WriteFile/CreatePipe; scripts/nelisp-standalone-build.el:13286 discusses reader file IO | Qualify exact image, partial reads/writes, inheritance, UTF-16 paths, handle exhaustion; keep child stdio adapter | OS1,VAL1 |
+| Named-pipe server, overlapped cancel, security | OS layer has overlapped directory watches (:4778, :4824), not a found CreateNamedPipe server API; current host uses default security and blocking IO | Add typed message-mode accept/read/write/cancel, ERROR_MORE_DATA handling, first-instance guard, explicit security descriptor including intended low-IL clients; adapter retains public endpoint | OS1,CW2,VAL1 |
+| File mmap/view lifetime | OS layer :2071, :2104, :2140 uses CreateFileMapping/MapViewOfFile/unmap | Qualify offsets/alignment, bounds, read-only lifetime, leases, invalid files and Unicode; keep local_index builder/current swap/cleanup native | OS1,RW2,VAL1 |
+| Atomic replace and durable storage | Generic rename exists in runtime; lisp/nelisp-cc-bi-nl-write-file.el:135 explicitly says no fsync | No qualified fsync/FlushFileBuffers plus WRITE_THROUGH replace contract found in OS layer. Preserve flush, append rollback, stage reflush, cursor ordering and storage refusal in adapter; generic close/rename insufficient | OS1,VAL1 |
+| TCP client/state machine | OS layer :3224, :3239, :3284, :3638, :4127 implements Winsock/nonblock/socket/options/poll | Qualify fragmented SKK response, EUC/UTF8 conversion, timeout and cancellation including DNS; cache identity and bounded job state may move to Lisp later, blocking network remains native initially | OS1,VAL1 |
+| Spawn, wait, kill and restart | OS layer :1487 CreateProcess, :3032 wait, :3097 kill, :4629 pidfd-like handles | Job Object tree ownership, suspended-child assignment, inherited handles and warming replacement/fence semantics not established by generic spawn; adapter enforces cleanup/deadlines | OS1,RW4,VAL1 |
+| Threads/event loop | OS layer :1375 accepts native entry/parameter pointers for CreateThread; :1397 joins; :4200 polls sockets/synthetic process/event/timer/watch descriptors | Native thread handles do not prove concurrent Lisp/foreign-thread rooting. Poll excludes ordinary file/anonymous-pipe fds (EBADF). Use single Lisp event loop with adapter wake messages, not unqualified shared-heap worker threads | OS1,RW1,CW2,VAL1 |
+| Timers/watchers/config | OS layer :5609, :5645 waitable timerfd; :4778 directory watch | Qualify cancellation/clock domains and registry change watcher; keep registry/log/QPC/state mirror native first | OS1; OS2 only for future UI migration |
+| Deployment image/AOT | NC1 Debian raw kernels/COFF experiment, not qualified Windows host application | First use existing runtime VM/image. Closed Windows native graph and smaller relocatable policy image are later optimizations, not first-stage blockers or substitutes for OS tests | CW1,RW4,VAL1 |
+
+CW1 builds the offline Win64 application closure; CW2 qualifies typed adapter
+entries without unrooted pointers. RW1 matters only if embedding/reentrant
+foreign Lisp callbacks are introduced; avoid that in C. RW2 applies to future
+raw index kernels; mapped dictionary bytes must remain outside the Lisp heap.
+RW3 bounded managed GC is not a prerequisite for core isolation, but is a
+prerequisite for promising tighter managed service tails. RW4 reduces the two
+managed processes' startup/memory cost. OS1 is the migration's blocking work.
+OS2 concerns Sumi/Win32 hooks and COM and is deliberately not pulled into this
+host project. PK1 DLL admission/hot-unload is not solved by an out-of-process
+host; preserve native core/shim ABI and existing generation leases. VAL1
+qualifies real Windows latency, lifetime, Unicode and deployment artifacts.
+Retiring a native adapter component requires OS1/VAL1 evidence for that exact
+contract, not just fboundp, successful import, or a raw kernel benchmark.
+
+* Protocol and storage freeze
+Freeze public message-mode pipe semantics, CLI ENGINE_EXE [REPOSITORY], env and
+private-registry overrides, error tokens, UTF-8/codepoint conversion, STATE/STATE2,
+WIRE UTF8 1, WIRE LEARNING 2, LEARNING2 byte framing, LOCAL commands, scoped
+SESSION OPEN 2 / V2 / PREPARE / SPACE / LOST recovery, legacy negotiation and
+CONVERT-KEYS. Freeze local-index versions, capability refusal rules, base/overlay
+layout, current manifest, lease cleanup and producer spool/outbox/checkpoint/
+watermark formats. Unknown capabilities keep legacy behavior. An internal
+adapter-policy protocol gets its own version and size bounds; it must not leak
+onto the public pipe. Build a fixture manifest with bytes and hashes in S2.
+
+Preserve three distinct orders: durable producer intent before provider STATE;
+FIFO checkpoint plus durable operation metadata before LOCAL ACK/retirement;
+immutable index bytes before current manifest publication. A candidate revision
+may publish before the checkpoint, but its durable watermark must not. Do not
+confuse volatile session checkpoints with durable dictionary checkpoints.
+One storage writer/ID authority survives policy restart. Validate incoming
+intent content but choose paths only from trusted configured roots. Do not let
+wire input choose a temporary file, spawn command or privileged mapping name.
+
+* Migration and end-to-end acceptance
+Every stage below ends with a real end-to-end criterion. EH1 only completes
+the written specification checks; even S1's end-to-end baseline gate remains
+pending. Existing tests are reused without lowering thresholds. A later
+implementation lane must first reproduce any newly identified failing gate
+on its unchanged tree. Here no failing behavioral check was supplied.
+
+** S1: design and unchanged-native baseline
+Inventory caller deadlines/config/ACL consumers and pin source/runtime hashes.
+Run native baseline in private registry/pipe/data roots, with the exact supplied
+runtime parameter, cold wait 45 s and first lattice warmup
+=a i SPACE WAIT3000 ENTER=. Compare phase traces and counts to recorded source
+contracts. End-to-end: unchanged native host passes local TSF and Emacs inline
+matrix with durability recovery, and has a measured host request distribution.
+This baseline is not demonstrated by the design inventory alone.
+
+** S2: freeze interchangeable external contracts
+Capture byte fixtures and semantic oracles for every request class, old/new
+engine negotiation, malformed/truncated UTF-8 and partial transport. Audit
+caller total versus per-transfer deadlines and client cancel behavior. Add
+private pipe soak: 32 clients, 100,000 completed requests, fragmentation,
+squatting clients, abrupt disconnect, queue saturation and endpoint collision;
+zero cross-session replies, lost accepted durable IDs or leaked children.
+End-to-end: unchanged native binary runs the frozen corpus through both TSF
+and Emacs paths plus private SK1 and session-v2 tests. Adapter cannot advance
+until it passes the same corpus, not merely a new parser unit test.
+
+** S3: adapter and shadow NeLisp policy
+Factor native contracts without changing public behavior. Shadow policy consumes
+copied events and proposes cache/source/restart/publication decisions; native
+remains authoritative and the shadow cannot write a second learning journal.
+Fault inject policy crash, malformed intent, 3 s GC pauses and channel overflow.
+Measure native/managed private memory and warm/cold startup. End-to-end: adapter
+with shadow policy passes baseline TSF + Emacs + durability + soak while local
+keys continue during repeated policy pauses. Reject on callback wait or stale
+result adoption. Shadow parity is semantic, not identical wall-clock order.
+
+** S4: incremental authoritative policy
+Switch one responsibility at a time: config/source policy, SK1 cache decisions,
+replacement scheduling, publication planning, then learning scheduling. Keep
+native IO, storage barriers, validation and publication commits authoritative;
+compare each with native reference, preserving source order and session state.
+Inject pause separately in policy and engine, and both together for 3 s;
+concurrently exercise local SPACE/edit/cancel, provider registration, Emacs
+inline, Sumi cached reads and learning bursts. Publication latency starts at
+validated intent and is reported also from original learn acceptance.
+End-to-end: all existing suites and new host gates pass with NeLisp policy
+selected, with no host wait on key callbacks and no loss of acknowledged
+learning through crash/restart. Failed policy reverts to native policy only
+after epoch/cursor reconciliation; never two writers or parallel engine relay.
+
+** S5: private deploy, rollback and hot swap
+Package adapter, policy runtime/image, engine and repository as one versioned
+snapshot; preserve host CLI and EngineHost launcher contract. Prewarm new policy
+privately, reject ABI/internal-protocol/image mismatches, and retain old bundle.
+Whole-host replacement is a brief public-pipe disconnect/reconnect, not two
+simultaneous endpoint owners. Drain/fence accepted writes, release old singleton
+and endpoint, acquire new endpoint, replay journals, publish ready; clients use
+existing lost-session and durable-ID recovery. A killed old host instead relies
+on durable replay. No claim of transferring a live composition across hosts
+without proof. Child hot swap retains existing warmup/composition/fence guards.
+End-to-end: in private roots, swap old -> new -> old during composition, local
+learning, provider outbox append and blocked worker; recover exact dictionary
+order and IDs, continue TSF/Emacs input, retain leased mappings, reap every owned
+process. Live rollout requires a separate coordinator-authorized round.
+
+** S6: qualify and optionally shrink native adapter
+Replace one OS1 component only after exact Windows image testing; CW1/RW4 may
+reduce policy cost. A stage can finish with justified retained native contracts:
+full Lisp replacement is not a mandatory success condition. Record ownership
+and byte/latency/durability equivalence for each retained or retired component.
+End-to-end: production-shaped private multi-app run using SKK-JISYO.L, adversarial
+GC/network/storage/client lifecycle, cold restart and bundle rollback passes
+VAL1 with bounded service tails, zero callback host waits, acknowledged-ID loss
+or owned-process leaks. Future live proof is separate, not inferred here.
+
+** Existing gate matrix and reproduction recipes (not executed in EH1)
+Future lanes may write artifacts only under their authorized build directory.
+Set private NATIVEIME_REGISTRY_KEY, DDSKK_PIPE_NAME, LOCALAPPDATA,
+DDSKK_USER_JISYO and local-index root; retain DDSKK_HARNESS_DIAGNOSTICS=1.
+Inspect each script's parameters and cleanup before running: some helpers have
+live defaults. Never invoke deploy-live, rollback-live, register or install
+scripts in worker qualification. Use scoped private deployment test helpers.
+
+#+begin_src powershell
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+ctest --test-dir build/w -C Release
+pwsh -NoProfile -File windows/test-host/test-engine-session-v2.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+pwsh -NoProfile -File windows/test-host/test-sk1-skkserv.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+pwsh -NoProfile -File windows/test-host/test-engine-learning-crash-v2.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+Use windows/test-host/run-harness.ps1 with the lane's DLL/tsf-host/engine-host
+paths and EngineExecutablePath=$Runtime, never another build's binaries.
+The supplied expected ERT sizes are 31 stateline/conformance and 14 lattice;
+record actual counts and failed cases rather than assuming those counts pass.
+
+| Gates | Stages | Acceptance use |
+|-------+--------+----------------|
+| ctest including host_utf8_protocol_test.cpp:53 and native learning/index tests | S1--S6 | Framing, mutex separation, FIFO, outbox, corrupted index negative controls; record actual test count |
+| test-ddskk-behavior.ps1, test-lattice-behavior.ps1 and engine semantic tests | S1,S2,S4--S6 | DDSKK oracle/registration/expression/okuri parity, preserve provider behavior |
+| test-hot-swap.ps1, test-core-hot-swap.ps1, test-core-deployment.ps1, test-scoped-rollback.ps1 | S3--S6 | Private child/core/bundle compatibility, stale work and generation lifetime |
+| test-emacs-integration.ps1, test-inline-preedit.py, inline-emacs-subscriber.el; ERT commands above | S1--S6 | Real Emacs integration/inline plus framework semantics; ERT alone is insufficient |
+| test-local-{conversion,two-source,navigation,overlay,key-refusal,fallback,edit-recovery,idle-spool,cleanup}.ps1 | S1,S3--S6 | Local callback isolation, learned overlay/watermark, unsupported fallback, leases/idle IO |
+| test-local-state-stress.ps1 with real SKK-JISYO.L | S1,S3--S6 | Existing 20 ms callback watchdog and real dictionary memory/publication load, no weakened threshold |
+| test-engine-session-v2.ps1, test-engine-learning-v2.ps1 | S2--S6 | Interleaving, prepared keyless SPACE, LRU eviction, real engine restart, idempotent retry |
+| test-sk1-skkserv.ps1, test-sk1-provider-relay.ps1 and sk1-skkserv-fixture.py | S2--S6 | Hit/miss/source order, pending enrichment, bounded provider relay, config generation invalidation |
+| test-engine-provider-outbox-v2.ps1, test-engine-learning-crash-v2.ps1 | S1,S3--S6 | STATE append barrier, locked worker host death, torn append/cursor/stage recovery, exact learned order |
+| New pipe soak, GC isolation, publication latency and crash/restart gates | S2--S6 | Specifications below; gate files do not yet exist and remain pending |
+
+New crash gate enumerates failure before/after append flush, candidate publication,
+checkpoint flush, replacement, cursor flush, outbox truncation and ACK write;
+also kill adapter, policy and engine separately. For every received ACK or
+learning-bearing STATE, reconstruct exact accepted operation IDs and dictionary
+order after restart. Lost reply permits duplicate retry but not duplicate learning.
+Force storage refusal, corrupt/truncated frames and incompatible internal versions;
+the damaged input must actually fail. Pause gate records key callback stacks and
+wall tails during repeated 3 s managed pauses, checks local published candidates
+and typing-ahead, and rejects a deliberately synchronous-host control. Publication
+gate retains old mapped readers during base+overlay update and same-revision
+watermark republish; reject torn current/index files and clean only unleased files.
+Restart gate verifies bounded backoff, no fork storm, no second endpoint owner,
+stale epoch discard and Job Object cleanup. All gates log commands, exit codes,
+verbatim tails, counts, runtime/bundle hashes, distributions and owned PID cleanup.
+
+* Risks and open questions
+- The exact runtime image may omit OS helpers visible in source. Qualification
+  must use the supplied Windows artifact and list loaded modules and identities.
+- Default named-pipe security is not an explicit least-privilege contract.
+  Which low-IL/AppContainer clients and Sumi state-map ACLs must be supported?
+  Test current access first; tightening ACLs requires compatibility evidence.
+- Two managed heaps increase memory and cold startup (13--45 s engine load).
+  Measure private bytes and warmup, including both processes, before AOT work.
+- Threads accepting native entry pointers do not establish Lisp thread safety.
+  Keep adapter callbacks independent; embedding would reopen RW1/CW2 risks.
+- DNS and detached blocking client IO have weak shutdown bounds today. Adapter
+  cancellation must improve boundedness without changing public message semantics.
+- Storage flush/rename reliability depends on filesystem and device behavior.
+  Crash tests establish the supported local Windows filesystem contract, not
+  power-loss guarantees on arbitrary network shares or dishonest devices.
+- Policy GC may delay fresh source/config intents even if cached reads and
+  existing mappings continue. Distinguish service freshness from key latency.
+- Host restart can lose volatile provider composition; session restoration and
+  pending edits need exactly the current client recovery rules and focused tests.
+- Are all Emacs/Sumi cached requests suitable for native cached replies? Freeze
+  state-owner/PID/version rules before moving publication policy.
+- Queue byte limits, fair scheduling, soak resource ceilings and supported storage
+  fixture must be pinned in S2. Never discard acknowledged durable operations to
+  meet a queue limit or percentile budget.
+- Legacy learning engines still require interpreter snapshots and their own
+  synchronous writer. Preserve fallback until their retirement is explicitly scoped.
+
+* EH1 reproduction and validation record
+No failing behavioral gate was identified in the brief. On the unchanged tree,
+the read-only existence check for the two requested deliverables exited 1:
+#+begin_example
+FAIL missing docs/design/engine-host-nelisp.org
+FAIL missing tools/ai/engine-host-nelisp-progress.org
+EH1 unchanged-tree deliverables: checked=2 missing=2
+#+end_example
+This reproduces missing design artifacts only. NC1 saved Debian results and
+historical IME logs were read, not rerun. No ctest, ERT, host, engine or TSF
+harness was run in this design-only round. The two-file write scope excludes
+build/test artifacts. Later acceptance remains pending in the companion ledger.
