@@ -209,7 +209,7 @@
     "windows/test-host/test-local-edit-recovery.ps1": "041a28152ce7ffdab99dd91e7f011461500a99bf6ff6b40cd95497e00d4508a7",
     "windows/test-host/test-local-fallback.ps1": "c1b2e8fee13f22443c6809537cecec77acc62f4e29323e6a1af234fd4b1a7e8b",
     "windows/test-host/test-local-idle-spool.ps1": "5153973c243e17d70f1154666f50b7b5c9be084bb76a3c108ff2cbc687b62280",
-    "windows/test-host/test-local-key-refusal.ps1": "465c2929046715fd4c4797be60e40d833ded29da28e89ec4174e7d87f86bcd9e",
+    "windows/test-host/test-local-key-refusal.ps1": "65c87036c51108c309d357855d06c3dab277b6c6c3c14c84fdc078c20ab4f0d0",
     "windows/test-host/test-local-navigation.ps1": "a8bef54605e759326fef69ebdbc7af61ad021e0ab80591265cbcac26427c1af3",
     "windows/test-host/test-local-overlay.ps1": "77653c3de2529dc0aaac5f89d8a34f2f4ac5e99055cd3360d79f35cce91bb619",
     "windows/test-host/test-local-state-stress.ps1": "fc5ad60655828f738d0f2f0b345b2485955fe62eee59ee31c79ccc3be1c5edf9",
@@ -4318,32 +4318,32 @@
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/test-host/test-local-key-refusal.ps1:16",
+      "source": "windows/test-host/test-local-key-refusal.ps1:96",
       "declaration": "foreach($name in @('DDSKK_DICTIONARY_FILES','DDSKK_HARNESS_DIAGNOSTICS','NATIVEIME_TEST_LOCAL_MAP_DELAY_MS')) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/test-local-key-refusal.ps1:16",
+      "source": "windows/test-host/test-local-key-refusal.ps1:96",
       "declaration": "foreach($name in @('DDSKK_DICTIONARY_FILES','DDSKK_HARNESS_DIAGNOSTICS','NATIVEIME_TEST_LOCAL_MAP_DELAY_MS')) {"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_MAP_DELAY_MS",
-      "source": "windows/test-host/test-local-key-refusal.ps1:16",
+      "source": "windows/test-host/test-local-key-refusal.ps1:96",
       "declaration": "foreach($name in @('DDSKK_DICTIONARY_FILES','DDSKK_HARNESS_DIAGNOSTICS','NATIVEIME_TEST_LOCAL_MAP_DELAY_MS')) {"
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/test-host/test-local-key-refusal.ps1:20",
+      "source": "windows/test-host/test-local-key-refusal.ps1:100",
       "declaration": "$env:DDSKK_DICTIONARY_FILES=$personal+';'+$shared"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/test-local-key-refusal.ps1:21",
+      "source": "windows/test-host/test-local-key-refusal.ps1:101",
       "declaration": "$env:DDSKK_HARNESS_DIAGNOSTICS='1'; $env:NATIVEIME_TEST_LOCAL_MAP_DELAY_MS='3000'"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_MAP_DELAY_MS",
-      "source": "windows/test-host/test-local-key-refusal.ps1:21",
+      "source": "windows/test-host/test-local-key-refusal.ps1:101",
       "declaration": "$env:DDSKK_HARNESS_DIAGNOSTICS='1'; $env:NATIVEIME_TEST_LOCAL_MAP_DELAY_MS='3000'"
     },
     {
