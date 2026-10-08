@@ -139,6 +139,11 @@ std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record, un
   const char lower = static_cast<char>(std::tolower(static_cast<unsigned char>(key)));
 
   if (record) raw_keys_.push_back(static_cast<char32_t>(key));
+  // DDSKK punctuation can trigger auto-start conversion while a reading is
+  // open. Its configurable policy belongs to the provider, not this parser.
+  // Retain the triggering key for the complete provider handoff.
+  if (!continuous_preedit_ && preedit_ && record &&
+      std::ispunct(static_cast<unsigned char>(key))) return std::nullopt;
   if (key == 127 && preedit_ && okuri_started_) {
     if (!pending_.empty()) pending_.clear();
     else if (!text_.empty() && text_.back() != L'*') text_.pop_back();

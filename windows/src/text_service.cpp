@@ -93,8 +93,10 @@ bool SameComIdentity(IUnknown* left, IUnknown* right);
 class StateEditSession final : public ITfEditSession {
  public:
   StateEditSession(TextService* service, ITfContext* context,
-                   ddskk::EngineState state, const wchar_t* path = L"engine", uint64_t sequence = 0)
+                   ddskk::EngineState state, const wchar_t* path = L"engine", uint64_t sequence = 0,
+                   std::optional<ddskk::EngineState> preceding = std::nullopt)
       : service_(service), context_(context), state_(std::move(state)),
+        preceding_(std::move(preceding)),
         sequence_(sequence ? sequence : service->KeySequence()), generation_(service->EditGeneration()), path_(path) {
     service_->StateSessionCreated();
     service_->AddRef();
@@ -124,7 +126,14 @@ class StateEditSession final : public ITfEditSession {
     }
     const auto saved_trace = service_->SetEditTraceSequence(sequence_);
     service_->TracePhase(L"edit-start", sequence_, path_);
-    const HRESULT result = service_->ApplyEngineState(edit_cookie, context_, state_, &pair_caret_);
+    // Implicit confirmation and the following key share one TSF lock. A
+    // queued second request must never replace the uncommitted candidate.
+    HRESULT result = S_OK;
+    if (preceding_) {
+      result = service_->ApplyEngineState(edit_cookie, context_, *preceding_, &pair_caret_);
+    }
+    if (SUCCEEDED(result))
+      result = service_->ApplyEngineState(edit_cookie, context_, state_, &pair_caret_);
     service_->FinishStateEdit(context_, state_, result);
     service_->TracePhase(L"edit-end", sequence_, path_, result);
     service_->SetEditTraceSequence(saved_trace);
@@ -143,6 +152,7 @@ class StateEditSession final : public ITfEditSession {
   TextService* service_;
   ITfContext* context_;
   ddskk::EngineState state_;
+  std::optional<ddskk::EngineState> preceding_;
   uint64_t sequence_, generation_;
   const wchar_t* path_;
   bool executed_ = false;
@@ -1050,8 +1060,23 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
     return;
   }
   if (active_context_ == nullptr) return;
+  auto edit_state = *result->state;
+  std::optional<ddskk::EngineState> preceding;
+  if (edit_state.composition_start < 0 && edit_state.pending_romaji.empty() &&
+      !deferred_provider_keys_.empty() && deferred_provider_keys_.front().has_codepoint) {
+    auto following = realtime_frontend_;
+    const auto next = following.Feed(deferred_provider_keys_.front().codepoint);
+    if (next && next->composition_start < 0 && next->pending_romaji.empty()) {
+      preceding = edit_state;
+      edit_state = *next;
+      realtime_frontend_ = std::move(following);
+      deferred_provider_keys_.pop_front();
+      kana_mode_ = ddskk::DeriveKanaMode(edit_state);
+      last_engine_mode_ = edit_state.mode;
+    }
+  }
   auto* edit_session =
-      new (std::nothrow) StateEditSession(this, active_context_, *result->state, L"engine", result->key_sequence);
+      new (std::nothrow) StateEditSession(this, active_context_, edit_state, L"engine", result->key_sequence, std::move(preceding));
   if (edit_session == nullptr) return;
   HRESULT edit_result = E_FAIL;
   const HRESULT request = RequestEdit(active_context_, edit_session, &edit_result, L"engine", result->key_sequence);
@@ -1167,7 +1192,11 @@ void TextService::ReplayDeferredProviderKeys() {
         if (BeginProviderKeys(keys, true)) return;
       }
     }
-    if (!state) continue;
+    if (!state) {
+      if (engine_id_ == "ddskk" && !realtime_frontend_.latin() &&
+          key.has_codepoint && BeginProviderKeys(realtime_frontend_.raw_keys(), true)) return;
+      continue;
+    }
 
     engine_pending_ = state->composition_start >= 0 ||
                       !state->pending_romaji.empty();
@@ -2594,6 +2623,14 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       debug_exit(*eaten, hr, hr); return S_OK;
     }
     if (key) {
+      auto following = realtime_frontend_;
+      following.Reset();
+      if (const auto next = following.Feed(*key); next &&
+          next->composition_start < 0 && next->pending_romaji.empty()) {
+        const HRESULT hr = CommitLocal(context, &*next);
+        if (SUCCEEDED(hr)) realtime_frontend_ = std::move(following);
+        debug_exit(*eaten, hr, hr); return S_OK;
+      }
       const HRESULT hr = CommitLocal(context);
       if (FAILED(hr)) { debug_exit(*eaten, hr, hr); return S_OK; }
       // Continue this callback through the native frontend. No provider
@@ -3746,9 +3783,10 @@ HRESULT TextService::AbortCandidate() {
   return state ? RequestStateEdit(*state) : E_FAIL;
 }
 
-HRESULT TextService::ApplyLocalState(ITfContext* context, const ddskk::EngineState& state) {
+HRESULT TextService::ApplyLocalState(ITfContext* context, const ddskk::EngineState& state,
+                                   std::optional<ddskk::EngineState> preceding) {
   if (!context) return E_UNEXPECTED;
-  auto* edit = new (std::nothrow) StateEditSession(this, context, state, L"local");
+  auto* edit = new (std::nothrow) StateEditSession(this, context, state, L"local", 0, std::move(preceding));
   if (!edit) return E_OUTOFMEMORY;
   HRESULT result = E_FAIL;
   const HRESULT request = RequestEdit(context, edit, &result, L"local");
@@ -3814,13 +3852,14 @@ void TextService::RetryLocalConversion() {
   } else local_conversion_.Reset();
 }
 
-HRESULT TextService::CommitLocal(ITfContext* context) {
+HRESULT TextService::CommitLocal(ITfContext* context, const ddskk::EngineState* following) {
   const auto saved = local_conversion_;
   const auto key = local_conversion_.reading();
   const auto word = local_conversion_.selected();
   const auto okuri = local_conversion_.okuri();
   const auto state = local_conversion_.Commit();
-  const HRESULT result = ApplyLocalState(context, state);
+  const HRESULT result = following ? ApplyLocalState(context, *following, state)
+                                  : ApplyLocalState(context, state);
   if (FAILED(result)) { local_conversion_ = saved; return result; }
   local_okuri_snapshot_ = {};
   realtime_frontend_.Reset();

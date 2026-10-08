@@ -800,6 +800,23 @@ struct KeyEvent {
 };
 
 bool TokenToKey(const std::wstring& token, KeyEvent* out) {
+  // OEM names identify virtual keys; the active keyboard layout determines
+  // their characters. Prefix S for the shifted variant (for example SPERIOD).
+  const struct { const wchar_t* name; UINT vk; } punctuation[] = {
+      {L"PERIOD", VK_OEM_PERIOD}, {L"COMMA", VK_OEM_COMMA},
+      {L"SLASH", VK_OEM_2}, {L"SEMICOLON", VK_OEM_1},
+      {L"QUOTE", VK_OEM_7}, {L"BACKQUOTE", VK_OEM_3},
+      {L"BACKSLASH", VK_OEM_5}, {L"LBRACKET", VK_OEM_4},
+      {L"RBRACKET", VK_OEM_6}, {L"MINUS", VK_OEM_MINUS},
+      {L"EQUALS", VK_OEM_PLUS}, {L"OEM102", VK_OEM_102}};
+  for (const auto& item : punctuation) {
+    if (token == item.name || token == std::wstring(L"S") + item.name) {
+      *out = KeyEvent{item.vk, token != item.name, false}; return true;
+    }
+  }
+  if (token == L"." || token == L",") {
+    *out = KeyEvent{static_cast<UINT>(token == L"." ? VK_OEM_PERIOD : VK_OEM_COMMA), false, false}; return true;
+  }
   if (token == L"BRACKET") { *out = KeyEvent{VK_OEM_4, false, false}; return true; }
   if (token == L"SSPACE") { *out = KeyEvent{VK_SPACE, true, false}; return true; }
   if (token == L"PGUP") { *out = KeyEvent{VK_PRIOR, false, false}; return true; }
