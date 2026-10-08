@@ -15,6 +15,19 @@ namespace ddskk {
 // Native, allocation-bounded romaji/preedit path.  It deliberately performs
 // no dictionary work: conversion providers receive raw_keys() only at the
 // conversion barrier, while ordinary typing never waits for NeLisp.
+// Registration candidates belong to the provider's editor, even though
+// their wire state carries a candidate list for its UI.
+inline bool IsDocumentCandidate(const EngineState& state) {
+  return state.mode != L"registration" &&
+      (state.mode == L"candidate" || !state.candidates.empty());
+}
+
+// C-g remains QUIT when replay moves from registration back to its
+// provider-owned outer reading. Escape is the same semantic control.
+inline bool IsQuitKey(uint32_t virtual_key, bool control) {
+  return virtual_key == 0x1b || (virtual_key == 'G' && control);
+}
+
 class RealtimeFrontend {
  public:
   // Standard providers (for example Lattice) compose every kana sequence.

@@ -87,6 +87,40 @@ int main(int argc, char** argv) {
     Check(!conversion.Begin(original, L"ながい"), "oversized learning selects provider before conversion");
     Check(!conversion.Begin(original, L"みす"), "missing reading provider registration");
     Check(conversion.Begin(original, L"かな", {L"哉"}) && conversion.State().text == L"▼哉", "pending learning order");
+    {
+      const int before = checks;
+      // The backend registered the word, but this deliberately retained
+      // mapping still selects the old word without the local pending view.
+      Store registration;
+      ddskk::EngineState completed;
+      completed.mode = L"hiragana"; completed.text = L"て愛";
+      Check(registration.LearnRegistration(completed, L"かな"), "registration stages confirmed plain word");
+      Conversion retained;
+      Check(retained.Begin(original, L"かな") && retained.State().text == L"▼佳奈", "negative control old overlay selects old candidate");
+      Check(retained.Begin(original, L"かな", registration.Pending(L"かな")) && retained.State().text == L"▼て愛", "confirmed registration wins before remap");
+      completed.text = L"て書く";
+      Check(registration.LearnRegistration(completed, L"かな"), "nested okuri remains part of outer plain word");
+      Check(retained.Begin(original, L"かな", registration.Pending(L"かな")) && retained.Commit().text == L"て書く", "nested okuri reconverts before remap");
+      completed.text = L"書く";
+      Check(registration.LearnRegistration(completed, L"かk", L"く"), "outer okuri stages stem");
+      Check(registration.Pending(L"かk") == std::vector<std::wstring>{L"書"}, "only outer okuri suffix removed");
+      Check(registration.Pending(L"あい").empty(), "nested reading never receives outer word");
+      Check(!registration.LearnRegistration(completed, L""), "missing outer reading never learned");
+      Check(!registration.LearnRegistration(completed, L"かk", L"す"), "mismatched outer okuri never learned");
+      completed.text.clear();
+      Check(!registration.LearnRegistration(completed, L"かな"), "idle cancellation never learned");
+      completed.text = L"▽かな"; completed.composition_start = 1;
+      Check(!registration.LearnRegistration(completed, L"かな"), "restored reading cancellation never learned");
+      completed.composition_start = -1; completed.pending_romaji = L"k";
+      Check(!registration.LearnRegistration(completed, L"かな"), "pending prefix never learned");
+      completed.pending_romaji.clear(); completed.mode = L"registration";
+      Check(!registration.LearnRegistration(completed, L"かな"), "nested editor never learned");
+      completed.mode = L"candidate"; completed.candidates = {L"愛"};
+      Check(!registration.LearnRegistration(completed, L"かな"), "nested candidate never learned");
+      Check(registration.Unsaved() == 3 && registration.SpoolWritesForDiagnostics() == 0,
+            "only three confirmed entries queued without callback I/O");
+      std::cout << "PASS registration learning visibility checks=" << checks - before << "\n";
+    }
     Publish(root, {source, second}, "かな /哉/佳奈/仮名/\n", rules, 1);
     auto learned = OpenPublished(root);
     auto reused = OpenPublished(root, original);

@@ -3971,3 +3971,559 @@ Final PowerShell parser gate used
 verbatim tail: =PowerShell parser errors=0=. Final =git diff --check= exited
 0 with no whitespace findings; =git diff --cached --stat= was empty (0 staged
 files). These are source/checker checks, not TSF harness passes.
+
+* RG1: nested conversion in dictionary registration (2026-10-09)
+
+** Result and limits
+
+Unstaged worker change. No commit, deployment, live settings, personal
+jisyo, shim/ABI, host source, or other checkout changed. TSF and real-Emacs
+inline execution remains REQUIRED outside the worker registry sandbox.
+No worker-started host, tsf-host, runtime, or Emacs process remains; all
+started batch processes/builds finished. No hosts were started by CTest:
+its wrapper failed before launching each binary.
+
+** Reproduction before implementation
+
+The unchanged core/engine was exercised by the new runtime regression,
+with a fresh private DDSKK_USER_JISYO and the runtime supplied in the brief.
+Command: =$Runtime --load engine/test-registration-nested.el=.
+Exit 1, first case (miss, plain nested candidate, RET). Verbatim response:
+
+#+begin_example
+CONTROL CONVERT => STATE registration 3 2 0030660025bc00611b - 0 00611b 003071003071003071
+CONTROL COMMIT => STATE registration 2 -1 00306600611b - -1 - 003071003071003071
+#+end_example
+
+Error: =RG1: RET finishes nested registration=. The composed word stayed
+in the registration editor; an extra RET was required. A preliminary
+PowerShell-piped stdio probe returned =ERR CONVERT-KEYS= and =nil=; that
+probe was not treated as a successful reproduction.
+
+An additional stock-oracle check exposed exhausted outer cancellation:
+DDSKK restores the previous candidate; the engine produced a reading
+marker followed by the old candidate word. The added runtime assertion
+failed (exit 1): =RG1: outer quit matches stock miss/exhaustion= before
+that cancellation fix, then passed after it.
+
+** Changes (file:line)
+
+- =windows/src/text_service.cpp:393=: deferred server exhaustion now replays
+  provider conversion and candidate traversal, preserving its cancellation
+  checkpoint. Same direct-key path at =windows/src/text_service.cpp:2688=.
+- =windows/src/text_service.cpp:969=: document candidate acceptance excludes
+  registration states even when they contain nested candidates.
+- =windows/src/text_service.cpp:1066=: registration queue uses the normal
+  registration key router; queued SPACE and other semantic controls are
+  no longer dropped by a partial Enter/Backspace-only dispatcher.
+- =windows/src/text_service.cpp:1106=: queued registration keys route through
+  OnKeyDown with their original Shift/Ctrl/Caps state, without document
+  confirmation/replay or local conversion ownership.
+- =windows/src/text_service.cpp:2629= and =:2724=: local candidate and okuri
+  handling cannot take over while registration owns input.
+- =windows/src/text_service.cpp:2741=: registration cancellation preserves
+  queued key order; C-g/Escape cannot discard the provider editor's work.
+  =:2761= preserves C-g/Delete as controls and the original modifier state.
+- =windows/src/text_service.cpp:2908=: registration C-g dispatches async QUIT
+  to the provider rather than translating G or cancelling the document.
+- =windows/src/realtime_frontend.h:20=: shared document-candidate ownership
+  predicate, used by production provider replay.
+- =engine/ddskk-engine.el:765=: exhausted registration cancellation restores
+  the previous candidate. A miss retains the marker-safe reading restore.
+- =engine/ddskk-engine.el:867=: RET commits/flushes nested text, then registers
+  and inserts the composed word on that same request.
+- =engine/ddskk-engine.el:879=: C-g unwinds the nested candidate, reading, or
+  pending prefix before cancelling the outer registration.
+- =windows/test/realtime_frontend_test.cpp:49=: five ownership cases, with
+  negative controls proving ordinary document candidates still qualify.
+- =engine/test-registration-nested.el:1=: 76 runtime assertions. Miss and
+  exhaustion; plain/okuri nested conversion; RET and KEY commit-then-type;
+  exact inserted text and learning; prefix/reading/candidate/okuri/outer
+  cancellation and unchanged dictionary negative controls.
+- =engine/test-registration-nested-oracle.el:1=: four ERT tests using vendor
+  DDSKK commands and its actual exit-minibuffer/abort-recursive-edit advice.
+  Includes real stock registration entry from miss and exhaustion; only
+  minibuffer text collection is replaced for batch operation.
+- =windows/test-host/test-registration-nested.ps1:1=: 36 fresh TSF runs by
+  default (two local modes, two entry paths, nine scenarios). Each uses
+  run-harness private registry/pipe/jisyo and warm-up. Original UTF-8 host
+  logs supply exact text assertions, cancellation/no-learning controls,
+  and learned-word re-conversion. Syntax checked; execution NOT run here.
+- =windows/test-host/test-inline-preedit.py:40=: new
+  =emacs-registration-nested= case, including plain/okuri RET, following-key
+  commits, exhaustion, and nested cancellation. Private dictionary at =:270=;
+  scripts at =:155=; real subscriber routing at =:99= and =:284=; assertions
+  at =:331=. Checks six final-document checkpoints, nested render text,
+  unchanged subscriber buffer, no TSF composition, existing 25 ms callback
+  limit, and process cleanup. Syntax checked; execution NOT run here.
+- This RG1 section records the evidence and outstanding coordinator gates.
+
+** Gates run
+
+=$Runtime= below is the supplied runtime executable, passed only at the
+command line. Every engine invocation had a fresh private
+=DDSKK_USER_JISYO= under =build/rg1=.
+
+1. =cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64=:
+   exit 0, generation completed. No CMake/source-scope changes.
+2. =cmake --build build/w --config Release= (final stdout saved in
+   =build/rg1/build-final.log=): exit 0. Reporting tail: =BUILD exit=0=.
+   Earlier full compilation reported existing C4244 in engine_protocol.cpp.
+3. =ctest --test-dir build/w -C Release=: exit 1. Verbatim result tail:
+   =0% tests passed, 10 tests failed out of 10=.
+   All 10 failed at run-isolated-test.ps1:13, private HKCU key creation:
+   =New-Item : Access to the registry key ... is denied.= Binaries did not run.
+4. Direct binaries, with private NATIVEIME_REGISTRY_KEY/DDSKK_PIPE_NAME and
+   LOCALAPPDATA under build/rg1/direct-data, all exit 0:
+   =build/w/Release/ddskk-engine-protocol-test.exe=,
+   =ddskk-engine-client-test.exe=, =ddskk-candidate-ui-test.exe=,
+   =ddskk-display-attribute-test.exe=, =ddskk-langbar-button-test.exe=,
+   =ddskk-mode-indicator-test.exe=, =ddskk-realtime-frontend-test.exe=,
+   =ddskk-host-utf8-protocol-test.exe=;
+   =build/w/Release/nativeime-local-conversion-test.exe build/rg1/local-data=.
+   Verbatim tails/counts:
+   =Registration candidate ownership cases=5 PASS=;
+   =host UTF8 protocol: 128 checks, 0 failures=;
+   =PASS local conversion 178 checks (4 corrupt/source negative controls)=;
+   =DIRECT tests=9 failures=0=.
+   Registry-settings binary was not run directly; its required writes are blocked.
+5. =$Runtime --load engine/test-registration-nested.el=: exit 0. Tail:
+   =PASS RG1 assertions=76= / =nil=.
+6. =$Runtime --load engine/test-ddskk-registration.el=: exit 0 after final
+   engine changes. Tail: =PASS registration assertions=22= / =nil=.
+7. =$Runtime --load build/rg1/session.el= (loads ddskk-engine.el then
+   test-session-v2.el): exit 0. Tail: =EG2 sessions: 28 checks PASS= / =t=.
+8. =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L vendor/ddskk -L engine -l engine/test-registration-nested-oracle.el -f ert-run-tests-batch-and-exit=:
+   exit 0. Verbatim tail:
+   =Ran 4 tests, 4 results as expected, 0 unexpected= (elapsed 3.106894 sec).
+9. =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit=:
+   exit 0. Tail: =Ran 31 tests, 31 results as expected, 0 unexpected=
+   (elapsed 0.059552 sec).
+10. =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit=:
+    exit 0. Tail: =Ran 14 tests, 14 results as expected, 0 unexpected=
+    (elapsed 0.054273 sec).
+11. =[Management.Automation.Language.Parser]::ParseFile= on the new PS script:
+    tail =PowerShell parser errors=0=.
+    =python -m py_compile windows/test-host/test-inline-preedit.py=:
+    exit 0, no output.
+12. Per-command-safe-directory =git diff --check=: exit 0, no whitespace
+    errors. =git diff --cached --stat=: empty, 0 staged files.
+
+** Exact required coordinator commands (unrun here)
+
+Run from this worker checkout outside the registry sandbox. Set =$Runtime=
+to the executable specified by the task brief; do not use the live pipe/key.
+The scripts supply private state and clean up only their owned children.
+
+#+begin_src powershell
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+ctest --test-dir build/w -C Release
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-registration-nested.ps1 -BuildDirectory build/w/Release -EngineExecutablePath $Runtime -ColdLoadSleepSec 45
+# Focused first reproduction, if needed:
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-registration-nested.ps1 -BuildDirectory build/w/Release -EngineExecutablePath $Runtime -ColdLoadSleepSec 45 -OnlyCase miss-plain-ret-local1
+# Actual Emacs inline subscriber, local OFF then ON:
+$env:HOME=[Environment]::GetFolderPath('UserProfile');
+python windows/test-host/test-inline-preedit.py --case emacs-registration-nested --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $Runtime --artifacts build/rg1-inline-off --cold-load 45
+$env:HOME=[Environment]::GetFolderPath('UserProfile');
+python windows/test-host/test-inline-preedit.py --case emacs-registration-nested --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $Runtime --artifacts build/rg1-inline-on --cold-load 45 --local-conversion
+#+end_src
+
+Do not infer TSF, inline rendering, actual callback latency, or local
+exhaustion checkpoint parity from the runtime/unit/oracle passes alone.
+
+** RG1 follow-up: coordinator's three failures (2026-10-09)
+
+Examined the unchanged failing artifacts before the follow-up edits.
+=build/rg1-tsf/miss-plain-ret-local0/harness-1e7d8491482d/tsf.stdout.log=
+already contains =AFTER END BUF=[て愛] SEL=2,2 COMP=-=,
+=AFTER LEARN BUF=[▼て愛] SEL=3,3 COMP=0,3= and the correct reinsertion.
+The parser incorrectly searched for =AFTER SETTLE8000:END=; the host prints
+only the label. Both new harness checkers had this mistake.
+
+The existing behavior-suite expectation is stock DDSKK behavior. After
+completed kana =te= in registration, C-g aborts its minibuffer and restores
+the outer reading; the next C-g clears that reading. Vendor advice at
+=vendor/ddskk/skk.el:5176= and =vendor/ddskk/skk.el:5215= distinguishes
+active candidate, reading/prefix, and idle minibuffer cancellation.
+The new fifth oracle executes actual =abort-recursive-edit= advice with
+completed kana and actual =keyboard-quit= on the restored outer reading.
+The engine already passed this sequence; the core replay path silently
+dropped the second queued Ctrl+G after leaving registration. An exhaustion
+cancel can also restore a candidate, whose replay must QUIT rather than
+commit it. The existing =test-ddskk-behavior.ps1= expectations are unchanged.
+
+The inline artifact
+=build/claude-verify-rg1/core/inline-emacs-registration-nested/harness-1a2c14939074/tsf.stdout.log=
+shows first RET inserts exactly =て愛=. The next uppercase P enters ordinary
+pending p instead of reading mode, and subsequent keys insert =ぱぱぷ=
+before REG2. This is not repeated insertion by registration RET. Modifier
+translation changing between test/down callbacks is the inferred cause;
+new diagnostics expose the exact scalar and snapshot source. Capture the
+tested keyboard state/layout before connection/settings work, translate
+once lazily in KeyDown, and preserve already-translated queued scalars.
+The new deterministic fault injection clears thread modifier state between
+TestKeyDown and KeyDown, so each registration harness must pass that race.
+Registration text also needed publication to the existing inline epoch;
+its earlier status-only publication never rendered nested candidates in Emacs.
+
+Follow-up changes (the earlier inventory covers the rest of RG1):
+- =windows/src/realtime_frontend.h:27= and
+  =windows/test/realtime_frontend_test.cpp:49=: shared quit classification,
+  four positive/negative checks (C-g/Escape vs plain G/C-j).
+- =windows/src/text_service.cpp:973,1154,1172=: preserve QUIT across
+  candidate/preedit/local replay. =:1061,3512=: publish registration text
+  to the existing inline epoch without document edits.
+- =windows/src/text_service.h:138,347= and
+  =windows/src/text_service.cpp:1824,2483,4152=: event keyboard/layout
+  capture, lazy single translation, no ToUnicode call in TestKeyDown.
+  =windows/src/text_service.cpp:1124,4027=: replay exact queued scalar and
+  invalidate stale snapshots on replay/key-up.
+- =windows/test-host/tsf_host.cpp:1092=: opt-in modifier fault injection.
+- =windows/test-host/test-registration-nested.ps1:31,38,46,87=:
+  correct unique-checkpoint parser; enable/require injection and restore env.
+- =windows/test-host/test-inline-preedit.py:36,282,344=: shared exact
+  checkpoint validator, injection, unchanged exact accumulated word checks.
+- =engine/test-registration-nested.el:64=: completed-kana double C-g,
+  no learning, fresh uppercase reading; runtime suite now 81 assertions.
+- =engine/test-registration-nested-oracle.el:95=: fifth stock oracle.
+- =windows/test-host/test-registration-nested-log.ps1:1=: exercise the
+  production parser on the actual coordinator log, missing/duplicate controls.
+- =windows/test-host/test-registration-nested-log.py:1=: exercise actual
+  inline validator, missing/duplicate/leaked-reading controls, including
+  rejection of the original coordinator failure log.
+
+Follow-up gates actually run:
+1. =cmake --build build/w --config Release=: exit 0, final log
+   =build/rg1/followup-build-final.log=. Verbatim tail basename:
+   =tsf-host.vcxproj -> ...\build\w\Release\tsf-host.exe=.
+2. =$Runtime --load engine/test-registration-nested.el= with private
+   =DDSKK_USER_JISYO=: exit 0, =PASS RG1 assertions=81= / =nil=.
+3. =$Runtime --load engine/test-ddskk-registration.el= with a separate
+   private jisyo: exit 0, =PASS registration assertions=22= / =nil=.
+4. =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L vendor/ddskk -L engine -l engine/test-registration-nested-oracle.el -f ert-run-tests-batch-and-exit=:
+   exit 0, =Ran 5 tests, 5 results as expected, 0 unexpected=
+   (elapsed 3.111175 sec), =build/rg1/followup-oracle-final.log=.
+5. =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-registration-nested-log.ps1 -LogPath build/rg1-tsf/miss-plain-ret-local0/harness-1e7d8491482d/tsf.stdout.log=:
+   exit 0, =PASS registration checkpoint parser: 3 real checkpoints, 2 negative controls=.
+6. =python windows/test-host/test-registration-nested-log.py build/claude-verify-rg1/core/inline-emacs-registration-nested/harness-1a2c14939074/tsf.stdout.log=:
+   exit 0, =PASS inline registration checker: 6 checkpoints, 4 negative controls=.
+   This is verifier validation, not a new real-Emacs pass.
+7. Direct nine binaries listed above, fresh private data directory and full
+   =\\.\pipe\ddskk-rg1-direct-<guid>= pipe name: all exit 0. Tails:
+   =Queued quit ownership cases=4 PASS=;
+   =Registration candidate ownership cases=5 PASS=;
+   =host UTF8 protocol: 128 checks, 0 failures=;
+   =PASS local conversion 178 checks (4 corrupt/source negative controls)=;
+   =DIRECT tests=9 failures=0=.
+   Initial direct attempts had a malformed pipe name (engine-client abort
+   exit -1073740791) and reused local test data (learning-base failure).
+   Corrected invocation uses a full pipe name and fresh artifact directory;
+   no product/test changes were made for these invocation mistakes.
+8. =ctest --test-dir build/w -C Release=: exit 8, all ten wrappers failed
+   before running binaries at private HKCU creation. Verbatim diagnostic:
+   =New-Item : Access to the registry key ... is denied.= Final tail:
+   =Errors while running CTest=. Logs =build/rg1/followup-ctest.log= and
+   =build/w/Testing/Temporary/LastTest.log=. Coordinator's earlier 10/10
+   pass is not a claim about this final build.
+9. PowerShell AST ParseFile on both registration scripts: each
+   =parser errors=0=. Python compile(source) on the two Python files:
+   =Python syntax: 2 files PASS=. No generated pycache.
+10. =git -c safe.directory=<worker> diff --check=: exit 0, no whitespace
+    errors. =git ... diff --cached --stat=: empty, no staged changes.
+    =Get-Process -Name nelisp,tsf-host,ddskk-engine-host,emacs=: no matches
+    at completion. All processes started for these checks exited; no owned
+    leftovers. CIM enumeration was denied; no unrelated process was stopped.
+
+Real TSF/inline/behavior gates remain unrun in this sandbox. Coordinator
+should rerun the commands in the preceding section against this final build,
+then its unchanged DDSKK behavior gate and other acceptance gates. Keep
+=-ColdLoadSleepSec 45= / =--cold-load 45= and task-supplied =$Runtime=.
+
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-ddskk-behavior.ps1 -DllPath build/w/Release/ddskk-ime.dll -TsfHostExe build/w/Release/tsf-host.exe -EngineHostPath build/w/Release/ddskk-engine-host.exe -EngineExecutablePath $Runtime -ColdLoadSleepSec 45
+#+end_src
+
+** RG1 callback latency follow-up (2026-10-09)
+
+Coordinator reports all gates passing on RG1b except the new inline case's
+unchanged 25 ms watchdog. Inspected the unchanged failing raw log first:
+=build/claude-verify-rg1b/core/inline-emacs-registration-nested/harness-dd1b0c6dc274/tsf.stdout.log=.
+Verbatim timing evidence:
+#+begin_example
+KEYLAT token=s test_us=56233 down_us=602 total_us=56835 claimed=1 direct=0
+KEYLAT token=u test_us=40070 down_us=468 total_us=40538 claimed=1 direct=0
+KEYLAT token=s test_us=51447 down_us=501 total_us=51948 claimed=1 direct=0
+KEYLAT token=ENTER test_us=47481 down_us=308 total_us=47789 claimed=1 direct=0
+#+end_example
+The overrun is TestKeyDown's synchronous Connect, not inline publication:
+=windows/src/engine_client.cpp:53= acquires the transaction mutex before
+checking an already-connected pipe. The preceding registration worker owns
+that mutex during its round trip. Its timeout parameter does not bound this
+mutex wait. Registration results already publish text/status from the
+provider-result message, outside the actual TSF key callback.
+
+Changes this follow-up:
+- =windows/src/text_service.cpp:1908=: registration claims its owned input
+  without probing Connect. Normal provider connection behavior is retained.
+- =windows/src/text_service.cpp:45,354,2979= and
+  =windows/src/text_service.h:301=: registration callbacks enqueue exact
+  key/control/modifier snapshots and post a continuation. Worker creation
+  and local observer/mirror-release work now run in message-pump replay.
+- =windows/src/text_service.cpp:1149=: replay marks registration dispatch
+  so the continuation starts the worker rather than enqueueing itself again.
+  Launch failure stops replay and retries by timer, retaining the exact key.
+- =windows/src/text_service.cpp:3033=: removed synchronous registration
+  SendControl/SendKey fallback. No engine round trip or worker wait remains
+  in registration's key callback. RET/C-g/nested editor semantics are unchanged.
+- =windows/src/text_service.cpp:1081,1854,1865,1914,2550=: phase timing for
+  inline registration publication, TestKeyDown, connection probes, and
+  replay. Pump replays have a distinct =registration-pump= trace path.
+- =windows/src/text_service.cpp:66,600,608,737,743=: private diagnostic
+  registration-worker delay; captured registration flag, no cross-thread
+  access to mutable editor state. Delay runs exclusively on the worker.
+- =windows/test-host/test-inline-preedit.py:48,317,380,387=: output the
+  eight slowest callback test/down/total timings and per-phase count/max;
+  print before the watchdog assertion. Reject provider-probe phases during
+  registration TestKeyDown. Require a 75 ms worker-delay negative control;
+  the callback limit remains exactly =max(times) <= 25000= at line 388.
+- =windows/test-host/test-registration-nested-log.py:24=: synthetic phase
+  checks exercise the actual timing reporter; missing phases and an on-key
+  provider probe must fail. Existing document/learning/cancel checks retained.
+
+Gates run on this follow-up (no live TSF gate run in the registry sandbox):
+1. =cmake --build build/w --config Release=: exit 0, final output in
+   =build/rg1/latency-build-final.log=, both core and host built.
+2. Direct nine binaries listed in the earlier inventory, fresh private
+   registry-name/pipe-name/data environment, each exit 0. Verbatim tails:
+   =cancel invalidation while provider blocked: 0 us=;
+   =Registration candidate ownership cases=5 PASS=;
+   =Queued quit ownership cases=4 PASS=;
+   =host UTF8 protocol: 128 checks, 0 failures=;
+   =PASS local conversion 178 checks (4 corrupt/source negative controls)=;
+   =DIRECT tests=9 failures=0=.
+3. =$Runtime --load engine/test-registration-nested.el=, fresh private
+   jisyo: exit 0, =PASS RG1 assertions=81= / =nil=;
+   =build/rg1/latency-nested.log=.
+4. =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L vendor/ddskk -L engine -l engine/test-registration-nested-oracle.el -f ert-run-tests-batch-and-exit=:
+   exit 0, =Ran 5 tests, 5 results as expected, 0 unexpected=
+   (elapsed 3.113041 sec), =build/rg1/latency-oracle.log=.
+5. =python windows/test-host/test-registration-nested-log.py build/claude-verify-rg1/core/inline-emacs-registration-nested/harness-1a2c14939074/tsf.stdout.log=:
+   exit 0. Tails =PASS inline registration checker: 6 checkpoints, 4 negative controls=
+   and =PASS registration timing reporter: 5 phase pairs, 2 negative controls=.
+   These synthetic timing results do not establish actual callback latency.
+6. =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-registration-nested-log.ps1 -LogPath build/rg1-tsf/miss-plain-ret-local0/harness-1e7d8491482d/tsf.stdout.log=:
+   exit 0, =PASS registration checkpoint parser: 3 real checkpoints, 2 negative controls=.
+7. =python -c "from pathlib import Path; [compile(Path(p).read_text(encoding='utf-8'),p,'exec') for p in ['windows/test-host/test-inline-preedit.py','windows/test-host/test-registration-nested-log.py']]; print('Python syntax: 2 files PASS')"=:
+   exit 0, =Python syntax: 2 files PASS=.
+8. =git -c safe.directory=<worker> diff --check=: exit 0, no whitespace
+   errors. =git ... diff --cached --stat=: empty. No commits/staging.
+   Both owned build processes, owned runtime and batch Emacs exited.
+   Other Emacs/NeLisp/engine-host processes were observed and left untouched;
+   no owned leftovers. CTest/TSF require coordinator rerun as before.
+
+Coordinator commands; set =$Runtime= to the task-supplied runtime externally.
+The case enables both negative controls itself and reports phases before
+any timing failure. Run OFF then ON, then the full gates:
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile');
+python windows/test-host/test-inline-preedit.py --case emacs-registration-nested --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $Runtime --artifacts build/rg1-latency-inline-off --cold-load 45
+$env:HOME=[Environment]::GetFolderPath('UserProfile');
+python windows/test-host/test-inline-preedit.py --case emacs-registration-nested --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $Runtime --artifacts build/rg1-latency-inline-on --cold-load 45 --local-conversion
+#+end_src
+
+** RG1 registration learning visibility follow-up (2026-10-09)
+
+Coordinator reports RG1c's inline case passing at max callback 1385 us,
+but three matrix runs failing local-ON exhaustion reconversion. Inspected
+those unchanged failures before editing; their exact tails are
+=Learning failed: exhaust-okuri-ret-local1= (two runs) and
+=Learning failed: exhaust-plain-ret-local1= (one run).
+Logs: =build/claude-verify-rg1c/reg-nested.log=, =reg-nested-r1.log=,
+=reg-nested-r2.log=. The raw failing okuri artifact is
+=build/rg1-tsf/exhaust-okuri-ret-local1/harness-2ee0a37e4579/tsf.stdout.log=:
+#+begin_example
+PROVIDER control seq=8 control=3 state=1 ms=110 raw=STATE hiragana 3 -1 0030660066f800304f - -1 -
+AFTER END BUF=[て書く] SEL=3,3 COMP=-
+AFTER LEARN BUF=[▼既存] SEL=3,3 COMP=0,3
+AFTER REINSERT BUF=[既存] SEL=2,2 COMP=-
+#+end_example
+Its host stderr shows an ordinary learning outbox append and asynchronous
+native publication. RET reached registration and returned/inserted the
+composed word correctly. The defect is local read-your-writes ordering:
+provider registration learns in the engine, but the local store had no
+pending entry while host publication/coalescing and worker remapping lagged.
+Exhaustion leaves a certified existing local entry, so reconversion could
+select that stale entry. A miss generally takes the provider path instead.
+Removing callback waits exposed this already-required visibility barrier.
+
+Changes this follow-up:
+- =windows/src/local_conversion.h:35= and
+  =windows/src/local_conversion.cpp:207=: LearnRegistration validates a
+  completed provider result and stages its entry through the existing
+  bounded Store::Learn queue. The queue immediately feeds Capture/Pending,
+  is spooled/acknowledged by the worker, and is retired only after the
+  acknowledged overlay is mapped. LOCAL learning promotes/deduplicates the
+  already-registered entry; it does not insert another document word.
+  Cancellation, nested editor/candidate, unresolved prefix, empty result,
+  and invalid outer okuri do not enqueue learning. Only an outer okuri
+  suffix is removed; nested okuri remains part of a plain registration word.
+- =windows/src/text_service.h:239,340= and
+  =windows/src/text_service.cpp:980,3506,4019=: retain the authoritative
+  outer registration reading from its wire state (not the nested reading)
+  and outer okuri, then stage its confirmed final word before document
+  visibility, frontend reset, or replay can permit local reconversion.
+  The normal async result path performs this work on the message pump.
+  No connection probe, pipe transaction, filesystem operation, worker wait,
+  or change to the 25 ms watchdog was added to the key callback.
+- =windows/test/local_conversion_test.cpp:90=: 16 additional checks,
+  including stale-overlay old-candidate control, plain/nested-okuri immediate
+  reconversion, actual outer-okuri stem, no nested-reading pollution, and
+  cancellation/prefix/candidate controls. Test queues only three confirmed
+  entries with zero synchronous spool writes.
+- =windows/test-host/test-registration-nested.ps1:38,48,91=: save/restore
+  remap-delay env; require exactly one confirmed registration enqueue for
+  local positive cases and zero for cancellations. Delay remapping 4000 ms
+  and require its retained-mapping trace in local positive cases. Existing
+  exact END/reinsertion/learning/cancel checks and waits are unchanged.
+
+Gates actually run:
+1. =cmake --build build/w --config Release=: final exit 0;
+   =build/rg1/visibility-build-final.log=. Initial build failed with C2065
+   for unqualified EngineState in the new test; qualified ddskk::EngineState
+   and rebuilt. An old 178-check binary was inadvertently run after that
+   failed build; its result is not evidence for the new checks.
+2. Nine direct binaries listed above, fresh private data and full private
+   pipe name, all exit 0. Verbatim tails:
+   =Queued quit ownership cases=4 PASS=;
+   =Registration candidate ownership cases=5 PASS=;
+   =host UTF8 protocol: 128 checks, 0 failures=;
+   =PASS registration learning visibility checks=16=;
+   =PASS local conversion 194 checks (4 corrupt/source negative controls)=;
+   =DIRECT tests=9 failures=0=.
+3. =$Runtime --load engine/test-registration-nested.el= with fresh private
+   DDSKK_USER_JISYO: exit 0, =PASS RG1 assertions=81= / =nil=.
+   Log: =build/rg1/visibility-nested.log=.
+4. =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L vendor/ddskk -L engine -l engine/test-registration-nested-oracle.el -f ert-run-tests-batch-and-exit=:
+   exit 0, =Ran 5 tests, 5 results as expected, 0 unexpected=
+   (elapsed 3.126592 sec), =build/rg1/visibility-oracle.log=.
+5. =python windows/test-host/test-registration-nested-log.py build/claude-verify-rg1/core/inline-emacs-registration-nested/harness-1a2c14939074/tsf.stdout.log=:
+   exit 0, =PASS inline registration checker: 6 checkpoints, 4 negative controls=
+   and =PASS registration timing reporter: 5 phase pairs, 2 negative controls=.
+6. =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-registration-nested-log.ps1 -LogPath build/rg1-tsf/miss-plain-ret-local0/harness-1e7d8491482d/tsf.stdout.log=:
+   exit 0, =PASS registration checkpoint parser: 3 real checkpoints, 2 negative controls=.
+7. PowerShell AST ParseFile on updated test-registration-nested.ps1:
+   =PowerShell parser errors=0=. Per-command-safe-directory
+   =git diff --check=: exit 0, no whitespace errors; staged diff empty.
+   All processes started for these gates exited; no owned leftovers.
+   Registry-blocked real TSF gates remain for coordinator execution. The
+   earlier 1385 us result belongs to RG1c, not this unrun final TSF build.
+
+Exact coordinator commands (task-supplied =$Runtime= remains external):
+#+begin_src powershell
+# Focused failing combination, then the full 36-case matrix with remap delay.
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-registration-nested.ps1 -BuildDirectory build/w/Release -EngineExecutablePath $Runtime -ColdLoadSleepSec 45 -OnlyCase exhaust-okuri-ret-local1 -ArtifactDirectory build/rg1-visibility-focus
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-registration-nested.ps1 -BuildDirectory build/w/Release -EngineExecutablePath $Runtime -ColdLoadSleepSec 45 -ArtifactDirectory build/rg1-visibility-matrix
+# Keep the inline callback/worker-delay gate as well.
+$env:HOME=[Environment]::GetFolderPath('UserProfile');
+python windows/test-host/test-inline-preedit.py --case emacs-registration-nested --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $Runtime --artifacts build/rg1-visibility-inline --cold-load 45 --local-conversion
+#+end_src
+
+** RG1d single callback overrun: synchronous candidate preview (2026-10-09)
+
+Inspected the unchanged RG1d failure before edits. Its callback is SPACE
+while beginning the third outer reading, local conversion OFF:
+#+begin_example
+KEYLAT token=SPACE test_us=103 down_us=70110 total_us=70213 claimed=1 direct=0
+#+end_example
+Raw log:
+=build/claude-verify-rg1d/core/inline-emacs-registration-nested/harness-4ead431cf538/tsf.stdout.log=.
+Its matching debug phases (seq 116) are:
+#+begin_example
+PHASE name=lookup-miss seq=116 path=local us=31368280352
+PHASE name=engine-lookup-request seq=116 path=engine us=31368349584
+PHASE name=candidate-show-start seq=116 path=provider-busy us=31368349818
+PHASE name=candidate-show-end seq=116 path=provider-busy us=31368349908
+PHASE name=key-return seq=116 path=provider-convert us=31368349910
+#+end_example
+The 69,232 us gap is the synchronous PreviewCandidates call between
+lookup-miss and BeginProviderConversion. LOCAL_PRECONDITION says
+=failed=disabled=, =enabled=0=: no local learning queue or overlay wait runs
+on this callback. PreviewCandidates (engine_client.cpp:369) calls RawTransact,
+which acquires the transaction mutex before its timeout can bound pipe I/O.
+An outstanding provider preparation can hold that mutex. The preceding
+visibility fix is retained unchanged; this overrun is on another path.
+
+Changes this follow-up:
+- =windows/src/text_service.h:225= and
+  =windows/src/text_service.cpp:499,524=: pass the optional native preview
+  reading into the existing conversion worker. Preview RPC and its mutex
+  wait occur on that worker, before artificial conversion-delay injection,
+  preserving the early advisory preview during slow actual conversion.
+- =windows/src/text_service.cpp:317,546,961=: independently retained preview
+  result message. Only a matching, still-pending conversion may show its UI.
+  Preview messages cannot clear provider_pending, consume queued keys, edit
+  the document, change a registration checkpoint, or stage learning. Stale
+  messages are ignored and independently released, just like final results.
+- =windows/src/text_service.cpp:3222=: SPACE launches the worker and shows
+  its existing busy UI; it never queries the preview pipe on the key callback.
+- =windows/src/text_service.cpp:526,539,966,968,3223,3225=: separate timings
+  for preview worker, preview UI message-pump work, and callback dispatch.
+- =windows/test-host/test-inline-preedit.py:61,70,324,389=: output the new
+  phase pairs; reject a preview marked as running on the key callback.
+  Local-OFF case injects 75 ms preview-worker delay, requires its trace and
+  an actual preview UI, and rejects document application of preview state.
+  The 25 ms callback limit and learning visibility/cancellation controls
+  remain unchanged.
+- =windows/test-host/test-registration-nested-log.py:46=: three more phase
+  pairs and a negative control rejecting preview work on the key callback.
+
+Gates actually run:
+1. =cmake --build build/w --config Release=: exit 0;
+   =build/rg1/preview-build.log= contains final build output.
+2. The nine direct Windows binaries listed above, fresh private pipe/name
+   and data directories: all exit 0. Verbatim tails:
+   =Queued quit ownership cases=4 PASS=;
+   =Registration candidate ownership cases=5 PASS=;
+   =host UTF8 protocol: 128 checks, 0 failures=;
+   =PASS registration learning visibility checks=16=;
+   =PASS local conversion 194 checks (4 corrupt/source negative controls)=;
+   =DIRECT tests=9 failures=0=.
+3. =python windows/test-host/test-registration-nested-log.py build/claude-verify-rg1/core/inline-emacs-registration-nested/harness-1a2c14939074/tsf.stdout.log=:
+   exit 0. Tails =PASS inline registration checker: 6 checkpoints, 4 negative controls=
+   and =PASS registration timing reporter: 8 phase pairs, 3 negative controls=.
+4. Python compile(source) on the two Python files: exit 0,
+   =Python syntax: 2 files PASS=. No generated pycache.
+5. Audited RG1d's raw logs with the actual registration_timing_report and
+   unchanged watchdog assertion: exit 0 (expected rejection), tail
+   =BASELINE watchdog rejected callbacks=94 max_us=70213 limit_us=25000=.
+   This validates rejection of the original failure, not a new live pass.
+6. Attempted real inline case using the command below, local OFF:
+   exit 1 at run-harness.ps1:247, before TSF/engine-host startup. Tail:
+   =New-Item : Access to the registry key ... is denied.= Artifact log
+   =build/rg1/preview-inline-attempt.log=. The runner exited its owned batch
+   Emacs in its finally block. This environment cannot run even the first
+   live pass, so three consecutive live passes are unrun here.
+7. Per-command-safe-directory =git diff --check=: exit 0, no whitespace
+   errors. =git ... diff --cached --stat=: empty. No commit/staging.
+   All processes started for these gates exited; no owned leftovers.
+   Existing external Emacs/NeLisp/engine-host processes remain untouched.
+
+Exact attempted command (task-supplied runtime externally assigned):
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile');
+python windows/test-host/test-inline-preedit.py --case emacs-registration-nested --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $Runtime --artifacts build/rg1-preview-inline-attempt --cold-load 45
+#+end_src
+
+Coordinator: three consecutive OFF runs (the failing path), then ON and
+the learning matrix. Distinct artifact directories prevent log reuse.
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile');
+foreach ($run in 1..3) {
+  python windows/test-host/test-inline-preedit.py --case emacs-registration-nested --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $Runtime --artifacts "build/rg1-preview-inline-off-$run" --cold-load 45
+  if ($LASTEXITCODE) { throw "Inline registration run $run failed" }
+}
+$env:HOME=[Environment]::GetFolderPath('UserProfile');
+python windows/test-host/test-inline-preedit.py --case emacs-registration-nested --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $Runtime --artifacts build/rg1-preview-inline-on --cold-load 45 --local-conversion
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-registration-nested.ps1 -BuildDirectory build/w/Release -EngineExecutablePath $Runtime -ColdLoadSleepSec 45 -ArtifactDirectory build/rg1-preview-matrix
+#+end_src
