@@ -222,6 +222,24 @@ End-to-end: unchanged native binary runs the frozen corpus through both TSF
 and Emacs paths plus private SK1 and session-v2 tests. Adapter cannot advance
 until it passes the same corpus, not merely a new parser unit test.
 
+EH2 S2 implementation note (2026-10-08): the versioned contract and actual
+native/old-engine/disk goldens are in docs/contracts/. The replay and soak
+entry points are windows/test-host/run-engine-host-s2.ps1 (Contracts/Soak).
+The old-engine fixture uses framework/lattice, whose actual WIRE replies
+are ERR REQUEST. STATE2/LEARNING2 count Unicode scalars, not UTF8 bytes;
+the outbox length instead counts bytes. Existing decoder payload wait is
+90s, TSF interactive wait is 350ms, and operation waits are per IO, not
+whole-transaction deadlines. These facts supersede any reading of the S1
+proposed <=30s budget as an existing native caller deadline.
+
+Soak qualifies 100000 cached ENGINE CURRENT requests with 32 clients and
+20 controls; it does not establish a global queue bound or all engine-relay
+tails. No native production code changed. Registry/TSF/Emacs qualification
+and a core-produced spool golden remain in the coordinator lane. Commands,
+executed counts/tails, resource bounds and limitations are recorded in
+docs/contracts/CLAUDE-S2.org and EH2-validation.org. S3 cannot infer a full
+end-to-end S2 pass from pipe-only results.
+
 ** S3: adapter and shadow NeLisp policy
 Factor native contracts without changing public behavior. Shadow policy consumes
 copied events and proposes cache/source/restart/publication decisions; native
