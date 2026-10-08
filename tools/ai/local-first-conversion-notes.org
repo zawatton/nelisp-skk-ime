@@ -3512,3 +3512,324 @@ unrun from the interrupted coordinator run. The revised assertions do not
 claim those cases passed. Changes remain unstaged, no commits. The only
 new process this worker started was batch Emacs; it exited normally and
 removed its temporary dictionary. No owned process leftovers.
+
+** DP1 IMM follow-up: separate confirmation and fresh-key sessions
+
+This supersedes the original two-state-in-one-session DP1 implementation and
+the interrupted combined-result experiment. Base main f7bdf4a was clean when
+this worker started. User evidence is =build/live-emacs-punct.log=: local SPACE
+and vk=BE both succeeded in Emacs pid 32444, but the real application lost the
+candidate. Correct TSF buffer snapshots did not validate CUAS/IMM delivery.
+The latest explicit design decision is: confirm as Enter in one edit session,
+then process the original key from idle in a separate later edit session.
+
+Implementation:
+- =windows/src/text_service.cpp:97=: StateEditSession now applies exactly one
+  state. Confirmation captures a collapsed end anchor; fresh-key sessions take
+  that anchor instead of the ended composition's replacement range. Terminal
+  punctuation is never concatenated with the candidate in one state/session.
+  The partial MergeConfirmedResult helper/tests were removed, leaving no net
+  realtime_frontend changes in this follow-up.
+- =windows/src/text_service.cpp:348,:1232,:1242,:1274=: completion barrier,
+  continuation messages, and FIFO replay. Pending state edits remain counted
+  until their sessions release. A two-message continuation fence permits CUAS
+  notifications queued at unlock to precede the fresh key. Only one key is
+  replayed per continuation, through OnKeyDown; subsequent input queues until
+  the preceding edit has finished. Shift/Control/Caps state is preserved.
+  Queued printable input after a Latin-mode switch is delivered explicitly.
+- =windows/src/text_service.cpp:1091,:1121,:2631,:2721,:2907,:3964=: provider
+  result/acceptance and local/okuri candidate confirmation use the same barrier.
+  Enter/local confirmation also gates following input while an edit is deferred.
+  Local learning is queued once; retrying a refused accepted edit does not learn
+  or consume the triggering key again. Only pre-mutation lock/access refusals
+  are retried; a failed EndComposition is not blindly duplicated.
+- =windows/src/text_service.cpp:4204=: ApplyEngineState can return a collapsed
+  commit-end anchor and accept that anchor for a fresh episode. Inline final
+  text is materialized in a short explicit composition, ending once, instead
+  of suppressing default composition through InsertTextAtSelection. Fresh
+  replayed terminal keys likewise get their own result composition. Inline
+  PAIR advisory behavior remains separate from ordinary document pairing.
+- =windows/src/text_service.h:90,:108,:236,:261,:294=: session/continuation APIs,
+  queue modifiers, pending flags, retained commit state and owned end anchor.
+  Context cancellation/deactivation clears queue state, retry timer and anchor.
+  Existing quiescence queue bit also includes an active confirmation barrier;
+  no shim or ABI files changed.
+- =windows/test-host/tsf_host.cpp:334,:617,:639,:650,:1254=: record the text in
+  each ended composition and its lock ID. Emit IMM AFTER snapshots with count,
+  last result and accumulated result-only text. APPCLEAR resets result history.
+  Ordinary SetText outside composition is deliberately invisible to this model.
+  This is an IMM-like consumer model, not an implementation of real CUAS.
+- =windows/test-host/test-punct-commit.ps1:28,:69,:106=: preserve the original
+  16-case matrix; add result assertions requiring candidate then symbol under
+  different increasing lock IDs. Expected success total is 16 cases/64 checks.
+  Preedit auto-start expects no result, only its still-active candidate.
+- =windows/test-host/test-punct-next-key.ps1:1=: ten additional local/provider
+  cases for pending k, new ▽k, no-settle k, delayed-lock k, and period+k+a.
+  Expected success total is 10 cases/40 checks. The new reading range starts
+  after the committed candidate. Typeahead expects candidate, period, then
+  completed kana as three distinct result episodes, with no missing/duplicate
+  text and different increasing lock IDs.
+- =windows/test-host/test-punct-commit-parser.ps1:32=: offline positive and
+  negative checks against the actual runner functions. Reject combined results,
+  lost word, duplicate results, missing end events and same-lock delivery.
+- =windows/test/punct_stock_test.el:52=: explicit stock Enter-then-fresh-key
+  oracle for k, K, and .ka. This tests the chosen rule directly rather than
+  relying on DDSKK's special handling of uppercase keys in active candidates.
+
+Executed gates and evidence:
+- =cmake --build build/w --config Release=: final exit 0,
+  =build/dp1-separated-final-build.log= contains the verbatim build tail through
+  =tsf-host.vcxproj= and all four core variants. No merged-result code remains.
+- Direct native test command was a foreach over these nine Release executables:
+  nativeime-local-conversion-test, ddskk-engine-protocol-test,
+  ddskk-engine-client-test, ddskk-candidate-ui-test,
+  ddskk-display-attribute-test, ddskk-langbar-button-test,
+  ddskk-mode-indicator-test, ddskk-realtime-frontend-test,
+  ddskk-host-utf8-protocol-test. Each invocation was
+  =& "build/w/Release/$target.exe"= with isolated LOCALAPPDATA, user dictionary,
+  unique private registry-key name and pipe environment variables.
+  All nine exit 0, =build/dp1-separated-direct.log=. Verbatim counted lines:
+  =PASS local conversion 178 checks (4 corrupt/source negative controls)=;
+  =Punctuation frontend cases=4 preedit=1 PASS=;
+  =host UTF8 protocol: 128 checks, 0 failures=.
+  Final tail: =ddskk-host-utf8-protocol-test exit=0=.
+  These unit executables do not exercise TextService's real TSF continuation.
+- =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L engine -L vendor/ddskk -l windows/test/punct_stock_test.el -f ert-run-tests-batch-and-exit=,
+  exit 0, =build/dp1-separated-stock.log=. Verbatim tail:
+  =STOCK fresh=k mode=hiragana text=4eee540d pending=k=;
+  =STOCK fresh=K mode=preedit text=4eee540d25bd pending=k=;
+  =STOCK fresh=.ka mode=hiragana text=4eee540d3002304b pending==;
+  =Ran 2 tests, 2 results as expected, 0 unexpected=.
+  Counts: eight punctuation case rows plus three fresh-key rows.
+  An exploratory --eval probe that fed uppercase directly into a candidate
+  failed with =End of file during parsing: Error reading from stdin=, exit -1,
+  =build/dp1-next-stock-probe.log=. It supplied no passing oracle evidence;
+  the explicit-Enter ERT above is the measured final acceptance check.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-punct-commit-parser.ps1=,
+  exit 0, =build/dp1-imm-parser.log=. Verbatim tail:
+  =PASS punctuation snapshot checks=6 negative-controls=4=;
+  =PASS punctuation snapshot/IMM checks=12 negative-controls=9=.
+- =ctest --test-dir build/w -C Release=: exit 8,
+  =build/dp1-separated-ctest.log=: =0% tests passed, 10 tests failed out of 10=;
+  =Errors while running CTest=. All ten wrappers fail private-registry New-Item
+  before their executable starts. This does not claim the registry suite passed.
+- Both TSF commands below were attempted with the caller-supplied runtime.
+  Punctuation gate: exit 1, =build/dp1-separated-punct.log=. Verbatim failure:
+  =powershell.exe : New-Item : Access to the registry key 'HKEY_CURRENT_USER\Software\NativeIME-test-e459b806fc1b' is denied.=;
+  =FullyQualifiedErrorId : NativeCommandError=.
+  Next-key gate: exit 1, =build/dp1-separated-next.log=. Verbatim failure:
+  =powershell.exe : New-Item : Access to the registry key 'HKEY_CURRENT_USER\Software\NativeIME-test-dc9aa9a5a9c0' is denied.=;
+  =FullyQualifiedErrorId : NativeCommandError=.
+  Live TSF cases/checks completed here: 0/0 for both. No hosts were launched.
+- Next-key PowerShell AST parsing: exit 0,
+  =Next-key PowerShell parse errors=0=. Main runner/helper parsing is also
+  checked by the passing parser regression. =git diff --check=: exit 0.
+  Stateline/Lattice ERT were not rerun; no corresponding source changed.
+
+Claude handoff, from this worktree after setting the brief's =$Runtime=:
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-punct-commit.ps1 `
+  -Runtime $Runtime -BuildDir build/w -InputRulesFile build/live-input-rules.conf -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-punct-next-key.ps1 `
+  -Runtime $Runtime -BuildDir build/w -InputRulesFile build/live-input-rules.conf -ColdLoadSleepSec 45
+ctest --test-dir build/w -C Release
+#+end_src
+Use the worker build's DLL/core/host, not the deployed core. Both scripts pass
+all paths to the private harness. Then verify the separate IMM results with
+the actual Emacs user: candidate period/comma, okuri period, candidate+k/K,
+and fast SPACE+period+k+a with the inline overlay enabled.
+
+Remaining: all 26 live TSF cases, private inline/CUAS delivery and the real
+Emacs check. Correct synthetic snapshots and source ordering do not prove
+that CUAS delivered every WM_IME_COMPOSITION result. No live settings,
+registration/deployment scripts or other checkouts touched. Changes remain
+unstaged, no commits. All worker-started native tests, builds and batch Emacs
+processes completed; no known owned process leftovers. Existing application
+processes were left untouched.
+
+** DP1 Claude dp3 gate follow-up: observation and episode boundaries
+
+Read the supplied dp3 logs before editing. Reproduced the unchanged verifier
+failure with:
+=& windows/test-host/test-punct-commit.ps1 -Runtime unused -LogDirectory build/w/punct-tsf-418cb96553c44ea28e56baf4bd5f58f4 -Providers 1 -Cases period=.
+Verbatim failure: =Candidate and following result share a lock or run out of order: 1-period=.
+The underlying log actually has =IMMRESULT count=1 lock=10 range=0,2 hex=4eee540d=
+then =IMMRESULT count=2 lock=11 range=2,3 hex=3002=. The matcher selected a
+count=2 event from warm-up (lock 2), before APPCLEAR reset the counters.
+Typeahead likewise already has candidate/period/kana in locks 10/11/13.
+These supplied logs do not show a shared-lock core failure.
+
+Changes in this follow-up (no additional TextService changes):
+- =windows/test-host/test-punct-commit.ps1:38=: use explicit Match objects and
+  scope the result episode to its candidate event before testing later lock IDs.
+  Keep distinct increasing lock requirements and exact result counts/text.
+- =windows/test-host/test-punct-commit-parser.ps1:38,:46=: positive control with
+  warm-up events, reset counters and adjacent locks; matching negative control
+  still rejects candidate/punctuation sharing a lock after reset.
+- =windows/test-host/tsf_host.cpp:1519=: ASYNCFLUSH drains posted messages after
+  FlushWrites returns and its lock has released, before taking the snapshot.
+  No sleep, relaxed threshold or changed expected text. The supplied gap-0 log
+  showed the queued burst intact: ASYNCFLUSH saw only the first 無い, then replay
+  completed 無い無い during WAITREMAP5000, and END was 無い無い無い. Observing
+  before later-session replay was incompatible with the explicit new design.
+
+Uncertified failure remains: =build/w/local-tsf-4b563fdb90b744a2bdd5cd720f3f28bb/uncertified.log=
+ends =Local index publication timeout= at =windows/test-host/run-harness.ps1:356=.
+There is no =run-harness: launching tsf-host.exe= or TSF key trace in that case.
+The previous successful uncertified log has that launch line. This failure is
+before TextService can run; changing its queue cannot repair publication.
+The harness unconditionally waits for a manifest when LocalConversion=1;
+publication is in =windows/host/main.cpp:2390-2447=. Both areas are unchanged
+and outside the authorized file scope. Stopped this part rather than disabling
+LocalConversion, dropping the case, or removing the publication check. Claude
+must inspect the host's uncertified-status/snapshot/publication path or authorize
+that separate scope. The precise reason no manifest was published is unproven.
+
+Executed gates:
+- =cmake --build build/w --config Release=: exit 0,
+  =build/dp1-dp3-build.log=. Verbatim tail:
+  =tsf_host.cpp=;
+  =tsf-host.vcxproj -> D:\Cowork\Notes\dev\nelisp-skk-ime-worker-dp1\build\w\Release\tsf-host.exe=.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-punct-commit-parser.ps1=:
+  exit 0, =build/dp1-dp3-parser.log=. Verbatim tail:
+  =PASS punctuation snapshot checks=6 negative-controls=4=;
+  =PASS punctuation snapshot/IMM checks=14 negative-controls=10=.
+- Same period replay command above after correction: exit 0,
+  =build/dp1-dp3-period-replay.log=. Tail prefix (followed by artifact path):
+  =PASS punctuation cases=1 checks=4 artifacts==.
+- =& windows/test-host/test-punct-commit.ps1 -Runtime unused -LogDirectory build/w/punct-tsf-506e3363653f417a8a9b3602386fe392 -Providers 1 -Cases letter,reading,letter-fast,letter-async,typeahead=:
+  exit 0, =build/dp1-dp3-next-replay.log=. Tail prefix:
+  =PASS punctuation cases=5 checks=20 artifacts==.
+  These six cases/24 checks validate existing Claude logs, not new TSF execution.
+- =ctest --test-dir build/w -C Release=: exit 8,
+  =build/dp1-dp3-ctest.log=. =0% tests passed, 10 tests failed out of 10=;
+  tail =Use "--rerun-failed --output-on-failure" to re-run the failed cases verbosely.=.
+  The private-registry wrappers remain blocked by this sandbox.
+- Attempted each TSF command below with the brief's supplied runtime (not stored
+  in repository command defaults). All exit 1 before any host launch, 0 live
+  cases/checks. Logs =build/dp1-dp3-{punct,next,async,local}-live.log=.
+  Verbatim final error line in each: =FullyQualifiedErrorId : NativeCommandError=.
+  Leading errors =New-Item : Access to the registry key ... is denied.=, keys
+  =NativeIME-test-8c75c16360f2=, =NativeIME-test-7c691d0031b7=,
+  =NativeIME-test-bc133477d47d=, =NativeIME-test-72ba6fecd54f= respectively.
+- =git diff --check=: exit 0; =git diff --cached --stat=: empty. No commits.
+  All started build/test PowerShell processes completed; no owned leftovers.
+  Native core/stock tests were not repeated for these host/parser-only changes.
+
+Claude rerun commands (set =$Runtime= as in the brief):
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-punct-commit.ps1 -Runtime $Runtime -BuildDir build/w -InputRulesFile build/live-input-rules.conf -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-punct-next-key.ps1 -Runtime $Runtime -BuildDir build/w -InputRulesFile build/live-input-rules.conf -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-async-space.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-conversion.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45 -Cases uncertified
+ctest --test-dir build/w -C Release
+#+end_src
+Remaining: fresh live TSF/async gates, uncertified host publication investigation,
+and real Emacs/CUAS verification. The parser correction does not establish real
+IMM delivery, and the async observation fix has only compiled here.
+
+** DP1 dp5 full-run follow-up: inline commits and kana-valued symbols
+
+Read =build/claude-verify-dp5/= and its inline, stress and session artifacts.
+Inline's no-composition failure was caused by this worker's explicit temporary
+composition for inline terminal insertion. Restore composition-free insertion,
+while preserving the two-session FIFO barrier for candidate plus fresh key.
+
+Changes in this follow-up:
+- =windows/src/text_service.cpp:4261=: inline terminal output uses
+  InsertTextAtSelection(TF_IAS_NO_DEFAULT_COMPOSITION), as main did. It captures
+  a collapsed end anchor for later replay, keeps PAIR advisory delivery and
+  does not impose a SetSelection failure on successful IMM insertion. Both
+  confirmation and fresh punctuation return before StartComposition. Existing
+  inline emacs/inline tests already assert no COMPOSITION START; they remain
+  the live regression gate, with no weakened assertion or Python edit.
+- =windows/src/realtime_frontend.cpp:79,:90,:166,:259=: share builtin symbol
+  outputs and distinguish kana-valued symbol rules from punctuation boundaries.
+  An exported literal kana output, including ー, extends a reading; a command
+  or punctuation-valued output still hands auto-start policy to DDSKK. This is
+  based on the rule's output, not a stress dictionary/word special case.
+- =windows/test/realtime_frontend_test.cpp:269=: three positive cases for
+  builtin and exported O-mu and a custom semicolon -> kana rule. Existing
+  preedit period handoff assertion remains. Added first, built and ran against
+  unchanged frontend: exit 276, =build/dp1-dp5-reading-red.log= tail
+  =CHECK failed at line 276: vowel.Feed(ch)=;
+  =Punctuation frontend cases=4 preedit=1 PASS=.
+- =windows/test/punct_stock_test.el:20=: stock oracle asserts O-mu stays
+  preedit with text ▽おーむ. No conversion/autostart occurs at the long vowel.
+- =windows/test-host/test-punct-commit.ps1:9,:80,:100,:119,:129=: optional
+  period-denied, letter-denied, okuri-denied cases retain exact result counts,
+  result text, distinct increasing locks and composition assertions, and
+  require exactly one injected write denial. Original defaults/counts unchanged.
+- =windows/test-host/test-punct-refused-key.ps1:1=: six-case local/provider
+  refusal runner, expected 6 cases/30 checks. This coverage is not yet run live.
+
+Stress evidence: reconstructed the 60 expected words with the script's seeded
+Random and inspected AFTER ENTER deltas. Non-Ω episodes match, including
+refused conversion/okuri edits. All mismatches are Ω episodes (8,11,17,23,38,
+40,41,47,53), starting with O - handing off to the provider, which produces
+wrong/stale later reading/candidate states. The alleged adjacent duplication
+抵抗値値 includes two intentional distinct episodes (resistance then value).
+The culprit in the frontend is the blanket ispunct preedit handoff, which
+also appears in f7bdf4a source. The new symbol-reading correction removes that
+unnecessary handoff; full stress is still unverified here. No speculative
+queue/refusal rewrite was made without a corresponding failing trace.
+
+Restart evidence: test-engine-session-v2 starts ddskk-engine-host directly and
+does not load the TIP/core. It cannot exercise TextService's deferred replay.
+Ran the unchanged gate with the supplied runtime and cold wait 45:
+=powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-engine-session-v2.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45=.
+Exit 0; =build/dp1-dp5-session-before.log= verbatim tail:
+=EG2 private sessions: 17 checks PASS (real restart, eviction, durable retry)=.
+Artifacts: =build/w/session-v2-89219efc87f544b0b616c755498ba7eb/=.
+No restart code or expectation changed. The reported intermittent failure's
+root cause is not established; Claude should rerun this unchanged gate too.
+
+Other executed gates:
+- =cmake --build build/w --config Release=: exit 0, final log
+  =build/dp1-dp5-build-final.log=, tail through =tsf-host.vcxproj=.
+- =& build/w/Release/ddskk-realtime-frontend-test.exe=: exit 0,
+  =build/dp1-dp5-reading-green.log= verbatim output:
+  =Punctuation frontend cases=4 preedit=1 PASS=;
+  =Kana-valued symbol reading cases=3 PASS=.
+- =$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L engine -L vendor/ddskk -l windows/test/punct_stock_test.el -f ert-run-tests-batch-and-exit=:
+  exit 0, =build/dp1-dp5-stock.log=. Tail:
+  =Ran 3 tests, 3 results as expected, 0 unexpected= (timestamp follows).
+  Eight punctuation rows, three fresh-key rows, one long-vowel row.
+- =powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-punct-commit-parser.ps1=:
+  exit 0, =build/dp1-dp5-parser.log=. Verbatim tail:
+  =PASS punctuation snapshot checks=6 negative-controls=4=;
+  =PASS punctuation snapshot/IMM checks=14 negative-controls=10=.
+- =& windows/test-host/test-punct-commit.ps1 -Runtime unused -LogDirectory build/w/punct-tsf-418cb96553c44ea28e56baf4bd5f58f4 -Providers 1 -Cases period=:
+  exit 0, =build/dp1-dp5-period-replay.log=, one existing case/four checks.
+- Refused-key script AST parse: =Refused-key script parse errors=0=.
+- =ctest --test-dir build/w -C Release=: exit 8, all ten registry wrappers
+  blocked, =build/dp1-dp5-ctest.log= and Testing/Temporary/LastTest.log.
+  =0% tests passed, 10 tests failed out of 10=.
+- Ran all seven TSF/inline commands below. Each exit 1 at private-registry
+  New-Item before host launch, zero live cases/checks. Logs
+  =build/dp1-dp5-{punct-commit,punct-next-key,punct-refused-key,local-conversion,async-space,local-state-stress,inline}.log=.
+  PowerShell script tails: =FullyQualifiedErrorId : NativeCommandError=;
+  inline Python ends an AssertionError containing =New-Item : Access to the registry key ... is denied.=.
+  Thus no claim that the four previously passing live gates remain green on
+  this final build, or that the inline/stress fixes pass end to end.
+- Exploratory stock engine export probe failed before starting the engine:
+  =Cannot open load file: No such file or directory, ../nelisp/src/nelisp-buffer.el=,
+  exit -1, =build/dp1-dp5-rules-probe.log=. No successful result claimed.
+  Stock session-only minus probe did run (exit 0):
+  =MINUS=("-" nil skk-auto-kutouten)=, =build/dp1-dp5-minus-stock.log=.
+- =git diff --check=: exit 0; cached diff empty. Changes unstaged, no commit.
+  Owned test host/runtime, builds, batch Emacs and Python/helper processes
+  all finished. Final process inventory contains only pre-existing applications.
+
+Claude rerun commands; set =$Runtime= and =$LargeDictionary= to supplied paths:
+#+begin_src powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-punct-commit.ps1 -Runtime $Runtime -BuildDir build/w -InputRulesFile build/live-input-rules.conf -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-punct-next-key.ps1 -Runtime $Runtime -BuildDir build/w -InputRulesFile build/live-input-rules.conf -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-punct-refused-key.ps1 -Runtime $Runtime -BuildDir build/w -InputRulesFile build/live-input-rules.conf -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-conversion.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-async-space.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-local-state-stress.ps1 -Runtime $Runtime -LargeDictionary $LargeDictionary -BuildDir build/w -ColdLoadSleepSec 45
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --case emacs --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $Runtime --artifacts build/dp1-dp5-inline-rerun --cold-load 45
+powershell -NoProfile -ExecutionPolicy Bypass -File windows/test-host/test-engine-session-v2.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+ctest --test-dir build/w -C Release
+#+end_src

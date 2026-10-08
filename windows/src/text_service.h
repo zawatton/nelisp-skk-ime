@@ -89,13 +89,23 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
 
   HRESULT ApplyEngineState(TfEditCookie edit_cookie, ITfContext* context,
                            const ddskk::EngineState& state,
-                           ddskk::AutoPairCaretUpdate* pair_caret = nullptr);
+                           ddskk::AutoPairCaretUpdate* pair_caret = nullptr,
+                           ITfRange* insertion_start = nullptr,
+                           ITfRange** committed_end = nullptr,
+                           bool force_result_composition = false);
   void UpdateCandidateUI(ITfContext* context,
                          const ddskk::EngineState& state);
   HRESULT RequestEdit(ITfContext* context, ITfEditSession* edit, HRESULT* result,
                       const wchar_t* path = L"engine", uint64_t sequence = 0);
   void StateSessionCreated() { ++pending_state_edits_; }
-  void StateSessionExecuted() { --pending_state_edits_; }
+  void StateSessionExecuted() { --pending_state_edits_; ScheduleConfirmationReplay(); }
+  void ScheduleConfirmationReplay();
+  void ResumeConfirmedKeys();
+  void ConfirmationFinished(ITfContext* context, uint64_t generation, HRESULT result, ITfRange* end);
+  void RememberConfirmation(const ddskk::EngineState& state) { confirmation_state_ = state; confirmation_pending_ = true; }
+  void RetryConfirmation();
+  bool ReplayingConfirmation() const { return replaying_confirmation_ || (confirmation_replay_ && !confirmation_pending_); }
+  ITfRange* TakeConfirmationAnchor() { auto* range = confirmation_anchor_; confirmation_anchor_ = nullptr; return range; }
   uint64_t EditGeneration() const { return edit_generation_; }
   bool StateEditAllowed(ITfContext* context, uint64_t generation) const;
   void FinishStateEdit(ITfContext* context, const ddskk::EngineState& state, HRESULT result);
@@ -223,8 +233,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   void ShowProviderBusy(ITfContext* context);
   void RenderLocalOkuri(ITfContext* context);
   HRESULT ApplyLocalState(ITfContext* context, const ddskk::EngineState& state,
-                          std::optional<ddskk::EngineState> preceding = std::nullopt);
-  HRESULT CommitLocal(ITfContext* context, const ddskk::EngineState* following = nullptr);
+                          bool confirmation = false);
+  HRESULT CommitLocal(ITfContext* context, bool confirmation = true);
   void CancelLocalRetry();
   void ScheduleLocalRetry();
   void RetryLocalConversion();
@@ -251,6 +261,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
     bool has_codepoint = false;
     bool shift = false;
     bool ctrl_j = false;
+    bool control = false;
+    bool caps = false;
   };
 
   LONG ref_count_ = 1;
@@ -282,6 +294,13 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   size_t okuri_mirrored_keys_ = 0;
   std::u32string okuri_handoff_keys_;
   std::deque<DeferredProviderKey> deferred_provider_keys_;
+  bool confirmation_pending_ = false;
+  bool confirmation_replay_ = false;
+  bool replaying_confirmation_ = false;
+  bool confirmation_resume_posted_ = false;
+  uint64_t confirmation_dispatch_sequence_ = 0;
+  ITfRange* confirmation_anchor_ = nullptr;
+  std::optional<ddskk::EngineState> confirmation_state_;
   ITfComposition* composition_ = nullptr;
   // AddRef'd identities of compositions ended by this TIP. Some hosts delay
   // OnCompositionTerminated; a vector preserves every outstanding identity

@@ -4,6 +4,7 @@
 #include "realtime_frontend.h"
 #include "input_rule_mode.h"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <string_view>
@@ -75,6 +76,25 @@ bool IsConsonant(char value) {
          value != 'u' && value != 'e' && value != 'o' && value != 'n';
 }
 
+const wchar_t* DefaultSymbol(char key) {
+  switch (key) {
+    case '.': return L"。";
+    case ',': return L"、";
+    case '-': return L"ー";
+    case '[': return L"「";
+    case ']': return L"」";
+    default: return nullptr;
+  }
+}
+
+bool KanaReading(const std::wstring& text) {
+  return !text.empty() && std::all_of(text.begin(), text.end(), [](wchar_t ch) {
+    return (ch >= 0x3041 && ch <= 0x3096) || (ch >= 0x309d && ch <= 0x309f) ||
+           (ch >= 0x30a1 && ch <= 0x30fa) ||
+           (ch >= 0x30fc && ch <= 0x30fe);
+  });
+}
+
 }  // namespace
 
 bool RealtimeFrontend::TrySetRulesForReading(const std::vector<RomajiRule>& rules) {
@@ -143,7 +163,16 @@ std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record, un
   // open. Its configurable policy belongs to the provider, not this parser.
   // Retain the triggering key for the complete provider handoff.
   if (!continuous_preedit_ && preedit_ && record &&
-      std::ispunct(static_cast<unsigned char>(key))) return std::nullopt;
+      std::ispunct(static_cast<unsigned char>(key))) {
+    const auto rule = rules_.find(pending_ + key);
+    const auto builtin = rules_.empty() ? DefaultSymbol(key) : nullptr;
+    // Kana-valued symbols (notably the prolonged vowel mark) are reading
+    // atoms. ASCII punctuation alone does not imply a word boundary.
+    const bool reading_atom = rule != rules_.end()
+        ? rule->second.command.empty() && KanaReading(rule->second.hiragana)
+        : builtin && KanaReading(builtin);
+    if (!reading_atom) return std::nullopt;
+  }
   if (key == 127 && preedit_ && okuri_started_) {
     if (!pending_.empty()) pending_.clear();
     else if (!text_.empty() && text_.back() != L'*') text_.pop_back();
@@ -227,16 +256,8 @@ std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record, un
       text_.append(pending_.begin(), pending_.end());
       pending_.clear();
     }
-    switch (key) {
-      case '.': text_ += L"。"; break;
-      case ',': text_ += L"、"; break;
-      case '-': text_ += L"ー"; break;
-      case '[': text_ += L"「"; break;
-      case ']': text_ += L"」"; break;
-      default:
-        text_.push_back(static_cast<wchar_t>(static_cast<unsigned char>(key)));
-        break;
-    }
+    if (const auto symbol = DefaultSymbol(key)) text_ += symbol;
+    else text_.push_back(static_cast<wchar_t>(static_cast<unsigned char>(key)));
   } else {
     std::string next = pending_ + lower;
     if (next.size() == 2 && next[0] == next[1] && IsConsonant(next[0])) {
