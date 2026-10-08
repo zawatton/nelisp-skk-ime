@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "text_service.h"
+#include <textstor.h>
 #include "registry_settings.h"
 
 #include <cstdarg>
@@ -40,6 +41,7 @@ constexpr wchar_t kProviderWindowClass[] = L"NeLispImeProviderResultWindow";
 constexpr UINT kPublishStateMessage = WM_APP + 91;
 constexpr UINT kModeIndicatorMessage = WM_APP + 92;
 constexpr UINT kInlineMessage = WM_APP + 93;
+constexpr UINT kConfirmationReplayMessage = WM_APP + 94;
 size_t InlineCursor(const ddskk::EngineState& state) {
   const auto display = state.text + state.pending_romaji;
   size_t units = display.size();
@@ -94,13 +96,15 @@ class StateEditSession final : public ITfEditSession {
  public:
   StateEditSession(TextService* service, ITfContext* context,
                    ddskk::EngineState state, const wchar_t* path = L"engine", uint64_t sequence = 0,
-                   std::optional<ddskk::EngineState> preceding = std::nullopt)
+                   bool confirmation = false)
       : service_(service), context_(context), state_(std::move(state)),
-        preceding_(std::move(preceding)),
+        confirmation_(confirmation), fresh_key_(service->ReplayingConfirmation()),
         sequence_(sequence ? sequence : service->KeySequence()), generation_(service->EditGeneration()), path_(path) {
     service_->StateSessionCreated();
     service_->AddRef();
     context_->AddRef();
+    if (confirmation_) service_->RememberConfirmation(state_);
+    if (fresh_key_) insertion_start_ = service_->TakeConfirmationAnchor();
   }
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
     if (object == nullptr) return E_POINTER;
@@ -119,21 +123,17 @@ class StateEditSession final : public ITfEditSession {
     return count;
   }
   HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie edit_cookie) override {
-    if (!executed_) { executed_ = true; service_->StateSessionExecuted(); }
     if (!service_->StateEditAllowed(context_, generation_)) {
       service_->TracePhase(L"edit-abandoned", sequence_, path_, S_FALSE);
       return S_FALSE;
     }
     const auto saved_trace = service_->SetEditTraceSequence(sequence_);
     service_->TracePhase(L"edit-start", sequence_, path_);
-    // Implicit confirmation and the following key share one TSF lock. A
-    // queued second request must never replace the uncommitted candidate.
-    HRESULT result = S_OK;
-    if (preceding_) {
-      result = service_->ApplyEngineState(edit_cookie, context_, *preceding_, &pair_caret_);
-    }
-    if (SUCCEEDED(result))
-      result = service_->ApplyEngineState(edit_cookie, context_, state_, &pair_caret_);
+    ITfRange* end = nullptr;
+    const HRESULT result = service_->ApplyEngineState(edit_cookie, context_, state_, &pair_caret_,
+        insertion_start_, confirmation_ ? &end : nullptr, fresh_key_);
+    if (confirmation_) service_->ConfirmationFinished(context_, generation_, result, end);
+    if (end) end->Release();
     service_->FinishStateEdit(context_, state_, result);
     service_->TracePhase(L"edit-end", sequence_, path_, result);
     service_->SetEditTraceSequence(saved_trace);
@@ -144,7 +144,8 @@ class StateEditSession final : public ITfEditSession {
   ~StateEditSession() {
     // Synchronous callers retain this reference through text-store unlock.
     pair_caret_.Complete();
-    if (!executed_) service_->StateSessionExecuted();
+    if (insertion_start_) insertion_start_->Release();
+    service_->StateSessionExecuted();
     context_->Release();
     service_->Release();
   }
@@ -152,10 +153,10 @@ class StateEditSession final : public ITfEditSession {
   TextService* service_;
   ITfContext* context_;
   ddskk::EngineState state_;
-  std::optional<ddskk::EngineState> preceding_;
+  bool confirmation_ = false, fresh_key_ = false;
+  ITfRange* insertion_start_ = nullptr;
   uint64_t sequence_, generation_;
   const wchar_t* path_;
-  bool executed_ = false;
   ddskk::AutoPairCaretUpdate pair_caret_;
 };
 
@@ -343,6 +344,23 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
   if (message == kInlineMessage && service != nullptr) {
     service->HandleInlineEvent();
     return 0;
+  }
+  if (message == kConfirmationReplayMessage && service != nullptr) {
+    if (!service->confirmation_resume_posted_ ||
+        static_cast<uint64_t>(lparam) != service->confirmation_dispatch_sequence_) return 0;
+    if (!wparam) {
+      // Cross another message boundary after the commit lock releases. IMM
+      // result notifications queued by CUAS at unlock precede this continuation.
+      if (!PostMessageW(window, kConfirmationReplayMessage, 1, lparam))
+        service->confirmation_resume_posted_ = false;
+    } else {
+      service->confirmation_resume_posted_ = false;
+      service->ResumeConfirmedKeys();
+    }
+    return 0;
+  }
+  if (message == WM_TIMER && wparam == 7 && service != nullptr) {
+    service->RetryConfirmation(); return 0;
   }
   if (message == kPublishStateMessage && service != nullptr) {
     service->FlushPublishedState();
@@ -831,6 +849,12 @@ void TextService::ResolveLocalFallback() {
 }
 
 void TextService::CancelPendingProvider() {
+  confirmation_resume_posted_ = false;
+  confirmation_state_.reset();
+  if (provider_window_) KillTimer(provider_window_, 7);
+  confirmation_pending_ = confirmation_replay_ = false;
+  if (confirmation_anchor_) confirmation_anchor_->Release();
+  confirmation_anchor_ = nullptr;
   preparation_sequence_.fetch_add(1);
   provider_deadline_ = 0;
   okuri_conversion_started_qpc_ = 0;
@@ -979,7 +1003,10 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
       consume = false;
     }
     if (consume) deferred_provider_keys_.pop_front();
-    if (control && BeginProviderControl(*control)) return;
+    if (control && BeginProviderControl(*control)) {
+      if (!consume || *control == ddskk::EngineControl::kCommit) confirmation_pending_ = true;
+      return;
+    }
   }
 
   // Preserve raw keys across candidate/registration states. They provide
@@ -1060,23 +1087,9 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
     return;
   }
   if (active_context_ == nullptr) return;
-  auto edit_state = *result->state;
-  std::optional<ddskk::EngineState> preceding;
-  if (edit_state.composition_start < 0 && edit_state.pending_romaji.empty() &&
-      !deferred_provider_keys_.empty() && deferred_provider_keys_.front().has_codepoint) {
-    auto following = realtime_frontend_;
-    const auto next = following.Feed(deferred_provider_keys_.front().codepoint);
-    if (next && next->composition_start < 0 && next->pending_romaji.empty()) {
-      preceding = edit_state;
-      edit_state = *next;
-      realtime_frontend_ = std::move(following);
-      deferred_provider_keys_.pop_front();
-      kana_mode_ = ddskk::DeriveKanaMode(edit_state);
-      last_engine_mode_ = edit_state.mode;
-    }
-  }
   auto* edit_session =
-      new (std::nothrow) StateEditSession(this, active_context_, edit_state, L"engine", result->key_sequence, std::move(preceding));
+      new (std::nothrow) StateEditSession(this, active_context_, *result->state, L"engine", result->key_sequence,
+          confirmation_pending_ && result->state->composition_start < 0 && result->state->pending_romaji.empty());
   if (edit_session == nullptr) return;
   HRESULT edit_result = E_FAIL;
   const HRESULT request = RequestEdit(active_context_, edit_session, &edit_result, L"engine", result->key_sequence);
@@ -1087,6 +1100,9 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   if (SUCCEEDED(request) && SUCCEEDED(edit_result)) {
     if (result->state->mode == L"candidate") TraceOkuriCandidate(false);
     ReplayDeferredProviderKeys();
+  } else if (confirmation_pending_) {
+    ConfirmationFinished(active_context_, EditGeneration(), FAILED(request) ? request : edit_result, nullptr);
+    return;
   } else if (local_enabled_) {
     ResolveLocalFallback();
     return;
@@ -1102,6 +1118,7 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
 }
 
 void TextService::ReplayDeferredProviderKeys() {
+  if (confirmation_pending_ || confirmation_replay_) { ScheduleConfirmationReplay(); return; }
   while (!deferred_provider_keys_.empty() && active_context_ != nullptr &&
          !provider_pending_.load(std::memory_order_acquire)) {
     const DeferredProviderKey key = deferred_provider_keys_.front();
@@ -1210,6 +1227,90 @@ void TextService::ReplayDeferredProviderKeys() {
     edit_session->Release();
     if (FAILED(request) || FAILED(edit_result)) return;
   }
+}
+
+void TextService::ScheduleConfirmationReplay() {
+  if (confirmation_replay_ && !confirmation_pending_ && !pending_state_edits_ &&
+      !provider_pending_.load() && provider_window_ && !confirmation_resume_posted_) {
+    confirmation_resume_posted_ = true;
+    const auto sequence = ++confirmation_dispatch_sequence_;
+    if (!PostMessageW(provider_window_, kConfirmationReplayMessage, 0, static_cast<LPARAM>(sequence)))
+      confirmation_resume_posted_ = false;
+  }
+}
+
+void TextService::ConfirmationFinished(ITfContext* context, uint64_t generation,
+                                      HRESULT result, ITfRange* end) {
+  if (!StateEditAllowed(context, generation)) return;
+  if (FAILED(result)) {
+    // Retry only refusals that precede document mutation. A failed EndComposition
+    // may already have delivered a result and must never be replayed blindly.
+    if (provider_window_ && (result == TF_E_LOCKED || result == TF_E_SYNCHRONOUS ||
+        result == TS_E_READONLY || result == E_ACCESSDENIED))
+      SetTimer(provider_window_, 7, 50, nullptr);
+    return;
+  }
+  confirmation_state_.reset();
+  if (provider_window_) KillTimer(provider_window_, 7);
+  confirmation_pending_ = false;
+  confirmation_replay_ = true;
+  if (confirmation_anchor_) confirmation_anchor_->Release();
+  confirmation_anchor_ = end;
+  if (end) end->AddRef();
+  // The continuation is posted when TSF releases the commit session.
+}
+
+void TextService::RetryConfirmation() {
+  if (!confirmation_state_ || !active_context_ || pending_state_edits_ || provider_pending_.load()) return;
+  const auto state = *confirmation_state_;
+  if (provider_window_) KillTimer(provider_window_, 7);
+  // A refused synchronous local request restored its selected candidate. An
+  // accepted asynchronous commit already queued learning, so retry only its
+  // retained document state in that case, never learning or consuming keys twice.
+  if (local_conversion_.active()) CommitLocal(active_context_, true);
+  else ApplyLocalState(active_context_, state, true);
+}
+
+void TextService::ResumeConfirmedKeys() {
+  if (!confirmation_replay_ || confirmation_pending_ || pending_state_edits_ ||
+      provider_pending_.load() || !active_context_) return;
+  if (deferred_provider_keys_.empty()) {
+    confirmation_replay_ = false;
+    if (confirmation_anchor_) confirmation_anchor_->Release();
+    confirmation_anchor_ = nullptr;
+    return;
+  }
+  const auto key = deferred_provider_keys_.front();
+  deferred_provider_keys_.pop_front();
+  BYTE saved[256]{}, keyboard[256]{};
+  GetKeyboardState(saved);
+  if (key.shift) keyboard[VK_SHIFT] = 0x80;
+  if (key.ctrl_j || key.control) keyboard[VK_CONTROL] = 0x80;
+  if (key.caps) keyboard[VK_CAPITAL] = 1;
+  if (key.has_codepoint && ((key.codepoint >= U'a' && key.codepoint <= U'z') ||
+      (key.codepoint >= U'A' && key.codepoint <= U'Z')))
+    keyboard[VK_CAPITAL] = ((key.codepoint >= U'A' && key.codepoint <= U'Z') != key.shift) ? 1 : 0;
+  SetKeyboardState(keyboard);
+  replaying_confirmation_ = true;
+  BOOL eaten = FALSE;
+  const auto scan = MapVirtualKeyW(static_cast<UINT>(key.virtual_key), MAPVK_VK_TO_VSC);
+  OnKeyDown(active_context_, key.virtual_key, (static_cast<LPARAM>(scan) << 16) | 1, &eaten);
+  if (!eaten && key.has_codepoint) {
+    // A queued mode command may have switched to Latin before this key. The
+    // original key was already eaten, so deliver its printable text explicitly.
+    ddskk::EngineState literal;
+    literal.mode = last_engine_mode_;
+    if (key.codepoint <= 0xffff) literal.text.assign(1, static_cast<wchar_t>(key.codepoint));
+    else {
+      literal.text.push_back(static_cast<wchar_t>(0xd800 + ((key.codepoint - 0x10000) >> 10)));
+      literal.text.push_back(static_cast<wchar_t>(0xdc00 + ((key.codepoint - 0x10000) & 0x3ff)));
+    }
+    ApplyLocalState(active_context_, literal);
+  }
+  replaying_confirmation_ = false;
+  SetKeyboardState(saved);
+  // One key per message; a deferred edit retains the barrier until release.
+  ScheduleConfirmationReplay();
 }
 
 void TextService::ShowProviderBusy(ITfContext* context) {
@@ -1357,6 +1458,9 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
 }
 
 HRESULT TextService::Deactivate() {
+  confirmation_pending_ = confirmation_replay_ = false;
+  if (confirmation_anchor_) confirmation_anchor_->Release();
+  confirmation_anchor_ = nullptr;
   fallback_rules_.reset();
   fallback_rule_snapshot_.reset();
   FlushDebugLog();
@@ -2521,6 +2625,12 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     debug_exit(FALSE);
     return S_OK;
   }
+  if (!replaying_confirmation_ && (confirmation_pending_ || confirmation_replay_)) {
+    const auto key = !control_down ? TranslateKey(wparam, lparam) : std::optional<char32_t>{};
+    deferred_provider_keys_.push_back({wparam, key.value_or(0), key.has_value(), ShiftDown(), ctrl_j, control_down, (GetKeyState(VK_CAPITAL) & 1) != 0});
+    ScheduleConfirmationReplay();
+    *eaten = TRUE; branch = L"confirmation-queue"; debug_exit(*eaten); return S_OK;
+  }
   if (local_store_.started()) {
     local_handoff_requested_ = 0;
     local_store_.Start();
@@ -2623,18 +2733,10 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       debug_exit(*eaten, hr, hr); return S_OK;
     }
     if (key) {
-      auto following = realtime_frontend_;
-      following.Reset();
-      if (const auto next = following.Feed(*key); next &&
-          next->composition_start < 0 && next->pending_romaji.empty()) {
-        const HRESULT hr = CommitLocal(context, &*next);
-        if (SUCCEEDED(hr)) realtime_frontend_ = std::move(following);
-        debug_exit(*eaten, hr, hr); return S_OK;
-      }
-      const HRESULT hr = CommitLocal(context);
-      if (FAILED(hr)) { debug_exit(*eaten, hr, hr); return S_OK; }
-      // Continue this callback through the native frontend. No provider
-      // response or one-key replay is involved in implicit confirmation.
+      deferred_provider_keys_.push_back({wparam, *key, true, ShiftDown(), ctrl_j, control_down, (GetKeyState(VK_CAPITAL) & 1) != 0});
+      confirmation_pending_ = true;
+      const HRESULT hr = CommitLocal(context, true);
+      debug_exit(*eaten, hr, hr); return S_OK;
     } else { debug_exit(*eaten); return S_OK; }
   }
   if (local_enabled_ && realtime_frontend_.okuri_started() &&
@@ -2777,6 +2879,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       control = controls[wparam - VK_F6];
     }
     if (control && BeginProviderControl(*control)) {
+      if (*control == ddskk::EngineControl::kCommit) confirmation_pending_ = true;
       branch = L"provider-control";
       *eaten = TRUE;
       debug_exit(*eaten);
@@ -2800,6 +2903,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       deferred_provider_keys_.push_back(DeferredProviderKey{
           wparam, *codepoint, true, ShiftDown(), ctrl_j});
       if (BeginProviderControl(ddskk::EngineControl::kCommit)) {
+        confirmation_pending_ = true;
         branch = L"provider-accept-and-queue";
         *eaten = TRUE;
         debug_exit(*eaten);
@@ -3433,6 +3537,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
 // OnKeyDown failure path that abandons a composition, from
 // OnCompositionTerminated(), and from Deactivate().
 void TextService::ResetAbandonedComposition() {
+  confirmation_pending_ = confirmation_replay_ = false;
+  if (confirmation_anchor_) confirmation_anchor_->Release();
+  confirmation_anchor_ = nullptr;
   ++edit_generation_;
   CancelLocalRetry();
   local_store_.ReleaseState();
@@ -3784,14 +3891,16 @@ HRESULT TextService::AbortCandidate() {
 }
 
 HRESULT TextService::ApplyLocalState(ITfContext* context, const ddskk::EngineState& state,
-                                   std::optional<ddskk::EngineState> preceding) {
+                                   bool confirmation) {
   if (!context) return E_UNEXPECTED;
-  auto* edit = new (std::nothrow) StateEditSession(this, context, state, L"local", 0, std::move(preceding));
+  if (confirmation) RememberConfirmation(state);
+  auto* edit = new (std::nothrow) StateEditSession(this, context, state, L"local", 0, confirmation);
   if (!edit) return E_OUTOFMEMORY;
   HRESULT result = E_FAIL;
   const HRESULT request = RequestEdit(context, edit, &result, L"local");
   edit->Release();
   if (FAILED(request) || FAILED(result)) {
+    if (confirmation) ConfirmationFinished(context, EditGeneration(), FAILED(request) ? request : result, nullptr);
     if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
       std::printf("LOCAL_EDIT denied=1 retry=reading pending=0 request=%08lx edit=%08lx\n", request, result);
     return FAILED(request) ? request : result;
@@ -3852,14 +3961,14 @@ void TextService::RetryLocalConversion() {
   } else local_conversion_.Reset();
 }
 
-HRESULT TextService::CommitLocal(ITfContext* context, const ddskk::EngineState* following) {
+HRESULT TextService::CommitLocal(ITfContext* context, bool confirmation) {
+  if (confirmation) confirmation_pending_ = true;
   const auto saved = local_conversion_;
   const auto key = local_conversion_.reading();
   const auto word = local_conversion_.selected();
   const auto okuri = local_conversion_.okuri();
   const auto state = local_conversion_.Commit();
-  const HRESULT result = following ? ApplyLocalState(context, *following, state)
-                                  : ApplyLocalState(context, state);
+  const HRESULT result = ApplyLocalState(context, state, confirmation);
   if (FAILED(result)) { local_conversion_ = saved; return result; }
   local_okuri_snapshot_ = {};
   realtime_frontend_.Reset();
@@ -4095,7 +4204,18 @@ void TextService::HandleInlineEvent() {
 HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
                                       ITfContext* context,
                                       const ddskk::EngineState& state,
-                                      ddskk::AutoPairCaretUpdate* pair_caret) {
+                                      ddskk::AutoPairCaretUpdate* pair_caret,
+                                      ITfRange* insertion_start,
+                                      ITfRange** committed_end,
+                                      bool force_result_composition) {
+  if (committed_end) *committed_end = nullptr;
+  const auto closer = auto_pair_.Closer(state);
+  const auto save_end = [&](ITfRange* range) {
+    if (!committed_end) return S_OK;
+    HRESULT hr = range->Clone(committed_end);
+    if (SUCCEEDED(hr)) hr = (*committed_end)->Collapse(edit_cookie, TF_ANCHOR_END);
+    return hr;
+  };
   // A TSF edit session may retain this core after its shim deactivated.
   if (thread_manager_ == nullptr) return S_FALSE;
   const bool has_preedit = state.composition_start >= 0 || !state.pending_romaji.empty();
@@ -4139,30 +4259,25 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
   }
   if (!has_preedit) preedit_episode_ = false;
   if (inline_commit) {
-    if (state.text.empty()) return S_OK; // cancellation
+    if (state.text.empty()) return S_OK;
     ITfInsertAtSelection* insertion = nullptr;
     HRESULT result = context->QueryInterface(IID_ITfInsertAtSelection,
         reinterpret_cast<void**>(&insertion));
     if (FAILED(result)) return result;
     ITfRange* inserted = nullptr;
-    // SetText creates an implicit temporary composition even without an
-    // explicit StartComposition. Suppress that documented default here.
+    // Inline overlays own preedit. Neither their confirmation nor fresh
+    // terminal keys may create an explicit or default TSF composition.
     result = insertion->InsertTextAtSelection(edit_cookie,
         TF_IAS_NO_DEFAULT_COMPOSITION, state.text.data(),
         static_cast<LONG>(state.text.size()), &inserted);
     insertion->Release();
     if (SUCCEEDED(result) && inserted) {
-      // InsertTextAtSelection already advances the host's selection. CUAS
-      // may reject an explicit SetSelection after delivering IMM input; that
-      // must not turn a successful commit into a failed provider edit and
-      // strand the keys queued behind it. Emacs also owns the final point
-      // after inserting an advisory PAIR closer.
       inserted->Collapse(edit_cookie, TF_ANCHOR_END);
       CaptureCaretRect(edit_cookie, context, inserted);
+      result = save_end(inserted);
     }
     if (inserted) inserted->Release();
-    if (SUCCEEDED(result))
-      inline_channel_.Pair(commit_epoch, state.text, auto_pair_.Closer(state));
+    if (SUCCEEDED(result)) inline_channel_.Pair(commit_epoch, state.text, closer);
     return result;
   }
   wchar_t diagnostics[2]{};
@@ -4176,14 +4291,14 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
       registration_commit_pending_ && registration_range_ != nullptr;
   const bool direct_commit = state.composition_start < 0 &&
                              state.pending_romaji.empty() &&
-                             composition_ == nullptr && !registration_target;
+                             composition_ == nullptr && !registration_target && !inline_commit && !force_result_composition;
   const std::wstring committed = direct_commit ? state.text : std::wstring();
   // The wire protocol carries `text' and `pending_romaji' as separate
   // STATE fields; render both together so a pending-only romaji prefix
   // (e.g. text empty, pending_romaji "k" before it resolves to a kana)
   // is actually visible instead of silently dropped.
-  const auto composition_closer = !direct_commit && !registration_target
-      ? auto_pair_.Closer(state) : std::wstring{};
+  const auto composition_closer = !direct_commit && !registration_target && !inline_commit
+      ? closer : std::wstring{};
   const std::wstring display =
       direct_commit ? std::wstring() : state.text + state.pending_romaji + composition_closer;
   DebugLog(L"ApplyEngineState entry comp=%d dlen=%zu",
@@ -4206,15 +4321,15 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
   } else {
     TF_SELECTION selection{};
     ULONG fetched = 0;
-    const HRESULT get_selection =
+    const HRESULT get_selection = insertion_start ? insertion_start->Clone(&selection.range) :
         context->GetSelection(edit_cookie, TF_DEFAULT_SELECTION, 1, &selection,
                               &fetched);
+    if (insertion_start && SUCCEEDED(get_selection)) fetched = 1;
     if (FAILED(get_selection) || fetched != 1) return FAILED(get_selection)
                                                         ? get_selection
                                                         : E_FAIL;
     range = selection.range;
     if (!committed.empty()) {
-      const auto closer = auto_pair_.Closer(state);
       if (!closer.empty()) {
         const HRESULT pair = auto_pair_.Insert(edit_cookie, context, range, committed, closer,
                                               auto_pair_caret_, pair_caret);
@@ -4242,8 +4357,9 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
     }
     if (display.empty()) {
       CaptureCaretRect(edit_cookie, context, range);
+      const HRESULT saved = save_end(range);
       range->Release();
-      return S_OK;
+      return saved;
     }
     ITfContextComposition* composition_context = nullptr;
     HRESULT result = context->QueryInterface(
@@ -4328,8 +4444,10 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
   }
   if (SUCCEEDED(set_text) && !composition_closer.empty() && pair_caret)
     pair_caret->Prepare(composition_closer, auto_pair_caret_);
+  const HRESULT saved_end = SUCCEEDED(set_text) && !has_preedit ? save_end(range) : S_OK;
   range->Release();
   if (FAILED(set_text)) return set_text;
+  if (FAILED(saved_end)) return saved_end;
   // A pending-only state (composition_start < 0 but pending_romaji still
   // non-empty) must keep the composition alive: `display' above already
   // rendered the pending prefix inside it, so ending the composition here
@@ -4509,7 +4627,7 @@ bool TextService::CoreQuiescent() const {
   const uint64_t flags = (composition_ ? 1 : 0) | (engine_pending_ ? 2 : 0) |
       (registration_mode_ ? 4 : 0) | (provider_pending_.load() ? 8 : 0) |
       (provider_composition_active_ ? 16 : 0) | (provider_cleanup_pending_ ? 32 : 0) |
-      (!deferred_provider_keys_.empty() ? 64 : 0) |
+      ((!deferred_provider_keys_.empty() || confirmation_pending_ || confirmation_replay_) ? 64 : 0) |
       (realtime_frontend_.composing() ? 128 : 0) |
       (candidate_ui_id_ != TF_INVALID_UIELEMENTID ? 256 : 0) |
       (!ending_compositions_.empty() ? 512 : 0) |

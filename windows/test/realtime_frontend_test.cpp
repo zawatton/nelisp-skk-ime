@@ -266,6 +266,23 @@ int main(int argc, char** argv) {
   CHECK(punctuation_preedit.raw_keys() == U"Nai.");
   CHECK(punctuation_preedit.RestorePreedit().text == L"▽ない");
   std::printf("Punctuation frontend cases=%zu preedit=1 PASS\n", punctuation_checks);
+  // Kana-valued symbol rules extend a reading; punctuation-valued rules
+  // still hand off auto-start policy to DDSKK. Exercise exported and builtin
+  // long vowels, plus a custom kana rule unrelated to the stress dictionary.
+  for (const bool exported : {false, true}) {
+    ddskk::RealtimeFrontend vowel;
+    if (exported) vowel.SetRules({{"o", "", L"お", L"オ", L""},
+        {"mu", "", L"む", L"ム", L""}, {"-", "", L"ー", L"ー", L""}});
+    for (const auto ch : std::u32string(U"O-mu")) CHECK(vowel.Feed(ch));
+    CHECK(vowel.preview_reading() == L"おーむ");
+    CHECK(vowel.raw_keys() == U"O-mu");
+  }
+  ddskk::RealtimeFrontend kana_symbol;
+  kana_symbol.SetRules({{"o", "", L"お", L"オ", L""}, {";", "", L"かな", L"カナ", L""}});
+  CHECK(kana_symbol.Feed(U'O'));
+  CHECK(kana_symbol.Feed(U';'));
+  CHECK(kana_symbol.preview_reading() == L"おかな");
+  std::printf("Kana-valued symbol reading cases=3 PASS\n");
   CHECK(late_rules.TrySetRulesForReading(published));
   auto changed_rules = published; changed_rules[0].hiragana = L"ぬ";
   CHECK(!late_rules.TrySetRulesForReading(changed_rules));

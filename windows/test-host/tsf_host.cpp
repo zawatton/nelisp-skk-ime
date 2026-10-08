@@ -330,6 +330,7 @@ class DocumentStore final : public ITextStoreACP,
     }
     locked_ = true;
     current_lock_flags_ = dwLockFlags;
+    ++lock_sequence_;
     *phrSession = sink_->OnLockGranted(dwLockFlags);
     locked_ = false;
     current_lock_flags_ = 0;
@@ -342,6 +343,7 @@ class DocumentStore final : public ITextStoreACP,
       const DWORD flags = pending_lock_flags_;
       locked_ = true;
       current_lock_flags_ = flags;
+      ++lock_sequence_;
       sink_->OnLockGranted(flags);
       locked_ = false;
       current_lock_flags_ = 0;
@@ -613,12 +615,31 @@ class DocumentStore final : public ITextStoreACP,
     UpdateCompositionSpan(pComposition);
     std::printf("COMPOSITION END range=%ld,%ld\n",
                 static_cast<long>(comp_start_), static_cast<long>(comp_end_));
+    // Result-only consumer: document SetText outside a composition is invisible
+    // to this model. Snapshot the ended range before another episode edits it.
+    if (comp_start_ >= 0 && comp_end_ >= comp_start_ &&
+        static_cast<size_t>(comp_end_) <= buffer_.size()) {
+      imm_last_ = buffer_.substr(comp_start_, comp_end_ - comp_start_);
+      imm_text_ += imm_last_;
+      ++imm_results_;
+      std::printf("IMMRESULT count=%zu lock=%llu range=%ld,%ld hex=%s\n", imm_results_,
+                  lock_sequence_, comp_start_, comp_end_, ResultHex(imm_last_).c_str());
+    } else std::printf("IMMRESULT invalid-range=1\n");
     composition_active_ = false;
     return S_OK;
   }
 
   // --- Test-harness accessors -------------------------------------------
   std::wstring BufferSnapshot() const { return buffer_; }
+  static std::string ResultHex(const std::wstring& text) {
+    std::string result;
+    for (const auto ch : text) { char hex[5]{}; std::snprintf(hex, sizeof(hex), "%04x", static_cast<unsigned>(ch)); result += hex; }
+    return result.empty() ? "-" : result;
+  }
+  void PrintImmSnapshot(const std::wstring& token) const {
+    std::printf("IMM AFTER %ls COUNT=%zu LAST=%s TEXT=%s\n", token.c_str(), imm_results_,
+                ResultHex(imm_last_).c_str(), ResultHex(imm_text_).c_str());
+  }
   void DelayWrites() { async_writes_ = true; }
   void FlushWrites() {
     async_writes_ = false;
@@ -626,6 +647,7 @@ class DocumentStore final : public ITextStoreACP,
     pending_lock_ = false;
     locked_ = true; current_lock_flags_ = pending_lock_flags_;
     const auto started = GetTickCount64();
+    ++lock_sequence_;
     const HRESULT result = sink_->OnLockGranted(pending_lock_flags_);
     locked_ = false; current_lock_flags_ = 0;
     std::printf("EDIT_ASYNC executed=1 hr=%08lx elapsed_ms=%llu tick=%llu\n",
@@ -638,6 +660,7 @@ class DocumentStore final : public ITextStoreACP,
   void ApplicationClear() {
     const LONG previous = static_cast<LONG>(buffer_.size());
     buffer_.clear();
+    imm_text_.clear(); imm_last_.clear(); imm_results_ = 0;
     sel_start_ = sel_end_ = 0;
     NotifyTextChange(0, previous, 0);
     NotifySelectionChange();
@@ -701,6 +724,9 @@ class DocumentStore final : public ITextStoreACP,
   LONG ref_count_ = 1;
   HWND hwnd_ = nullptr;
   std::wstring buffer_;
+  std::wstring imm_text_, imm_last_;
+  size_t imm_results_ = 0;
+  unsigned long long lock_sequence_ = 0;
   LONG sel_start_ = 0;
   LONG sel_end_ = 0;
 
@@ -1225,6 +1251,7 @@ void PrintAfterLine(const std::wstring& token, const DocumentStore* store) {
             std::to_wstring(sel_start) + L"," +
             std::to_wstring(sel_end) + L" COMP=" + comp;
   std::printf("%s\n", Utf8FromWide(line).c_str());
+  store->PrintImmSnapshot(token);
   std::fflush(stdout);
 }
 
@@ -1489,6 +1516,10 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
       stores[active]->DelayWrites();
     } else if (token == L"ASYNCFLUSH") {
       stores[active]->FlushWrites();
+      // Confirmation deliberately schedules fresh keys after unlock. Drain
+      // those queued continuations before observing the completed flush;
+      // never execute them from within the text-store write lock.
+      PumpMessages(0);
     } else if (token == L"DENYWRITE") {
       stores[active]->DenyNextWrite();
     } else if (token == L"APPCLEAR") {

@@ -17,6 +17,15 @@
 (remove-hook 'kill-emacs-hook #'skk-save-jisyo)
 (remove-hook 'kill-emacs-hook #'skk-record-jisyo-data)
 (add-hook 'kill-emacs-hook (lambda () (delete-directory punct-stock-directory t)))
+(ert-deftest punct-stock-long-vowel-stays-reading ()
+  (let ((session (skk-ime-session-create)))
+    (unwind-protect
+        (let ((state (skk-ime-session-feed-string session "O-mu")))
+          (should (eq (plist-get state :mode) 'preedit))
+          (should (equal (plist-get state :text) "▽おーむ"))
+          (message "STOCK long-vowel reading=▽おーむ PASS"))
+      (skk-ime-session-destroy session))))
+
 (ert-deftest punct-stock-confirm-before-inserting ()
   (let ((cases '(("period" "Kana " "." "仮名。" hiragana)
                  ("comma" "Kana " "," "仮名、" hiragana)
@@ -48,3 +57,29 @@
                          (car case) (plist-get state :mode)
                          (mapconcat (lambda (c) (format "%04x" c)) (plist-get state :text) ""))))
           (skk-ime-session-destroy session))))))
+
+(ert-deftest punct-stock-enter-then-fresh-key ()
+  "The chosen uniform rule confirms exactly like Enter before dispatching a key."
+  (dolist (case '(("k" "仮名" "k" hiragana)
+                  ("K" "仮名▽" "k" preedit)
+                  (".ka" "仮名。か" "" hiragana)))
+    (let ((session (skk-ime-session-create)))
+      (unwind-protect
+          (progn
+            (skk-ime-session--with-buffer session
+              (setq-local skk-jisyo-code 'utf-8)
+              (setq-local skk-search-prog-list
+                          '((skk-search-jisyo-file (cons skk-large-jisyo skk-jisyo-code) 0 t)))
+              (setq-local skk-current-search-prog-list nil))
+            (skk-ime-session-feed-string session "Kana ")
+            (let ((commit (skk-ime-session-control session 'commit)))
+              (should (equal (plist-get commit :text) "仮名")))
+            (let ((state (skk-ime-session-feed-string session (car case))))
+              (message "STOCK fresh=%s mode=%s text=%s pending=%s"
+                       (car case) (plist-get state :mode)
+                       (mapconcat (lambda (c) (format "%04x" c)) (plist-get state :text) "")
+                       (plist-get state :pending-romaji))
+              (should (equal (plist-get state :text) (nth 1 case)))
+              (should (equal (plist-get state :pending-romaji) (nth 2 case)))
+              (should (eq (plist-get state :mode) (nth 3 case)))))
+        (skk-ime-session-destroy session)))))
