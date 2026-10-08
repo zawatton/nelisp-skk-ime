@@ -157,7 +157,7 @@
     "windows/test-host/compare-conversion-candidates.ps1": "0400ac92830d3145deeda4883211e8099d31aef0682aebb33f8bcf641a44fc33",
     "windows/test-host/core-test-action.ps1": "a20733eef2d6c1d572f8cd285f203326b0dc574b837341191d4a4d3a3ba4f96a",
     "windows/test-host/crlf-parser/host_crlf_parser_test.cpp": "7aa360c9c963311cf7c071bf0401f0cbe9cd42fe533170ccf8cb602173bbf9a4",
-    "windows/test-host/host-disk-contracts.py": "d189a58697b114e7b41fa4b7069eb6d054f8c41cae672b1e49f4820cbbed8c00",
+    "windows/test-host/host-disk-contracts.py": "7bd8b36d7b995ff87b21e35d2b9d98bd7a30db4a9fd3dbd60078c6d63110a83e",
     "windows/test-host/host-policy-ipc.py": "777a7f8bbe5cbc01eab54f9bae1e31beaba305f19ebdc951de0b1d555db1c9b0",
     "windows/test-host/host-policy-test.el": "64702f42e5f29f5d77bae9d14311d318abac44c9ceb3d10225287cb9ea09da64",
     "windows/test-host/host-policy.py": "c6cf06f36c8fd5fb5fc29182ef6e48641c35b86072c0719ff03a3c5a9144634f",
@@ -238,7 +238,7 @@
     "windows/test-host/test-sk1-provider-relay.ps1": "2d1f0d5c31fae1a3be40c5699e7dee36b1b77eb3a5fd7ba5f41c0aafa814f4e5",
     "windows/test-host/test-sk1-skkserv.ps1": "ecbd135c51431fe9bc3383152ca197a6979147162ebd83e33315552e49a3199c",
     "windows/test-host/tsf_host.cpp": "ba428dfa470f2da1a6c9f8e28a4d663b82dd027d48abc3fb815ac0f7753446f7",
-    "windows/test-host/verify-host-contracts.py": "0bb34f360655c7c10a36bf758223b6143dbdd310edb73656dab0127a10775b9b"
+    "windows/test-host/verify-host-contracts.py": "057c5206814db9a29a084bb457474e7930cff602437f0b576b127554dc7e5132"
   },
   "inputs": [
     {

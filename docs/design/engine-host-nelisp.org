@@ -340,11 +340,10 @@ $env:HOME=[Environment]::GetFolderPath('UserProfile'); pwsh -NoProfile -File win
 #+end_src
 
 Boundary and Isolation are worker-verifiable; EndToEnd must run with private
-HKCU creation permitted. Contracts stays red until the pre-existing disk
-fixture/hash discrepancy is resolved by the coordinator outside EH3's
-additive-only contract scope. Run EndToEnd separately to collect TSF evidence
-while that independent fixture issue is tracked. Do not edit or bypass it.
-For individually collecting legacy replay despite the native disk failure:
+HKCU creation permitted. The initial fixture/hash discrepancy was repaired by
+the coordinator's byte-exact contracts merge. The subsequent checkout-dependent
+disk digest failure is addressed by the replay normalization described below.
+For individually collecting legacy replay:
 #+begin_src powershell
 foreach($shadow in @('0','1')) {
   $env:DDSKK_HOST_POLICY_SHADOW=$shadow
@@ -363,10 +362,63 @@ session/learning/crash/outbox/SK1-provider checks passed with counts
 and on before =AssertionError: disk fixture hash=; legacy replay passed 19
 replies in both modes. CTest's wrapper failed before all 10 bodies because
 private HKCU creation was denied, as did the TSF part of test-sk1-skkserv.
-These are recorded failures; EH3 does not claim completed S3 acceptance.
+These are historical worker failures from before the coordinator's merge and
+qualification; they do not describe the later Contracts normalization rerun.
 The additional =test-host-policy-disk.py --off-run $OffRun --on-run $OnRun=
 diagnostic compared all eight off/on disk files using unchanged S2 PID/generation
-normalizers and passed. It does not replace the failing golden-hash gate.
+normalizers and passed. At that point it did not replace the failing golden-hash
+gate; the later correction below preserves golden fixture integrity.
+
+*** S3 disk replay portability correction (EH3, 2026-10-08)
+The unchanged tree reproduced =AssertionError: disk mismatch: overlay= after
+121 native wire replies. After the existing PID/generation normalization, only
+index bytes 80--111 (configuration digest) and 112--143 (derived checksum)
+differed in base and overlay. Native Publish hashes decimal capabilities, raw
+RULES metadata, ordered absolute dictionary paths and binary dictionary content
+SHA256s. Reconstructing that input matched the actual digest; substituting the
+original EH2 checkout name reproduced the frozen digest exactly. This is a
+checkout namespace dependency, not a timestamp or learning-order race.
+
+=native-disk-inputs-v1.json= pins ordered repository-relative source names,
+raw source SHA256s and the original captured configuration digest. Replay
+validates each native checksum and the actual configuration digest against
+the absolute paths and pinned source contents before substituting a portable
+digest with relative source names. It verifies the frozen digest against its
+pinned capture provenance. Only that verified namespace identity and the
+existing PID/generation identities are normalized. Capabilities, rules,
+revision, candidate bytes, source order/content, watermark, outbox and journal
+remain byte-exact. The original disk fixture and its SHA256 are unchanged.
+This correction extends S2's originally PID/generation-only replay allowance
+for the verified absolute source namespace; it leaves the on-disk native
+configuration contract unchanged.
+Explicit future capture preserves existing LF/CRLF style instead of letting
+Windows text-mode writes rewrite contract line endings.
+
+=test-host-disk-normalization.py= checks two checkout roots and rejects forged
+configuration digests with valid checksums, changed source comments, source
+order/names and stable payload/metadata changes; it also checks capture EOLs.
+Offline integrity validates the new input plan and both frozen index digests.
+The source inventory refresh changes only the two edited replay-helper hashes.
+Qualification commands (runtime supplied by the caller):
+#+begin_src powershell
+python windows/test-host/test-host-disk-normalization.py
+python windows/test-host/verify-host-contracts.py
+foreach($attempt in 1..3) {
+  pwsh -NoProfile -File windows/test-host/run-engine-host-s3.ps1 -Runtime $Runtime -BuildDir build/w -Stage Contracts
+  if($LASTEXITCODE -ne 0) { throw "Contracts attempt $attempt failed" }
+}
+#+end_src
+EH3 ran seven normalization tests and offline integrity (140 responses,
+eight disk files, 238 source hashes), all passing. Three consecutive full
+Contracts stages passed four gates each: native 121 and legacy 19 replies in
+both shadow modes, totaling 840 wire replies and 48 disk-file comparisons.
+All 14 pre-existing contract files preserve EOLs; only the inventory's two
+helper hashes changed, with every golden fixture byte unchanged. Cleanup
+verified 32 owned PIDs across 13 runs, six actual shadow-policy launches and
+no leftovers. Receipts: =build/w/EH3-disk-normalization-validation.md= and
+=build/w/contracts-normalized-{1,2,3}.log=. This correction reran replay and
+offline checks; coordinator Boundary/Isolation/EndToEnd/CTest results remain
+separately attributed and were not rerun by this worker.
 
 ** S4: incremental authoritative policy
 Switch one responsibility at a time: config/source policy, SK1 cache decisions,
