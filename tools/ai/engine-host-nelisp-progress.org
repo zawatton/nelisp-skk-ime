@@ -1,0 +1,148 @@
+#+TITLE: Engine host migration to NeLisp
+#+DATE: 2026-10-08
+
+Design-only EH1, base main 96f1ecfdf25fc29b142df912f567f976c8155a4a.
+All weights default to 1. Twenty defined criteria; no runtime acceptance
+is claimed. Evidence checks certify a written specification, not its execution.
+Line references below identify relevant sections of the hashed whole document;
+the meter's evidence syntax hashes the file, not a line range.
+
+The initial unchanged-tree artifact check failed (2 missing files, exit 1).
+S1.1 retains a command check for that failure; rerun after authoring. The
+standard meter writes cache files on a normal run. In this two-file-only lane,
+use --no-run without --json to evaluate evidence without writing a cache.
+S1.1 will therefore be UNKNOWN until a later authorized normal meter run,
+even if the separate read-only existence check passes. Pending stages have
+not been converted from known-red behavioral gates: none was identified or
+run here. Existing historical provider SPACE latency failure remains explicitly
+documented in the design; this ledger does not claim to fix that separate goal.
+
+Read-only meter recipe, from the repository root with NOTES_ROOT supplied:
+#+begin_src sh
+bash "$NOTES_ROOT/bin/progress-meter.sh" --ledger tools/ai/engine-host-nelisp-progress.org --root "$PWD" --no-run
+#+end_src
+Future runtime commands require the supplied runtime through Runtime or
+EngineExecutablePath and private registry/pipe/data roots. No machine-specific
+absolute runtime path belongs in this ledger. See the design's gate matrix
+for exact existing runners and the specifications of gates not yet implemented.
+
+EH1 validation receipt (2026-10-08):
+- Read-only existence check, exit 0, two files checked; command and verbatim tail:
+  #+begin_src powershell
+  $missing=0; foreach($p in @('docs/design/engine-host-nelisp.org','tools/ai/engine-host-nelisp-progress.org')) {if((Test-Path -LiteralPath $p) -and (Get-Item -LiteralPath $p).Length -gt 0){Write-Output "PASS $p"}else{$missing++;Write-Output "FAIL missing $p"}}; Write-Output "EH1 deliverables: checked=2 missing=$missing"; if($missing){exit 1}
+  #+end_src
+  #+begin_example
+  PASS docs/design/engine-host-nelisp.org
+  PASS tools/ai/engine-host-nelisp-progress.org
+  EH1 deliverables: checked=2 missing=0
+  #+end_example
+- Meter recipe above run with NOTES_ROOT resolved by the shell, --no-run and
+  no --json, exit 0. All three evidence hashes passed live. Verbatim final line:
+  #+begin_example
+  measured: 15.0% of defined criteria; criteria defined: 20
+  #+end_example
+  S1: PASS=3, FAIL=0, SKIP=0, PEND=1, UNKNOWN=1, 60.0%.
+  S2--S6: each PASS=0, FAIL=0, SKIP=0, PEND=3, UNKNOWN=0, 0.0%.
+  S1.1 UNKNOWN is a missing command cache, not a failed artifact check.
+  The meter performs no behavioral test in this invocation.
+- Whitespace commands:
+  #+begin_src powershell
+  git diff --no-index --check -- /dev/null docs/design/engine-host-nelisp.org
+  git diff --no-index --check -- /dev/null tools/ai/engine-host-nelisp-progress.org
+  rg -n '[ \t]+$' docs/design/engine-host-nelisp.org tools/ai/engine-host-nelisp-progress.org
+  #+end_src
+  Git used the same command-local safe.directory override as the status check.
+  Both no-index commands exited 1 for added-file differences with no whitespace
+  diagnostics (not a passing exit-code gate). rg exited 1 for no matches; its
+  PowerShell exit-status wrapper returned 0 with this verbatim tail:
+  #+begin_example
+  EH1 whitespace: checked=2 trailing_whitespace_matches=0
+  #+end_example
+- Final status: only the two scoped files are untracked/unstaged; staged names
+  empty. No host, engine, tsf-host or Emacs process was started by EH1, so no
+  such owned process remains. No behavioral/build/ERT gate was run.
+
+* S1 Design and native baseline
+** S1.1 Both scoped design deliverables exist and are nonempty
+cmd: test -s docs/design/engine-host-nelisp.org && test -s tools/ai/engine-host-nelisp-progress.org
+
+** S1.2 Every host responsibility has a source anchor, contract and consumer
+#+NOTE: docs/design/engine-host-nelisp.org:32--74; source inspection only.
+evidence: docs/design/engine-host-nelisp.org sha256=6bc90fde95eed672f23007f443aaa998e2d0c68dadb687485864c7fa6cc3b1fe
+
+** S1.3 Architecture choice isolates local key paths from GC and maps runtime gaps to NC1
+#+NOTE: docs/design/engine-host-nelisp.org:75--177; proposed budgets and source availability are explicitly separated from measurements.
+evidence: docs/design/engine-host-nelisp.org sha256=6bc90fde95eed672f23007f443aaa998e2d0c68dadb687485864c7fa6cc3b1fe
+
+** S1.4 Versioned migration, durability, rollback, acceptance gates and risks are specified
+#+NOTE: docs/design/engine-host-nelisp.org:178--364; written plan, not executed acceptance.
+evidence: docs/design/engine-host-nelisp.org sha256=6bc90fde95eed672f23007f443aaa998e2d0c68dadb687485864c7fa6cc3b1fe
+
+** S1.5 End to end: unchanged native host passes private TSF local and Emacs inline with durability recovery and measured request tails
+#+NOTE: Design S1; exact supplied Windows runtime, cold wait 45 s, lattice warmup, private roots, counts/hashes/PID cleanup. No behavioral gate run in EH1.
+pending
+
+* S2 Frozen interchangeable contracts
+** S2.1 Public wire, index and learning formats have hashed byte fixtures and caller deadline inventory
+#+NOTE: Cover old-engine negotiation, UTF8/STATE2/LEARNING2, session v2, legacy replay, error tokens, config and ownership rules.
+pending
+
+** S2.2 Private pipe soak validates framing, isolation, bounded queues and cancellation
+#+NOTE: 32 clients and 100000 completed requests; malformed frames, fragmentation, squatting clients, disconnect, collision and cleanup controls; no gate implementation yet.
+pending
+
+** S2.3 End to end: native reference passes frozen corpus through TSF and Emacs plus SK1 and real session restart
+#+NOTE: Existing DDSKK behavior, Emacs/inline, session-v2 and skkserv runners; ctest is necessary but insufficient.
+pending
+
+* S3 Adapter and shadow policy
+** S3.1 Native adapter preserves endpoint, IO, publication, storage and process contracts with versioned bounded policy IPC
+#+NOTE: One writer and interpreter owner; typed copied data, epochs and IDs; shadow cannot publish learning.
+pending
+
+** S3.2 Policy crash and 3 s GC injection leave cached replies, native publication and local callbacks independent
+#+NOTE: New host-specific gates; reject deliberately synchronous-host control; record full tails, private bytes, startup and owned children.
+pending
+
+** S3.3 End to end: adapter with shadow policy passes private TSF, Emacs inline, durability and pipe soak during pauses
+#+NOTE: Existing local suite including SKK-JISYO.L stress; preserve 20 ms watchdog and local Space p50 <=30 ms; no lowered thresholds.
+pending
+
+* S4 Authoritative NeLisp policy
+** S4.1 Incremental source, cache, restart, publication and learning decisions match native semantics
+#+NOTE: Each responsibility selected separately; native OS barriers retained; no duplicate engine transactions or storage writers.
+pending
+
+** S4.2 Publication and durable-ID recovery pass policy, engine and adapter crash/pause matrices
+#+NOTE: Intent-to-publication p99 <=500 ms/max <=1 s on pinned fixture; also report learn-to-publication; outbox, stage, checkpoint, cursor and ACK crash points.
+pending
+
+** S4.3 End to end: NeLisp policy passes all existing gates and new host gates under multi-client conversion and learning
+#+NOTE: DDSKK, lattice, local suite/L stress, session v2, SK1, Emacs inline and both ERT suites, provider outbox and staged-crash gates; zero host waits in local callbacks or acknowledged-ID loss.
+pending
+
+* S5 Private deployment and rollback
+** S5.1 Versioned bundles preserve CLI and reject incompatible policy images or internal protocol
+#+NOTE: Prewarm private endpoint; retain old bundle and generation leases; no live scripts in worker lanes.
+pending
+
+** S5.2 Host and engine replacement reconcile epochs, sessions, fences and durable cursors with one endpoint owner
+#+NOTE: Composition deferral, blocked storage, canceled warmup and crash-before/after handover; no assumed transparent host session transfer.
+pending
+
+** S5.3 End to end: private old-to-new-to-old swap preserves TSF and Emacs input and exact learned order with zero owned-process leaks
+#+NOTE: Hot swap, scoped deployment/rollback, inline, learning bursts, retained mappings and real host/engine restart. Live rollout is separately authorized.
+pending
+
+* S6 Windows qualification and adapter retirement decision
+** S6.1 Exact Windows runtime qualifies each proposed OS1 replacement or documents its retained native boundary
+#+NOTE: Named-pipe security/cancel, mmap leases, flush/replace, TCP/DNS, process jobs, event loop and Unicode; source presence or GNU Emacs ERT alone is insufficient.
+pending
+
+** S6.2 CW1 and RW4 artifact choices meet measured memory/startup and host-tail budgets without weakening durability or callback gates
+#+NOTE: AOT/minimal image optional; retain adapter where OS1/VAL1 is unqualified. RW3 needed only for stronger managed pause promises, not local isolation.
+pending
+
+** S6.3 End to end: production-shaped private Windows multi-app run passes VAL1 with L dictionary, hostile lifecycle and bundle rollback
+#+NOTE: Repeat existing and new host gates with GC/network/storage pressure, cold restart, zero callback host waits, acknowledged-ID loss or owned-process leaks; live acceptance not inferred.
+pending
