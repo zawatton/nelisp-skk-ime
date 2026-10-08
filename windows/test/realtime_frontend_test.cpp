@@ -46,6 +46,26 @@ std::optional<std::vector<ddskk::RomajiRule>> ReadRules(std::istream& input) {
 }
 
 int main(int argc, char** argv) {
+  CHECK(ddskk::IsQuitKey('G', true));
+  CHECK(ddskk::IsQuitKey(0x1b, false));
+  CHECK(!ddskk::IsQuitKey('G', false));
+  CHECK(!ddskk::IsQuitKey('J', true));
+  std::printf("Queued quit ownership cases=4 PASS\n");
+  ddskk::EngineState nested;
+  nested.mode = L"registration";
+  nested.candidates = {L"愛"};
+  nested.candidate_index = 0;
+  CHECK(!ddskk::IsDocumentCandidate(nested));
+  nested.candidates.clear();
+  CHECK(!ddskk::IsDocumentCandidate(nested));
+  nested.mode = L"candidate";
+  CHECK(ddskk::IsDocumentCandidate(nested));
+  nested.mode = L"preedit";
+  CHECK(!ddskk::IsDocumentCandidate(nested));
+  nested.candidates = {L"愛"};
+  CHECK(ddskk::IsDocumentCandidate(nested));
+  std::printf("Registration candidate ownership cases=5 PASS\n");
+
   if (argc == 4 && std::string(argv[2]) == "--q-oracle") {
     std::ifstream fixture(argv[1]);
     CHECK(fixture.good());

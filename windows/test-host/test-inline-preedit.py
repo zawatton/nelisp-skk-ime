@@ -33,11 +33,61 @@ def verify_custom_symbol_rules(artifacts):
         assert symbols == {'00002e': '003002', '00002c': '003001'}, symbols
 
 
+def verify_registration_document(host_text):
+    expected = {'RET': 'て愛', 'OKURI': 'て愛て書く',
+                'FOLLOW': 'て愛て書くて愛すと',
+                'OKURI-FOLLOW': 'て愛て書くて愛すとて書くすと',
+                'EXHAUST': 'て愛て書くて愛すとて書くすとて愛',
+                'END': 'て愛て書くて愛すとて書くすとて愛'}
+    for label, word in expected.items():
+        checkpoints = re.findall(r'^AFTER ' + re.escape(label) +
+                                 r' BUF=\[(.*?)\] SEL=.* COMP=-\r?$', host_text, re.MULTILINE)
+        assert len(checkpoints) == 1 and checkpoints[0] == word, (label, checkpoints, host_text[-4000:])
+
+
+def registration_timing_report(host_text, debug):
+    callbacks = re.findall(r'^KEYLAT token=(\S+) test_us=(\d+) down_us=(\d+) total_us=(\d+) claimed=1',
+                           host_text, re.MULTILINE)
+    assert callbacks, 'No claimed callback timings'
+    slowest = sorted(callbacks, key=lambda row: int(row[3]), reverse=True)[:8]
+    print('REGISTRATION CALLBACKS ' + ' '.join(
+        f'{token}:test={test},down={down},total={total}us' for token, test, down, total in slowest))
+    phases = re.findall(r'PHASE name=(\S+) seq=(\d+) path=(\S+) us=(\d+)', debug)
+    starts, durations = {}, {}
+    pairs = {'key-test-return': 'key-test-receipt', 'key-return': 'key-receipt',
+             'key-connect-end': 'key-connect-start', 'engine-lookup-end': 'engine-lookup-start',
+             'engine-lookup-start': 'engine-lookup-request',
+             'registration-inline-end': 'registration-inline-start',
+             'provider-preview-end': 'provider-preview-start',
+             'provider-preview-ui-end': 'provider-preview-ui-start',
+             'provider-dispatch-end': 'provider-dispatch-start',
+             'native-index-end': 'native-index-start'}
+    registration_tests = {seq for name, seq, path, _ in phases
+                          if name == 'key-test-receipt' and path == 'registration'}
+    for name, seq, path, stamp in phases:
+        if name == 'key-connect-start':
+            assert seq not in registration_tests, ('Registration probed provider on callback', seq)
+        if name == 'provider-preview-start':
+            assert path == 'engine-worker', ('Provider preview ran on callback', seq, path)
+        starts[seq, name] = (int(stamp), path)
+        if name in pairs and (seq, pairs[name]) in starts:
+            begin, start_path = starts[seq, pairs[name]]
+            duration = int(stamp) - begin
+            assert duration >= 0, (seq, name, duration)
+            durations.setdefault((pairs[name], start_path), []).append(duration)
+    for (name, path), values in sorted(durations.items()):
+        print(f'REGISTRATION PHASE {name} path={path} count={len(values)} max_us={max(values)}')
+    assert registration_tests, 'No registration test phases'
+    for required in ('key-test-receipt', 'engine-lookup-start', 'registration-inline-start'):
+        assert any(name == required for name, _ in durations), ('Missing timing phase', required)
+    return [int(row[3]) for row in callbacks]
+
+
 def main():
     p = argparse.ArgumentParser()
     for name in ('dll', 'core', 'tsf-host', 'engine-host', 'runtime', 'artifacts'):
         p.add_argument('--' + name, required=True)
-    p.add_argument('--case', choices=('inline', 'missing', 'wrong', 'drop', 'emacs', 'pair', 'pair-legacy', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation', 'emacs-fast-typeahead', 'emacs-open-mode', 'emacs-provider-restored'), default='inline')
+    p.add_argument('--case', choices=('inline', 'missing', 'wrong', 'drop', 'emacs', 'pair', 'pair-legacy', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation', 'emacs-fast-typeahead', 'emacs-open-mode', 'emacs-provider-restored', 'emacs-registration-nested'), default='inline')
     p.add_argument('--custom-symbol-rules', action='store_true')
     p.add_argument('--map-during-reading', action='store_true')
     p.add_argument('--key-gap', type=int, choices=(0, 10, 20), default=0)
@@ -96,7 +146,7 @@ def main():
                 return
             while not done.is_set() and not pidfile.exists():
                 time.sleep(.02)
-            if done.is_set() or args.case in ('missing', 'emacs', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation', 'emacs-fast-typeahead', 'emacs-open-mode', 'emacs-provider-restored'):
+            if done.is_set() or args.case in ('missing', 'emacs', 'pair-down', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation', 'emacs-fast-typeahead', 'emacs-open-mode', 'emacs-provider-restored', 'emacs-registration-nested'):
                 return
             pid = int(pidfile.read_text())
             published_token = 'f' * 32 if args.case == 'wrong' else token
@@ -152,6 +202,17 @@ def main():
                   'K a SPACE SETTLE8000 n '
                   + ('SETTLE8000 CONTEXTALIAS ' if args.context_alias else '')
                   + 'u SETTLE8000 WAIT500')
+    if args.case == 'emacs-registration-nested':
+        script = ('WAIT2500 CTX2 a i SPACE WAIT3000 ENTER CTX1 '
+                  'P a p a p i SPACE SETTLE8000:REG1 t e A i SPACE WAIT500 ENTER SETTLE8000:RET '
+                  'P a p a p u SPACE SETTLE8000:REG2 t e K a K u WAIT500 ENTER SETTLE8000:OKURI '
+                  'P a p a p e SPACE SETTLE8000:REG3 t e A i SPACE s u t o ENTER SETTLE8000:FOLLOW '
+                  'P a p a p o SPACE SETTLE8000:REG4 t e K a K u s u t o ENTER SETTLE8000:OKURI-FOLLOW '
+                  'P a p a p a SPACE SETTLE8000:FIRST SPACE SETTLE8000:REG5 '
+                  't e A i SPACE ENTER SETTLE8000:EXHAUST '
+                  'Z a z a z a SPACE SETTLE8000:CANCEL-REG t e A i SPACE '
+                  'CTRLG SETTLE8000:CANCEL-CANDIDATE CTRLG SETTLE8000:CANCEL-READING '
+                  'CTRLG SETTLE8000:CANCEL-OUTER CTRLG SETTLE8000:END WAIT500')
     if args.case == 'emacs-navigation':
         assert args.local_conversion, 'Navigation case requires local ownership'
         script = ('WAIT2500 K a n a REFUSEWRITE SPACE WAIT200 SETTLE8000:FIRST MIRROR '
@@ -256,6 +317,15 @@ def main():
         if args.case == 'emacs-provider-restored':
             first.write_text('ない /無い/内/\nないあ /無い亜/\n', encoding='utf-8')
             env['NATIVEIME_TEST_LOCAL_MAP_DELAY_MS'] = '6000'
+    if args.case == 'emacs-registration-nested':
+        env['NATIVEIME_TEST_KEYSTATE_AFTER_TEST'] = '1'
+        env['NATIVEIME_TEST_REGISTRATION_WORKER_DELAY_MS'] = '75'
+        if not args.local_conversion:
+            env['NATIVEIME_TEST_PROVIDER_PREVIEW_DELAY_MS'] = '75'
+        source = directory / 'registration.utf8'
+        source.write_text(';; okuri-ari entries.\nかk /書/\n;; okuri-nasi entries.\n'
+                          'あい /愛/\nぱぱぱ /既存/\n', encoding='utf-8')
+        env['DDSKK_DICTIONARY_FILES'] = str(source)
     if args.case == 'emacs-okuri':
         env['DDSKK_DICTIONARY_FILES'] = str(root / 'windows/test-host/data/okuri-jisyo.utf8')
     try:
@@ -265,7 +335,7 @@ def main():
             observer = subprocess.Popen([os.sys.executable,
                 str(root / 'windows/test-host/candidate-window-observer.py'),
                 str(directory), str(artifacts), caret_map])
-        if args.case in ('emacs', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation', 'emacs-fast-typeahead', 'emacs-open-mode', 'emacs-provider-restored'):
+        if args.case in ('emacs', 'emacs-pair', 'emacs-accept-queue', 'emacs-nested-pair', 'emacs-okuri', 'emacs-navigation', 'emacs-fast-typeahead', 'emacs-open-mode', 'emacs-provider-restored', 'emacs-registration-nested'):
             # Same prefix required for every PowerShell launch of Emacs.
             emacs_command = "$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L emacs -l windows/test-host/inline-emacs-subscriber.el"
             emacs = subprocess.Popen(['powershell', '-NoProfile', '-Command', emacs_command], cwd=root, env=env)
@@ -312,6 +382,23 @@ def main():
     if args.custom_symbol_rules:
         verify_custom_symbol_rules(artifacts)
     assert 'exited=True' in output, 'Harness did not confirm owned process cleanup'
+    if args.case == 'emacs-registration-nested':
+        assert 'KEYSTATE_AFTER_TEST injected=1' in host_text, 'Modifier-race negative control missing'
+        assert 'REGISTRATION_WORKER delay_ms=75' in host_text, 'Worker-delay negative control missing'
+        if not args.local_conversion:
+            assert 'PROVIDER_PREVIEW_WORKER delay_ms=75' in host_text, 'Preview-delay negative control missing'
+            assert 'CANDIDATEUI preview=1' in host_text, 'Asynchronous preview UI missing'
+        assert 'ENGINE_APPLY mode=provider-preview' not in host_text, 'Preview changed document state'
+        verify_registration_document(host_text)
+        rendered = (directory / 'emacs.log').read_text(encoding='utf-8')
+        assert 'て▼愛' in rendered and 'て▼書く' in rendered, rendered
+        assert 'BUFFER_UNCHANGED=t' in rendered and emacs.returncode == 0
+        assert 'COMPOSITION START' not in host_text, 'Nested conversion created document composition'
+        debug = '\n'.join(f.read_text(encoding='utf-8') for f in artifacts.rglob('dll-debug.log'))
+        times = registration_timing_report(host_text, debug)
+        assert times and max(times) <= 25000, times
+        print(f'PASS real Emacs nested registration checkpoints=6 callbacks={len(times)} max_us={max(times)} cleanup=confirmed')
+        return
     if args.case == 'emacs-open-mode':
         states = re.findall(r'^CLIENT mode=(\S+) open=(\d+) composing=(\d+) sequence=(\d+)', host_text, re.MULTILINE)
         assert len(states) == 5, states

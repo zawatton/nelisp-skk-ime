@@ -204,6 +204,20 @@ bool Store::Learn(std::wstring key, std::wstring candidate, std::wstring okuri) 
   written_.store(written + 1, std::memory_order_release);
   wake_.notify_one(); return true;
 }
+bool Store::LearnRegistration(const EngineState& completed, std::wstring reading,
+                              std::wstring okuri) {
+  if (reading.empty() || completed.composition_start >= 0 ||
+      !completed.pending_romaji.empty() || !completed.candidates.empty() ||
+      completed.mode == L"registration" || completed.mode == L"candidate" ||
+      completed.mode == L"preedit" || completed.text.empty()) return false;
+  auto word = completed.text;
+  if (!okuri.empty()) {
+    if (!word.ends_with(okuri)) return false;
+    word.resize(word.size() - okuri.size());
+  }
+  if (word.empty()) return false;
+  return Learn(std::move(reading), std::move(word), std::move(okuri));
+}
 void Store::RequestServer(std::wstring reading, std::wstring okuri) {
   auto previous = server_request_.load();
   if (previous && previous->reading == reading && previous->okuri == okuri) return;

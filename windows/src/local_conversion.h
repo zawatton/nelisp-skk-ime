@@ -30,6 +30,10 @@ class Store {
   Selection Capture();
   std::vector<std::wstring> Pending(std::wstring_view key) const;
   bool Learn(std::wstring key, std::wstring candidate, std::wstring okuri = {});
+  // Provider registration has committed durably, but its published overlay
+  // can lag. Stage that confirmed entry in the same immediate learning view.
+  bool LearnRegistration(const EngineState& completed, std::wstring reading,
+                         std::wstring okuri = {});
   size_t Unsaved() const;
   bool Available() const;
   bool PublishState(const EngineState& state, bool claim = true);
