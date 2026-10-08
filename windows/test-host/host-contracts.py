@@ -228,6 +228,7 @@ def corpus(args, h):
                 response_sha256=digest(response)))
     finally:
         p.close()
+    print(f'PASS wire mode={args.mode} engine={args.engine} replies={len(records)}', flush=True)
     if args.mode == 'capture':
         path.parent.mkdir(parents=True, exist_ok=True)
         data = (json.dumps(dict(version=1, baseline='bff41b7',

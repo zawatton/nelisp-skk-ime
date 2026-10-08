@@ -103,15 +103,18 @@ pending
 * S3 Adapter and shadow policy
 ** S3.1 Native adapter preserves endpoint, IO, publication, storage and process contracts with versioned bounded policy IPC
 #+NOTE: One writer and interpreter owner; typed copied data, epochs and IDs; shadow cannot publish learning.
-pending
+#+NOTE: EH3 implements native_adapter*.h, host-policy.el and additive policy-ipc-v1.json; Boundary runs queue/envelope tests and exact Windows IPC qualification. Contracts remains known-red: native wire=121 off/on and legacy=19 off/on match, but the unchanged native-disk-v1.json hash disagrees with its .sha256. No frozen fixture was edited. Commands require EH3_RUNTIME; Claude records whole logs/hashes.
+cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s3.ps1 -Runtime "$EH3_RUNTIME" -BuildDir build/w -Stage Boundary && pwsh -NoProfile -File windows/test-host/run-engine-host-s3.ps1 -Runtime "$EH3_RUNTIME" -BuildDir build/w -Stage Contracts
 
 ** S3.2 Policy crash and 3 s GC injection leave cached replies, native publication and local callbacks independent
 #+NOTE: New host-specific gates; reject deliberately synchronous-host control; record full tails, private bytes, startup and owned children.
-pending
+#+NOTE: EH3 Isolation verifies 3 s pause, timeout/late discard, real durable native publication, policy kill/restart and unchanged 100000/32/20 soak. The real synchronous-channel control fails with cached latency >3 s. Exact Windows HP1 probe verifies the Lisp-side 3 s injection. Local callback acceptance still requires EndToEnd with private HKCU and real SKK-JISYO.L; no callback proof is inferred from pipe results. See design S3 and build/w/S3-validation.md.
+cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s3.ps1 -Runtime "$EH3_RUNTIME" -BuildDir build/w -Stage Isolation && pwsh -NoProfile -File windows/test-host/run-engine-host-s3.ps1 -Runtime "$EH3_RUNTIME" -BuildDir build/w -Stage EndToEnd -LargeDictionary "$EH3_LARGE_DICTIONARY"
 
 ** S3.3 End to end: adapter with shadow policy passes private TSF, Emacs inline, durability and pipe soak during pauses
 #+NOTE: Existing local suite including SKK-JISYO.L stress; preserve 20 ms watchdog and local Space p50 <=30 ms; no lowered thresholds.
-pending
+#+NOTE: EH3 EndToEnd enables shadow and publication-kind Lisp pauses for existing private TSF/Emacs/local gates, then runs independent policy faults and soak. Worker CTest=0/10 bodies reached (HKCU denied); worker TSF SK1 likewise denied. Stage fails on any existing red gate; coordinator must retain pause, callback, startup/resource and owned-PID evidence. The native disk fixture failure also prevents full contract acceptance. Only S3 lines changed; earlier EH1 whole-design evidence hashes need coordinator reconciliation after the requested S3 doc addition.
+cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s3.ps1 -Runtime "$EH3_RUNTIME" -BuildDir build/w -Stage EndToEnd -LargeDictionary "$EH3_LARGE_DICTIONARY" && pwsh -NoProfile -File windows/test-host/run-engine-host-s3.ps1 -Runtime "$EH3_RUNTIME" -BuildDir build/w -Stage Contracts
 
 * S4 Authoritative NeLisp policy
 ** S4.1 Incremental source, cache, restart, publication and learning decisions match native semantics
