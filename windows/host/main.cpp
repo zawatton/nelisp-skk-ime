@@ -288,92 +288,9 @@ std::wstring EngineRunnerScript(const std::wstring& repository,
   return kFrameworkRunner;
 }
 
-struct Child {
-  HANDLE process = nullptr;
-  HANDLE input = nullptr;
-  HANDLE output = nullptr;
-  std::string engine;
-  ULONGLONG started = 0;
-  bool exit_logged = false;
-  bool wire_checked = false;
-  bool utf8_wire = false;
-  bool learning_worker = false;
-  std::string local_status;
-};
+#include "native_adapter_transport.h"
 
-void LogChildExit(Child& child, bool expected) {
-  if (!child.process || child.exit_logged) return;
-  DWORD code = STILL_ACTIVE;
-  if (!GetExitCodeProcess(child.process, &code) || code == STILL_ACTIVE) return;
-  LogEvent("child-exit pid=" + std::to_string(GetProcessId(child.process)) +
-      " engine=" + child.engine + " code=" + std::to_string(code) +
-      " uptime_ms=" + std::to_string(GetTickCount64() - child.started) +
-      " expected=" + (expected ? "true" : "false"));
-  child.exit_logged = true;
-}
-
-void Close(HANDLE& handle) {
-  if (handle != nullptr && handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
-  handle = nullptr;
-}
-
-void StopChild(Child& child) {
-  LogChildExit(child, false);
-  Close(child.input);
-  Close(child.output);
-  if (child.process != nullptr) {
-    if (WaitForSingleObject(child.process, 500) == WAIT_TIMEOUT) {
-      TerminateProcess(child.process, 1);
-      WaitForSingleObject(child.process, 5000);
-    }
-    LogChildExit(child, true);
-    Close(child.process);
-  }
-}
-
-bool WriteAll(HANDLE handle, const std::string& text) {
-  size_t offset = 0;
-  while (offset < text.size()) {
-    DWORD written = 0;
-    if (!WriteFile(handle, text.data() + offset,
-                   static_cast<DWORD>(text.size() - offset), &written, nullptr) ||
-        written == 0) return false;
-    offset += written;
-  }
-  return true;
-}
-
-// A high resolution timer keeps pipe polling independent of the system's
-// roughly 16 ms clock tick. No machine-wide timer resolution is changed.
-void WaitForEngineData() {
-  struct Timer {
-    HANDLE handle = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002, TIMER_ALL_ACCESS);
-    ~Timer() { if (handle) CloseHandle(handle); }
-  };
-  thread_local Timer timer;
-  LARGE_INTEGER due; due.QuadPart = -10000;  // one millisecond
-  if (!timer.handle || !SetWaitableTimer(timer.handle, &due, 0, nullptr, nullptr, FALSE)) {
-    Sleep(2); return;
-  }
-  WaitForSingleObject(timer.handle, 10);
-}
-
-bool ReadLine(HANDLE handle, std::string* line) {
-  line->clear();
-  const ULONGLONG deadline = GetTickCount64() + 90000;
-  for (;;) {
-    DWORD available = 0;
-    if (g_stopping.load() || GetTickCount64() >= deadline ||
-        !PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr)) return false;
-    if (available == 0) { WaitForEngineData(); continue; }
-    char value = 0;
-    DWORD read = 0;
-    if (!ReadFile(handle, &value, 1, &read, nullptr) || read != 1) return false;
-    if (value == '\n') return true;
-    if (value != '\r') line->push_back(value);
-    if (line->size() > 65536) return false;
-  }
-}
+#include "native_adapter.h"
 
 // The settings UI (docs/design/sumi-indicator-settings.md, the 辞書 and
 // behavior-flag tabs) stores the user dictionary path/save-batch size and
@@ -535,6 +452,10 @@ bool StartChild(const std::wstring& engine, const std::wstring& repository,
   }
   ResumeThread(process.hThread);
   CloseHandle(process.hThread);
+  child->epoch = ++native_adapter::next_engine_epoch;
+  native_adapter::Observe(native_adapter::PolicyKind::Config, IsDdskkEngineId(id) ? 0 : 1,
+      FileExists(repository + L"\\framework\\nelisp-ime-stdio.el") ? 1 : 0, 0,
+      EngineRunnerScript(repository, id) == kDdskkRunner ? 0 : 1, NarrowEngineId(id), child->epoch);
   child->process = process.hProcess;
   child->input = stdin_write;
   child->output = stdout_read;
@@ -1148,8 +1069,17 @@ class ServerCache {
     const auto key = reading + '\x1f' + okuri;
     std::unique_lock lock(mutex_);
     if (identity != identity_) { identity_ = identity; ++generation_; cache_.clear(); jobs_.clear(); }
+    native_adapter::Observe(native_adapter::PolicyKind::Sources, config.enabled != 0,
+        !config.dictionary_files.empty(), generation_,
+        !config.enabled ? 0 : (config.dictionary_files.empty() ? 2 : 1), identity);
     if (!config.enabled) return "4";
     auto found = cache_.find(key);
+    if (found != cache_.end() && found->second.reply) {
+      const auto age = GetTickCount64() - found->second.completed;
+      const bool hit = found->second.reply->starts_with("1");
+      native_adapter::Observe(native_adapter::PolicyKind::Cache, hit, age, generation_,
+          age >= (hit ? 60000 : 2000));
+    }
     if (found != cache_.end() && found->second.reply && GetTickCount64() - found->second.completed >=
         (found->second.reply->starts_with("1") ? 60000 : 2000)) { cache_.erase(found); found = cache_.end(); }
     if (found == cache_.end()) {
@@ -1983,6 +1913,8 @@ void ReplacementLoop() {
       LogEvent("replacement-abandoned engine=" + id);
       StopChild(next);
       retry_at = GetTickCount64() + backoff;
+      native_adapter::Observe(native_adapter::PolicyKind::Restart, backoff, 0, generation,
+          (std::min)(backoff * 2, DWORD{30000}));
       backoff = (std::min)(backoff * 2, DWORD{30000});
       continue;
     }
@@ -2004,6 +1936,7 @@ void ReplacementLoop() {
         if (g_composing_sessions.empty() || GetTickCount64() >= deadline) {
           old = g_child;
           g_child = next;
+          native_adapter::engine_epoch = g_child.epoch;
           if (g_learning_queue) g_learning_queue->Submit("");
           { std::lock_guard<std::mutex> rules_lock(g_romaji_mutex);
             g_romaji_rules = std::move(next_rules); }
@@ -2039,6 +1972,7 @@ void ReplacementLoop() {
         }
       }
     }
+    native_adapter::Observe(native_adapter::PolicyKind::Restart, backoff, 1, generation, 1000);
     backoff = 1000;
     retry_at = 0;
   }
@@ -2373,6 +2307,7 @@ void LocalPublicationLoop() {
         DictionaryServerConfig config;
         std::string status, snapshot, rules, source_identity, base_identity;
         ddskk::LearningQueue* native = nullptr;
+        uint64_t policy_engine_epoch = 0;
         {
           // Metadata copy only for v2. Never scan, serialize or read dictionary
           // files with interpreter ownership. Legacy engines retain SNAPSHOT.
@@ -2388,6 +2323,7 @@ void LocalPublicationLoop() {
             lock.unlock(); Sleep(1); continue;
           }
           config = g_dictionary_server.config;
+          policy_engine_epoch = g_child.epoch;
           if (g_current_engine == "ddskk") {
             { std::lock_guard<std::mutex> rules_lock(g_romaji_mutex); rules = g_romaji_rules; }
             if (g_child.learning_worker) { native = g_learning_queue.get(); status = g_child.local_status; }
@@ -2406,8 +2342,12 @@ void LocalPublicationLoop() {
         const auto overlay_generation = native ? std::to_string(native->SnapshotGeneration()) : "";
         const auto identity = status + rules + source_identity + overlay_generation;
         base_identity = status.substr(0, status.rfind(' ')) + rules + source_identity;
-        if (rules.empty() || !status.starts_with("LOCAL ") ||
-            !window.Due(identity, base_identity, GetTickCount64())) snapshot.clear();
+        const bool have_rules = !rules.empty(), have_status = status.starts_with("LOCAL ");
+        // Preserve the original short circuit: Due mutates the native window.
+        const bool due = have_rules && have_status && window.Due(identity, base_identity, GetTickCount64());
+        native_adapter::Observe(native_adapter::PolicyKind::Publication, have_rules, have_status,
+            due, due, status + ":" + source_identity, policy_engine_epoch);
+        if (!due) snapshot.clear();
         if (!snapshot.empty()) {
           std::vector<std::filesystem::path> files;
           size_t start = 0;
@@ -2438,6 +2378,8 @@ void LocalPublicationLoop() {
             Sleep(ms); // Snapshot obtained above; engine mutex is released.
           }
           ddskk::local::Publish(ddskk::local::Directory(), files, overlay, rules, capabilities, revision);
+          ++native_adapter::publication_generation;
+          LogEvent("adapter-publication generation=" + std::to_string(native_adapter::publication_generation.load()));
           previous = identity;
           window.Published(previous, base_identity);
           std::fprintf(stderr, "LOCAL publication status=%s capabilities=%llu\n", status.c_str(), capabilities);
@@ -2476,6 +2418,9 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     while (!request.empty() && (request.back() == '\n' || request.back() == '\r'))
       request.pop_back();
     std::string response;
+#ifdef NATIVEIME_POLICY_SYNCHRONOUS_CONTROL
+    native_adapter::shadow.SynchronousControl();
+#endif
     std::string engine_request = request;
     const auto scoped_id = SessionIdFromRequest(request);
     if (!scoped_id.empty()) engine_request = request.substr(9 + scoped_id.size());
@@ -2734,6 +2679,10 @@ int wmain(int argc, wchar_t** argv) {
   }
   g_executable = argv[1];
   g_repository = repository;
+  native_adapter::shadow.Start(argv[1], repository, g_child_job);
+  struct PolicyLifetime {
+    ~PolicyLifetime() { native_adapter::shadow.Stop(); }
+  } policy_lifetime;
   const std::wstring configured = ConfiguredEngineId();
   const std::wstring initial_registry_engine = ConfiguredEngineId(false);
   g_current_engine = NarrowEngineId(configured);
@@ -2751,6 +2700,7 @@ int wmain(int argc, wchar_t** argv) {
     StopChild(g_child);
     return 3;
   }
+  native_adapter::engine_epoch = g_child.epoch;
   InitializeStateMirror(g_pipe_name);
   // Populate outside the keyboard path, including cold engine startup.
   std::thread([] {
@@ -2903,6 +2853,7 @@ int wmain(int argc, wchar_t** argv) {
     StopChild(g_child);
   }
   if (g_learning_queue) g_learning_queue->Drain();
+  native_adapter::shadow.Stop();
   g_server_cache.Stop();
   ShutdownDictionaryServer();
   return 0;

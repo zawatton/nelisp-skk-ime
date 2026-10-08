@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.24)
+project(host_policy_control LANGUAGES CXX)
+add_executable(host-policy-sync-control ../../host/main.cpp
+  ../../src/local_index.cpp ../../src/engine_protocol.cpp)
+target_compile_features(host-policy-sync-control PRIVATE cxx_std_20)
+target_compile_definitions(host-policy-sync-control PRIVATE UNICODE _UNICODE
+  WIN32_LEAN_AND_MEAN NOMINMAX NATIVEIME_POLICY_SYNCHRONOUS_CONTROL)
+target_compile_options(host-policy-sync-control PRIVATE /W4 /permissive- /utf-8)
+target_link_libraries(host-policy-sync-control PRIVATE ws2_32 advapi32 bcrypt)
+add_executable(host-policy-unit ../host_policy_unit.cpp
+  ../../src/local_index.cpp ../../src/engine_protocol.cpp)
+target_compile_features(host-policy-unit PRIVATE cxx_std_20)
+target_compile_definitions(host-policy-unit PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(host-policy-unit PRIVATE /W4 /permissive- /utf-8)
+target_link_libraries(host-policy-unit PRIVATE ws2_32 advapi32 bcrypt)

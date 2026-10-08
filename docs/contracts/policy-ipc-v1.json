@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "scope": "private anonymous stdio of the native adapter's job-owned shadow policy child",
+  "enable": {"environment": "DDSKK_HOST_POLICY_SHADOW=1", "default": "disabled"},
+  "ownership": {
+    "native_adapter": ["public endpoint and CLI", "pipe IO", "cached replies", "publication", "durable storage", "learning FIFO and provider outbox", "SK1 worker", "job and child handles"],
+    "policy": ["independent numeric policy decisions", "no public response or publication authority"]
+  },
+  "framing": {
+    "ready": "HP1 READY\n",
+    "request": "HP1 Q request_id policy_epoch engine_epoch publication_generation kind a b c context_hex_or_dash\n",
+    "response": "HP1 R request_id policy_epoch engine_epoch publication_generation kind decision\n",
+    "encoding": "ASCII; decimal unsigned inputs; copied UTF-8 context as lowercase hex, never eval",
+    "stream": "partial and multiple reads are assembled; CR and unknown versions/kinds/invalid fields fail closed"
+  },
+  "bounds": {
+    "frame_bytes": 4096, "context_bytes": 1024, "queued_requests": 64,
+    "queue_bytes": 131072, "outstanding_requests": 1,
+    "startup_timeout_ms": 60000, "reply_timeout_ms": 200,
+    "late_drain_timeout_ms": 5000, "restart_backoff_ms": [1000, 30000]
+  },
+  "identity": "Request IDs monotonically increase across policy replacements. Each policy launch and engine launch advances its own epoch. Successful native publication advances a diagnostic generation. All four identifiers and kind must match; no policy result is adopted.",
+  "timeout": "Log timeout; retain the single outstanding ID while draining and discarding its late response for at most 5 s. Retire channel on malformed reply, child death, drain timeout or shutdown before another request is sent. Native work never waits.",
+  "saturation": "Try-lock/value queue drops shadow observations on contention, count/byte cap or oversized context. No native work, acknowledged learning or public response is dropped.",
+  "kinds": {
+    "1": {"name": "config", "a": "DDSKK family=0, framework=1", "b": "framework runner exists", "c": "reserved", "context": "configured engine ID", "decision": "runner family with DDSKK fallback"},
+    "2": {"name": "sources", "a": "server enabled", "b": "built-in files configured", "c": "source configuration generation", "context": "host:port:enabled:ordered files:start command identity", "decision": "disabled=0, built-ins then server=1, server only=2"},
+    "3": {"name": "restart", "a": "current native backoff ms", "b": "replacement succeeded", "c": "switch generation", "decision": "success resets 1000; failure doubles capped at 30000"},
+    "4": {"name": "cache", "a": "hit=1, miss=0", "b": "entry age ms", "c": "source configuration generation", "decision": "expired=1 using hit 60000 / miss 2000 ms TTL"},
+    "5": {"name": "publication", "a": "rules ready", "b": "local status valid", "c": "native coalescing window due", "context": "status and source identity", "decision": "publish intent if a AND b AND c"}
+  },
+  "qualification": {
+    "os_pause": "Suspend only a verified job-owned policy child for 3 s; force a source observation; verify timeout and late discard, native cached replies, learning/publication and soak.",
+    "lisp_pause": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND=5 blocks the policy event loop for 3 s on publication observations, gated by diagnostics and a Software\\NativeIME-test- registry key; for private TSF/Emacs qualification. The runtime lacks sleep-for; this injection uses float-time on the isolated policy process.",
+    "negative_control": "Separate test-host/s3 executable defines NATIVEIME_POLICY_SYNCHRONOUS_CONTROL and synchronously waits on the real shadow channel from ServeClient. The identical isolation gate must fail."
+  }
+}

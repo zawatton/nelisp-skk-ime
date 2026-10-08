@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "captured_config_sha256": "74d2fa12c3b2023aec609d26524b6249277803c9a1285a413e31935605483cf9",
+  "sources": [
+    {
+      "relative_path": "windows/test-host/data/behavior-jisyo.utf8",
+      "sha256": "58764b681ec826713e590e74d576bcc0dbc53787982bf4f5f014da7ea87c4190"
+    }
+  ]
+}

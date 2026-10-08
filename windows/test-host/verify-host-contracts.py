@@ -6,7 +6,8 @@ from pathlib import Path
 import runpy
 
 ROOT = Path(__file__).resolve().parents[2]
-canonical = runpy.run_path(str(Path(__file__).with_name('host-disk-contracts.py')))['canonical_index']
+disk = runpy.run_path(str(Path(__file__).with_name('host-disk-contracts.py')))
+canonical = disk['canonical_index']
 
 
 def sha(data):
@@ -25,6 +26,7 @@ def checked_response(record):
 
 
 contracts = ROOT / 'docs/contracts'
+plan = disk['input_plan'](contracts / 'native-disk-inputs-v1.json')
 spec = json.loads((contracts / 'engine-host-v1.json').read_text())
 assert spec['contract_version'] == 1 and len(spec['public_requests']) >= 35
 count = 0
@@ -41,6 +43,10 @@ for name in ('native-v1', 'native-legacy-v1', 'native-disk-v1'):
         assert sha(data) == item['sha256']
         if name in ('base', 'overlay'):
             canonical(data)
+    if 'files' in fixture:
+        base = base64.b64decode(fixture['files']['base']['bytes_base64'], validate=True)
+        config = disk['index_config'](base, plan, captured=True)
+        canonical(base64.b64decode(fixture['files']['overlay']['bytes_base64'], validate=True), config)
 record = json.loads((contracts / 'native-v1.json').read_text())['records'][0]
 record['response_base64'] = base64.b64encode(b'wrong').decode()
 try:

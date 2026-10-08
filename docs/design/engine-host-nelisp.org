@@ -250,6 +250,176 @@ with shadow policy passes baseline TSF + Emacs + durability + soak while local
 keys continue during repeated policy pauses. Reject on callback wait or stale
 result adoption. Shadow parity is semantic, not identical wall-clock order.
 
+*** S3 implementation (EH3, 2026-10-08)
+The existing executable, arguments and public endpoint/protocol remain the
+native adapter. =windows/host/native_adapter_transport.h= factors its engine
+process handles and bounded stdio reader/writer out of main.cpp. Native IO,
+cached responses, local publication, durable files, learning FIFO/outbox, SK1,
+interpreter ownership and the kill-on-close Job Object remain native. No core,
+shim, settings or dictionary file is changed by this stage.
+
+=windows/host/native_adapter.h= adds a separate native supervision thread and
+value queue. =DDSKK_HOST_POLICY_SHADOW=1= enables it; absent/other values leave
+it disabled. The same runtime argument launches =engine/host-policy.el= with
+=--load= in the supplied repository. The child is started suspended, assigned
+to the adapter job, then resumed at below-normal priority. Its inherited
+handle list contains only private stdin/stdout (stderr shares stdout); public
+pipes, engine handles and storage handles are not policy IPC capabilities.
+Startup/exit/ready/comparison/timeout/drop diagnostics stay on native workers.
+
+HP1 is documented additively in =docs/contracts/policy-ipc-v1.json=. It has a
+4096-byte frame cap, 1024-byte copied context cap, 64 queued value objects and
+a 128 KiB queue byte cap, plus one outstanding request. Requests carry a
+monotonic request ID, policy epoch, actual engine child epoch and diagnostic
+publication generation. Active-child epoch changes at the native swap, not
+when a warming child starts; publication snapshots copy their epoch while
+holding native metadata ownership. All identifiers and kind must match the
+reply envelope. No Lisp pointers, evaluator input or shared Lisp locks cross
+this boundary. Queue contention/full/oversized context drops observations,
+never native requests or acknowledged operations.
+
+The ready deadline is 60 s, the reply deadline 200 ms. A timed-out request
+keeps sole ownership of its channel for a bounded 5 s late drain; its matching
+late reply is discarded. Bad version/envelope/type, child death or drain
+expiry retires the channel before another request. Policy launch failures
+back off from 1 s to 30 s; a ready child resets supervision backoff. Host
+shutdown interrupts polling and joins supervision, including early returns.
+Detached native clients retain a process-lifetime observation queue/mutex.
+
+The policy independently computes runner fallback, ordered source-tier choice,
+native replacement backoff, hit/miss TTL expiry and publication readiness
+from copied inputs. Engine/source identity strings are copied as bounded UTF-8
+hex context. Native cache admission/eviction, source reading, publication
+coalescing, durable barriers and engine transactions are retained; HP1's
+publication =c= field is the native window's due input, not a port of that
+window algorithm. Responses only produce match/mismatch diagnostics. They
+cannot answer public clients, publish mappings or emit learning. This is S3
+shadow observation, not S4 authority or full policy-algorithm migration.
+
+*** S3 qualification and coordinator commands
+=run-engine-host-s3.ps1= supplies Boundary, Isolation, Contracts and EndToEnd
+stages. Boundary builds a separate test control executable and tests queue
+caps/copies/contention, stale IDs/epochs/generations and malformed envelopes.
+It runs policy ERT and the exact Windows image's HP1 probe (split/batched
+frames, six decisions, five malformed inputs and a Lisp-side 3 s pause).
+The supplied image has =float-time= but lacks =sleep-for=; the private Lisp
+injection blocks only the policy event loop using its clock. That limitation
+was reproduced rather than inferred from GNU Emacs.
+
+Isolation suspends only a verified job-owned policy child for 3 s, forces a
+real source observation, checks 801 cached requests with unchanged unloaded
+p99 <=10 ms/max <=50 ms limits, and requires a real durable LOCAL LEARN overlay
+publication during the pause (<=1 s). It verifies late discard, kills policy,
+checks cached service and restart, and records host/engine/policy private
+bytes, handles, policy startup times and owned PIDs. The unchanged S2
+32-client/100000-request/20-control soak runs during a policy pause and kill.
+Every spawned child is job-owned and cleanup waits for observed child PIDs.
+The separately compiled synchronous control waits on the real policy channel
+inside ServeClient. The identical isolation gate must reject it with observed
+cached latency >50 ms and confirm no leftover child, not just exit nonzero.
+
+EndToEnd enables =DDSKK_HOST_POLICY_TEST_PAUSE_KIND=5= for repeated Lisp-side
+3 s pauses on publication observations. Injection requires diagnostics and a
+private =Software\NativeIME-test-= key. Existing local callback/watchdog,
+publication/learning, real SKK-JISYO.L stress and Emacs/inline tests retain
+their original thresholds. It removes that injection before the independent
+OS-suspension/kill gates. TSF/registry/real Emacs acceptance is a coordinator
+gate, not inferred from ERT or pipe-only results.
+
+Run from repository root, supplying runtime and real large dictionary paths
+as variables (never using live registry/pipe/data defaults):
+#+begin_src powershell
+$Runtime=$env:EH3_RUNTIME
+$LargeDictionary=$env:EH3_LARGE_DICTIONARY
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+pwsh -NoProfile -File windows/test-host/run-engine-host-s3.ps1 -Runtime $Runtime -BuildDir build/w -Stage Boundary
+pwsh -NoProfile -File windows/test-host/run-engine-host-s3.ps1 -Runtime $Runtime -BuildDir build/w -Stage Isolation
+pwsh -NoProfile -File windows/test-host/run-engine-host-s3.ps1 -Runtime $Runtime -BuildDir build/w -Stage Contracts
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); pwsh -NoProfile -File windows/test-host/run-engine-host-s3.ps1 -Runtime $Runtime -BuildDir build/w -Stage EndToEnd -LargeDictionary $LargeDictionary
+#+end_src
+
+Boundary and Isolation are worker-verifiable; EndToEnd must run with private
+HKCU creation permitted. The initial fixture/hash discrepancy was repaired by
+the coordinator's byte-exact contracts merge. The subsequent checkout-dependent
+disk digest failure is addressed by the replay normalization described below.
+For individually collecting legacy replay:
+#+begin_src powershell
+foreach($shadow in @('0','1')) {
+  $env:DDSKK_HOST_POLICY_SHADOW=$shadow
+  pwsh -NoProfile -File windows/test-host/test-host-contracts.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45 -Engine lattice -Fixture docs/contracts/native-legacy-v1.json
+}
+#+end_src
+
+Worker receipts are in =build/w/S3-validation.md= with commands, verbatim log
+tails, counts, changes and cleanup; coordinator evidence should retain whole
+stage logs and =policy.json=/=soak.json= resources, binary/runtime hashes,
+KEYLAT/ENGINE_RELEASE traces and actual callback distributions. Worker results:
+native host protocol 128 checks; direct local conversion 178 checks; ERT
+31 stateline +14 lattice +6 policy tests; HP1 malformed controls 5. Pipe-only
+session/learning/crash/outbox/SK1-provider checks passed with counts
+17/16/15/18/20. Full native replay matched 121 wire replies with shadow off
+and on before =AssertionError: disk fixture hash=; legacy replay passed 19
+replies in both modes. CTest's wrapper failed before all 10 bodies because
+private HKCU creation was denied, as did the TSF part of test-sk1-skkserv.
+These are historical worker failures from before the coordinator's merge and
+qualification; they do not describe the later Contracts normalization rerun.
+The additional =test-host-policy-disk.py --off-run $OffRun --on-run $OnRun=
+diagnostic compared all eight off/on disk files using unchanged S2 PID/generation
+normalizers and passed. At that point it did not replace the failing golden-hash
+gate; the later correction below preserves golden fixture integrity.
+
+*** S3 disk replay portability correction (EH3, 2026-10-08)
+The unchanged tree reproduced =AssertionError: disk mismatch: overlay= after
+121 native wire replies. After the existing PID/generation normalization, only
+index bytes 80--111 (configuration digest) and 112--143 (derived checksum)
+differed in base and overlay. Native Publish hashes decimal capabilities, raw
+RULES metadata, ordered absolute dictionary paths and binary dictionary content
+SHA256s. Reconstructing that input matched the actual digest; substituting the
+original EH2 checkout name reproduced the frozen digest exactly. This is a
+checkout namespace dependency, not a timestamp or learning-order race.
+
+=native-disk-inputs-v1.json= pins ordered repository-relative source names,
+raw source SHA256s and the original captured configuration digest. Replay
+validates each native checksum and the actual configuration digest against
+the absolute paths and pinned source contents before substituting a portable
+digest with relative source names. It verifies the frozen digest against its
+pinned capture provenance. Only that verified namespace identity and the
+existing PID/generation identities are normalized. Capabilities, rules,
+revision, candidate bytes, source order/content, watermark, outbox and journal
+remain byte-exact. The original disk fixture and its SHA256 are unchanged.
+This correction extends S2's originally PID/generation-only replay allowance
+for the verified absolute source namespace; it leaves the on-disk native
+configuration contract unchanged.
+Explicit future capture preserves existing LF/CRLF style instead of letting
+Windows text-mode writes rewrite contract line endings.
+
+=test-host-disk-normalization.py= checks two checkout roots and rejects forged
+configuration digests with valid checksums, changed source comments, source
+order/names and stable payload/metadata changes; it also checks capture EOLs.
+Offline integrity validates the new input plan and both frozen index digests.
+The source inventory refresh changes only the two edited replay-helper hashes.
+Qualification commands (runtime supplied by the caller):
+#+begin_src powershell
+python windows/test-host/test-host-disk-normalization.py
+python windows/test-host/verify-host-contracts.py
+foreach($attempt in 1..3) {
+  pwsh -NoProfile -File windows/test-host/run-engine-host-s3.ps1 -Runtime $Runtime -BuildDir build/w -Stage Contracts
+  if($LASTEXITCODE -ne 0) { throw "Contracts attempt $attempt failed" }
+}
+#+end_src
+EH3 ran seven normalization tests and offline integrity (140 responses,
+eight disk files, 238 source hashes), all passing. Three consecutive full
+Contracts stages passed four gates each: native 121 and legacy 19 replies in
+both shadow modes, totaling 840 wire replies and 48 disk-file comparisons.
+All 14 pre-existing contract files preserve EOLs; only the inventory's two
+helper hashes changed, with every golden fixture byte unchanged. Cleanup
+verified 32 owned PIDs across 13 runs, six actual shadow-policy launches and
+no leftovers. Receipts: =build/w/EH3-disk-normalization-validation.md= and
+=build/w/contracts-normalized-{1,2,3}.log=. This correction reran replay and
+offline checks; coordinator Boundary/Isolation/EndToEnd/CTest results remain
+separately attributed and were not rerun by this worker.
+
 ** S4: incremental authoritative policy
 Switch one responsibility at a time: config/source policy, SK1 cache decisions,
 replacement scheduling, publication planning, then learning scheduling. Keep
