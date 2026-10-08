@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "baseline": "bff41b7",
+  "engine": "lattice",
+  "host_sha256": "6ccf0476ef14bb091f1eebd9cf68a8b8c6fe4932e2f2112b90fff33f6a109d1e",
+  "runtime_sha256": "3fb43697a8bf01e10bc993c468365489ef98a30d5acbe05206f9e9faefdde3db",
+  "records": [
+    {
+      "request": "HELLO 1",
+      "normalize": "",
+      "request_sha256": "6ee4981ddb7fc70eb5ca9eab4a715b234443f667c463ccc8351c46bb09e2dc80",
+      "response_base64": "T0sgMQ==",
+      "response_sha256": "997fafab6c84f8611cff3824d453f9b5bbc557ef33752e59557bea328416871b"
+    },
+    {
+      "request": "WIRE UTF8 1",
+      "normalize": "",
+      "request_sha256": "18b9d4934abd4c39605fa11b35b2f0c0c8d1c0f8cdd35343daa4613c8f7f2e07",
+      "response_base64": "RVJSIFJFUVVFU1Q=",
+      "response_sha256": "0dbb43a0bbfd894034805b8a3ddc62854985b60d7fa43598b8dd5cb6c73e33ff"
+    },
+    {
+      "request": "WIRE LEARNING 2",
+      "normalize": "",
+      "request_sha256": "038677b8bf0605e9a18ec4df4ffbfb76c07d7a46f02f55d14a245f3f854b4839",
+      "response_base64": "RVJSIFJFUVVFU1Q=",
+      "response_sha256": "0dbb43a0bbfd894034805b8a3ddc62854985b60d7fa43598b8dd5cb6c73e33ff"
+    },
+    {
+      "request": "ENGINE CURRENT",
+      "normalize": "",
+      "request_sha256": "f8941ab88877e625975aedff5f554c49c6bafa5a4a1552634d04f2144a211dbb",
+      "response_base64": "RU5HSU5FIGxhdHRpY2U=",
+      "response_sha256": "0c948ac4d04b68dd380312e6fed8fa76ab3da847f3f09f2f98b17523e727a699"
+    },
+    {
+      "request": "ROMAJI RULES 1",
+      "normalize": "",
+      "request_sha256": "0ea84cf527ddb8ac394f3666bce17e37a30ccc9f32057de2167fea10541752bb",
+      "response_base64": "RVJSIFJVTEVTIE5PVC1SRUFEWQ==",
+      "response_sha256": "cb17765f68d0bece3ea1d0b9e536471c0c6d4ebde13d7478d8bb288d2ae83919"
+    },
+    {
+      "request": "LOCAL STATUS",
+      "normalize": "",
+      "request_sha256": "d0757cd6c402a6163ad350c56c345d91fb1fe956b660932f16208978db3f6911",
+      "response_base64": "RVJSIFJFUVVFU1Q=",
+      "response_sha256": "0dbb43a0bbfd894034805b8a3ddc62854985b60d7fa43598b8dd5cb6c73e33ff"
+    },
+    {
+      "request": "RESET",
+      "normalize": "",
+      "request_sha256": "7ef2fad58d1f2f12f5d78bdf7fc7ba3ad9529010ebd071c14d69394153f6106b",
+      "response_base64": "U1RBVEUgaGlyYWdhbmEgMCAtMSAtIC0gMCAt",
+      "response_sha256": "ee2c1da15ab9611690388b826d288d5210071cf7de91a72b971e3ffbf6501f8a"
+    },
+    {
+      "request": "KEY 97",
+      "normalize": "",
+      "request_sha256": "352b1de2cc67c02b902ebc6dd2ceb898bfcd3bf7ece400e34eb041000aa56e55",
+      "response_base64": "U1RBVEUgcHJlZWRpdCAxIDAgMDAzMDQyIC0gMCAt",
+      "response_sha256": "e609a5f45f8f46aa674e2b8aef9ff9be6ac9172a4199d261b4ffa7b1712b821e"
+    },
+    {
+      "request": "KEY 105",
+      "normalize": "",
+      "request_sha256": "288961fa519ba68a26768d9099ad075ac678c15c38d4be80a95416d5094019a2",
+      "response_base64": "U1RBVEUgcHJlZWRpdCAyIDAgMDAzMDQyMDAzMDQ0IC0gMCAt",
+      "response_sha256": "5172d86693c6e5bef6fcee965596fde4e4dd29963dec3985a8a05edce23b09ce"
+    },
+    {
+      "request": "STATUS",
+      "normalize": "",
+      "request_sha256": "8c2e4a035f5f3d218f87211a0ba367ef05fc2242510559807ef03969dd091b32",
+      "response_base64": "U1RBVEUgcHJlZWRpdCAyIDAgMDAzMDQyMDAzMDQ0IC0gMCAt",
+      "response_sha256": "5172d86693c6e5bef6fcee965596fde4e4dd29963dec3985a8a05edce23b09ce"
+    },
+    {
+      "request": "CONTROL COMMIT",
+      "normalize": "",
+      "request_sha256": "0b90ba01253af2db81812395d4a33763a9685e13534f84894fd1e296f993cda5",
+      "response_base64": "U1RBVEUgaGlyYWdhbmEgMCAtMSAwMDMwNDIwMDMwNDQgLSAwIC0=",
+      "response_sha256": "fa2840677450c6b3d2ead2ce29f14e3ec56dd560cf7cf13fa202cbbe2fb29733"
+    },
+    {
+      "request": "CONTROL CANCEL",
+      "normalize": "",
+      "request_sha256": "f22037c498449687de0996f0a10b3c4ea3d4ff8492732faa3bc739852bb25217",
+      "response_base64": "U1RBVEUgaGlyYWdhbmEgMCAtMSAtIC0gMCAt",
+      "response_sha256": "ee2c1da15ab9611690388b826d288d5210071cf7de91a72b971e3ffbf6501f8a"
+    },
+    {
+      "request": "CONTROL CONVERT-KEYS 97,105",
+      "normalize": "",
+      "request_sha256": "6f733242402b1cdb7f7dc00230829516d68979f3b12534616763ef827c0fb24d",
+      "response_base64": "U1RBVEUgY2FuZGlkYXRlIDEgMCAwMDYxMWIgLSAwIDAwNjExYiwwMDc2ZjgsMDA4NWNkLDAwOTU5MywwMDU0MDgsMDA0ZTljMDA4ODYzLDAwNTRjMCwwMDU3YzMsMDA2MzI4LDAwNjZkNiwwMDc3YjksMDA5NzQ5LDAwNTY2YiwwMDZiMzgsMDA5Njk4LDAwNWEwMywwMDg1ZjksMDA5NjI4LDAwN2E2MiwwMDU5ZjYsMDA0ZjFhLDAwOTk1NyAwOjE7MA==",
+      "response_sha256": "b93743f7d7b635bbe1296056c57a218b3b468419782682cae69537b357d5ff8a"
+    },
+    {
+      "request": "KEY 1114112",
+      "normalize": "",
+      "request_sha256": "4f97f650ba6cd28c6c84a0af0daab6272bd6486a6409aea08c4bf7b9df252438",
+      "response_base64": "RVJSIENPREVQT0lOVA==",
+      "response_sha256": "a4d76beed1a7e68d150c8ed11b59c815ece958287225d544cd760dcf4e54eb9e"
+    },
+    {
+      "request": "UNKNOWN",
+      "normalize": "",
+      "request_sha256": "23759997b3c59884dc4c0ff5320d6301b0e7f63bf0f6483a7b54d7d43bc5ccd1",
+      "response_base64": "RVJSIFJFUVVFU1Q=",
+      "response_sha256": "0dbb43a0bbfd894034805b8a3ddc62854985b60d7fa43598b8dd5cb6c73e33ff"
+    },
+    {
+      "request": "SESSION legacy-test OPEN 2",
+      "normalize": "",
+      "request_sha256": "47c224aea9958e54df5279717283d68758b4eced9775fa6cb39e705a5fb10388",
+      "response_base64": "RVJSIFJFUVVFU1Q=",
+      "response_sha256": "0dbb43a0bbfd894034805b8a3ddc62854985b60d7fa43598b8dd5cb6c73e33ff"
+    },
+    {
+      "request": "SESSION legacy-test KEY 97",
+      "normalize": "",
+      "request_sha256": "2b1c4e0e46554a4241319dc8e783c6217cf1cccb19d8dce3454b11c5934331ef",
+      "response_base64": "U1RBVEUgcHJlZWRpdCAxIDAgMDAzMDQyIC0gMCAt",
+      "response_sha256": "e609a5f45f8f46aa674e2b8aef9ff9be6ac9172a4199d261b4ffa7b1712b821e"
+    },
+    {
+      "request": "SESSION legacy-test CLOSE",
+      "normalize": "",
+      "request_sha256": "e51b1924fe350fbcc61069909f479a8a5738952f1574f766bea8522f23c44ce5",
+      "response_base64": "T0sgQ0xPU0VE",
+      "response_sha256": "9b14e1b2cc733707a45deb15f5ad0c51477ba84990481556e5416233f7bff8d8"
+    },
+    {
+      "request": "DIAG CHILD-PID",
+      "normalize": "pid",
+      "request_sha256": "1470f2074d24a39a0b080c5b724b7a02b949f01b6e1f593d5d92533f0a9ad870",
+      "response_base64": "UElEIDI5MzMy",
+      "response_sha256": "f3407cd61472a59e887b80faec88a94ae914ac142b71974889fd2e17af12ed75"
+    }
+  ]
+}

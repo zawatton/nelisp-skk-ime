@@ -1,0 +1,21 @@
+[
+  {"request":"HELLO 1"},
+  {"request":"WIRE UTF8 1"},
+  {"request":"WIRE LEARNING 2"},
+  {"request":"ENGINE CURRENT"},
+  {"request":"ROMAJI RULES 1"},
+  {"request":"LOCAL STATUS"},
+  {"request":"RESET"},
+  {"request":"KEY 97"},
+  {"request":"KEY 105"},
+  {"request":"STATUS"},
+  {"request":"CONTROL COMMIT"},
+  {"request":"CONTROL CANCEL"},
+  {"request":"CONTROL CONVERT-KEYS 97,105"},
+  {"request":"KEY 1114112"},
+  {"request":"UNKNOWN"},
+  {"request":"SESSION legacy-test OPEN 2"},
+  {"request":"SESSION legacy-test KEY 97"},
+  {"request":"SESSION legacy-test CLOSE"},
+  {"request":"DIAG CHILD-PID","normalize":"pid"}
+]

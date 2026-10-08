@@ -1,0 +1,196 @@
+#+TITLE: EH2 native reference validation receipt
+#+DATE: 2026-10-08
+
+* Baseline, changes and reproduction
+HEAD bff41b7; native host source unchanged. No commit or staging. Runtime was
+the supplied parameter, SHA256
+3fb43697a8bf01e10bc993c468365489ef98a30d5acbe05206f9e9faefdde3db.
+Built host SHA256
+6ccf0476ef14bb091f1eebd9cf68a8b8c6fe4932e2f2112b90fff33f6a109d1e.
+Exact coordinator/runtime commands are in CLAUDE-S2.org. $Runtime in the
+recipes below was bound to that supplied executable; no other image tested.
+
+On unchanged tree, before writing, the three-artifact existence check:
+#+begin_src powershell
+$missing=0; foreach($p in @('docs/contracts/engine-host-v1.json','windows/test-host/test-host-contracts.ps1','windows/test-host/test-private-pipe-soak.ps1')) {if(Test-Path $p){Write-Output "PASS $p"}else{$missing++;Write-Output "FAIL missing $p"}}; Write-Output "S2 unchanged-tree: checked=3 missing=$missing"; if($missing){exit 1}
+#+end_src
+Exit 1, verbatim tail:
+#+begin_example
+FAIL missing docs/contracts/engine-host-v1.json
+FAIL missing windows/test-host/test-host-contracts.ps1
+FAIL missing windows/test-host/test-private-pipe-soak.ps1
+S2 unchanged-tree: checked=3 missing=3
+#+end_example
+No preexisting behavioral failure was named. This reproduces missing S2
+artifacts, not an engine regression. Capture development failed twice at
+ROMAJI RULES with EOF until the new client collected GetOverlappedResult
+on immediate ERROR_MORE_DATA; final replay uses 17-byte reads and passes.
+
+* Build and native checks
+#+begin_src powershell
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+ctest --test-dir build/w -C Release
+#+end_src
+Configure and build exited 0. Build log: build/w/build.log. Verbatim emitted
+compiler line (complete tail retained in that log, including resolved paths):
+#+begin_example
+  tsf_host.cpp
+#+end_example
+CTest exited 8; all ten wrappers denied private HKCU
+creation before test bodies. Verbatim summary:
+#+begin_example
+0% tests passed, 10 tests failed out of 10
+Total Test time (real) =   4.23 sec
+#+end_example
+First diagnostic: New-Item: Access to HKEY_CURRENT_USER\Software\NativeIME-test-<uuid>
+is denied; run-isolated-test.ps1:13, UnauthorizedAccessException. Logs:
+build/w/ctest.log and build/w/Testing/Temporary/LastTest.log. Full registry
+gates remain Claude's responsibility, with exact CTest command above.
+
+Direct native bodies were run with unique private environment pipe/key/data
+roots, without creating registry keys. Exact pattern (same executable list):
+#+begin_src powershell
+$env:NATIVEIME_REGISTRY_KEY='Software\NativeIME-test-EH2-'+[guid]::NewGuid().ToString('N')
+$env:DDSKK_PIPE_NAME='\\.\pipe\EH2-native-'+[guid]::NewGuid().ToString('N')
+$env:LOCALAPPDATA=Join-Path (Get-Location) 'build/w/native-data'
+New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+$env:DDSKK_USER_JISYO=Join-Path $env:LOCALAPPDATA 'user.jisyo'
+$env:DDSKK_SKKSERV_ENABLE='0'
+foreach($name in @('ddskk-engine-protocol-test','ddskk-engine-client-test','ddskk-candidate-ui-test','ddskk-display-attribute-test','ddskk-langbar-button-test','ddskk-mode-indicator-test','ddskk-realtime-frontend-test','ddskk-host-utf8-protocol-test')) {& "build/w/Release/$name.exe"}
+& build/w/Release/nativeime-local-conversion-test.exe (Join-Path (Get-Location) 'build/w/native-local')
+#+end_src
+All nine executable exits 0. Logs build/w/<test-name>.log, local-native.log.
+Verbatim emitted tails/counts (silent executables have no internal count):
+#+begin_example
+ddskk-engine-protocol-test exit=0
+ddskk-engine-client-test exit=0
+cancel invalidation while provider blocked: 0 us
+ddskk-candidate-ui-test exit=0
+ddskk-display-attribute-test exit=0
+ddskk-langbar-button-test exit=0
+ddskk-mode-indicator-test exit=0
+ddskk-realtime-frontend-test exit=0
+Punctuation frontend cases=4 preedit=1 PASS
+Kana-valued symbol reading cases=3 PASS
+ddskk-host-utf8-protocol-test exit=0
+commit durability reply QPC wait_ms=0.020600
+host UTF8 protocol: 128 checks, 0 failures
+PASS rules-only publication checks=5
+PASS local conversion 178 checks (4 corrupt/source negative controls)
+#+end_example
+
+* Public/disk goldens and final replay
+Commands, each exit 0 (capture called explicitly, then replay):
+#+begin_src powershell
+pwsh -NoProfile -File windows/test-host/test-host-contracts.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45 -Mode capture
+pwsh -NoProfile -File windows/test-host/test-host-contracts.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45 -Mode capture -Engine lattice -Fixture docs/contracts/native-legacy-v1.json
+python windows/test-host/inventory-host-contracts.py
+pwsh -NoProfile -File windows/test-host/run-engine-host-s2.ps1 -Runtime $Runtime -BuildDir build/w -Stage Contracts
+#+end_src
+Final contract log build/w/contracts-final.log. Verbatim result lines (absolute
+artifact prefixes omitted here; exact complete output remains in the log):
+#+begin_example
+PASS integrity transcripts=2 responses=140 disk_files=8 sources=228 bad_response_rejected=1
+PASS disk mode=replay files=8 corrupt_index_rejected=1
+PASS contracts mode=replay records=121
+PASS contracts mode=replay records=19
+PASS S2 stage=Contracts gates=3
+#+end_example
+Final run suffixes: s2-gates-a236e5c1c45d4e47a531d01afeca36e4,
+eh2-671042d5e1ee411d8ad5e7899ea26068 (native),
+eh2-b90fe17ed1c24058b60ee4ba494a2d0b (legacy).
+Every reference has raw base64 bytes plus individual SHA256 and a whole-file
+SHA256 sidecar. Disk replay validates the original index checksum before
+normalizing PID/generation fields; corrupted index and bad response controls
+fail. A nonempty sealed outbox is captured under real checkpoint file-sharing
+refusal, then retired before checking the final dictionary/watermark.
+
+* Private soak
+#+begin_src powershell
+pwsh -NoProfile -File windows/test-host/test-private-pipe-soak.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+#+end_src
+Exit 0. Complete verbatim numeric tail:
+#+begin_example
+PASS soak {"p50": 2.1281, "p99": 13.8391, "max": 47.4174} clients=32 completed=100000 controls=20
+CLEANUP owned job closed; host reaped; private pipe=\\.\pipe\EH2-026c32e917ee4667b6ffbc5546d64817
+#+end_example
+Tail's artifact path is build/w/eh2-4b404bdfac234e1abd9a408687f6bcac;
+full stdout build/w/soak-final.log; 100ms resource samples in soak.json.
+Thresholds fixed before execution: host private growth <=64MiB, sampled
+peak <=512MiB, handles growth <=64, sampled peak <=2048. No latency
+threshold is invented from these measurements. Graceful shutdown <=5s
+passed with eight connected idle clients. First development soak also passed
+100000 requests; final numbers supersede its less complete control set.
+Final measured resources: private bytes before=2056192, after=2592768,
+sampled peak=4026368; handles before=118, after=119, sampled peak=159;
+120 samples. Engine memory is not included in those host counters.
+
+* Pipe-only engine gates and ERT
+Each following engine command used -Runtime $Runtime -BuildDir build/w
+-ColdLoadSleepSec 45 and exited 0. The exact script names and verbatim tails:
+#+begin_example
+test-engine-session-v2.ps1:
+EG2 private sessions: 17 checks PASS (real restart, eviction, durable retry)
+test-engine-learning-v2.ps1:
+second-client SPACE QPC mutex_wait_ms=0.008100
+EG2 learning: 16 checks PASS (reply, second client, overlay, shutdown)
+test-engine-learning-crash-v2.ps1:
+EG2 learning crash: 15 checks PASS (host crash, staged outbox, idempotent replay)
+test-engine-provider-outbox-v2.ps1:
+provider commit reply wall_ms=40.429700
+EG2 provider outbox: 18 checks PASS (reply-before-write crash, exactly once, retirement)
+test-sk1-provider-relay.ps1:
+PASS SK1 provider mode=unreachable checks=20
+OWNED_HOST_EXITED=True
+OWNED_CHILD_EXITED=True
+PASS SK1 provider modes=2 checks=20
+#+end_example
+Logs respectively session-v2.log, learning-v2.log, learning-crash.log,
+provider-outbox.log, sk1-provider.log under build/w. SK1 ran disabled and
+unreachable modes; successful skkserv TCP/TSF suite is still in the handoff.
+
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+Both exit 0. Verbatim tails:
+#+begin_example
+Ran 31 tests, 31 results as expected, 0 unexpected (2026-10-08 17:17:37+0900, 0.041297 sec)
+Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-08 17:17:39+0900, 0.058034 sec)
+#+end_example
+Python compilation and PowerShell parser checks passed; parser errors=0.
+Registry/TSF DDSKK behavior, full Emacs integration, inline Emacs, local
+suite/L-dictionary and successful skkserv were not run in this sandbox.
+No S2 end-to-end PASS or full migration percentage is claimed.
+
+* Change anchors and final cleanup
+All new files start at line 1 unless a more specific implementation anchor
+is given. The following is the complete scoped authored/generated file set:
+- docs/contracts/engine-host-v1.json:1 -- versioned semantic wire/file/config/ownership contract.
+- docs/contracts/deadlines-v1.json:1 -- semantic deadline/cancellation inventory.
+- docs/contracts/source-inventory-v1.json:1 -- 228 hashed sources and 465 deadline sites; config/error/command anchors.
+- docs/contracts/requests-v1.json:1 -- native capture plan including 65-context eviction.
+- docs/contracts/requests-legacy-v1.json:1 -- framework/lattice fallback capture plan.
+- docs/contracts/native-v1.json:1 and native-v1.sha256:1 -- 121 native replies and exact hashes.
+- docs/contracts/native-legacy-v1.json:1 and native-legacy-v1.sha256:1 -- 19 old-engine replies and hashes.
+- docs/contracts/native-disk-v1.json:1 and native-disk-v1.sha256:1 -- eight native file images and hashes.
+- docs/contracts/CLAUDE-S2.org:1 -- exact registry/TSF/end-to-end handoff and limitations.
+- docs/contracts/EH2-validation.org:1 -- commands, counts, tails and cleanup receipt.
+- windows/test-host/host-contracts.py:55 -- overlapped cancel/drain client; :114 job ownership; :188 corpus replay; :290 soak.
+- windows/test-host/host-disk-contracts.py:21 -- original checksum validation and bounded normalization; :58 native file capture.
+- windows/test-host/inventory-host-contracts.py:1 -- repeatable source/inputs/errors/deadline extraction.
+- windows/test-host/verify-host-contracts.py:1 -- integrity checker and failing checksum control.
+- windows/test-host/test-host-contracts.ps1:2 -- supplied runtime/host/corpus wrapper.
+- windows/test-host/test-private-pipe-soak.ps1:2 -- fixed-size private soak wrapper.
+- windows/test-host/run-engine-host-s2.ps1:2 -- Contracts/Soak/EndToEnd command orchestration and separate gate logs.
+- tools/ai/engine-host-nelisp-progress.org:86 -- only S2 lines replaced with real executable cmd checks and qualified notes.
+- docs/design/engine-host-nelisp.org:225 -- S2 execution/contract corrections; native behavior unchanged.
+
+git diff --check exited 0; staged names empty. No native source, live
+registry/pipe/data or other checkout changed. Python caches removed.
+Owned process cleanup was checked against every host/child identity logged
+under this lane's build, without terminating other processes. Verbatim tail:
+#+begin_example
+EH2 cleanup: logged_owned_pids=52 leftover=0
+#+end_example

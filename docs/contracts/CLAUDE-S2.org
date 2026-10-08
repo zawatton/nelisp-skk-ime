@@ -1,0 +1,100 @@
+#+TITLE: EH2 native contracts: coordinator command handoff
+#+DATE: 2026-10-08
+
+* Inputs and commands
+Run from this checkout. Supply the approved runtime as EH2_RUNTIME and a real
+SKK-JISYO.L as EH2_LARGE_DICTIONARY; neither path is embedded in repository
+files. All host tests use unique private endpoints, nonexistent private
+registry paths (pipe-only), or run-harness's disposable NativeIME-test key.
+Never substitute a live deploy/register/install runner.
+
+The following commands are exact entry points. run-engine-host-s2.ps1 logs
+each expanded command, its exit status failure, and eight verbatim tail lines.
+It stops at the first failure; fix the cause or run the remaining named
+commands independently, never call that a complete end-to-end pass.
+
+#+begin_src powershell
+$Runtime=$env:EH2_RUNTIME
+$LargeDictionary=$env:EH2_LARGE_DICTIONARY
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+ctest --test-dir build/w -C Release
+python windows/test-host/verify-host-contracts.py
+pwsh -NoProfile -File windows/test-host/run-engine-host-s2.ps1 -Runtime $Runtime -BuildDir build/w -Stage Contracts
+pwsh -NoProfile -File windows/test-host/run-engine-host-s2.ps1 -Runtime $Runtime -BuildDir build/w -Stage Soak
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); pwsh -NoProfile -File windows/test-host/run-engine-host-s2.ps1 -Runtime $Runtime -BuildDir build/w -Stage EndToEnd -LargeDictionary $LargeDictionary
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+
+Contracts means integrity, native public+disk replay, and framework/lattice
+old-engine replay. Soak means 32 simultaneous persistent clients with
+100000 completed cached ENGINE CURRENT requests, 20 adversarial/resource/
+shutdown controls, and a resource sample every 100ms. Reconnect every 500
+requests exercises disconnect cleanup. Percentiles are nearest rank and
+include client scheduling/IO; these measurements are workload receipts,
+not arbitrary request latency guarantees. Host private bytes and handles
+are sampled; child engine memory is outside these fixed host bounds.
+
+EndToEnd expands to the commands below (the wrapper supplies these exact
+arguments, logs separate cases, and requires the large dictionary upfront).
+The four DLL/executable paths are all from this lane's build. The existing
+Emacs integration and DDSKK wrappers select the core beside this DLL;
+inline Emacs and all local runners explicitly supply the core path.
+
+#+begin_src powershell
+$root=(Get-Location).Path
+$bin=Join-Path $root 'build/w/Release'
+$common=@('-Runtime',$Runtime,'-BuildDir','build/w','-ColdLoadSleepSec','45')
+$paths=@('-RepositoryPath',$root,'-DllPath',(Join-Path $bin 'ddskk-ime.dll'),'-TsfHostExe',(Join-Path $bin 'tsf-host.exe'),'-EngineHostPath',(Join-Path $bin 'ddskk-engine-host.exe'),'-EngineExecutablePath',$Runtime,'-ColdLoadSleepSec','45')
+$env:DDSKK_HARNESS_DIAGNOSTICS='1'
+pwsh -NoProfile -File windows/test-host/test-ddskk-behavior.ps1 @paths
+pwsh -NoProfile -File windows/test-host/test-emacs-integration.ps1 @paths
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --dll "$bin/ddskk-ime.dll" --core "$bin/ddskk-ime-core.dll" --tsf-host "$bin/tsf-host.exe" --engine-host "$bin/ddskk-engine-host.exe" --runtime $Runtime --artifacts build/w/s2-inline-emacs --case emacs --cold-load 45 --repository $root
+foreach($name in @('test-engine-session-v2','test-engine-learning-v2','test-engine-learning-crash-v2','test-engine-provider-outbox-v2','test-sk1-provider-relay','test-sk1-skkserv','test-local-conversion','test-local-two-source','test-local-navigation','test-local-overlay','test-local-key-refusal','test-local-fallback','test-local-idle-spool','test-local-cleanup')) {
+  pwsh -NoProfile -File "windows/test-host/$name.ps1" @common
+  if($LASTEXITCODE){throw "$name failed"}
+}
+pwsh -NoProfile -File windows/test-host/test-local-edit-recovery.ps1 @common -LargeDictionary $LargeDictionary
+pwsh -NoProfile -File windows/test-host/test-local-state-stress.ps1 @common -LargeDictionary $LargeDictionary
+pwsh -NoProfile -File windows/test-host/test-host-contracts.ps1 @common
+pwsh -NoProfile -File windows/test-host/test-host-contracts.ps1 @common -Engine lattice -Fixture docs/contracts/native-legacy-v1.json
+pwsh -NoProfile -File windows/test-host/test-private-pipe-soak.ps1 @common
+#+end_src
+
+For direct TSF smoke with the diagnostic warmup and explicit core:
+#+begin_src powershell
+pwsh -NoProfile -File windows/test-host/run-harness.ps1 -Script 'a i SPACE WAIT3000 ENTER K a n a SPACE SETTLE8000:CANDIDATE ENTER SETTLE8000:END' -DllPath "$bin/ddskk-ime.dll" -CoreDllPath "$bin/ddskk-ime-core.dll" -TsfHostExe "$bin/tsf-host.exe" -EngineHostPath "$bin/ddskk-engine-host.exe" -EngineExecutablePath $Runtime -RepositoryPath $root -LocalConversion 1 -ColdLoadSleepSec 45 -ArtifactDirectory build/w/s2-tsf-smoke
+#+end_src
+
+* Worker execution boundary and remaining work
+The worker cannot create HKCU keys. CTest was run and all ten wrappers
+failed at New-Item with UnauthorizedAccessException before any test body.
+The registry-settings test and TSF/Emacs/inline/local integration gates
+therefore belong to Claude. Nine native test bodies were run directly with
+private environment roots; that does not convert CTest to PASS.
+
+Core learning spool schema is frozen with source anchors but a TSF-produced
+nonempty spool golden is not claimed. Capture that in the coordinator lane
+while a producer holds its exclusive lease, retain the raw bytes+SHA256,
+and validate against local_conversion.cpp:34 before claiming every disk
+producer is byte-qualified. LOCAL outbox/checkpoint and index fixtures
+already have native capture/replay and corrupted-index negative controls.
+
+The source inventory intentionally includes declarations, implementations
+and every script deadline site; it is broader than the semantic caller
+table. Existing native unbounded blocking accept/read/flush and detached
+client threads are recorded, not redesigned. No bounded queue claim is
+inferred from this soak. Only host-local cached requests are the percentile
+workload; engine-relay tails are separately measured by existing gates.
+
+Do not recapture a fixture to hide a mismatch. Capture requires -Mode
+capture and records host/runtime hashes. Replay accepts an alternate
+-HostExecutable with the identical runtime, repository and private fixture
+conditions; only documented PID/generation fields may differ. Index config
+hash contains source identity, so relocated source paths require a separately
+approved reference capture, not another normalization rule.
+
+The required S2 design notes change the whole design-document hash. S1
+evidence hashes in the ledger predate these notes; refreshing those S1 lines
+is outside the worker's S2-line scope and must be reconciled by Claude.

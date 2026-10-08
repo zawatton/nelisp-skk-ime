@@ -85,14 +85,19 @@ pending
 * S2 Frozen interchangeable contracts
 ** S2.1 Public wire, index and learning formats have hashed byte fixtures and caller deadline inventory
 #+NOTE: Cover old-engine negotiation, UTF8/STATE2/LEARNING2, session v2, legacy replay, error tokens, config and ownership rules.
-pending
+#+NOTE: EH2: docs/contracts/engine-host-v1.json, deadlines-v1.json and source-inventory-v1.json; native 121 + old-engine 19 replies, eight disk files. Native reference replay executed; core spool golden still requires TSF coordinator capture. Full receipt and exact remaining commands: docs/contracts/CLAUDE-S2.org and EH2-validation.org.
+#+NOTE: Claude ran the Contracts stage (exit 0) on the EH2 tree; log copied to build/validation.
+evidence: build/validation/eh2-s2/Contracts.log sha256=6e3fa9aea54ed10ac41a0957daf5c3f771e68fa4f009e213c34722ba643b2262
 
 ** S2.2 Private pipe soak validates framing, isolation, bounded queues and cancellation
-#+NOTE: 32 clients and 100000 completed requests; malformed frames, fragmentation, squatting clients, disconnect, collision and cleanup controls; no gate implementation yet.
-pending
+#+NOTE: EH2: 32 clients, 100000 completed ENGINE CURRENT requests, 20 controls including cancel/drain, collision, disconnect, malformed/fragmented frames and shutdown with squatters; 100ms resource sampling. Executed p50=2.1281ms p99=13.8391ms max=47.4174ms. Bounds apply to this cached-request host workload; native has no global bounded request queue.
+#+NOTE: Claude ran the Soak stage (exit 0): 32 clients, 100000 requests, 20 controls, p50 1.50 ms, p99 9.12 ms, max 25.3 ms.
+evidence: build/validation/eh2-s2/Soak.log sha256=7e6d44b8a41280ef8c71f9c4b7c8c3236ac2da3284830c0ec40d68b67253211c
 
 ** S2.3 End to end: native reference passes frozen corpus through TSF and Emacs plus SK1 and real session restart
 #+NOTE: Existing DDSKK behavior, Emacs/inline, session-v2 and skkserv runners; ctest is necessary but insufficient.
+#+NOTE: EH2: registry/TSF end-to-end handed to Claude, not passed in worker sandbox. CTest exit=8, 0/10 bodies reached because private HKCU creation denied. Pipe-only session restart=17, learning=16, crash=15, provider-outbox=18, SK1 provider=20 passed. Exact commands and binary paths in docs/contracts/CLAUDE-S2.org. EH2_RUNTIME and EH2_LARGE_DICTIONARY must be supplied; command remains executable/uncached until coordinator runs it.
+#+NOTE: Claude ran EndToEnd (build/validation/eh2-s2/EndToEnd-2.log): ctest, DDSKK behavior, Emacs integration, inline, session v2 and learning/crash/outbox, SK1, local conversion/two-source/navigation/overlay PASS; it stops at test-local-key-refusal, a known-red TL1 test-host test (fails on main since 55a9428, unrelated to EH2). The remaining runners (fallback, idle-spool, cleanup, host contracts, SKK-JISYO.L edit recovery and stress) were run separately and PASS. Stays not-done until key-refusal is fixed.
 pending
 
 * S3 Adapter and shadow policy
