@@ -4,18 +4,54 @@ param(
   [Parameter(Mandatory)][string]$Runtime,
   [string]$BuildDir = 'build/w',
   [int]$ColdLoadSleepSec = 45,
+  [switch]$ValidateParametersOnly,
   [string[]]$RecoveryPoints = @('before-handover','after-release','during-prewarm','after-prewarm','after-commit')
 )
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $run = Join-Path $root ($BuildDir + '/eh5-' + [guid]::NewGuid().ToString('N'))
-[void](New-Item -ItemType Directory -Path $run)
+if (-not $ValidateParametersOnly) { [void](New-Item -ItemType Directory -Path $run) }
 $hostPath = Join-Path $root "$BuildDir/Release/ddskk-engine-host.exe"
 $deploy = Join-Path $root 'windows/scripts/private-host-bundle.ps1'
 $old = Join-Path $run 'native'
 $new = Join-Path $run 'policy'
 $gates = 0
+function Assert-GateParameters([string]$name,[string]$exe,[string[]]$arguments) {
+  if ($exe -notin 'pwsh','powershell') { return }
+  $fileIndex = [Array]::IndexOf($arguments, '-File')
+  if ($fileIndex -lt 0) { throw "FAIL $name parameter error: missing -File" }
+  $path = $arguments[$fileIndex + 1]
+  # Get-Command reads script metadata without running the script body.
+  $command = Get-Command -Name $path -ErrorAction Stop
+  $supplied = @{}
+  for ($i = $fileIndex + 2; $i -lt $arguments.Count; $i++) {
+    if ($arguments[$i].StartsWith('-')) {
+      $parameter = $arguments[$i].Substring(1)
+      if (-not $command.Parameters.ContainsKey($parameter)) {
+        throw "FAIL $name parameter error: $path unknown parameter -$parameter"
+      }
+      $supplied[$parameter] = $true
+      if ($command.Parameters[$parameter].ParameterType -ne [switch]) {
+        if ($i + 1 -ge $arguments.Count -or [string]::IsNullOrEmpty($arguments[$i + 1]) -or
+            $arguments[$i + 1] -match '^-[A-Za-z]') {
+          throw "FAIL $name parameter error: $path missing value for -$parameter"
+        }
+        $i++
+      }
+    }
+  }
+  $missing = @($command.Parameters.Values | Where-Object {
+    ($_.Attributes | Where-Object { $_ -is [Management.Automation.ParameterAttribute] -and $_.Mandatory }) -and
+    -not $supplied.ContainsKey($_.Name)
+  } | ForEach-Object { $_.Name })
+  if ($missing.Count) {
+    throw "FAIL $name parameter error: $path missing mandatory parameter(s): $($missing -join ', ')"
+  }
+}
 function Gate([string]$name,[string]$exe,[string[]]$arguments) {
+  Assert-GateParameters $name $exe $arguments
+  if ($ValidateParametersOnly) { $script:gates++; return }
+  if ($exe -in 'pwsh','powershell') { $arguments = @('-NonInteractive') + $arguments }
   $log = Join-Path $run "$name.log"
   Write-Output ("cmd: $exe " + ($arguments -join ' '))
   & python (Join-Path $PSScriptRoot 'host-test-process-guard.py') run --root $root -- $exe @arguments *> $log
@@ -68,18 +104,21 @@ if ($Stage -eq 'EndToEnd') {
     '-ArtifactDirectory',(Join-Path $run 'scoped'))
   Gate 'core-hot-swap' 'pwsh' @('-NoProfile','-File',(Join-Path $PSScriptRoot 'test-core-hot-swap.ps1'),
     '-EngineExecutablePath',$Runtime,'-BuildDirectory',(Join-Path $root "$BuildDir/Release"),
+    '-RepositoryPath',$root,
     '-ArtifactDirectory',(Join-Path $run 'core-swap'),'-ColdLoadSleepSec',"$ColdLoadSleepSec")
   foreach ($bundle in $old,$new,$old) {
-    $env:DDSKK_HOST_BUNDLE_MANIFEST = Join-Path $bundle 'bundle.manifest'
-    foreach ($switch in 'SOURCES','CACHE','RESTART','PUBLICATION','LEARNING') {
-      [Environment]::SetEnvironmentVariable("DDSKK_HOST_POLICY_$switch", $(if ($bundle -eq $new) {'1'} else {'0'}))
+    if (-not $ValidateParametersOnly) {
+      $env:DDSKK_HOST_BUNDLE_MANIFEST = Join-Path $bundle 'bundle.manifest'
+      foreach ($switch in 'SOURCES','CACHE','RESTART','PUBLICATION','LEARNING') {
+        [Environment]::SetEnvironmentVariable("DDSKK_HOST_POLICY_$switch", $(if ($bundle -eq $new) {'1'} else {'0'}))
+      }
     }
     $label = "input-$gates"
     Gate $label 'pwsh' @('-NoProfile','-File',(Join-Path $PSScriptRoot 'test-emacs-integration.ps1'),
       '-DllPath',(Join-Path $root "$BuildDir/Release/ddskk-ime.dll"),'-TsfHostExe',(Join-Path $root "$BuildDir/Release/tsf-host.exe"),
       '-EngineHostPath',(Join-Path $bundle 'ddskk-engine-host.exe'),'-RepositoryPath',(Join-Path $bundle 'repository'),
       '-EngineExecutablePath',$Runtime,'-ColdLoadSleepSec',"$ColdLoadSleepSec")
-    $env:HOME=[Environment]::GetFolderPath('UserProfile')
+    if (-not $ValidateParametersOnly) { $env:HOME=[Environment]::GetFolderPath('UserProfile') }
     Gate "$label-inline" 'python' @((Join-Path $PSScriptRoot 'test-inline-preedit.py'),
       '--case','emacs','--dll',(Join-Path $root "$BuildDir/Release/ddskk-ime.dll"),
       '--tsf-host',(Join-Path $root "$BuildDir/Release/tsf-host.exe"),'--engine-host',(Join-Path $bundle 'ddskk-engine-host.exe'),
@@ -88,4 +127,5 @@ if ($Stage -eq 'EndToEnd') {
       '--cold-load',"$ColdLoadSleepSec")
   }
 }
-Write-Output "PASS S5 $Stage gates=$gates artifacts=$run"
+if ($ValidateParametersOnly) { Write-Output "PASS S5 $Stage parameter audit gates=$gates stacks=0" }
+else { Write-Output "PASS S5 $Stage gates=$gates artifacts=$run" }

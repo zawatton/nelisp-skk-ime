@@ -272,3 +272,37 @@ Claude must record whole logs, bundle/runtime hashes, counts and final owned
 PID lists as evidence before accepting the S5 ledger commands. Live rollout
 requires separate user approval and separate launcher/registry integration;
 the private guards and deploy-live.ps1 are not changed to permit it here.
+
+* EndToEnd parameter correction after 4a2930c
+The unchanged core-hot-swap invocation reproduced exit 1 before starting any
+stack: "Cannot process command because of one or more missing mandatory
+parameters: RepositoryPath." The bundle runner now passes -RepositoryPath
+with the checkout root. Its Gate checks PowerShell script parameter metadata
+before launching the process guard, throws a named "parameter error" for
+missing required arguments, unknown parameters or missing values, and launches
+PowerShell noninteractively. -ValidateParametersOnly audits the actual stage
+argument arrays without creating artifacts or starting stacks (PowerShell
+metadata only; Python argument definitions were separately read).
+
+Checked mandatory parameters in private-host-bundle.ps1, test-core-deployment.ps1,
+test-scoped-rollback.ps1, test-core-hot-swap.ps1, test-emacs-integration.ps1,
+and the existing Python EndToEnd runners' argparse definitions. All other
+required arguments are supplied. The nested run-harness.ps1 param block has
+no mandatory attributes; test-emacs-integration supplies its engine paths.
+
+Worker regression command (no runtime required):
+#+begin_src powershell
+pwsh -NoProfile -NonInteractive -File windows/test-host/test-private-host-bundle-parameters.ps1
+#+end_src
+Verbatim successful tail:
+#+begin_example
+PASS S5 EndToEnd parameter audit gates=15 stacks=0
+PASS bundle parameter regression negative_controls=3 audited_gates=15 stacks=0
+#+end_example
+The three negative controls assert named failures and zero passing gates for
+missing RepositoryPath, an unknown parameter, and a missing RepositoryPath
+value. No IME process is started by this regression. Full EndToEnd remains
+for Claude to rerun serially; this correction does not claim that acceptance.
+#+begin_src powershell
+pwsh -NoProfile -NonInteractive -File windows/test-host/test-private-host-bundle.ps1 -Runtime $EH5_RUNTIME -BuildDir build/claude-verify-eh5 -ColdLoadSleepSec 45 -Stage EndToEnd
+#+end_src
