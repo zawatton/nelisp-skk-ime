@@ -12,6 +12,9 @@ param([Parameter(Mandatory)][string]$Runtime,
 # packages/nelisp-service (sibling ../nelisp checkout by default, or
 # $env:NELISP_SERVICE_SRC).
 $ErrorActionPreference='Stop'
+# Resolve a relative -Runtime against the caller's directory before the
+# child runs with the repository root as its working directory.
+$Runtime=[IO.Path]::GetFullPath($Runtime, (Get-Location).ProviderPath)
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $private=Join-Path (Join-Path $root $BuildDir) ('engine-pool-'+[guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory $private)
