@@ -36,6 +36,12 @@ def source(mode, policy_source=None):
               (equal (aref values 8) "01")) (error "HP1 copied fields")))
 (host-policy-frame "HP1 Q 1 7 11 13 12 1 0 0 00af")
 (host-policy-frame (concat "HP1 Q 1 7 11 13 1 1 0 0 " (make-string 2048 97)))
+(dolist (digits (list "000001" "2147483647" "9223372036854775807"
+                     "9223372036854775808" "18446744073709551615"
+                     (make-string 3072 57)))
+ (let* ((expected (string-to-number digits))
+        (parsed (host-policy-frame (concat "HP1 Q " digits " 7 11 13 1 1 0 0 -"))))
+  (unless (= (aref (car parsed) 0) expected) (error "HP1 decimal conversion changed"))))
 (dolist (bad (list "HP1 R 1 7 11 13 1 1 0 0 -"
                   "HP1 Q 1 7 11 13 0 1 0 0 -"
                   "HP1 Q 1 7 11 13 13 1 0 0 -"
@@ -51,18 +57,30 @@ def source(mode, policy_source=None):
   (condition-case nil (host-policy-frame bad) (error (setq rejected t)))
   (unless rejected (error "HP1 invalid accepted"))))
 ''' + source('echo')
-    if mode == 'policy':
+    if mode in ('policy', 'allocation'):
         text = (policy_source or ROOT/'engine/host-policy.el').read_text('utf-8')
         text = '(defvar s6-read-begin 0)\n(defvar s6-read-end 0)\n(defvar s6-write-begin 0)\n(defvar s6-write-end 0)\n(defvar s6-gc-before 0)\n(defvar s6-gc-after 0)\n' + text
         text = text.replace('(let ((bytes (read-stdin-bytes 4096)))',
             '(setq s6-gc-before (nth 7 (nelisp--debug-switch 0)))\n      (setq s6-read-begin (float-time))\n      (let ((bytes (read-stdin-bytes 4096)))\n        (setq s6-read-end (float-time))')
+        policy_trace = TRACE.replace('%.9f\\n', '%.9f %d %d\\n').replace('s6-write-end))', 's6-write-end s6-gc-before s6-gc-after))')
+        allocation_after = ''
+        if mode == 'allocation':
+            text = '(nelisp--debug-switch 24)\n(defvar s6-alloc-before nil)\n(defvar s6-alloc-after nil)\n'+text
+            text = text.replace('(setq s6-read-begin (float-time))',
+                '(setq s6-alloc-before (nelisp--debug-switch 0)) (setq s6-read-begin (float-time))')
+            allocation_after = '(setq s6-alloc-after (nelisp--debug-switch 0)) '
+            policy_trace = policy_trace.replace('%d %d\\n', '%d %d %d %d %d\\n').replace(
+                's6-gc-after))', 's6-gc-after (- (nth 10 s6-alloc-after) (nth 10 s6-alloc-before)) (- (nth 11 s6-alloc-after) (nth 11 s6-alloc-before)) (- (nth 12 s6-alloc-after) (nth 12 s6-alloc-before))))')
+        if '(host-policy-write-reply pending numbers decision reply)' in text:
+            original = '(host-policy-write-reply pending numbers decision reply)'
+            wrapped = '(progn (setq s6-write-begin (float-time)) '+original+' (setq s6-write-end (float-time)) (setq s6-gc-after (nth 7 (nelisp--debug-switch 0))) '+allocation_after+policy_trace+')'
+            return text.replace(original, wrapped)
         begin = text.index('(nelisp--write-stdout-bytes\n                   (concat')
         end = text.index('\n              (setq pending', begin)
         original = text[begin:end]
         assert original.endswith('))))'), original
         call = original[:-2]  # retain the decision/fields let closures outside
-        policy_trace = TRACE.replace('%.9f\\n', '%.9f %d %d\\n').replace('s6-write-end))', 's6-write-end s6-gc-before s6-gc-after))')
-        wrapped = '(progn (setq s6-write-begin (float-time)) '+call+'\n (setq s6-write-end (float-time)) (setq s6-gc-after (nth 7 (nelisp--debug-switch 0))) '+policy_trace+')))'
+        wrapped = '(progn (setq s6-write-begin (float-time)) '+call+'\n (setq s6-write-end (float-time)) (setq s6-gc-after (nth 7 (nelisp--debug-switch 0))) '+allocation_after+policy_trace+')))'
         return text[:begin]+wrapped+text[end:]
     if mode in ('echo', 'parse', 'match', 'split', 'validate', 'cond', 'format'):
         work = {'echo':'', 'parse':'(string-match "\\n" bytes) (split-string bytes " " t)',
@@ -135,9 +153,9 @@ def probe(runtime, directory, mode, count, size, gc_disabled=False, policy_sourc
             raise RuntimeError('resume failed')
         reader = threading.Thread(target=read); reader.start()
         ready = take()[0]
-        assert ready == (b'HP1 READY\n' if mode in ('policy','stream') else b'READY\n'), ready
+        assert ready == (b'HP1 READY\n' if mode in ('policy','allocation','stream') else b'READY\n'), ready
         for serial in range(1, count+1):
-            if mode in ('policy','stream'):
+            if mode in ('policy','allocation','stream'):
                 wire = f'HP1 Q {serial} 7 11 13 1 1 0 0 -\n'.encode()
                 expected = f'HP1 R {serial} 7 11 13 1 0\n'.encode()
                 if mode == 'stream' and serial > 1:
@@ -159,7 +177,7 @@ def probe(runtime, directory, mode, count, size, gc_disabled=False, policy_sourc
             assert actual == expected, actual
             row = dict(roundtrip_ms=(received_perf-start_perf)*1000,
                        python_send_ms=(sent_perf-start_perf)*1000)
-            if mode in ('policy', 'timed-echo'):
+            if mode in ('policy', 'allocation', 'timed-echo'):
                 trace = take()[0].decode('ascii').split()
                 assert trace[0] == 'S6TIME', trace
                 a,b,c,d = map(float, trace[1:5])
@@ -167,8 +185,10 @@ def probe(runtime, directory, mode, count, size, gc_disabled=False, policy_sourc
                            write_call_ms=(d-c)*1000, delivery_from_write_ms=(received_wall-c)*1000,
                            read_call_ms=(b-a)*1000,
                            lisp_timestamps=[a,b,c,d], python_timestamps=[start_wall,received_wall])
-                if len(trace) == 7:
-                    row['midform_gc_before'], row['midform_gc_after'] = map(int,trace[5:])
+                if len(trace) >= 7:
+                    row['midform_gc_before'], row['midform_gc_after'] = map(int,trace[5:7])
+                if len(trace) == 10:
+                    row['allocation_bucket_hits'], row['allocation_linear_hits'], row['allocation_bump_allocs'] = map(int, trace[7:10])
             rows.append(row)
         process.stdin.close(); process.wait(timeout=10)
         assert process.returncode == 0, process.returncode
@@ -177,7 +197,7 @@ def probe(runtime, directory, mode, count, size, gc_disabled=False, policy_sourc
                       rows=rows, distributions={
             key:s6.distribution([row[key] for row in rows]) for key in rows[0] if key.endswith('_ms')})
         if mode == 'framing':
-            result.update(valid_frames=3, rejected_frames=11)
+            result.update(valid_frames=3, rejected_frames=11, decimal_conversion_controls=6)
         if mode == 'stream':
             result.update(fragmented_frames=1, batched_frames=2*(count-1),
                           verified_replies=2*count-1)
@@ -206,6 +226,7 @@ def main():
     modes.add_argument('--gc-control', action='store_true')
     modes.add_argument('--framing-controls', action='store_true')
     modes.add_argument('--stream-controls', action='store_true')
+    modes.add_argument('--allocation-controls', action='store_true')
     parser.add_argument('--policy-source', type=Path)
     args = parser.parse_args()
     directory = args.output_dir.resolve()
@@ -216,7 +237,9 @@ def main():
     identity = hashlib.sha256(runtime.read_bytes()).hexdigest()
     results = []
     try:
-        if args.stream_controls:
+        if args.allocation_controls:
+            matrix = [('allocation',32)]
+        elif args.stream_controls:
             matrix = [('stream',32)]
         elif args.framing_controls:
             matrix = [('framing',1)]

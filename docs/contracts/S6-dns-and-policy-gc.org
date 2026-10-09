@@ -1,0 +1,190 @@
+#+TITLE: S6 DNS cancellation and policy allocation preparation
+#+DATE: 2026-10-10
+
+* Status and restrictions
+Prepared against d91ae40. Claude's Production stack was running in build/w
+during this work. No IME host, NeLisp, TSF client or runtime test runner was
+started here. Only compilation into build/eh6-next and pure source checks
+were run. Runtime qualification and policy budget results below are explicitly
+PENDING. No timeout or resource/callback/durability budget has been relaxed.
+
+* A: cancellable native resolution
+ConnectDictionaryServer now uses GetAddrInfoExW, a manual-reset OVERLAPPED
+event and GetAddrInfoExCancel. Resolution has a 150 ms phase deadline, matching
+the existing external socket-I/O ceiling; the existing 200 ms provider cache
+wait, TCP connect ceiling per address and 150 ms exchange deadline are
+unchanged. Previously DNS itself had no deadline. Shutdown is checked against
+both g_stopping and the ServerCache worker's atomic stop flag, at intervals
+of at most 5 ms while waiting. No resolver runs in the input callback.
+
+Returned address lists are traversed in resolver order with the same AF_UNSPEC,
+SOCK_STREAM and IPPROTO_TCP hints. Nothing sorts or filters the result list.
+Resolver errors and cancellation still map to INVALID_SOCKET and the existing
+negative server reply; obsolete config generations still discard replies.
+The worker does not spawn a dictionary server after shutdown cancellation.
+The Unicode API receives the original wide hostname directly.
+
+Cancellation must be followed by completion drain before event/result/storage
+release or WSACleanup. The drain waits for the completion event; it is not
+abandoned after an arbitrary timeout. Microsoft's documented cancellation
+contract signals completion immediately, but legacy namespace providers may
+continue internal synchronous work. The probe measures the actual cancellation
+and drain on this Windows installation; it does not claim that every installed
+third-party provider stops its internal work.
+References: [[https://learn.microsoft.com/en-us/windows/win32/api/ws2tcpip/nf-ws2tcpip-getaddrinfoexw][GetAddrInfoExW]],
+[[https://learn.microsoft.com/en-us/windows/win32/api/ws2tcpip/nf-ws2tcpip-getaddrinfoexcancel][GetAddrInfoExCancel]].
+
+The private hook requires all existing OS1 trace gates: diagnostics=1,
+NATIVEIME_TEST_OS1_DNS_TRACE=1, a NativeIME-test registry branch and an EH private
+pipe. Only with these gates and NATIVEIME_TEST_OS1_DNS_SERVER=127.0.0.2 does it
+use ADDRINFOEX6 with an exclusive per-query UDP DNS server and cache bypass.
+This API requires Windows build 22000 or newer. Production uses ordinary
+namespace resolution without a custom server. No DNS adapter settings,
+HKCU keys, hosts file or live IME configuration are changed.
+Reference: [[https://learn.microsoft.com/en-us/windows/win32/api/ws2def/ns-ws2def-addrinfoex6][ADDRINFOEX6 custom DNS servers]].
+
+test-os1-private.py --mode dns exclusively binds 127.0.0.2 UDP/53. It fails
+if that endpoint is occupied; it never reconfigures or stops another server.
+An ordinary NXDOMAIN, immediate failure or missing DNS packets fails the gate.
+The fixture first withholds real UDP replies, then answers A with loopback
+and AAAA with NODATA, then withholds replies again. On one host, serially:
+
+1. A real pending resolution reaches the 150 ms deadline. Successful cancel
+   status=0, completion WSA_E_CANCELLED=10111, real received DNS packets and
+   drain <=1000 ms are mandatory; total first resolution must be <=1000 ms.
+2. A new reading goes through the same worker and obtains the exact
+   SERVER 1/S6-DNS/ reply from the fixture's TCP server. TTL=0 and per-query
+   cache bypass prevent the shutdown case from using a cached address.
+3. A new pending resolution receives SHUTDOWN. Successful shutdown cancel,
+   status=10111, drain <=1000 ms and the existing 5 s process shutdown ceiling
+   are mandatory. Host job and fixture sockets/threads are closed in finally.
+
+These new resolver assertions supplement rather than weaken existing gates.
+The code is compiled; this real cancellation probe has NOT been executed.
+
+* B: policy allocation changes
+The stream loop reuses a 4096-byte frame buffer, the numeric field vector,
+a bounded decimal-string cache and a 4160-byte reply buffer. It scans each
+read chunk by index, handles all complete frames in order, and retains a
+partial frame by its used length. There is no pending-buffer concat, line
+substring, tail substring, frame cons or per-request numeric vector.
+EOF still discards an incomplete frame; newline, byte/field/context/kind
+validation and raw decimal reply spelling remain unchanged.
+
+Decimal strings must have exactly the original field length. Inspection of
+the read-only runtime sources found that padding a reusable decimal string
+would leave the integer fast path and could change overflow behavior.
+The final implementation therefore caches one mutable exact-length string
+per observed digit length, copying characters by index before calling the
+same string-to-number. Each new length allocates once, subsequently reused
+across fields and requests. The cache has 4097 slots; even adversarially
+observing every length gives a bounded sum of 8,390,656 ASCII characters
+(actual object/storage overhead is runtime-dependent). No arithmetic parser,
+integer cap or input special case is substituted. Finite framing probes
+compare six decimal strings, including overflow-size tokens, with the exact
+runtime's direct string-to-number result.
+
+The reply buffer copies the original qid/host/epoch/config/kind spellings.
+Common decisions reuse literal decimal strings; variable backoff decisions
+still require number-to-string. The unchanged whole-string stdout writer
+requires one final exact-length substring. The compatibility frame function
+continues to return the old numeric-fields/raw-kind/copied-prefix interface
+for finite probes; the serving loop never calls it.
+
+The private publication-pause hook still compares the raw kind spelling,
+including leading zeros. Diagnostic gating is computed once at process start.
+No GC switch, debt threshold or production runtime flag has been changed.
+
+check-policy-allocation.py checks the explicit allocation sites and exercises
+two rejection controls (injected concat and unbalanced syntax). It also parses
+the Lisp produced by all twelve diagnostic modes without importing a runtime
+runner. This is a source assertion, not a claim of zero interpreter allocation.
+
+diagnose-policy-ipc.py --allocation-controls enables allocation telemetry only
+in a finite diagnostic process with normal GC: debug-switch 24 resets/enables
+counters; debug-switch 0 indices 10/11/12 report bucket reuse, linear reuse and
+bump allocations. Each exchange records deltas and GC counts. Counter sampling
+itself allocates and includes the input string, parser, writer and diagnostic
+bookkeeping; compare identical before/after instrumentation rather than
+interpreting this as an exact count of production objects. This telemetry
+does not alter the authoritative uninstrumented policy budget measurement.
+
+* Exact serial commands for Claude, after the current Production run exits
+Run from this worktree. Supply NELISP_RUNTIME with the exact read-only runtime
+path from the task. Do not run any command concurrently with an IME stack.
+All runtime scripts below own/reap their processes before the next command.
+Leave build/w untouched for these focused checks; use the compiled new host.
+Check each command's exit code, retain its output tail and stop on failure.
+No deployment, registration, HKCU creation, commit or live settings operation
+is needed.
+
+#+begin_src powershell
+$Runtime=$env:NELISP_RUNTIME
+if (-not $Runtime) { throw 'Set NELISP_RUNTIME to the supplied read-only Windows executable' }
+$RuntimeHash=(Get-FileHash -LiteralPath $Runtime -Algorithm SHA256).Hash
+cmake -S windows -B build/eh6-next -G "Visual Studio 17 2022" -A x64
+if ($LASTEXITCODE) { throw 'configure failed' }
+cmake --build build/eh6-next --config Release --target ddskk-engine-host -- /m:1
+if ($LASTEXITCODE) { throw 'build failed' }
+python windows/test-host/check-policy-allocation.py
+if ($LASTEXITCODE) { throw 'static allocation check failed' }
+python windows/test-host/test-os1-private.py --runtime $Runtime --host build/eh6-next/Release/ddskk-engine-host.exe --build-dir build/eh6-next --cold-load-sleep-sec 45 --mode dns
+if ($LASTEXITCODE) { throw 'real DNS cancellation gate failed; preserve result.json/host.log' }
+python windows/test-host/diagnose-policy-ipc.py --runtime $Runtime --output-dir build/eh6-next/policy-framing --count 1 --framing-controls
+if ($LASTEXITCODE) { throw 'framing/decimal conversion failed' }
+python windows/test-host/diagnose-policy-ipc.py --runtime $Runtime --output-dir build/eh6-next/policy-stream --count 2 --stream-controls
+if ($LASTEXITCODE) { throw 'fragmented/batched framing failed' }
+python -c "import pathlib,subprocess; pathlib.Path('build/eh6-next/policy-before.el').write_bytes(subprocess.check_output(['git','show','d91ae40:engine/host-policy.el']))"
+if ($LASTEXITCODE) { throw 'baseline extraction failed' }
+python windows/test-host/diagnose-policy-ipc.py --runtime $Runtime --output-dir build/eh6-next/policy-alloc-before --count 100 --allocation-controls --policy-source build/eh6-next/policy-before.el
+if ($LASTEXITCODE) { throw 'baseline allocation telemetry failed' }
+python windows/test-host/diagnose-policy-ipc.py --runtime $Runtime --output-dir build/eh6-next/policy-alloc-after --count 100 --allocation-controls
+if ($LASTEXITCODE) { throw 'new allocation telemetry failed' }
+python windows/test-host/host-windows-s6.py --runtime $Runtime --output build/eh6-next/policy-gc-budget.json --samples 3 --cold-load-sleep-sec 45
+if ($LASTEXITCODE) { throw 'unchanged IPC budget remains red; preserve receipts' }
+if ((Get-FileHash -LiteralPath $Runtime -Algorithm SHA256).Hash -ne $RuntimeHash) { throw 'runtime artifact changed' }
+#+end_src
+
+Expected counts, NOT executed receipts: DNS deadline/shutdown cancellations=2,
+exact next-request reply=1; framing valid=3, rejected=11, decimal controls=6;
+stream split=1, batched frames=2, exact replies=3; telemetry before/after=100
+exchanges each; budget=3 launches/300 exact replies. Authoritative budget stays
+policy IPC p99 <=10 ms and max <=50 ms, startup <=60000 ms, private <=512 MiB.
+Runtime results and measured allocation/GC improvement remain PENDING.
+
+* Executed preparation receipts
+Configure exit=0, selected verbatim lines (output directory: build/eh6-next):
+#+begin_example
+-- Configuring done (3.1s)
+-- Generating done (0.3s)
+#+end_example
+Host-only Release target build exit=0; targets built=2 (the host and its local
+index static-library dependency). First build compiled the existing dependency
+with pre-existing C4018/C4244 warnings. Final incremental host compilation
+completed with no warnings. The command was:
+#+begin_src powershell
+cmake --build build/eh6-next --config Release --target ddskk-engine-host -- /m:1
+#+end_src
+Its final output reports ddskk-engine-host.vcxproj producing
+build/eh6-next/Release/ddskk-engine-host.exe. No binary was executed.
+
+Pure check command, exit=0, verbatim tail:
+#+begin_src powershell
+python windows/test-host/check-policy-allocation.py
+#+end_src
+#+begin_example
+PASS policy static allocation sites {"host-policy-frame-into": {"make-string": 1}, "host-policy-serve": {"make-string": 2, "make-vector": 2}, "host-policy-write-reply": {"number-to-string": 1, "substring": 1}}
+PASS controls=2; reusable_storage=4; decimal_cache_miss_site=1; exact_reply_slice=1
+PASS generated Lisp syntax modes=12; generator AST only; runtime processes=0
+STATIC ONLY: interpreter binding/number/read-buffer allocations and GC tails require exact-runtime measurement
+#+end_example
+Python AST-only check, exit=0, command and verbatim tail:
+#+begin_src powershell
+python -c "import ast,pathlib; names=['test-os1-private.py','diagnose-policy-ipc.py','check-policy-allocation.py']; [ast.parse((pathlib.Path('windows/test-host')/name).read_text('utf-8'),filename=name) for name in names]; print('PASS Python AST files=3; imports=0; processes=0')"
+#+end_src
+#+begin_example
+PASS Python AST files=3; imports=0; processes=0
+#+end_example
+git diff --check exit=0; no whitespace errors (only existing sandbox Git ignore
+access/line-ending warnings). Started IME/runtime/TSF processes=0; owned
+leftover processes=0. Claude's independently running stack was not touched.

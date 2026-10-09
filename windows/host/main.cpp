@@ -900,28 +900,93 @@ bool Os1DnsTraceEnabled() {
 }
 // Resolves and connects to the configured dictionary server. Returns
 // INVALID_SOCKET on any failure (bad hostname, connection refused, etc.).
-// TCP connect is bounded to 150ms per resolved address. Name resolution
-// belongs to the background worker, never an input callback.
-SOCKET ConnectDictionaryServer(const DictionaryServerConfig& config) {
+// DNS has a cancellable 150ms phase; TCP connect retains 150ms per address.
+// Name resolution belongs to the background worker, never an input callback.
+SOCKET ConnectDictionaryServer(const DictionaryServerConfig& config,
+                               const std::atomic<bool>* stopping = nullptr) {
   const std::string host_utf8 = WideToUtf8(config.host);
-  const std::string port_text = std::to_string(config.port);
+  const std::wstring port_text = std::to_wstring(config.port);
 
-  ADDRINFOA hints{};
+  ADDRINFOEX6 hints{};
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_protocol = IPPROTO_TCP;
-  ADDRINFOA* result = nullptr;
+  ADDRINFOEXW* result = nullptr;
   const bool trace_dns = Os1DnsTraceEnabled();
   const double dns_started = trace_dns ? ProfileMilliseconds() : 0;
+  // A per-query DNS server is permitted only by the private diagnostic gate.
+  // No adapter, registry, hosts-file or system DNS settings are changed. The
+  // probe binds this loopback address itself and withholds real DNS replies.
+  SOCKADDR_IN test_address{};
+  ADDRINFO_DNS_SERVER test_server{};
+  wchar_t test_dns[64]{};
+  if (trace_dns && GetEnvironmentVariableW(L"NATIVEIME_TEST_OS1_DNS_SERVER", test_dns, 64) &&
+      std::wstring(test_dns) == L"127.0.0.2") {
+    test_address.sin_family = AF_INET;
+    InetPtonW(AF_INET, test_dns, &test_address.sin_addr);
+    test_server.ai_servertype = AI_DNS_SERVER_TYPE_UDP;
+    test_server.ai_addrlen = sizeof(test_address);
+    test_server.ai_addr = reinterpret_cast<sockaddr*>(&test_address);
+    hints.ai_flags = AI_EXTENDED | AI_EXCLUSIVE_CUSTOM_SERVERS | AI_DNS_ONLY | AI_BYPASS_DNS_CACHE;
+    hints.ai_version = 6;
+    hints.ai_numservers = 1;
+    hints.ai_servers = &test_server;
+  }
+  OVERLAPPED overlapped{};
+  overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!overlapped.hEvent) return INVALID_SOCKET;
+  HANDLE cancellation = nullptr;
+  // Resolution gets the same 150 ms external-I/O phase ceiling as TCP I/O;
+  // provider cache waits remain 200 ms and callbacks never await this worker.
+  const auto deadline = GetTickCount64() + 150;
+  const auto stopped = [&] { return g_stopping.load() || (stopping && stopping->load()); };
+  if (stopped()) { CloseHandle(overlapped.hEvent); return INVALID_SOCKET; }
+  bool interrupted = false;
   if (trace_dns) LogEvent("os1-dns-enter tid=" + std::to_string(GetCurrentThreadId()) + " host=" + host_utf8);
-  const int resolved = getaddrinfo(host_utf8.c_str(), port_text.c_str(), &hints, &result);
+  int resolved = GetAddrInfoExW(config.host.c_str(), port_text.c_str(), NS_ALL, nullptr,
+      reinterpret_cast<const ADDRINFOEXW*>(&hints), &result, nullptr, &overlapped, nullptr, &cancellation);
+  if (resolved == WSA_IO_PENDING) {
+    if (trace_dns) LogEvent("os1-dns-pending");
+    for (;;) {
+      if (WaitForSingleObject(overlapped.hEvent, 0) == WAIT_OBJECT_0) break;
+      const auto now = GetTickCount64();
+      if (stopped() || now >= deadline) {
+        interrupted = true;
+        const bool shutdown = stopped();
+        const auto cancel_started = ProfileMilliseconds();
+        const int cancelled = GetAddrInfoExCancel(&cancellation);
+        if (trace_dns) LogEvent(std::string("os1-dns-cancel reason=") +
+            (shutdown ? "shutdown" : "deadline") + " status=" + std::to_string(cancelled));
+        // Cancel signals completion immediately, but is not a completion drain.
+        // Keep OVERLAPPED, hints, name, event and result alive until signalled;
+        // never call WSACleanup or free operation storage while it is pending.
+        WaitForSingleObject(overlapped.hEvent, INFINITE);
+        if (trace_dns) LogEvent("os1-dns-drained ms=" +
+            std::to_string(ProfileMilliseconds()-cancel_started));
+        break;
+      }
+      const DWORD remaining = static_cast<DWORD>(deadline - now);
+      const DWORD waited = WaitForSingleObject(overlapped.hEvent, std::min<DWORD>(remaining, 5));
+      if (waited == WAIT_OBJECT_0) break;
+      if (waited == WAIT_FAILED) {
+        interrupted = true;
+        GetAddrInfoExCancel(&cancellation);
+        WaitForSingleObject(overlapped.hEvent, INFINITE);
+        break;
+      }
+    }
+    resolved = GetAddrInfoExOverlappedResult(&overlapped);
+  }
+  CloseHandle(overlapped.hEvent);
   if (trace_dns) LogEvent("os1-dns-exit status=" + std::to_string(resolved) +
       " ms=" + std::to_string(ProfileMilliseconds()-dns_started));
-  if (resolved != 0)
+  if (resolved != 0 || stopped() || interrupted) {
+    if (result) FreeAddrInfoExW(result);
     return INVALID_SOCKET;
+  }
 
   SOCKET socket_handle = INVALID_SOCKET;
-  for (const ADDRINFOA* candidate = result; candidate != nullptr;
+  for (const ADDRINFOEXW* candidate = result; candidate != nullptr && !stopped();
        candidate = candidate->ai_next) {
     socket_handle = socket(candidate->ai_family, candidate->ai_socktype,
                            candidate->ai_protocol);
@@ -942,7 +1007,7 @@ SOCKET ConnectDictionaryServer(const DictionaryServerConfig& config) {
     closesocket(socket_handle);
     socket_handle = INVALID_SOCKET;
   }
-  freeaddrinfo(result);
+  FreeAddrInfoExW(result);
   if (socket_handle == INVALID_SOCKET) return INVALID_SOCKET;
 
   // Worker-owned socket: dead servers cannot block input callbacks.
@@ -1066,6 +1131,7 @@ class ServerCache {
   void Start() { worker_ = std::thread([this] { Run(); }); }
   void Stop() {
     if (Os1DnsTraceEnabled()) LogEvent("os1-dns-worker-stop-request");
+    stopping_.store(true);
     { std::lock_guard lock(mutex_); stop_ = true; }
     changed_.notify_all(); if (worker_.joinable()) worker_.join();
     if (Os1DnsTraceEnabled()) LogEvent("os1-dns-worker-stopped");
@@ -1133,6 +1199,7 @@ class ServerCache {
   std::mutex mutex_; std::condition_variable changed_;
   std::map<std::string, Entry> cache_; std::deque<Job> jobs_;
   std::string identity_; uint64_t generation_ = 0; bool stop_ = false;
+  std::atomic<bool> stopping_{false};
   std::thread worker_;
   void Run() {
     WSADATA data{}; const bool winsock = WSAStartup(MAKEWORD(2, 2), &data) == 0;
@@ -1144,7 +1211,7 @@ class ServerCache {
       if (winsock) {
         const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
         const double connect_started = debug ? ProfileMilliseconds() : 0;
-        SOCKET socket = ConnectDictionaryServer(job.config);
+        SOCKET socket = ConnectDictionaryServer(job.config, &stopping_);
         if (debug)
           std::fprintf(stderr, "dictionary-source name=skkserv-connect ms=%.6f\n",
                        ProfileMilliseconds()-connect_started);
@@ -1158,7 +1225,7 @@ class ServerCache {
           if (found &&
               !response.empty() && (response[0] == '1' || response[0] == '4')) reply = std::move(response);
           closesocket(socket);
-        } else if (!job.config.start_command.empty()) TrySpawnSkkServ(job.config.start_command);
+        } else if (!stopping_.load() && !g_stopping.load() && !job.config.start_command.empty()) TrySpawnSkkServ(job.config.start_command);
       }
       { std::lock_guard lock(mutex_);
         if (job.generation == generation_) {

@@ -10,6 +10,152 @@ import sys
 import subprocess
 import time
 import uuid
+import socket
+import struct
+import threading
+import re
+
+
+class DnsFixture:
+    """Real per-query DNS blackhole on an exclusively owned loopback socket.
+
+    Unsupported custom-server APIs, busy UDP/53, or early NXDOMAIN fail the
+    probe rather than silently substituting a sleep or a completed lookup.
+    """
+    def __init__(self):
+        self.sockets = []
+        self.threads = []
+        self.stop = threading.Event()
+        self.answer = threading.Event()
+        self.packets = 0
+        self.errors = []
+
+    def start(self):
+        try:
+            dns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sockets.append(dns)
+            dns.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            dns.bind(('127.0.0.2', 53))
+            tcp = socket.socket()
+            self.sockets.append(tcp)
+            tcp.bind(('127.0.0.1', 0))
+            tcp.listen(4)
+            self.port = tcp.getsockname()[1]
+            for sock, task in ((dns, self.dns), (tcp, self.server)):
+                sock.settimeout(.05)
+                thread = threading.Thread(target=task, args=(sock,))
+                self.threads.append(thread)
+                thread.start()
+            return self
+        except BaseException:
+            self.close()
+            raise
+
+    def dns(self, sock):
+        try:
+            while not self.stop.is_set():
+                try: data, peer = sock.recvfrom(4096)
+                except socket.timeout: continue
+                self.packets += 1
+                if not self.answer.is_set(): continue  # no response at all
+                assert len(data) >= 17 and data[4:6] == b'\0\1', 'unexpected DNS query'
+                end = 12
+                while data[end]: end += 1+data[end]
+                end += 1
+                kind, cls = struct.unpack('!HH', data[end:end+4])
+                question = data[12:end+4]
+                # Preserve question/transaction; answer A with TTL=0, AAAA with
+                # authoritative NODATA. No DNS cache entry survives this probe.
+                answer = (b'\xc0\x0c'+struct.pack('!HHIH', 1, 1, 0, 4)+socket.inet_aton('127.0.0.1')) if kind == 1 and cls == 1 else b''
+                response = data[:2]+struct.pack('!HHHHH', 0x8580, 1, bool(answer), 0, 0)+question+answer
+                sock.sendto(response, peer)
+        except BaseException as error:
+            if not self.stop.is_set(): self.errors.append(repr(error))
+
+    def server(self, sock):
+        try:
+            while not self.stop.is_set():
+                try: client, _ = sock.accept()
+                except socket.timeout: continue
+                with client:
+                    client.settimeout(.5)
+                    data = b''
+                    while b' ' not in data and len(data) < 4096:
+                        part = client.recv(4096)
+                        if not part: break
+                        data += part
+                    assert data.startswith(b'1') and data.endswith(b' '), data
+                    client.sendall(b'1/S6-DNS/\n')
+        except BaseException as error:
+            if not self.stop.is_set(): self.errors.append(repr(error))
+
+    def close(self):
+        self.stop.set()
+        for sock in self.sockets: sock.close()
+        for thread in self.threads:
+            thread.join(timeout=1)
+            assert not thread.is_alive(), 'fixture thread left behind'
+
+
+def dns_checks(host, fixture):
+    log = host.run/'host.log'
+    def text(): return log.read_text('utf-8', errors='replace')
+    def until(predicate, seconds=2):
+        deadline = time.monotonic()+seconds
+        while time.monotonic() < deadline:
+            value = text()
+            assert not fixture.errors, fixture.errors
+            if predicate(value): return value
+            time.sleep(.001)
+        raise AssertionError('DNS evidence timeout: '+text())
+    pipe = t.Pipe(host.name)
+    try:
+        assert pipe.request(b'LOCAL SERVER 000078000078000078 -') == b'SERVER PENDING'
+        first = until(lambda value: 'os1-dns-exit' in value)
+        assert fixture.packets > 0, 'no real DNS packet reached blackhole'
+        assert 'os1-dns-pending' in first
+        assert 'os1-dns-cancel reason=deadline status=0' in first, first
+        assert 'os1-dns-exit status=10111' in first, first  # WSA_E_CANCELLED
+        drains = re.findall(r'os1-dns-drained ms=([0-9.]+)', first)
+        assert len(drains) == 1 and float(drains[0]) <= 1000, drains
+        exits = re.findall(r'os1-dns-exit status=10111 ms=([0-9.]+)', first)
+        assert len(exits) == 1 and float(exits[0]) <= 1000, exits
+
+        fixture.answer.set()
+        assert pipe.request(b'LOCAL SERVER 000079000079000079 -') == b'SERVER PENDING'
+        deadline = time.monotonic()+5
+        reply = b''
+        while time.monotonic() < deadline:
+            reply = pipe.request(b'LOCAL SERVER 000079000079000079 -')
+            if reply != b'SERVER PENDING': break
+            time.sleep(.005)
+        assert reply == b'SERVER 1/S6-DNS/', reply
+        assert 'os1-dns-exit status=0' in text(), 'next resolver request failed'
+
+        fixture.answer.clear()
+        packets = fixture.packets
+        pending_count = text().count('os1-dns-pending')
+        assert pipe.request(b'LOCAL SERVER 00007a00007a00007a -') == b'SERVER PENDING'
+        until(lambda value: value.count('os1-dns-pending') > pending_count and fixture.packets > packets)
+        before = time.perf_counter()
+        assert pipe.request(b'SHUTDOWN') == b'OK'
+        ack_ms = (time.perf_counter()-before)*1000
+    finally:
+        pipe.close()
+    host.process.wait(timeout=5)  # existing private-soak ceiling, unchanged
+    elapsed = (time.perf_counter()-before)*1000
+    assert elapsed <= 5000, f'shutdown exceeded existing ceiling: {elapsed} ms'
+    final = text()
+    assert 'os1-dns-cancel reason=shutdown status=0' in final, final
+    assert final.count('os1-dns-exit status=10111') == 2, final
+    drains = list(map(float, re.findall(r'os1-dns-drained ms=([0-9.]+)', final)))
+    assert len(drains) == 2 and max(drains) <= 1000, drains
+    assert not fixture.errors, fixture.errors
+    return dict(real_dns_packets=fixture.packets, cancelled_status=10111,
+                deadline_cancelled=True, shutdown_cancelled=True, next_reply_exact=True,
+                cancel_drain_ms=drains, shutdown_ack_ms=ack_ms, shutdown_ms=elapsed,
+                shutdown_within_5s=elapsed <= 5000,
+                resolver_events=[line for line in final.splitlines() if 'os1-dns-' in line])
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('transport', Path(__file__).with_name('host-contracts.py'))
@@ -119,9 +265,7 @@ def main():
     host.env.update({f'DDSKK_HOST_POLICY_{name}':'1' for name in
                     ('SOURCES','CACHE','RESTART','PUBLICATION','LEARNING')})
     host.env['DDSKK_HOST_POLICY_SHADOW'] = '0'
-    if args.mode == 'dns':
-        host.env.update(DDSKK_SKKSERV_ENABLE='1', DDSKK_SKKSERV_HOST=uuid.uuid4().hex+'.s6.invalid',
-                        DDSKK_SKKSERV_PORT='9', DDSKK_SKKSERV_START_COMMAND='', NATIVEIME_TEST_OS1_DNS_TRACE='1')
+    fixture = None
     if args.mode == 'dictionary':
         if not args.dictionary: parser.error('--dictionary required')
         host.env['DDSKK_DICTIONARY_FILES'] = str(args.dictionary.resolve(strict=True))
@@ -129,40 +273,18 @@ def main():
     report = dict(mode=args.mode, runtime_sha256=hashlib.sha256(Path(args.runtime).read_bytes()).hexdigest(),
                   host_sha256=hashlib.sha256(Path(args.host).read_bytes()).hexdigest(), status='incomplete')
     try:
+        if args.mode == 'dns':
+            fixture = DnsFixture().start()
+            host.env.update(DDSKK_SKKSERV_ENABLE='1', DDSKK_SKKSERV_HOST=uuid.uuid4().hex+'.s6.test.',
+                            DDSKK_SKKSERV_PORT=str(fixture.port), DDSKK_SKKSERV_START_COMMAND='',
+                            NATIVEIME_TEST_OS1_DNS_TRACE='1', NATIVEIME_TEST_OS1_DNS_SERVER='127.0.0.2')
         host.start()
         if args.mode == 'pipe':
             report.update(pipe_checks(host),status='PASS')
             print('PASS OS1 private pipe '+json.dumps(report), flush=True)
         elif args.mode == 'dns':
-            pipe = t.Pipe(host.name)
-            try:
-                reply = pipe.request(b'LOCAL SERVER 000078000078000078 -')
-                deadline = time.monotonic()+5
-                log = host.run/'host.log'
-                while time.monotonic()<deadline:
-                    text = log.read_text('utf-8',errors='replace')
-                    if 'os1-dns-enter' in text: break
-                    time.sleep(.001)
-                assert 'os1-dns-enter' in text, 'network worker did not enter real resolver'
-                pending = 'os1-dns-exit' not in text
-                before = time.perf_counter()
-                assert pipe.request(b'SHUTDOWN') == b'OK'
-                ack_ms = (time.perf_counter()-before)*1000
-            finally:
-                pipe.close()
-            bounded = True
-            try:
-                host.process.wait(timeout=5)  # unchanged existing private-soak shutdown ceiling
-            except subprocess.TimeoutExpired:
-                bounded = False
-            text = log.read_text('utf-8',errors='replace')
-            report.update(pending_at_shutdown=pending, shutdown_ack_ms=ack_ms,
-                          shutdown_ms=(time.perf_counter()-before)*1000, shutdown_within_5s=bounded,
-                          resolver_events=[line for line in text.splitlines() if 'os1-dns-' in line],
-                          reply=reply.decode('ascii'), status='INCOMPLETE DNS cancellation',
-                          reason='synchronous getaddrinfo has no production cancellation token; completion is not cancellation')
-            print('INCOMPLETE OS1 DNS '+json.dumps(report)+' artifacts='+str(host.run),flush=True)
-            raise RuntimeError(report['reason'])
+            report.update(dns_checks(host, fixture), status='PASS')
+            print('PASS OS1 DNS cancellation '+json.dumps(report)+' artifacts='+str(host.run), flush=True)
         else:
             # Same post-cold-load publication deadline as run-harness.ps1.
             deadline = time.monotonic()+30
@@ -178,8 +300,14 @@ def main():
                           status='PASS' if manifests and 'invalid UTF8' not in error else 'FAIL')
             print('OS1 dictionary '+json.dumps(report)+' artifacts='+str(host.run),flush=True)
             assert manifests and not report['invalid_utf8'], 'native UTF-8 publication rejected dictionary'
+    except BaseException as error:
+        report.update(status='FAIL', failure=repr(error))
+        raise
     finally:
-        host.stop()
+        try:
+            host.stop()
+        finally:
+            if fixture: fixture.close()
         (host.run/'result.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
         print('CLEANUP OS1 private host reaped; job closed artifacts='+str(host.run),flush=True)
 
