@@ -79,8 +79,8 @@ evidence: docs/design/engine-host-nelisp.org sha256=01900ae60d63a72979235f3816ca
 evidence: docs/design/engine-host-nelisp.org sha256=01900ae60d63a72979235f3816ca0b5fff801795b2d432b6bcc3ad4070bbdcda
 
 ** S1.5 End to end: unchanged native host passes private TSF local and Emacs inline with durability recovery and measured request tails
-#+NOTE: Design S1; exact supplied Windows runtime, cold wait 45 s, lattice warmup, private roots, counts/hashes/PID cleanup. No behavioral gate run in EH1.
-pending
+#+NOTE: Design S1; exact supplied Windows runtime, cold wait 45 s, lattice warmup, private roots, counts/hashes/PID cleanup. Default native build; all S4 policy/shadow switches OFF; UTF-8 L validated by content. Final serial execution delegated to Claude; parameter audits are not PASS evidence.
+cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s1.ps1 -Runtime "$env:NELISP_RUNTIME" -LargeDictionary "$env:SKK_L_DICTIONARY" -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
 
 * S2 Frozen interchangeable contracts
 ** S2.1 Public wire, index and learning formats have hashed byte fixtures and caller deadline inventory
@@ -170,8 +170,8 @@ evidence: build/validation/eh5-s5/EndToEnd-2.log sha256=c5b7ab145e529495e943d008
 * S6 Windows qualification and adapter retirement decision
 ** S6.1 Exact Windows runtime qualifies each proposed OS1 replacement or documents its retained native boundary
 #+NOTE: Named-pipe security/cancel, mmap leases, flush/replace, TCP/DNS, process jobs, event loop and Unicode; source presence or GNU Emacs ERT alone is insufficient.
-cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime "$env:NELISP_RUNTIME" -Stage Qualification -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
-#+NOTE: EH6 retains all seven boundaries. Exact Unicode/HP1 and native soak/isolation measured; policy IPC red, private HKCU blocks CTest, explicit pipe security/server cancel and DNS cancellation remain unqualified. Runner deliberately refuses aggregate OS1 PASS.
+cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime "$env:NELISP_RUNTIME" -Stage Qualification -LargeDictionary "$env:SKK_L_DICTIONARY" -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+#+NOTE: All seven components retained native and mapped to required executed gates. Pipe ACL/client overlapped cancellation and GetAddrInfoExW DNS cancellation probes available (Claude prior PASS); UTF-8 L publication and separate exact-image Unicode bytes included. Qualification fails for any missing/failed component gate; S6.2 policy IPC budget runs in Resources only. Final runner execution delegated to Claude; see docs/contracts/CLAUDE-S6-final.org.
 
 ** S6.2 CW1 and RW4 artifact choices meet measured memory/startup and host-tail budgets without weakening durability or callback gates
 #+NOTE: AOT/minimal image optional; retain adapter where OS1/VAL1 is unqualified. RW3 needed only for stronger managed pause promises, not local isolation.

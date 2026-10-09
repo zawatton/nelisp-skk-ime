@@ -740,87 +740,76 @@ GC/network/storage/client lifecycle, cold restart and bundle rollback passes
 VAL1 with bounded service tails, zero callback host waits, acknowledged-ID loss
 or owned-process leaks. Future live proof is separate, not inferred here.
 
-*** S6 decision: EH6 exact Windows artifact (2026-10-10)
-Decision: retain every native OS1 boundary. No adapter or ABI change is made.
-S6 is not accepted: worker HKCU denies all ten CTest wrappers before their
-test bodies, the policy-only IPC budget is red, and several OS1 scenarios
-need additional qualification. Callable runtime symbols are discovery only.
-The new runner fails explicitly for the missing security/DNS and simultaneous
-production pressure evidence; a serial collection of older gates is not
-claimed to prove the entire S6 end-to-end requirement.
+*** S6 decision: retained native OS1 boundaries (2026-10-10)
+Decision: retain all seven native OS1 components. No Lisp replacement,
+shim/ABI change or live setting change is required for S6.1. Policy switches
+remain OFF by default. Qualification now runs OS1 probes independently of
+the failing S6.2 policy resource budget; it cannot declare PASS unless every
+component in the following table has successful receipts for every named gate.
+Parameter audits record planned coverage with executed=false, never qualification.
 
 Runtime identity: SHA256
 =3fb43697a8bf01e10bc993c468365489ef98a30d5acbe05206f9e9faefdde3db=.
 Policy identity: SHA256
-=0cceb29920adf11ccfea9bbb7541356ec8ab47e0495a6087c0afd1400b84c2f0=.
-All commands take Runtime as a parameter, leave that image read-only and run
-one stack at a time. JSON receipts include commands, exit codes, log hashes
-and per-launch measurements; raw artifacts stay under the worker build root.
+=5e755b118b7eb5b01ee5ee4bec8a65e231acc1f318d54cbc9979202fb2e81d21=.
+All commands take Runtime as a parameter and leave that image read-only.
+Gates execute serially under the existing ownership guard; receipts record
+commands, exit codes, hashes, logs, dictionary encoding and component coverage.
 
-| OS1 component | Decision / owner | Byte, latency or durability evidence | Remaining acceptance evidence |
-|---------------+------------------+--------------------------------------+-------------------------------|
-| Named pipe security/cancel | Retain native public endpoint | Exact runtime + adapter soak: 32 clients, 100000 exact ENGINE ddskk replies, 20 controls; p50 2.4071 / p99 13.3743 / max 43.9165 ms. Client cancellation drains and preserves next reply; shutdown/squatter/first-owner controls retained | Explicit ACL/low-IL compatibility and server overlapped cancellation are not established by client CancelIoEx; no security retirement |
-| mmap leases | Retain native index/view owner | Exact-runtime S4 publication: 21 intent samples p99=max 16 ms; 20 learn samples p99=max 398.8129 ms. Policy pause permits native durable publication (359.8966 ms in isolation) | Held old mappings, offsets/bounds, Unicode filenames, torn index rejection and lease cleanup need coordinator local-cleanup gate; publication timing alone is not a lease proof |
-| Flush/replace | Retain native durable writer | Two targeted adapter crash/restart cases passed: checkpoint-replaced retries return the same ACK twice; cursor-replaced preserves received learning-bearing STATE/provider ID 1; acknowledged_ID_loss=0 | Full append/stage/checkpoint/cursor/ACK crash matrix and storage-refusal gates must pass; generic Lisp rename is insufficient |
-| TCP/DNS | Retain native network worker | Existing test-sk1-skkserv and test-sk1-provider-relay are serial qualification commands with exact runtime, fragmented response and encoding assertions | Worker has not run these in EH6; bounded DNS cancellation/shutdown evidence still missing |
-| Process jobs | Retain native suspended-child job owner | Isolation: policy pause/kill/restart, two policy startup samples (2750/1797 ms); job guard and owned-child cleanup both report leftovers=[] | Full engine/adapter/both lifecycle matrix, inheritance/descendant fencing and bundle rollback require coordinator runs |
-| Event loop | Retain native callback/cache/publication owner | 801 cached replies during real 3 s policy suspension: p50 0.1033 / p99 0.2425 / max 0.5706 ms; killed-policy cached reply 0.2849 ms | Real TSF zero pipe IO/blocking waits and synchronous negative control still mandatory; cached pipe timing does not prove callback isolation |
-| Unicode | Retain native Windows conversion/framing boundary | Exact supplied image encodes and decodes kana + supplementary U+1F600 + combining U+0301, checked as exact UTF-8 stdout bytes; 300 exact HP1 replies across three launches | Native UTF-8 protocol CTest body was blocked; UTF-16 paths, malformed framing and EUC/UTF8 network equivalence remain required |
+| OS1 component | Decision / owner | Qualification gates | Evidence and retained scope |
+|---------------+------------------+---------------------+-----------------------------|
+| Named pipe security/cancel | Retain native public endpoint | os1-pipe, test-private-pipe-soak | Private ACL denial returns ERROR_ACCESS_DENIED, restores the original DACL and reconnects. Pending overlapped client read cancels/drains ERROR_OPERATION_ABORTED and the next reply is exact. Claude previously reported pipe PASS. Soak measures 32 clients / 100000 exact replies plus lifecycle controls. This qualifies the retained ACL/client-cancel boundary, not a new low-IL policy or replacement server. |
+| mmap leases | Retain native index/view owner | os1-dictionary, test-local-cleanup | Content/encoding validator selects the qualified UTF-8 L, then the native publication probe checks actual current manifests and rejects invalid UTF-8. Cleanup exercises held live-client state, dead-client replay, idempotent durable ACK and obsolete/orphan cleanup. No Lisp mmap replacement. |
+| Flush/replace | Retain native durable writer | test-engine-learning-crash-v2, test-engine-provider-outbox-v2, test-local-cleanup | Existing checkpoint/cursor/ACK crash-restart and provider-outbox cases preserve received/acknowledged IDs, refusal/retry behavior and durable spool cleanup. No generic rename/close substitution or relaxed durability gate. |
+| TCP/DNS | Retain native network worker | os1-dns, test-sk1-skkserv, test-sk1-provider-relay | DNS uses overlapped GetAddrInfoExW, existing deadline/shutdown checks, GetAddrInfoExCancel and completion drain. Real DNS blackhole probe proves deadline and shutdown cancellation plus a subsequent exact reply; Claude previously reported DNS cancellation PASS. Existing gates retain fragmented-response, encoding and provider-relay assertions. |
+| Process jobs | Retain native suspended-child job owner | test-private-pipe-soak, test-engine-learning-crash-v2, test-engine-provider-outbox-v2 | Suspended assignment, restart/fencing and actual owned-process cleanup are exercised by existing lifecycle gates and their kill-on-close command guards. No generic spawn/kill replacement. |
+| Event loop | Retain native callback/cache/publication owner | test-host-policy-callbacks, test-private-pipe-soak, test-local-cleanup | Real private TSF local callbacks check covered transfer/wait imports, zero pipe IO/blocking waits, settled local learning and the unchanged 20 ms watchdog. Native soak measures request tails and cleanup/replay exercises asynchronous lifecycle work. No shared managed-heap worker replacement. |
+| Unicode | Retain native Windows conversion/framing boundary | os1-unicode, os1-dictionary, test-sk1-skkserv, test-sk1-provider-relay | Separate exact-image byte probe checks kana, supplementary U+1F600 and combining U+0301 encode/decode and exact UTF-8 stdout bytes. UTF-8 L publication and existing EUC/UTF8 network gates cover retained boundaries. The byte probe never loads host-policy.el or measures policy IPC. |
 
-S6.2 measurements from =build/w/s6-runtime.json=: three serial fresh
-policy launches, each with 100 sequential decision roundtrips. These are
-process-cold, not filesystem-cache-cold; no cache flush is attempted on the
-user's PC. Startup p50 2197.6025 / p99=max 2394.4919 ms. Private bytes
-p50 155066368 / p99=max 155082752. IPC p99/max per launch:
-156.4586/156.6511, 157.5436/164.9209, 302.5963/329.0077 ms.
-The provisional standalone policy ceilings (60 s, 512 MiB, IPC p99 10 ms /
-max 50 ms) are explicit in the receipt; the IPC ceiling fails. These are
-not substitutes for existing adapter, callback or durable storage budgets.
-Adapter isolation separately measured host private bytes 2220032 -> 2433024,
-policy 143065088 and engine 385560576 bytes, plus unchanged host tails above.
-An integration rerun through =run-engine-host-s6.ps1 -Stage Resources=
-also failed the same IPC gate after three launches/300 replies. Its receipt
-=build/w/s6-b75c90725edd4098b28ee3a97a2b0126/runtime.json= records
-startup max 1869.2187 ms, private max 155287552 bytes, IPC p99 up to
-159.2099 ms/max 162.9609 ms, status FAIL and runtime_unchanged=true.
-Do not infer callback delays from the standalone IPC failure. No CW1 or RW4
-alternate image was supplied; this probe does not establish alternative
-availability or qualify an AOT/minimal alternative.
+S6.1 final aggregate execution is delegated to Claude; this worker only audits
+wiring/parameters. Prior worker HKCU failures are not native test failures:
+Claude subsequently reported default-build CTest 10/10 PASS, private pipe
+PASS and DNS cancellation PASS. The former unconditional OS1 INCOMPLETE throw
+is removed because these probes are available. A missing mapping or failed
+mapped gate still prevents aggregate Qualification PASS. ACL/client-overlapped
+qualification does not assert unmeasured low-IL or new server-cancel semantics.
 
-S6.3 extends the S5 same-client cycle with optional =--clients 3= and a real
-=--large-dictionary= SKK-JISYO.L: additional independent TSF text stores run
-against the policy bundle while the main client and real Emacs inline listener
-remain alive. Exact peer committed suffixes and the unchanged 20 ms ordinary
-key ceiling are checked. Old-new-restart-old and Job Object cleanup remain
-unchanged. Defaults preserve S5's existing single-client fixture. This path
-is parameter-audited, not executed in the worker because private HKCU is denied.
-GC/network/storage pressure is currently covered by serial S4 gates; concurrent
-pressure across the three-client bundle cycle remains an explicit S6.3 gap.
+S6.2 remains a failing check, blocked on runtime GC/allocation work (Debian
+runtime/native compiler lane), not on OS1 runner wiring. See
+[[file:../contracts/S6-runtime-ipc-latency.org][exact-image execution/allocation findings]].
+The current source allocates 673820.128 bytes and 24134.771 allocator calls
+per request on average; 1000 requests trigger 11 collections. CLI .nelc is
+slower (one reply 5981.605 ms / 407 MB); .neln retains source-body dispatch
+and identical 1000-request allocation totals. No resident Windows compiled
+policy fast path was demonstrated. Retain source policy and default OFF.
 
-Coordinator serial commands (set NELISP_RUNTIME and SKK_L_DICTIONARY to the
-supplied read-only artifact and real dictionary; never use live defaults):
-#+begin_src powershell
-$Runtime=$env:NELISP_RUNTIME
-$LargeDictionary=$env:SKK_L_DICTIONARY
-cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
-cmake --build build/w --config Release
-ctest --test-dir build/w -C Release --output-on-failure -j 1
-pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $Runtime -Stage Qualification -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
-pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $Runtime -Stage Resources -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
-pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $Runtime -Stage Production -LargeDictionary $LargeDictionary -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
-#+end_src
-The policy budget failure stops the Qualification/Resources runners early.
-To collect retained-boundary evidence independently of that known red, run
-these unchanged gates serially, waiting for each ownership guard to finish:
-#+begin_src powershell
-python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $Runtime -BuildDir build/w -Stage Recovery -ColdLoadSleepSec 45 -MatrixWorkers 1
-python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/test-sk1-skkserv.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
-python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/test-sk1-provider-relay.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
-python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/test-local-cleanup.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
-#+end_src
-No failure changes a threshold or provides authorization to retire a boundary.
-Qualification can finish with retained components only when their missing
-byte/latency/durability scenarios above have real measured receipts.
+The last three-launch Resources run (300 replies) failed unchanged ceilings:
+IPC p99 82.619 / 82.690 / 80.021 ms, max 104.786 / 106.664 / 91.106 ms;
+startup 1884.830 / 1945.584 / 1983.143 ms; private bytes about 153.5 MB.
+Budgets remain startup <= 60000 ms, private <= 512 MiB, IPC p99 <= 10 ms
+and max <= 50 ms. =host-windows-s6.py= stays in Resources only; it is neither
+removed nor weakened. Existing adapter/callback/durability gates remain distinct.
+No CW1/RW4 alternative image is qualified by source or manifest presence.
+
+S1.5 has a dedicated native baseline command. It reuses private TSF local,
+UTF-8 L state stress/edit recovery, real Emacs inline, crash/outbox recovery,
+cleanup, native pipe-tail and callback gates directly, with every S4 policy
+switch and shadow OFF and -MatrixWorkers 1. S3/S4 aggregates are deliberately
+not used for this baseline because they force policy ON. Default production
+binaries are built by the coordinator without control-build or policy options.
+The gate thresholds, fixture variants and recovery assertions are unchanged.
+
+S6.3 remains separate: Claude reported the serial S5 cycle (15 gates) and S4
+EndToEnd pressure set (7 gates, UTF-8 L) PASS. Serial pressure alone does not
+prove simultaneous GC/network/storage pressure across the multi-client bundle
+cycle; the existing Production INCOMPLETE guard is retained. No live acceptance
+or aggregate S6 completion is inferred from S6.1 success.
+
+Exact serial build, S1.5, Qualification and Resources commands, expected
+known-red handling and receipt requirements are in
+[[file:../contracts/CLAUDE-S6-final.org][CLAUDE-S6-final.org]]. Every private runner validates the L dictionary by
+content and detected encoding, accepts the existing UTF-8 copy, and records
+the selected bytes. Runtime, dictionaries and build paths are caller parameters.
 
 ** Existing gate matrix and reproduction recipes (not executed in EH1)
 Future lanes may write artifacts only under their authorized build directory.
