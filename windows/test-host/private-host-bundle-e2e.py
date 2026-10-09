@@ -5,6 +5,7 @@ is substituted for these real input assertions. Run one case at a time.
 """
 import argparse
 import importlib.util
+import json
 import os
 from pathlib import Path
 import re
@@ -17,6 +18,9 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('bundle', Path(__file__).with_name('private-host-bundle.py'))
 bundle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bundle)
+dictionary_spec = importlib.util.spec_from_file_location('large_dictionary', Path(__file__).with_name('large-dictionary.py'))
+large_dictionary = importlib.util.module_from_spec(dictionary_spec)
+dictionary_spec.loader.exec_module(large_dictionary)
 
 
 def remove_key(path):
@@ -40,10 +44,14 @@ def main():
     parser.add_argument('--cold-load-sleep-sec', type=int, default=45)
     args = parser.parse_args()
     if args.large_dictionary:
-        args.large_dictionary = args.large_dictionary.resolve(strict=True)
-        assert args.large_dictionary.name == 'SKK-JISYO.L', 'real L dictionary required'
+        selected = large_dictionary.select_utf8(args.large_dictionary)
+        args.large_dictionary = Path(selected['utf8']['path'])
+        print('DICTIONARY '+json.dumps(selected), flush=True)
     for name in ('bundle','previous','runtime','state','dll','core','tsf_host'):
         setattr(args, name, getattr(args, name).resolve())
+    dictionary_files = ';'.join(
+        [str(bundle.transport.ROOT / 'windows/test-host/data/behavior-jisyo.utf8')] +
+        ([str(args.large_dictionary)] if args.large_dictionary else []))
     args.key = 'Software\\NativeIME-test-' + uuid.uuid4().hex
     args.pipe = 'EH5-' + uuid.uuid4().hex
     args.state.mkdir(parents=True, exist_ok=True)
@@ -61,9 +69,7 @@ def main():
             created = True
             for name, value in dict(EngineHost=str(args.previous / 'ddskk-engine-host.exe'),
                                     Repository=str(args.previous / 'repository'), EngineExecutable=str(args.runtime),
-                                    CoreDll=str(args.core), DictionaryFiles=';'.join(
-                                        [str(bundle.transport.ROOT / 'windows/test-host/data/behavior-jisyo.utf8')] +
-                                        ([str(args.large_dictionary)] if args.large_dictionary else [])),
+                                    CoreDll=str(args.core), DictionaryFiles=dictionary_files,
                                     UserJisyoPath=str(args.state / 'user.jisyo'), Engine='ddskk').items():
                 winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
             for name, value in dict(LocalConversion=1, SkkServEnable=0, InitialKanaMode=1).items():
@@ -77,6 +83,7 @@ def main():
         old, new = args.previous.resolve(), args.bundle.resolve()
         deployment.start(old)
         env = dict(os.environ, NATIVEIME_REGISTRY_KEY=args.key, DDSKK_PIPE_NAME=deployment.name,
+                   DDSKK_DICTIONARY_FILES=dictionary_files,
                    DDSKK_HARNESS_DLL_PATH=str(args.dll), DDSKK_HARNESS_DIAGNOSTICS='1',
                    NELISP_IME_DISABLE_HOST_SPAWN='1', NATIVEIME_TEST_BUNDLE_DIRECTORY=str(args.state),
                    NATIVEIME_HARNESS_TSF_OUTPUT=str(args.state / 'tsf.log'),

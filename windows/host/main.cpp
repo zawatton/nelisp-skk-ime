@@ -888,6 +888,16 @@ void CloseDictionarySocket() {
   }
 }
 
+// Observation only: enabled exclusively for an explicitly private OS1 probe.
+bool Os1DnsTraceEnabled() {
+  wchar_t trace[2]{}, diagnostics[2]{}, registry[256]{}, pipe[256]{};
+  return GetEnvironmentVariableW(L"NATIVEIME_TEST_OS1_DNS_TRACE", trace, 2) == 1 && trace[0] == L'1' &&
+      GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", diagnostics, 2) == 1 && diagnostics[0] == L'1' &&
+      GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", registry, 256) < 256 &&
+      std::wstring(registry).starts_with(L"Software\\NativeIME-test-") &&
+      GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", pipe, 256) < 256 &&
+      std::wstring(pipe).starts_with(L"\\\\.\\pipe\\EH");
+}
 // Resolves and connects to the configured dictionary server. Returns
 // INVALID_SOCKET on any failure (bad hostname, connection refused, etc.).
 // TCP connect is bounded to 150ms per resolved address. Name resolution
@@ -901,7 +911,13 @@ SOCKET ConnectDictionaryServer(const DictionaryServerConfig& config) {
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_protocol = IPPROTO_TCP;
   ADDRINFOA* result = nullptr;
-  if (getaddrinfo(host_utf8.c_str(), port_text.c_str(), &hints, &result) != 0)
+  const bool trace_dns = Os1DnsTraceEnabled();
+  const double dns_started = trace_dns ? ProfileMilliseconds() : 0;
+  if (trace_dns) LogEvent("os1-dns-enter tid=" + std::to_string(GetCurrentThreadId()) + " host=" + host_utf8);
+  const int resolved = getaddrinfo(host_utf8.c_str(), port_text.c_str(), &hints, &result);
+  if (trace_dns) LogEvent("os1-dns-exit status=" + std::to_string(resolved) +
+      " ms=" + std::to_string(ProfileMilliseconds()-dns_started));
+  if (resolved != 0)
     return INVALID_SOCKET;
 
   SOCKET socket_handle = INVALID_SOCKET;
@@ -1049,8 +1065,10 @@ class ServerCache {
   ~ServerCache() { Stop(); }
   void Start() { worker_ = std::thread([this] { Run(); }); }
   void Stop() {
+    if (Os1DnsTraceEnabled()) LogEvent("os1-dns-worker-stop-request");
     { std::lock_guard lock(mutex_); stop_ = true; }
     changed_.notify_all(); if (worker_.joinable()) worker_.join();
+    if (Os1DnsTraceEnabled()) LogEvent("os1-dns-worker-stopped");
   }
   std::optional<std::string> Query(const std::string& reading, const std::string& okuri = {}, DWORD wait_ms = 0) {
     // Profile every cache exit, including LOCAL SERVER polls, disabled

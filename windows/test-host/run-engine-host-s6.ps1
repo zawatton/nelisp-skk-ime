@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$Runtime,
-      [ValidateSet('Qualification','Resources','Production')][string]$Stage='Qualification',
-      [string]$BuildDir='build/w', [string]$LargeDictionary='',
+      [ValidateSet('Qualification','Resources','Production','Os1')][string]$Stage='Qualification',
+      [string]$BuildDir='build/w', [string]$LargeDictionary='', [string]$LargeDictionaryUtf8='',
       [int]$ColdLoadSleepSec=45, [ValidateRange(1,1)][int]$MatrixWorkers=1,
       [switch]$ValidateParametersOnly)
 $ErrorActionPreference='Stop'
@@ -12,6 +12,7 @@ if (-not [IO.Path]::GetFullPath($run).StartsWith((Join-Path $root 'build')+[IO.P
 }
 [void](New-Item -ItemType Directory $run)
 $results=@()
+$dictionary=$null
 function Gate([string]$name,[string]$exe,[string[]]$arguments) {
   if($exe -eq 'pwsh') {
     $index=[Array]::IndexOf($arguments,'-File')
@@ -37,6 +38,13 @@ function ScriptGate([string]$name,[string[]]$extra=@()) {
   Gate $name 'pwsh' (@('-NoProfile','-File',(Join-Path $PSScriptRoot ($name+'.ps1')),
     '-Runtime',$Runtime,'-BuildDir',$BuildDir,'-ColdLoadSleepSec',"$ColdLoadSleepSec")+$extra)
 }
+function Os1Gates {
+  foreach($mode in @('pipe','dns')) {
+    Gate ("os1-"+$mode) 'python' @((Join-Path $PSScriptRoot 'test-os1-private.py'),
+      '--runtime',$Runtime,'--host',(Join-Path $root "$BuildDir/Release/ddskk-engine-host.exe"),
+      '--build-dir',$BuildDir,'--cold-load-sleep-sec',"$ColdLoadSleepSec",'--mode',$mode)
+  }
+}
 $saved=@{}
 foreach($name in @('SOURCES','CACHE','RESTART','PUBLICATION','LEARNING','SHADOW')) {
   $variable='DDSKK_HOST_POLICY_'+$name
@@ -44,7 +52,9 @@ foreach($name in @('SOURCES','CACHE','RESTART','PUBLICATION','LEARNING','SHADOW'
   [Environment]::SetEnvironmentVariable($variable,$(if($name -eq 'SHADOW'){'0'}else{'1'}))
 }
 try {
-  if($Stage -eq 'Resources') {
+  if($Stage -eq 'Os1') {
+    Os1Gates
+  } elseif($Stage -eq 'Resources') {
     Gate 'exact-policy-artifact' 'python' @((Join-Path $PSScriptRoot 'host-windows-s6.py'),
       '--runtime',$Runtime,'--output',(Join-Path $run 'runtime.json'),'--samples','3',
       '--cold-load-sleep-sec',"$ColdLoadSleepSec")
@@ -62,20 +72,29 @@ try {
       '-Runtime',$Runtime,'-BuildDir',$BuildDir,'-Stage','Recovery','-ColdLoadSleepSec',"$ColdLoadSleepSec",'-MatrixWorkers','1')
     ScriptGate 'test-sk1-skkserv'
     ScriptGate 'test-sk1-provider-relay'
-    # No existing gate proves low-IL ACL compatibility or DNS cancellation.
+    Os1Gates
+    # ACL denial/client CancelIoEx have real probes; low-IL compatibility,
+    # server cancellation and synchronous resolver cancellation remain open.
     # Do not turn the remaining OS1 acceptance gaps into an aggregate PASS.
-    if(-not $ValidateParametersOnly){throw 'INCOMPLETE S6 OS1: explicit pipe security/overlapped cancel and DNS cancellation qualification required; retain native (see S6 decision table)'}
+    if(-not $ValidateParametersOnly){throw 'INCOMPLETE S6 OS1: low-IL/server-cancel compatibility and DNS cancellation remain unqualified; retain native (see S6 decision table)'}
   } else {
-    if(-not $ValidateParametersOnly -and (-not $LargeDictionary -or -not (Test-Path -LiteralPath $LargeDictionary) -or
-       (Split-Path $LargeDictionary -Leaf) -ne 'SKK-JISYO.L')) {
-      throw 'Production requires the real SKK-JISYO.L via -LargeDictionary'
+    $qualifiedDictionary=$LargeDictionary
+    if(-not $ValidateParametersOnly -or ($LargeDictionary -and (Test-Path -LiteralPath $LargeDictionary))) {
+      if(-not $LargeDictionary){throw 'Production requires a content-validated L dictionary via -LargeDictionary'}
+      $select=@((Join-Path $PSScriptRoot 'large-dictionary.py'),'--dictionary',$LargeDictionary)
+      if($LargeDictionaryUtf8){$select+=@('--utf8-copy',$LargeDictionaryUtf8)}
+      $json=& python @select
+      if($LASTEXITCODE -ne 0){throw 'L dictionary content/encoding validation failed'}
+      $dictionary=$json | ConvertFrom-Json
+      $qualifiedDictionary=$dictionary.utf8.path
+      Write-Output ("DICTIONARY "+($dictionary | ConvertTo-Json -Depth 5 -Compress))
     }
     ScriptGate 'test-private-host-bundle' @('-Stage','Recovery')
     Gate 'production-clients' 'pwsh' @('-NoProfile','-File',(Join-Path $PSScriptRoot 'test-private-host-bundle.ps1'),
       '-Runtime',$Runtime,'-BuildDir',$BuildDir,'-Stage','EndToEnd','-ColdLoadSleepSec',"$ColdLoadSleepSec",
-      '-LargeDictionary',$LargeDictionary,'-Clients','3')
+      '-LargeDictionary',$qualifiedDictionary,'-Clients','3')
     Gate 'val1-pressure' 'pwsh' @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-engine-host-s4.ps1'),
-      '-Runtime',$Runtime,'-BuildDir',$BuildDir,'-Stage','EndToEnd','-LargeDictionary',$LargeDictionary,
+      '-Runtime',$Runtime,'-BuildDir',$BuildDir,'-Stage','EndToEnd','-LargeDictionary',$qualifiedDictionary,
       '-ColdLoadSleepSec',"$ColdLoadSleepSec",'-MatrixWorkers','1')
     # Recovery checks actual acknowledged IDs; callbacks includes the real
     # synchronous-wait rejection. Neither threshold is changed by this runner.
@@ -88,6 +107,6 @@ try {
   else {Write-Output "PASS S6 stage=$Stage gates=$($results.Count) artifacts=$run"}
 } finally {
   foreach($variable in $saved.Keys){[Environment]::SetEnvironmentVariable($variable,$saved[$variable])}
-  @{stage=$Stage;runtime_sha256=(Get-FileHash -LiteralPath $Runtime).Hash;gates=$results} |
+  @{stage=$Stage;runtime_sha256=(Get-FileHash -LiteralPath $Runtime).Hash;dictionary=$dictionary;gates=$results} |
     ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $run 'evidence.json') -Encoding utf8
 }
