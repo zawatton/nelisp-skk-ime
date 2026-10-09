@@ -11,7 +11,9 @@ try {
  $env:DDSKK_HARNESS_DIAGNOSTICS='1'; $env:NATIVEIME_TEST_CANDIDATE_CONTROL_FAIL_MS='1600'
  foreach($failure in @('missing','corrupt')) {
   $log=Join-Path $run ($failure+'.log')
-  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'run-harness.ps1') `
+  # Own the harness before it runs, including DLL-spawned replacement hosts
+  # after KILLHOST. Close only this case's job before the next case starts.
+  & python (Join-Path $PSScriptRoot 'host-test-process-guard.py') run --root $root --cleanup -- powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'run-harness.ps1') `
    -Script 'a i SPACE WAIT3000 ENTER K a n a SPACE SETTLE8000:FIRST KILLHOST SPACE SETTLE8000:RESOLVED CTRLG SETTLE8000:CANCEL K a n a SPACE SETTLE8000:RETRY CTRLG' `
    -EngineHostPath (Join-Path $build 'Release/ddskk-engine-host.exe') -EngineExecutablePath $Runtime `
    -RepositoryPath $root -DllPath (Join-Path $build 'Release/ddskk-ime.dll') -CoreDllPath (Join-Path $build 'Release/ddskk-ime-core.dll') `

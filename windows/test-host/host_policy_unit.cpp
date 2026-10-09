@@ -37,6 +37,41 @@ struct ShadowPolicyTest {
     check(!ShadowPolicy::ValidReply("HP2 R 1 2 3 4 5 1", prefix));
     check(!ShadowPolicy::ValidReply(prefix, prefix));
     check(!ShadowPolicy::ValidReply(prefix + "garbage", prefix));
+    // A differing, valid managed answer must actually replace the native
+    // branch; equality-only plumbing would fail this authority control.
+    policy.enabled_ = true; policy.switches_[0] = true; policy.healthy_ = true;
+    v = {PolicyKind::Sources, 7, 9, 1, 1, 0, 1};
+    policy.Remember(v, 2);
+    auto diagnostic = v; diagnostic.kind = PolicyKind::Config;
+    for (uint64_t i = 0; i < 100; ++i) { diagnostic.b = i; policy.Remember(diagnostic, 0); }
+    check(policy.decisions_.size() == 1); // Shadow traffic cannot evict authority.
+    check(policy.Decide(v) == 2);
+    check(policy.divergent_[static_cast<unsigned>(PolicyKind::Sources)] == 1);
+    policy.switches_[0] = false; check(policy.Decide(v) == 1);
+    check(policy.divergent_[static_cast<unsigned>(PolicyKind::Sources)] == 1);
+    policy.switches_[0] = true;
+    auto changed = v; changed.engine_epoch++; check(policy.Decide(changed) == 1);
+    changed = v; changed.publication_generation++; check(policy.Decide(changed) == 2);
+    changed = v; changed.context[0] = 'x'; changed.context_size = 1; check(policy.Decide(changed) == 2);
+    policy.decisions_[ShadowPolicy::Key(v)].at = GetTickCount64() - 30001;
+    check(policy.Decide(v) == 1);
+    policy.decisions_[ShadowPolicy::Key(v)].at = GetTickCount64();
+    auto other = v; other.kind = PolicyKind::CacheTtl; other.a = 1; other.b = other.c = 0;
+    policy.decisions_[ShadowPolicy::Key(other)] = {60000, GetTickCount64()};
+    policy.Timeout(other);
+    check(policy.decisions_.contains(ShadowPolicy::Key(v)) && !policy.decisions_.contains(ShadowPolicy::Key(other)));
+    policy.Invalidate(); check(policy.Decide(v) == 1 && policy.decisions_.empty());
+    policy.healthy_ = true;
+    policy.decisions_[ShadowPolicy::Key(v)] = {2, GetTickCount64()};
+    std::unique_lock busy(policy.mutex_);
+    uint64_t result = 99;
+    const auto begin = GetTickCount64();
+    std::thread nonblocking([&] { result = policy.Decide(v); }); nonblocking.join();
+    check(result == 1 && GetTickCount64() - begin < 50);
+    busy.unlock();
+    check(!ShadowPolicy::ValidDecision(PolicyKind::Restart, 999));
+    check(!ShadowPolicy::ValidDecision(PolicyKind::Cache, 2));
+    check(!ShadowPolicy::ValidDecision(PolicyKind::Sources, 3));
     std::printf("policy adapter unit: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
   }

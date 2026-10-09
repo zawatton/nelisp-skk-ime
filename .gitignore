@@ -19,3 +19,5 @@
 
 # Stray MSVC object from an out-of-tree harness build
 skkserv-spawn-harness.obj
+__pycache__/
+*.pyc

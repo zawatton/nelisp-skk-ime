@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <windows.h>
+#include "policy_fault.h"
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -44,10 +45,12 @@ class ProviderOutbox {
     const auto record = "EG2-OUTBOX 1 " + std::to_string(id) + " " +
         std::to_string(content.size()) + " " + std::to_string(Hash(content)) + "\n" +
         content + "\nEG2-END " + std::to_string(id) + "\n";
+    host_fault::Point(L"outbox-before");
     DWORD written = 0;
     const bool ok = positioned && record.size() <= MAXDWORD &&
         WriteFile(file, record.data(), static_cast<DWORD>(record.size()), &written, nullptr) &&
         written == record.size() && FlushFileBuffers(file);
+    if (ok) host_fault::Point(L"outbox-flushed");
     if (!ok && positioned) {
       // A partial failed append must not precede another acknowledged frame.
       if (!(SetFilePointerEx(file, original, nullptr, FILE_BEGIN) &&
@@ -114,8 +117,10 @@ class ProviderOutbox {
     bool ok = WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr) &&
         written == text.size() && FlushFileBuffers(file);
     CloseHandle(file);
+    if (ok) host_fault::Point(L"cursor-flushed");
     if (ok) ok = MoveFileExW(temporary.c_str(), path.c_str(),
         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+    if (ok) host_fault::Point(L"cursor-replaced");
     return ok;
   }
   static uint64_t Hash(const std::string& content) {

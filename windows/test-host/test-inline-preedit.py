@@ -45,6 +45,19 @@ def verify_registration_document(host_text):
         assert len(checkpoints) == 1 and checkpoints[0] == word, (label, checkpoints, host_text[-4000:])
 
 
+def verify_inline_cancel(host_text):
+    """Both keyboard-quit steps preserve the settled document and never commit."""
+    steps = re.findall(r'^SCRIPTKEY token=CTRLG[^\n]*\n(.*?)(?=^SCRIPTKEY token=|\Z)',
+                       host_text, re.MULTILINE | re.DOTALL)
+    assert len(steps) == 2, f'cancel regression: expected two Ctrl-G events, got {len(steps)}'
+    for index, step in enumerate(steps, 1):
+        assert not re.search(r'^PROVIDER control .*control=3\b', step, re.MULTILINE), \
+            f'cancel regression: Ctrl-G {index} sent provider COMMIT'
+        settled = re.findall(r'^AFTER WAIT100 BUF=\[(.*?)\] SEL=6,6 COMP=-\r?$', step, re.MULTILINE)
+        assert settled and settled[-1] == 'あい蚊消える', \
+            f'cancel regression: Ctrl-G {index} changed the settled document: {settled}'
+
+
 def registration_timing_report(host_text, debug):
     callbacks = re.findall(r'^KEYLAT token=(\S+) test_us=(\d+) down_us=(\d+) total_us=(\d+) claimed=1',
                            host_text, re.MULTILINE)
@@ -536,6 +549,8 @@ def main():
         print(f'PASS inline-preedit case={args.case} pair_lines={len(pairs)} opener_only={args.case != "pair-down"} cleanup=confirmed')
         return
     expected = 'あい蚊消えるカナ佳奈'
+    if args.case in ('inline', 'emacs'):
+        verify_inline_cancel(host_text)
     final = re.findall(r'AFTER WAIT500 BUF=\[([^\n]*)\] SEL=10,10 COMP=-', host_text)
     assert final and final[-1] == expected, (final, expected)
     ordinary = [int(value) for value in re.findall(r'KEYLAT token=[A-Za-z] .*?total_us=(\d+)', host_text)]

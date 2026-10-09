@@ -1,14 +1,21 @@
-;;; host-policy.el --- Private HP1 shadow decisions -*- lexical-binding: t; -*-
+;;; host-policy.el --- Private HP1 policy decisions -*- lexical-binding: t; -*-
 ;; This process has no engine, public pipe, publication or learning API.
 ;; Inputs are bounded decimal value fields; never read/eval IPC as Lisp.
 
 (defun host-policy-decision (kind a b c)
-  "Compute a shadow decision from copied native policy inputs."
+  "Compute a policy decision from copied native policy inputs."
   (cond ((= kind 1) (if (or (= a 0) (= b 1)) a 0)) ; runner availability
         ((= kind 2) (if (= a 0) 0 (if (= b 0) 2 1))) ; file before server
         ((= kind 3) (if (= b 1) 1000 (min 30000 (* a 2))))
         ((= kind 4) (if (>= b (if (= a 1) 60000 2000)) 1 0))
         ((= kind 5) (if (and (= a 1) (= b 1) (= c 1)) 1 0))
+        ((= kind 6) (if (and (= a 1) (= b 1)) 1 0)) ; ready FIFO head, or drain
+        ((= kind 7) (if (and (= a 1) (or (= b 0) (= c 1))) 1 0)) ; safe swap
+        ((= kind 8) (if (or (< a 256) (= b 1)) 1 0)) ; cache admission
+        ((= kind 9) (if (and (= a 1) (= b 1) (> c 0)) 1 0)) ; valid changed intent
+        ((= kind 10) (if (= a 1) (if (= b 1) 1 0) (if (= b 1) 2 0))) ; files then server
+        ((= kind 11) (if (= a 0) 0 (if (= b 1) 2 (if (= c 1) 1 0)))) ; base or overlay payload
+        ((= kind 12) (if (= a 1) 60000 2000)) ; SK1 hit/miss duration
         (t -1)))
 
 (defun host-policy-serve ()
@@ -37,7 +44,7 @@
                                  (string-match "\\`[0-9a-f]+\\'" (nth 10 fields))))
                   (error "HP1 context"))
                 (unless (and (>= (string-to-number (nth 6 fields)) 1)
-                             (<= (string-to-number (nth 6 fields)) 5))
+                             (<= (string-to-number (nth 6 fields)) 12))
                   (error "HP1 kind"))
                 (let ((decision (host-policy-decision
                                  (string-to-number (nth 6 fields))

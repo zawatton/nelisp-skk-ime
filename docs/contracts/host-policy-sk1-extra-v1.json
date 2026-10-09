@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "note": "SK1 extra: files precede server, duplicate file/server 仮名 is removed, serverExtra follows 哉; committed serverExtra becomes the first learned candidate. Numeric columns: kind,a,b,c,native decision. Pending entries remain native-owned and are not evicted without a completed victim.",
+  "records": [[2,1,1,0,1],[10,1,1,0,1],[8,255,0,0,1],[8,256,0,0,0],[8,256,1,0,1],[12,1,0,0,60000],[4,1,59999,0,0],[4,1,60000,0,1],[12,0,0,0,2000],[4,0,1999,0,0],[4,0,2000,0,1]],
+  "checkpoints": {
+    "FIRST": "あい▼仮名",
+    "SECOND": "あい▼哉",
+    "THIRD": "あい▼serverExtra",
+    "END": "あいserverExtra",
+    "LEARNED": "あいserverExtra▼serverExtra"
+  }
+}

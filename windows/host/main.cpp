@@ -1069,22 +1069,29 @@ class ServerCache {
     const auto key = reading + '\x1f' + okuri;
     std::unique_lock lock(mutex_);
     if (identity != identity_) { identity_ = identity; ++generation_; cache_.clear(); jobs_.clear(); }
-    native_adapter::Observe(native_adapter::PolicyKind::Sources, config.enabled != 0,
+    const auto source = native_adapter::Decide(native_adapter::PolicyKind::Sources, config.enabled != 0,
         !config.dictionary_files.empty(), generation_,
         !config.enabled ? 0 : (config.dictionary_files.empty() ? 2 : 1), identity);
-    if (!config.enabled) return "4";
+    if (source == 0) return "4";
     auto found = cache_.find(key);
     if (found != cache_.end() && found->second.reply) {
       const auto age = GetTickCount64() - found->second.completed;
       const bool hit = found->second.reply->starts_with("1");
-      native_adapter::Observe(native_adapter::PolicyKind::Cache, hit, age, generation_,
-          age >= (hit ? 60000 : 2000));
+      // The managed policy selects the duration; elapsed-time measurement and
+      // cache mutation stay native. S3 expiry observation remains independent.
+      const auto native_ttl = hit ? 60000 : 2000;
+      const auto ttl = native_adapter::Decide(native_adapter::PolicyKind::CacheTtl,
+          hit, 0, 0, native_ttl, identity);
+      const bool expired = age >= ttl;
+      native_adapter::Observe(native_adapter::PolicyKind::Cache, hit, age, generation_, age >= native_ttl);
+      if (expired) { cache_.erase(found); found = cache_.end(); }
     }
-    if (found != cache_.end() && found->second.reply && GetTickCount64() - found->second.completed >=
-        (found->second.reply->starts_with("1") ? 60000 : 2000)) { cache_.erase(found); found = cache_.end(); }
     if (found == cache_.end()) {
+      auto victim = std::find_if(cache_.begin(), cache_.end(), [](const auto& x) { return x.second.reply.has_value(); });
+      if (!native_adapter::Decide(native_adapter::PolicyKind::Capacity,
+          cache_.size() >= 256 ? 256 : 0, victim != cache_.end(), generation_,
+          cache_.size() < 256 || victim != cache_.end(), identity)) return "4";
       if (cache_.size() >= 256) {
-        auto victim = std::find_if(cache_.begin(), cache_.end(), [](const auto& x) { return x.second.reply.has_value(); });
         if (victim == cache_.end()) return "4";
         cache_.erase(victim);
       }
@@ -1209,7 +1216,10 @@ std::string LookupDictionary(const std::string& midasi) {
     server = g_server_cache.Query(midasi, {}, 200);
   }
   if (!server || server->empty() || (*server)[0] != '1') return files.empty() ? "4" : "1" + files;
-  if (files.empty()) return *server;
+  const auto order = native_adapter::Decide(native_adapter::PolicyKind::Order,
+      !files.empty(), 1, 0, files.empty() ? 2 : 1);
+  if (order == 2) return *server;
+  if (order == 0) return files.empty() ? "4" : "1" + files;
   return MergeServerReply(files, std::string_view(*server).substr(1));
 }
 
@@ -1414,6 +1424,9 @@ std::string Utf8KeyRequest(const std::string& request) {
 // In-memory learning revisions wake the overlay publisher. Idle
 // capability/recovery probes retain the previous one-second cadence.
 std::atomic<uint64_t> g_local_ack_activity{0};
+bool LearningSchedule(bool ready, bool draining) {
+  return native_adapter::Decide(native_adapter::PolicyKind::Learning, ready, 1, draining, ready) != 0;
+}
 std::unique_ptr<ddskk::LearningQueue> g_learning_queue;
 thread_local std::shared_future<bool> g_learning_barrier;
 thread_local std::vector<std::shared_ptr<ddskk::LearningQueue::ProducerOperation>> g_learning_producers;
@@ -1457,7 +1470,8 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
       child.learning_worker = reply == "OK WIRE LEARNING 2";
       if (child.learning_worker) {
         if (!g_learning_queue)
-          g_learning_queue = std::make_unique<ddskk::LearningQueue>(LearningTarget());
+          g_learning_queue = std::make_unique<ddskk::LearningQueue>(LearningTarget(),
+              std::function<bool(const std::string&)>{}, LearningSchedule);
         if (!WriteAll(child.input, "LOCAL STATUS\n")) return false;
         do { if (!ReadLine(child.output, &reply)) return false; } while (reply.starts_with("PHASE "));
         child.local_status = reply;
@@ -1543,7 +1557,8 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
     }
     if (line.starts_with("LEARNING2 ")) {
       if (!g_learning_queue)
-        g_learning_queue = std::make_unique<ddskk::LearningQueue>(LearningTarget());
+        g_learning_queue = std::make_unique<ddskk::LearningQueue>(LearningTarget(),
+              std::function<bool(const std::string&)>{}, LearningSchedule);
       const auto content = line.substr(10);
       if (content.empty()) return false;
       if (request.starts_with("LOCAL LEARN ") || !g_learning_producer_capture) {
@@ -1913,9 +1928,8 @@ void ReplacementLoop() {
       LogEvent("replacement-abandoned engine=" + id);
       StopChild(next);
       retry_at = GetTickCount64() + backoff;
-      native_adapter::Observe(native_adapter::PolicyKind::Restart, backoff, 0, generation,
-          (std::min)(backoff * 2, DWORD{30000}));
-      backoff = (std::min)(backoff * 2, DWORD{30000});
+      backoff = static_cast<DWORD>(native_adapter::Decide(native_adapter::PolicyKind::Restart,
+          backoff, 0, generation, (std::min)(backoff * 2, DWORD{30000})));
       continue;
     }
     Child old;
@@ -1933,7 +1947,12 @@ void ReplacementLoop() {
           LogEvent("replacement-learning-raced engine=" + id);
           break;
         }
-        if (g_composing_sessions.empty() || GetTickCount64() >= deadline) {
+        const bool swap_due = g_composing_sessions.empty() || GetTickCount64() >= deadline;
+        const bool policy_swap = native_adapter::Decide(native_adapter::PolicyKind::Replacement,
+            1, !g_composing_sessions.empty(), GetTickCount64() >= deadline, swap_due,
+            id) != 0;
+        // Native readiness/generation/fence checks remain mandatory barriers.
+        if (swap_due && policy_swap) {
           old = g_child;
           g_child = next;
           native_adapter::engine_epoch = g_child.epoch;
@@ -1972,8 +1991,8 @@ void ReplacementLoop() {
         }
       }
     }
-    native_adapter::Observe(native_adapter::PolicyKind::Restart, backoff, 1, generation, 1000);
-    backoff = 1000;
+    backoff = static_cast<DWORD>(native_adapter::Decide(native_adapter::PolicyKind::Restart,
+        backoff, 1, generation, 1000));
     retry_at = 0;
   }
 }
@@ -2266,6 +2285,7 @@ void LocalSpoolRecoveryLoop() {
 void LocalPublicationLoop() {
   std::string previous;
   ddskk::local::PublicationWindow window;
+  std::string published_base;
   bool test_stalled = false;
   std::shared_ptr<const ddskk::local::Index> mapped;
   ULONGLONG next_cleanup = 0, next_probe = 0;
@@ -2345,9 +2365,17 @@ void LocalPublicationLoop() {
         const bool have_rules = !rules.empty(), have_status = status.starts_with("LOCAL ");
         // Preserve the original short circuit: Due mutates the native window.
         const bool due = have_rules && have_status && window.Due(identity, base_identity, GetTickCount64());
-        native_adapter::Observe(native_adapter::PolicyKind::Publication, have_rules, have_status,
-            due, due, status + ":" + source_identity, policy_engine_epoch);
-        if (!due) snapshot.clear();
+        const auto intent_at = GetTickCount64();
+        const bool immediate = previous.empty() || base_identity != published_base;
+        const bool publish = native_adapter::Decide(native_adapter::PolicyKind::Intent,
+            have_rules && have_status, identity != previous,
+            immediate ? 1 : (window.Ready(intent_at) ? 2 : 0), due,
+            status + ":" + source_identity, policy_engine_epoch) != 0;
+        const auto payload = native_adapter::Decide(native_adapter::PolicyKind::Payload,
+            have_rules && have_status, immediate, identity != previous,
+            !have_rules || !have_status ? 0 : (immediate ? 2 : (identity != previous ? 1 : 0)),
+            status + ":" + source_identity, policy_engine_epoch);
+        if (!publish || !payload) snapshot.clear();
         if (!snapshot.empty()) {
           std::vector<std::filesystem::path> files;
           size_t start = 0;
@@ -2380,7 +2408,9 @@ void LocalPublicationLoop() {
           ddskk::local::Publish(ddskk::local::Directory(), files, overlay, rules, capabilities, revision);
           ++native_adapter::publication_generation;
           LogEvent("adapter-publication generation=" + std::to_string(native_adapter::publication_generation.load()));
-          previous = identity;
+          LogEvent("policy-intent-publication ms=" + std::to_string(GetTickCount64() - intent_at) +
+              " payload=" + (payload == 2 ? "base+overlay" : "overlay"));
+          previous = identity; published_base = base_identity;
           window.Published(previous, base_identity);
           std::fprintf(stderr, "LOCAL publication status=%s capabilities=%llu\n", status.c_str(), capabilities);
         }
@@ -2574,8 +2604,10 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     g_learning_producer_capture = false;
     DWORD written = 0;
     const double profile_write = ProfileMilliseconds();
+    if (response.starts_with("ACK ")) ddskk::host_fault::Point(L"ack-before");
     connected = WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()),
                           &written, nullptr) && written == response.size();
+    if (connected && response.starts_with("ACK ")) ddskk::host_fault::Point(L"ack-written");
     if (GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0))
       std::fprintf(stderr, "request-done tick=%llu total_ms=%llu qpc_total_ms=%.6f qpc_write_ms=%.6f request=%s\n",
           received, GetTickCount64()-received, ProfileMilliseconds()-profile_received,
@@ -2694,7 +2726,8 @@ int wmain(int argc, wchar_t** argv) {
     LogEvent("learning-outbox-recovery-failed");
     return 1; // fail closed rather than discard acknowledged learning
   }
-  g_learning_queue = std::make_unique<ddskk::LearningQueue>(LearningTarget());
+  g_learning_queue = std::make_unique<ddskk::LearningQueue>(LearningTarget(),
+              std::function<bool(const std::string&)>{}, LearningSchedule);
   if (!StartChild(argv[1], repository, &g_child, configured)) {
     g_stop_reason.store("initial-child-start-failed");
     StopChild(g_child);

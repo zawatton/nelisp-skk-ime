@@ -2,7 +2,7 @@
 param([Parameter(Mandatory)][string]$Runtime,[string]$BuildDir='build/w',
       [string]$ControlBuildDir='build/policy-control',
       [ValidateSet('Boundary','Isolation','Contracts','EndToEnd')][string]$Stage='Boundary',
-      [string]$LargeDictionary='')
+      [string]$LargeDictionary='', [switch]$ContinueOnFailure)
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $bin=Join-Path $root "$BuildDir/Release"
@@ -10,13 +10,19 @@ $control=Join-Path $root "$ControlBuildDir/Release/host-policy-sync-control.exe"
 $run=Join-Path $root ($BuildDir+'/s3-gates-'+[guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory $run)
 $checks=0
+$attempts=0
+$failures=@()
 function Gate([string]$name,[string]$exe,[string[]]$arguments) {
-  $log=Join-Path $run ("$checks-$name.log")
+  $log=Join-Path $run ("$attempts-$name.log");$script:attempts++
   Write-Output ("cmd: $exe "+($arguments -join ' '))
-  & $exe @arguments *> $log
+  & python (Join-Path $PSScriptRoot 'host-test-process-guard.py') run --root $root -- $exe @arguments *> $log
   $code=$LASTEXITCODE
   Get-Content -LiteralPath $log -Tail 8
-  if($code -ne 0){throw "FAIL $name exit=$code log=$log"}
+  if($code -ne 0){
+    $failure="FAIL $name exit=$code log=$log"
+    if(-not $ContinueOnFailure){throw $failure}
+    $script:failures+=$failure;Write-Output $failure;return
+  }
   $script:checks++
 }
 function ScriptGate([string]$name,[string[]]$arguments) {
@@ -24,6 +30,7 @@ function ScriptGate([string]$name,[string[]]$arguments) {
 }
 $common=@('-Runtime',$Runtime,'-BuildDir',$BuildDir,'-ColdLoadSleepSec','45')
 if($Stage -eq 'Boundary') {
+  Gate 'process-ownership-controls' 'python' @((Join-Path $PSScriptRoot 'test-host-process-ownership.py'),'--build-dir',$BuildDir)
   Gate 'control-config' 'cmake' @('-S',(Join-Path $PSScriptRoot 's3'),'-B',(Join-Path $root $ControlBuildDir),'-G','Visual Studio 17 2022','-A','x64')
   Gate 'control-build' 'cmake' @('--build',(Join-Path $root $ControlBuildDir),'--config','Release')
   Gate 'policy-unit' (Join-Path $root "$ControlBuildDir/Release/host-policy-unit.exe") @()
@@ -33,7 +40,7 @@ if($Stage -eq 'Boundary') {
 } elseif($Stage -eq 'Isolation') {
   ScriptGate 'test-host-policy' $common
   $log=Join-Path $run 'negative-control.log'
-  & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'test-host-policy.ps1') @common -HostExecutable $control *> $log
+  & python (Join-Path $PSScriptRoot 'host-test-process-guard.py') run --root $root -- pwsh -NoProfile -File (Join-Path $PSScriptRoot 'test-host-policy.ps1') @common -HostExecutable $control *> $log
   $code=$LASTEXITCODE; Get-Content -LiteralPath $log -Tail 12
   $text=Get-Content -LiteralPath $log -Raw
   if($code -eq 0 -or $text -notmatch 'FAIL pause isolation cached_max_ms=([0-9.]+)' -or [double]$Matches[1] -le 50 -or $text -notmatch 'leftovers=\[\]') {
@@ -48,9 +55,13 @@ if($Stage -eq 'Boundary') {
     ScriptGate 'test-host-contracts' ($common+@('-Engine','lattice','-Fixture','docs/contracts/native-legacy-v1.json'))
   }
 } else {
-  if(-not $LargeDictionary -or -not (Test-Path -LiteralPath $LargeDictionary)){throw 'EndToEnd requires real SKK-JISYO.L via -LargeDictionary'}
+  if(-not $LargeDictionary -or -not (Test-Path -LiteralPath $LargeDictionary)){
+    $failure='EndToEnd requires real SKK-JISYO.L via -LargeDictionary'
+    if(-not $ContinueOnFailure){throw $failure}
+    $failures+=$failure;Write-Output "FAIL $failure"
+  }
   $env:DDSKK_HOST_POLICY_SHADOW='1'
-  $env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='5'
+  if(-not $env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND){$env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='5'}
   $env:DDSKK_HARNESS_DIAGNOSTICS='1'
   $env:HOME=[Environment]::GetFolderPath('UserProfile')
   Gate 'ctest' 'ctest' @('--test-dir',(Join-Path $root $BuildDir),'-C','Release')
@@ -70,7 +81,11 @@ if($Stage -eq 'Boundary') {
     ScriptGate $name $common
   }
   foreach($name in @('test-local-edit-recovery','test-local-state-stress')) {
-    ScriptGate $name ($common+@('-LargeDictionary',$LargeDictionary))
+    # A missing diagnostic input is an explicit failed gate, never an
+    # interactive mandatory-parameter prompt or a passing skip.
+    $inputDictionary=if($LargeDictionary){$LargeDictionary}else{Join-Path $run 'missing-SKK-JISYO.L'}
+    $largeArgs=$common+@('-LargeDictionary',$inputDictionary)
+    ScriptGate $name $largeArgs
   }
   Remove-Item Env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND -ErrorAction SilentlyContinue
   ScriptGate 'test-host-policy' $common
@@ -78,4 +93,5 @@ if($Stage -eq 'Boundary') {
   # The coordinator must retain child/pause logs and existing KEYLAT evidence;
   # a passing ERT or pipe-only stage does not stand in for TSF callbacks.
 }
+if($failures.Count){throw "FAIL S3 stage=$Stage passed=$checks failures=$($failures.Count) artifacts=$run"}
 Write-Output "PASS S3 stage=$Stage gates=$checks artifacts=$run"
