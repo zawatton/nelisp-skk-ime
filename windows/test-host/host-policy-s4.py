@@ -1,9 +1,11 @@
 """S4 real-host authority, publication, crash/pause and concurrent-ID gates."""
 import argparse
 import concurrent.futures
+import contextlib
 import ctypes as C
 from ctypes import wintypes as W
 import importlib.util
+import io
 import json
 import math
 from pathlib import Path
@@ -84,9 +86,12 @@ def controls():
                  lambda: ack_gate(['a.1', 'b.1'], ['a.1']),
                  lambda: ack_gate(['a.1', 'b.1'], ['b.1', 'a.1'])):
         try:
-            call()
-        except AssertionError:
+            # Intentional failures must not look like failed positive gates.
+            with contextlib.redirect_stdout(io.StringIO()):
+                call()
+        except AssertionError as error:
             rejected += 1
+            print(f'CONTROL expected rejection {rejected}: {error}', flush=True)
         else:
             raise AssertionError('negative control accepted')
     print(f'PASS S4 negative controls rejected={rejected} (p99,max,ID-loss,ID-order)', flush=True)
@@ -152,6 +157,23 @@ def matrix_case(args, point, target, action):
     secondary = None
     resumed = False
     captured_ids = []
+    prepared = threading.Event()
+    phase = ['startup']
+    started = time.monotonic()
+    def evidence(predicate, timeout):
+        def check():
+            if predicate():
+                return True
+            assert not errors, f'{phase[0]}: {errors}'
+            # A provider STATE can precede the asynchronous durable cursor.
+            # Only preparation requires the client thread to remain alive.
+            if predicate == prepared.is_set:
+                assert thread.is_alive(), f'{phase[0]}: preparation ended; replies={replies}'
+            return False
+        try:
+            s3.until(check, timeout)
+        except Exception as error:
+            raise AssertionError(f'{phase[0]}: {error}; client_alive={thread.is_alive()} replies={replies}; artifacts={h.run}') from error
     try:
         h.start()
         s3.policy(h)
@@ -161,10 +183,15 @@ def matrix_case(args, point, target, action):
                 if provider:
                     for request in (b'SESSION s4 OPEN 2', b'SESSION s4 V2 PREPARE 2 75,97,110,97',
                                     b'SESSION s4 V2 SPACE 2'):
+                        phase[0] = request.decode()
                         response = p.request(request)
                         assert response.startswith((b'OK ', b'STATE ')), response
+                    phase[0] = 'COMMIT / rendezvous'
+                    prepared.set()
                     replies.append(p.request(b'SESSION s4 V2 CONTROL COMMIT'))
                 else:
+                    phase[0] = 'LOCAL LEARN / rendezvous'
+                    prepared.set()
                     replies.append(p.request(f'LOCAL LEARN {op} 00304b00306a 004eee00540d'.encode()))
             except Exception as error:
                 errors.append(str(error))
@@ -172,7 +199,12 @@ def matrix_case(args, point, target, action):
                 p.close()
         thread = threading.Thread(target=transaction)
         thread.start()
-        s3.until(marker.exists, 10)
+        # Policy readiness does not prove the independent engine is warm.
+        # Session creation and the first conversion are setup, not the fault
+        # rendezvous. Keep its original 10 s bound after SPACE has replied.
+        evidence(prepared.is_set, 60)
+        print(f'READY S4 matrix point={point} target={target} action={action} setup_ms={(time.monotonic()-started)*1000:.1f} artifacts={h.run}', flush=True)
+        evidence(marker.exists, 10)
         outbox = h.run / 'user.jisyo.eg2-outbox'
         if provider and outbox.exists():
             captured_ids = [int(v) for v in re.findall(rb'EG2-OUTBOX 1 (\d+) ', outbox.read_bytes())]
@@ -235,6 +267,13 @@ def matrix_case(args, point, target, action):
         (h.run / 's4-case.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
         print('PASS S4 matrix ' + json.dumps(result), flush=True)
         return result
+    except Exception as error:
+        failure = dict(point=point, target=target, action=action, phase=phase[0],
+                       error=str(error), interrupted=errors, replies=[r.decode() for r in replies],
+                       prepared=prepared.is_set(), artifacts=str(h.run))
+        (h.run / 's4-failure.json').write_text(json.dumps(failure, indent=2), encoding='utf-8')
+        print('FAIL S4 matrix evidence ' + json.dumps(failure), flush=True)
+        raise
     finally:
         if secondary:
             if action == 'pause' and not resumed:

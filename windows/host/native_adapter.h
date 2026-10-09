@@ -78,7 +78,10 @@ class ShadowPolicy {
     }
     Observe(value);
     const auto kind = static_cast<unsigned>(value.kind);
-    if (kind < used_.size()) ++(used ? used_[kind] : fallback_[kind]);
+    if (kind < used_.size()) {
+      ++(used ? used_[kind] : fallback_[kind]);
+      if (used && result != value.native_decision) ++divergent_[kind];
+    }
     return result;
   }
   void Stop() {
@@ -100,11 +103,14 @@ class ShadowPolicy {
   bool enabled_ = false;
   std::array<bool, 5> switches_{};
   std::array<std::atomic<uint64_t>, 13> used_{}, fallback_{};
+  std::array<std::atomic<uint64_t>, 13> divergent_{};
   void LogDecisions() {
     // Only the policy worker writes diagnostics; caller paths increment counters.
     for (size_t i = 1; i < used_.size(); ++i) {
       const auto used = used_[i].exchange(0), fallback = fallback_[i].exchange(0);
+      const auto divergent = divergent_[i].exchange(0);
       if (used) LogEvent("policy-authoritative kind=" + std::to_string(i) + " count=" + std::to_string(used));
+      if (divergent) LogEvent("policy-authoritative-difference kind=" + std::to_string(i) + " count=" + std::to_string(divergent));
       if (fallback) LogEvent("policy-fallback native reason=unavailable-or-stale kind=" +
           std::to_string(i) + " count=" + std::to_string(fallback));
     }
@@ -257,6 +263,7 @@ class ShadowPolicy {
       backoff = 1000; seeded_engine = ~uint64_t{0};
       { std::lock_guard lock(mutex_); healthy_ = true; }
       LogEvent("policy-ready startup_ms=" + std::to_string(GetTickCount64() - start));
+      LogEvent("policy-decision-accounting v=1");
       while (!stop_ && !g_stopping) {
         LogDecisions();
         const auto current_engine = engine_epoch.load();

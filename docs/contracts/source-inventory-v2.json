@@ -4,7 +4,7 @@
   "source_sha256": {
     "windows/host/learning_queue.h": "65d91836911ed74e10f785ea2765adbff22c9bf0fb588a18868bcbe2cdfca166",
     "windows/host/main.cpp": "6b94b0ece3d9349b96be13c14d19216d92d6c1985b149920d25f0f4ff1211833",
-    "windows/host/native_adapter.h": "365be40faff264b46fefd728dbe2c99767d8659c413c7865426ee49db931c887",
+    "windows/host/native_adapter.h": "0939a3f2d48b4430c5573abd12e3e35ed3c41fa8b5cc3ef42c3ad1883976c7eb",
     "windows/host/native_adapter_transport.h": "cd41813e9d9c4c4b7cbf509c8c873d2ed12eb86dad75b7fcbddb50810439b256",
     "windows/host/policy_fault.h": "e89371b994ee4732b4e069b69ab31e6273e13aa6dfc1ff601d957e02ccd4c2f4",
     "windows/host/provider_outbox.h": "cfb7b15a282e22050006dc3de0d094a42b179bccf77894f7ac86c144a3eac4c8",
@@ -166,10 +166,11 @@
     "windows/test-host/crlf-parser/host_crlf_parser_test.cpp": "7aa360c9c963311cf7c071bf0401f0cbe9cd42fe533170ccf8cb602173bbf9a4",
     "windows/test-host/host-disk-contracts.py": "7bd8b36d7b995ff87b21e35d2b9d98bd7a30db4a9fd3dbd60078c6d63110a83e",
     "windows/test-host/host-policy-ipc.py": "55a8e2e535fdf81a14f5a4f8b4c561eec33579b2be1e39a4cf450b381ecdf970",
-    "windows/test-host/host-policy-s4.py": "f7e37f96dfa9ef38ebcd2d9c424e6c37b7f1e4a1a539eff121aa393e022f2c82",
+    "windows/test-host/host-policy-s4.py": "ac5b5753781c3dc66985d12ed2e0f18d764fbc4cb53e36aa9d32845253fdbdf4",
     "windows/test-host/host-policy-test.el": "20346532caa5b4aae417968ce6bc88963630ce8e3625137ba770008e80d328fb",
     "windows/test-host/host-policy.py": "c6cf06f36c8fd5fb5fc29182ef6e48641c35b86072c0719ff03a3c5a9144634f",
-    "windows/test-host/host_policy_unit.cpp": "d032306d7a6721642af61c20771ea0e46e24d47d2d2aea187a4d381d22bc1786",
+    "windows/test-host/host-test-process-guard.py": "85bbe50ce0c9515de42128c05bf6190f196d5c5d0df6e119809023ef122924fc",
+    "windows/test-host/host_policy_unit.cpp": "89fc463865185229f4c9b6016fef2c9374d4f9000b00389048eb95f29f2a961c",
     "windows/test-host/host_utf8_protocol_test.cpp": "0efc6c940d0a66f4937aa05872fbfe76a0e808d18d76f040fe8dcf30ba42f416",
     "windows/test-host/inline-drop-subscriber.py": "d368bcdd285400ded49e38347935279a4c077894b3da1a149e9a25fb506a03b1",
     "windows/test-host/inline-emacs-subscriber.el": "6eb8fba4d4584a5905937f44179b741ee62838a6fe7f18c43ba6a06db9a83275",
@@ -192,8 +193,8 @@
     "windows/test-host/profile-eg1.py": "9b6cb469031a10f1790db3053355fb2d0e6690b459ccad40a08774f175f39944",
     "windows/test-host/report-inline-preedit.py": "d6fe08f17dc253ee29a554e3aa2eb52cdc8d8b12956eb6dc1c541b3de6d51906",
     "windows/test-host/run-engine-host-s2.ps1": "fc5c19f9abe29641a2be698133b9123fdee0071d2c6cef8c636ce2155b820815",
-    "windows/test-host/run-engine-host-s3.ps1": "9fc17a720273c7914860ae98ced60f141b366828e02d2643e7122758680a4a7c",
-    "windows/test-host/run-engine-host-s4.ps1": "938cb76c77acd435d6c91d6b41a9af5d59cbee245b1ab7200e0fe0114a345667",
+    "windows/test-host/run-engine-host-s3.ps1": "b41c58f1ef13fdd4f317c2e8ed4886692cf4d0bc790ca7e5cb83dc100f633b2a",
+    "windows/test-host/run-engine-host-s4.ps1": "eabb03184f407ae3a16737cda5cc3066351113f7cbdf57ceac6c2e47967c6814",
     "windows/test-host/run-harness.ps1": "2822441da93b0d0c17105d112a085cfca04b93786b5cef94fe1502ed2c7b8cb8",
     "windows/test-host/settings-request-probe.cpp": "9b1efd5cd9088664abafa09ea58807f3246a95e93e59cd58dc7d6ea911312810",
     "windows/test-host/sk1-skkserv-fixture.py": "e4e3aa6e58344f56d593cb776b5ba3be08ddaa7c839ec7ed89ade0eb87b53b90",
@@ -219,10 +220,11 @@
     "windows/test-host/test-host-disk-normalization.py": "153722ee9f32a27e090d0907541b90ea0a2971200a54939892af4af658cb17c4",
     "windows/test-host/test-host-policy-callbacks.ps1": "25aa842dae4eb62bf4abb2128f3d3745c070a05084ff9ae6d131eb558808aa7b",
     "windows/test-host/test-host-policy-disk.py": "74f342bdccc253a8befef3430b198786675d478e8611bde85d5b00966144b1aa",
+    "windows/test-host/test-host-policy-inline-control.ps1": "0ff50cf00993edd05c75121a9cb03f618e143b8a8ba44aab34f5e03811ee4099",
     "windows/test-host/test-host-policy-lattice-control.ps1": "f22b92e2df659e9ff3d0d73ec32e4c91e3ceb5c0bf0a3bcdb81b233c8c5a066c",
     "windows/test-host/test-host-policy.ps1": "62e1f4cfb3688429af1afc1130f283caa8b46aa4f72da1375ad90c7d30961c6e",
     "windows/test-host/test-hot-swap.ps1": "50970fb72e3a3b3158e2af2139758b750fb12d38c638034692317d69a5784b71",
-    "windows/test-host/test-inline-preedit.py": "ad253d8617e698886c71f7dceeda5b06cd87c26527136bbe1745e122113cc12a",
+    "windows/test-host/test-inline-preedit.py": "8efa2cabd2ccda5a8b85cbddc64183a1a19185a7f9e4510877b259e5388eac9c",
     "windows/test-host/test-lattice-behavior.ps1": "853a87af94d33c5e1d98d04bd3a693aa838eae06ca95a330f44858350c0cc919",
     "windows/test-host/test-live-host-selection.ps1": "48367548b630c0a246431499a827e5e1433d44c2dbc6f600463dbd62a9b2c74f",
     "windows/test-host/test-live-settings.ps1": "2afcfbd8b49c56c51f2b8c788057d24d034413bcad54575640b8b6ced23d80f3",
@@ -252,7 +254,7 @@
     "windows/test-host/test-scripted-keyboard.ps1": "70df798690e7ff6ebcc3ecd52b74bd76534989b2227dd3fa8449894fe9935146",
     "windows/test-host/test-sk1-provider-relay.ps1": "2d1f0d5c31fae1a3be40c5699e7dee36b1b77eb3a5fd7ba5f41c0aafa814f4e5",
     "windows/test-host/test-sk1-skkserv.ps1": "ecbd135c51431fe9bc3383152ca197a6979147162ebd83e33315552e49a3199c",
-    "windows/test-host/tsf_host.cpp": "c5e09e753f111eb655189cec5a523002f915a8671dcdd16ac877e84c432fee4a",
+    "windows/test-host/tsf_host.cpp": "3894830fda97ea53f000791331acf8f542ebd5a7f7bde750649e56d730a0673d",
     "windows/test-host/verify-host-contracts.py": "fadcdfeaafe48c217da1cc28326d784f5625a5e9118b93693097feecbe887312"
   },
   "inputs": [
@@ -2768,27 +2770,27 @@
     },
     {
       "name": "DDSKK_HOST_POLICY_",
-      "source": "windows/test-host/host-policy-s4.py:28",
+      "source": "windows/test-host/host-policy-s4.py:30",
       "declaration": "h.env.update({f'DDSKK_HOST_POLICY_{name}': '1' for name in SWITCHES})"
     },
     {
       "name": "DDSKK_HOST_POLICY_SHADOW",
-      "source": "windows/test-host/host-policy-s4.py:29",
+      "source": "windows/test-host/host-policy-s4.py:31",
       "declaration": "h.env['DDSKK_HOST_POLICY_SHADOW'] = '0'"
     },
     {
       "name": "NATIVEIME_TEST_HOST_POINT",
-      "source": "windows/test-host/host-policy-s4.py:146",
+      "source": "windows/test-host/host-policy-s4.py:151",
       "declaration": "h.env.update(NATIVEIME_TEST_HOST_POINT=point, NATIVEIME_TEST_HOST_POINT_ROOT=str(marker_root))"
     },
     {
       "name": "NATIVEIME_TEST_HOST_POINT_ROOT",
-      "source": "windows/test-host/host-policy-s4.py:146",
+      "source": "windows/test-host/host-policy-s4.py:151",
       "declaration": "h.env.update(NATIVEIME_TEST_HOST_POINT=point, NATIVEIME_TEST_HOST_POINT_ROOT=str(marker_root))"
     },
     {
       "name": "NATIVEIME_TEST_HOST_POINT",
-      "source": "windows/test-host/host-policy-s4.py:212",
+      "source": "windows/test-host/host-policy-s4.py:244",
       "declaration": "h.env.pop('NATIVEIME_TEST_HOST_POINT')"
     },
     {
@@ -3153,32 +3155,32 @@
     },
     {
       "name": "DDSKK_HOST_POLICY_SHADOW",
-      "source": "windows/test-host/run-engine-host-s3.ps1:56",
+      "source": "windows/test-host/run-engine-host-s3.ps1:63",
       "declaration": "$env:DDSKK_HOST_POLICY_SHADOW=$shadow"
     },
     {
       "name": "DDSKK_HOST_POLICY_SHADOW",
-      "source": "windows/test-host/run-engine-host-s3.ps1:66",
+      "source": "windows/test-host/run-engine-host-s3.ps1:73",
       "declaration": "$env:DDSKK_HOST_POLICY_SHADOW='1'"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/run-engine-host-s3.ps1:67",
+      "source": "windows/test-host/run-engine-host-s3.ps1:74",
       "declaration": "if(-not $env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND){$env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='5'}"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/run-engine-host-s3.ps1:67",
+      "source": "windows/test-host/run-engine-host-s3.ps1:74",
       "declaration": "if(-not $env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND){$env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='5'}"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/run-engine-host-s3.ps1:68",
+      "source": "windows/test-host/run-engine-host-s3.ps1:75",
       "declaration": "$env:DDSKK_HARNESS_DIAGNOSTICS='1'"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/run-engine-host-s3.ps1:93",
+      "source": "windows/test-host/run-engine-host-s3.ps1:100",
       "declaration": "Remove-Item Env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND -ErrorAction SilentlyContinue"
     },
     {
@@ -3223,37 +3225,37 @@
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS",
-      "source": "windows/test-host/run-engine-host-s4.ps1:45",
+      "source": "windows/test-host/run-engine-host-s4.ps1:52",
       "declaration": "Remove-Item Env:NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS -ErrorAction SilentlyContinue"
     },
     {
       "name": "DDSKK_HOST_POLICY_SHADOW",
-      "source": "windows/test-host/run-engine-host-s4.ps1:47",
+      "source": "windows/test-host/run-engine-host-s4.ps1:54",
       "declaration": "$env:DDSKK_HOST_POLICY_SHADOW='0'"
     },
     {
       "name": "DDSKK_HOST_POLICY_",
-      "source": "windows/test-host/run-engine-host-s4.ps1:62",
+      "source": "windows/test-host/run-engine-host-s4.ps1:69",
       "declaration": "$on=$selected -eq 'ALL' -or $name -eq ('DDSKK_HOST_POLICY_'+$selected)"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS",
-      "source": "windows/test-host/run-engine-host-s4.ps1:74",
+      "source": "windows/test-host/run-engine-host-s4.ps1:81",
       "declaration": "$env:NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS='1500'"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS",
-      "source": "windows/test-host/run-engine-host-s4.ps1:87",
+      "source": "windows/test-host/run-engine-host-s4.ps1:94",
       "declaration": "Remove-Item Env:NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/run-engine-host-s4.ps1:101",
+      "source": "windows/test-host/run-engine-host-s4.ps1:108",
       "declaration": "$env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='9'"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/run-engine-host-s4.ps1:126",
+      "source": "windows/test-host/run-engine-host-s4.ps1:130",
       "declaration": "Remove-Item Env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND -ErrorAction SilentlyContinue"
     },
     {
@@ -4312,6 +4314,61 @@
       "declaration": "$env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='9'"
     },
     {
+      "name": "DDSKK_HOST_POLICY_",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:14",
+      "declaration": "$names=@($switches | ForEach-Object {'DDSKK_HOST_POLICY_'+$_})+@("
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_SHADOW",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:15",
+      "declaration": "'DDSKK_HOST_POLICY_SHADOW','DDSKK_HOST_POLICY_TEST_PAUSE_KIND',"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:15",
+      "declaration": "'DDSKK_HOST_POLICY_SHADOW','DDSKK_HOST_POLICY_TEST_PAUSE_KIND',"
+    },
+    {
+      "name": "NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:16",
+      "declaration": "'NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS','HOME')"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:24",
+      "declaration": "[Environment]::SetEnvironmentVariable('DDSKK_HOST_POLICY_'+$switch,"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_SHADOW",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:27",
+      "declaration": "$env:DDSKK_HOST_POLICY_SHADOW=$(if($case -eq 'SHADOW'){'1'}else{'0'})"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:28",
+      "declaration": "[Environment]::SetEnvironmentVariable('DDSKK_HOST_POLICY_TEST_PAUSE_KIND',$PauseKind)"
+    },
+    {
+      "name": "NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:29",
+      "declaration": "Remove-Item Env:NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS -ErrorAction SilentlyContinue"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_SHADOW",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:38",
+      "declaration": "Write-Output \"CASE=$case ITERATION=$iteration PAUSE_KIND=$PauseKind SHADOW=$env:DDSKK_HOST_POLICY_SHADOW\""
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:39",
+      "declaration": "foreach($switch in $switches){Write-Output ('env: DDSKK_HOST_POLICY_'+$switch+'='+[Environment]::GetEnvironmentVariable('DDSKK_HOST_POLICY_'+$switch))}"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:39",
+      "declaration": "foreach($switch in $switches){Write-Output ('env: DDSKK_HOST_POLICY_'+$switch+'='+[Environment]::GetEnvironmentVariable('DDSKK_HOST_POLICY_'+$switch))}"
+    },
+    {
       "name": "DDSKK_HOST_POLICY_SOURCES",
       "source": "windows/test-host/test-host-policy-lattice-control.ps1:9",
       "declaration": "$names=@('DDSKK_HOST_POLICY_SOURCES','DDSKK_HOST_POLICY_CACHE','DDSKK_HOST_POLICY_RESTART',"
@@ -4428,82 +4485,82 @@
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/test-inline-preedit.py:273",
+      "source": "windows/test-host/test-inline-preedit.py:286",
       "declaration": "env['DDSKK_HARNESS_DIAGNOSTICS'] = '1'"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_MAP_DELAY_MS",
-      "source": "windows/test-host/test-inline-preedit.py:281",
+      "source": "windows/test-host/test-inline-preedit.py:294",
       "declaration": "env['NATIVEIME_TEST_LOCAL_MAP_DELAY_MS'] = '3000'"
     },
     {
       "name": "NATIVEIME_TEST_SELECTION_UNAVAILABLE",
-      "source": "windows/test-host/test-inline-preedit.py:285",
+      "source": "windows/test-host/test-inline-preedit.py:298",
       "declaration": "env['NATIVEIME_TEST_SELECTION_UNAVAILABLE'] = '1'"
     },
     {
       "name": "NATIVEIME_TEST_CANDIDATE_CONTROL_FAIL_MS",
-      "source": "windows/test-host/test-inline-preedit.py:287",
+      "source": "windows/test-host/test-inline-preedit.py:300",
       "declaration": "env['NATIVEIME_TEST_CANDIDATE_CONTROL_FAIL_MS'] = '1600'"
     },
     {
       "name": "NELISP_IME_INLINE_DIR",
-      "source": "windows/test-host/test-inline-preedit.py:290",
+      "source": "windows/test-host/test-inline-preedit.py:303",
       "declaration": "env['NELISP_IME_INLINE_DIR'] = str(directory)"
     },
     {
       "name": "NELISP_IME_INPUT_RULES",
-      "source": "windows/test-host/test-inline-preedit.py:302",
+      "source": "windows/test-host/test-inline-preedit.py:315",
       "declaration": "env['NELISP_IME_INPUT_RULES'] = str(rules)"
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/test-host/test-inline-preedit.py:309",
+      "source": "windows/test-host/test-inline-preedit.py:322",
       "declaration": "env['DDSKK_DICTIONARY_FILES'] = str(personal) + ';' + str(source)"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_WORKER_STALL_MS",
-      "source": "windows/test-host/test-inline-preedit.py:310",
+      "source": "windows/test-host/test-inline-preedit.py:323",
       "declaration": "env['NATIVEIME_TEST_LOCAL_WORKER_STALL_MS'] = '5000'"
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/test-host/test-inline-preedit.py:315",
+      "source": "windows/test-host/test-inline-preedit.py:328",
       "declaration": "env['DDSKK_DICTIONARY_FILES'] = str(first) + ';' + str(second)"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_REMAP_DELAY_MS",
-      "source": "windows/test-host/test-inline-preedit.py:316",
+      "source": "windows/test-host/test-inline-preedit.py:329",
       "declaration": "env['NATIVEIME_TEST_LOCAL_REMAP_DELAY_MS'] = '400'"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_MAP_DELAY_MS",
-      "source": "windows/test-host/test-inline-preedit.py:319",
+      "source": "windows/test-host/test-inline-preedit.py:332",
       "declaration": "env['NATIVEIME_TEST_LOCAL_MAP_DELAY_MS'] = '6000'"
     },
     {
       "name": "NATIVEIME_TEST_KEYSTATE_AFTER_TEST",
-      "source": "windows/test-host/test-inline-preedit.py:321",
+      "source": "windows/test-host/test-inline-preedit.py:334",
       "declaration": "env['NATIVEIME_TEST_KEYSTATE_AFTER_TEST'] = '1'"
     },
     {
       "name": "NATIVEIME_TEST_REGISTRATION_WORKER_DELAY_MS",
-      "source": "windows/test-host/test-inline-preedit.py:322",
+      "source": "windows/test-host/test-inline-preedit.py:335",
       "declaration": "env['NATIVEIME_TEST_REGISTRATION_WORKER_DELAY_MS'] = '75'"
     },
     {
       "name": "NATIVEIME_TEST_PROVIDER_PREVIEW_DELAY_MS",
-      "source": "windows/test-host/test-inline-preedit.py:324",
+      "source": "windows/test-host/test-inline-preedit.py:337",
       "declaration": "env['NATIVEIME_TEST_PROVIDER_PREVIEW_DELAY_MS'] = '75'"
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/test-host/test-inline-preedit.py:328",
+      "source": "windows/test-host/test-inline-preedit.py:341",
       "declaration": "env['DDSKK_DICTIONARY_FILES'] = str(source)"
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/test-host/test-inline-preedit.py:330",
+      "source": "windows/test-host/test-inline-preedit.py:343",
       "declaration": "env['DDSKK_DICTIONARY_FILES'] = str(root / 'windows/test-host/data/okuri-jisyo.utf8')"
     },
     {
@@ -5382,133 +5439,138 @@
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) {"
     },
     {
+      "name": "DDSKK_HARNESS_DIAGNOSTICS",
+      "source": "windows/test-host/tsf_host.cpp:1092",
+      "declaration": "L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0) != 0;"
+    },
+    {
       "name": "NATIVEIME_TEST_KEYSTATE_AFTER_TEST",
-      "source": "windows/test-host/tsf_host.cpp:1102",
+      "source": "windows/test-host/tsf_host.cpp:1108",
       "declaration": "if (GetEnvironmentVariableW(L\"NATIVEIME_TEST_KEYSTATE_AFTER_TEST\", modifier_race, 2) &&"
     },
     {
       "name": "NATIVEIME_HARNESS_TSF_OUTPUT",
-      "source": "windows/test-host/tsf_host.cpp:1164",
+      "source": "windows/test-host/tsf_host.cpp:1182",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_HARNESS_TSF_OUTPUT\", path, _countof(path));"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/tsf_host.cpp:1175",
+      "source": "windows/test-host/tsf_host.cpp:1193",
       "declaration": "L\"DDSKK_HARNESS_DIAGNOSTICS\", diagnostics, _countof(diagnostics));"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/tsf_host.cpp:1176",
+      "source": "windows/test-host/tsf_host.cpp:1194",
       "declaration": "SetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", L\"1\");"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/tsf_host.cpp:1212",
+      "source": "windows/test-host/tsf_host.cpp:1230",
       "declaration": "SetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\","
     },
     {
       "name": "NATIVEIME_HARNESS_TSF_OUTPUT",
-      "source": "windows/test-host/tsf_host.cpp:1226",
+      "source": "windows/test-host/tsf_host.cpp:1244",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_HARNESS_TSF_OUTPUT\", path, _countof(path));"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1344",
+      "source": "windows/test-host/tsf_host.cpp:1362",
       "declaration": "wchar_t key_name[256]{}; GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", key_name, 256);"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1347",
+      "source": "windows/test-host/tsf_host.cpp:1365",
       "declaration": "RegOpenKeyExW(HKEY_CURRENT_USER, key_name, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {"
     },
     {
       "name": "DDSKK_PIPE_NAME",
-      "source": "windows/test-host/tsf_host.cpp:1356",
+      "source": "windows/test-host/tsf_host.cpp:1374",
       "declaration": "wchar_t pipe[256]{}; const DWORD n = GetEnvironmentVariableW(L\"DDSKK_PIPE_NAME\", pipe, 256);"
     },
     {
       "name": "DDSKK_PIPE_NAME",
-      "source": "windows/test-host/tsf_host.cpp:1368",
+      "source": "windows/test-host/tsf_host.cpp:1386",
       "declaration": "const DWORD n = GetEnvironmentVariableW(L\"DDSKK_PIPE_NAME\", pipe, 256);"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1409",
+      "source": "windows/test-host/tsf_host.cpp:1427",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", root, _countof(root));"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1416",
+      "source": "windows/test-host/tsf_host.cpp:1434",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", root, _countof(root));"
     },
     {
       "name": "NATIVEIME_TEST_CORE_DIRECTORY",
-      "source": "windows/test-host/tsf_host.cpp:1417",
+      "source": "windows/test-host/tsf_host.cpp:1435",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_CORE_DIRECTORY\", directory, _countof(directory));"
     },
     {
       "name": "NATIVEIME_TEST_CORE_ACTION_SCRIPT",
-      "source": "windows/test-host/tsf_host.cpp:1422",
+      "source": "windows/test-host/tsf_host.cpp:1440",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_CORE_ACTION_SCRIPT\", action_script, _countof(action_script));"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1450",
+      "source": "windows/test-host/tsf_host.cpp:1468",
       "declaration": "LONG status = RegOpenKeyExW(HKEY_CURRENT_USER, root, 0, KEY_SET_VALUE, &key);"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1462",
+      "source": "windows/test-host/tsf_host.cpp:1480",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", root, _countof(root));"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1467",
+      "source": "windows/test-host/tsf_host.cpp:1485",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_READ, &key) != ERROR_SUCCESS) {"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1472",
+      "source": "windows/test-host/tsf_host.cpp:1490",
       "declaration": "RegQueryValueExW(key, L\"mode\", nullptr, nullptr, reinterpret_cast<BYTE*>(mode), &bytes);"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1475",
+      "source": "windows/test-host/tsf_host.cpp:1493",
       "declaration": "RegQueryValueExW(key, name, nullptr, nullptr, reinterpret_cast<BYTE*>(value), &size);"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1484",
+      "source": "windows/test-host/tsf_host.cpp:1502",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", path, _countof(path));"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1487",
+      "source": "windows/test-host/tsf_host.cpp:1505",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {"
     },
     {
       "name": "NATIVEIME_TEST_HOST_PID",
-      "source": "windows/test-host/tsf_host.cpp:1496",
+      "source": "windows/test-host/tsf_host.cpp:1514",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_HOST_PID\", value, _countof(value));"
     },
     {
       "name": "NATIVEIME_TEST_ENGINE_NAME",
-      "source": "windows/test-host/tsf_host.cpp:1501",
+      "source": "windows/test-host/tsf_host.cpp:1519",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_ENGINE_NAME\", engine_name, _countof(engine_name));"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1614",
+      "source": "windows/test-host/tsf_host.cpp:1632",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", private_key, _countof(private_key));"
     },
     {
       "name": "DDSKK_PIPE_NAME",
-      "source": "windows/test-host/tsf_host.cpp:1615",
+      "source": "windows/test-host/tsf_host.cpp:1633",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_PIPE_NAME\", private_pipe, _countof(private_pipe));"
     },
     {
       "name": "DDSKK_HARNESS_DLL_PATH",
-      "source": "windows/test-host/tsf_host.cpp:1616",
+      "source": "windows/test-host/tsf_host.cpp:1634",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_HARNESS_DLL_PATH\", private_dll, _countof(private_dll));"
     }
   ],
@@ -6662,43 +6724,43 @@
       "declaration": "WaitForSingleObject(g_child.process, 0) == WAIT_TIMEOUT) {"
     },
     {
-      "source": "windows/host/native_adapter.h:112",
+      "source": "windows/host/native_adapter.h:118",
       "declaration": "bool healthy_ = false; // guarded by mutex_; cleared on timeout/crash/retirement"
     },
     {
-      "source": "windows/host/native_adapter.h:158",
+      "source": "windows/host/native_adapter.h:164",
       "declaration": "void Timeout(const Observation& value) {"
     },
     {
-      "source": "windows/host/native_adapter.h:182",
+      "source": "windows/host/native_adapter.h:188",
       "declaration": "TerminateProcess(process_, 1); WaitForSingleObject(process_, 5000);"
     },
     {
-      "source": "windows/host/native_adapter.h:231",
+      "source": "windows/host/native_adapter.h:237",
       "declaration": "bool Line(std::string& line, DWORD timeout) {"
     },
     {
-      "source": "windows/host/native_adapter.h:232",
+      "source": "windows/host/native_adapter.h:238",
       "declaration": "line.clear(); const auto deadline = GetTickCount64() + timeout;"
     },
     {
-      "source": "windows/host/native_adapter.h:233",
+      "source": "windows/host/native_adapter.h:239",
       "declaration": "while (!stop_ && !g_stopping && GetTickCount64() < deadline) {"
     },
     {
-      "source": "windows/host/native_adapter.h:234",
+      "source": "windows/host/native_adapter.h:240",
       "declaration": "if (WaitForSingleObject(process_, 0) != WAIT_TIMEOUT) return false;"
     },
     {
-      "source": "windows/host/native_adapter.h:272",
+      "source": "windows/host/native_adapter.h:279",
       "declaration": "if (WaitForSingleObject(process_, 0) != WAIT_TIMEOUT) break;"
     },
     {
-      "source": "windows/host/native_adapter.h:301",
+      "source": "windows/host/native_adapter.h:308",
       "declaration": "Timeout(v);"
     },
     {
-      "source": "windows/host/native_adapter.h:303",
+      "source": "windows/host/native_adapter.h:310",
       "declaration": "LogEvent(\"policy-timeout-discard request=\" + std::to_string(id));"
     },
     {
@@ -7850,6 +7912,14 @@
       "declaration": "p.wait(timeout=10)"
     },
     {
+      "source": "windows/test-host/host-policy-s4.py:163",
+      "declaration": "def evidence(predicate, timeout):"
+    },
+    {
+      "source": "windows/test-host/host-policy-s4.py:174",
+      "declaration": "s3.until(check, timeout)"
+    },
+    {
       "source": "windows/test-host/host-policy.py:24",
       "declaration": "def until(predicate, timeout=60):"
     },
@@ -7874,7 +7944,7 @@
       "declaration": "until(lambda: log(h).count('policy-timeout-discard') > timeout_count, 2)"
     },
     {
-      "source": "windows/test-host/host_policy_unit.cpp:59",
+      "source": "windows/test-host/host_policy_unit.cpp:61",
       "declaration": "policy.Timeout(other);"
     },
     {
@@ -8354,39 +8424,39 @@
       "declaration": "Require ($hostProcess.WaitForExit(5000)) 'Shutdown did not terminate host'"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:122",
+      "source": "windows/test-host/test-inline-preedit.py:135",
       "declaration": "listener.settimeout(.2)"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:158",
+      "source": "windows/test-host/test-inline-preedit.py:171",
       "declaration": "except socket.timeout:"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:161",
+      "source": "windows/test-host/test-inline-preedit.py:174",
       "declaration": "conn.settimeout(.2)"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:166",
+      "source": "windows/test-host/test-inline-preedit.py:179",
       "declaration": "except socket.timeout:"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:264",
+      "source": "windows/test-host/test-inline-preedit.py:277",
       "declaration": "'-ArtifactDirectory', str(artifacts), '-TsfHostTimeoutSec', '90']"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:345",
+      "source": "windows/test-host/test-inline-preedit.py:358",
       "declaration": "stdout, stderr = harness.communicate(timeout=240)"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:346",
+      "source": "windows/test-host/test-inline-preedit.py:359",
       "declaration": "except subprocess.TimeoutExpired:"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:362",
+      "source": "windows/test-host/test-inline-preedit.py:375",
       "declaration": "except subprocess.TimeoutExpired:"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:368",
+      "source": "windows/test-host/test-inline-preedit.py:381",
       "declaration": "except subprocess.TimeoutExpired:"
     },
     {
@@ -8562,11 +8632,11 @@
       "declaration": "while (physical_modifiers() && GetTickCount64() < deadline) PumpMessages(5);"
     },
     {
-      "source": "windows/test-host/tsf_host.cpp:1433",
+      "source": "windows/test-host/tsf_host.cpp:1451",
       "declaration": "const DWORD wait = WaitForSingleObject(process.hProcess, 15000);"
     },
     {
-      "source": "windows/test-host/tsf_host.cpp:1435",
+      "source": "windows/test-host/tsf_host.cpp:1453",
       "declaration": "if (wait != WAIT_OBJECT_0) { TerminateProcess(process.hProcess, 1); WaitForSingleObject(process.hProcess, 5000); }"
     }
   ],

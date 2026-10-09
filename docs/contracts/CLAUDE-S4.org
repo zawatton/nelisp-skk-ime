@@ -137,3 +137,202 @@ immediately. Missing large-dictionary input is a failed diagnostic input and
 cannot qualify its two gates. No threshold or existing assertion is relaxed.
 Follow-up commands, outputs, counts and remaining failures are recorded in
 build/w/EH4-followup-validation.md, separately from the historical receipt.
+
+* Recovery3 / EndToEnd3 follow-up (2026-10-09, after 85f587d)
+Claude reported a main/native switches-OFF lattice control failing 2/2:
+provider control exceeds 20 ms and warm first candidate exceeds 150 ms.
+The user authorized excluding this known-red test from S4 acceptance.
+The runner prints KNOWN_RED with this evidence; the standalone test and all
+its assertions remain intact. Lattice ERT still runs. The worker did not run
+those main controls; EndToEnd3 itself happened to pass lattice (17 assertions).
+
+The two 100-sample FAIL publication lines in Recovery3/EndToEnd3 are the
+intentional percentile controls, not positive timing failures. They now print
+CONTROL expected rejection, including both ID loss/order controls (4/4).
+Recovery3 positive publication passed: 21 intents, p99/max 47 ms; 20 learning
+samples, p99/max 456.5262 ms. The real 1500 ms stall rejection remains required.
+
+Recovery3 matrix passed 35 cases before cursor-flushed/policy/crash failed.
+Exact failure artifact: build/w/eh2-0c7d1b2908c7454b9d912983566fcd58.
+Its host.log jumps from 04:38:01Z to 05:46:07Z during startup. No outbox,
+watermark or S4_POINT evidence exists. The old receipt did not record request
+phase or client errors, so the exact blocked setup request cannot be inferred.
+The unchanged isolated case passed with provider ID 1 recovered, zero loss,
+and all four children reaped (build/w/eh4-cursor-reproduce.log).
+The old marker deadline included OPEN/PREPARE/first SPACE. Preparation now
+has a separate 60-second bounded wait; the marker wait remains 10 seconds.
+A STATE reply can precede the background cursor write: completion of the
+client thread does not terminate that marker wait. On failure s4-failure.json
+records phase, replies, errors and prepared state. No learning commit is
+retried. Publication p99 <=500 ms / max <=1000 ms are unchanged.
+A real 11-second delay before COMMIT fails the unchanged harness's marker
+wait but passes the corrected harness with provider ID 1 recovered. Logs:
+build/w/eh4-old-setup-control-final.log and eh4-delayed-setup-final.log.
+This focused evidence does not qualify the unrun complete 63-case Recovery.
+
+Recovery3's final leftover PIDs 12156 and 35368 are unrelated applications.
+Read-only NtQueryInformationProcess attribution identifies M365 boot.el and
+Anvil mcp-bootstrap.el outside this worktree; neither is an EH4 child.
+The process guard now excludes verified outside-tree executables/Elisp scripts
+and retains IME loaders, unknown command lines and denied queries as failures.
+It never terminates a process. Existing job-owned handle cleanup remains.
+All runners still require one stack; MatrixWorkers is fixed at 1.
+
+EndToEnd3 existing-end-to-end fails because its nested inline-emacs failed.
+Full host trace: build/w/s3-gates-2752bd42b7b64473b4afc7c97797eb1d/inline-emacs/harness-9ce368acf74a/tsf.stdout.log.
+The first CTRLG has control=1 but enters provider-accept-and-queue and sends
+COMMIT (seq=7/control=3), inserting extra 仮名. Expected document is
+あい蚊消えるカナ佳奈 (10 units); actual is あい蚊消える仮名カナ佳奈 (12).
+There is no build/rules/Release/input-rules-host.exe in this tree; S3 already
+passes build/w/Release/tsf-host.exe explicitly. COREKEY version=production
+is the normal DLL label, not evidence of a stale host. Current build is up
+to date. Worker reproduction is denied at private HKCU creation, before any
+engine stack starts (build/w/eh4-inline-reproduce.log). The Ctrl-G routing
+and deferred key implementation reside in windows/src/text_service.cpp,
+outside the authorized scope. No core fix, expected-text change, or inline
+acceptance exclusion is made here. Claude must diagnose/fix that core path
+in a separately authorized lane. ContinueOnFailure keeps the failure and
+runs the remaining EndToEnd gates; it never produces acceptance on failures.
+
+Exact coordinator rerun commands (inputs supplied via environment):
+#+begin_src powershell
+python windows/test-host/verify-host-contracts.py
+python windows/test-host/host-policy-s4.py matrix --host build/w/Release/ddskk-engine-host.exe --runtime $env:EH4_RUNTIME --build-dir build/w --cold-load-sleep-sec 45 --engine ddskk --points cursor-flushed --targets policy --actions crash --workers 1
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -MatrixWorkers 1 -Stage Recovery
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $env:EH4_RUNTIME --artifacts build/w/inline-current --case emacs --cold-load 45 --repository .
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -MatrixWorkers 1 -Stage EndToEnd -LargeDictionary $env:EH4_LARGE_DICTIONARY -ContinueOnFailure
+#+end_src
+Run these sequentially; inspect cleanup before starting the next command.
+Current worker command/tail/count receipt: build/w/EH4-recovery3-validation.md.
+
+Current worker serial EndToEnd continuation finished with outer passed=4,
+failures=3 (exit 1), nested S3 passed=7/failures=15. All 15 nested failures
+are private HKCU barriers; ctest wrappers are blocked 10/10. Passing native
+checks: sessions 17; learning 16; learning-crash 15; provider-outbox 18;
+SK1 provider relay 20 (two modes); policy isolation 801 cached requests,
+max 0.5483 ms, publication 383.3191 ms; soak 32 clients/100000 requests/20
+controls, max 19.3172 ms. Outer multi-client passes 8 clients/80 conversions/
+80 acknowledged IDs/lost=0; ERT passes 31/31 and 14/14. Callback probe/control
+are blocked, not qualified. Logs: build/w/eh4-end-to-end-followup.log,
+s3-gates-1824de1a350e40308c624b2867a88124, and
+s4-gates-d3e3455d90a7419a829518dd21ceb0a8. All worker-started hosts/runtimes
+exited; no background test jobs remain. Process attribution controls pass
+9 cases plus both actual runner Gate functions reject unknown PID controls
+and permit a verified unrelated runtime. Inventory verification passes 253
+sources, 140 replies, 8 disk files, EOL controls=2 and corruption control=1.
+
+* Inline authoritative-ON investigation (2026-10-09; supersedes core attribution above)
+Claude's same-build OFF control passes (build/claude-verify-eh4/inline-off.log),
+and Claude reports main also passes. The earlier statement that a separate
+core lane must fix this is withdrawn: the authoritative-ON failure must be
+isolated by host policy responsibility before attributing it to a core defect.
+No causal production fix is claimed in this investigation yet.
+
+The saved failing ON trace has no replacement-published or policy-compare
+mismatch, and the host receives V2 CONTROL COMMIT at the first Ctrl-G. Only
+source kind 2 and learning kind 6 have consumed-authority rows during the
+script. This narrows the recorded decision activity, but does not identify
+which switch reproduces the failure. Seed traffic and the policy process can
+also change timing. The new policy-authoritative-difference counter reports
+actual consumed answers unequal to native decisions; unlike reply comparison,
+it detects a stale/aliased memo result. Its logging stays on the policy worker,
+with only atomic accounting on callers. Unit checks pass 31/31, including
+valid differing authority and disabled-switch controls. This is diagnostic
+instrumentation, not a fallback-to-equality change or a claimed fix.
+
+The targeted inline regression requires both settled Ctrl-G steps to preserve
+あい蚊消える and forbids a provider COMMIT in either cancellation interval.
+It rejects the actual saved ON trace at Ctrl-G 1. Synthetic valid two-step
+cancel passes; missing evidence and changed document controls are rejected.
+The existing final ten-unit document and callback thresholds remain intact.
+
+Worker single-switch bisect: OFF/SOURCES/CACHE/RESTART/PUBLICATION/LEARNING/
+ALL/SHADOW all BLOCKED at private HKCU creation, before any engine host starts.
+Logs: build/w/eh4-inline-switches.log and eh4-inline-switches-final.log.
+These are not switch PASS/FAIL results. No responsibility is identified yet.
+The coordinator's result is required before choosing a causal production fix.
+The serial helper prints every exact switch environment and command, captures
+consumed kind/difference/mismatch/replacement evidence and refuses a following
+stack if owned/unknown processes remain. SHADOW enables no authority switch;
+it separates native decision behavior with a policy process from authority.
+PauseKind defaults empty; repeat with 9 to reproduce S4's private pause fault.
+
+Coordinator commands, sequential only (finish any current bisect before
+rebuilding its executable):
+#+begin_src powershell
+cmake --build build/w --config Release --target ddskk-engine-host --parallel 1
+pwsh -NoProfile -File windows/test-host/test-host-policy-inline-control.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45
+pwsh -NoProfile -File windows/test-host/test-host-policy-inline-control.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45 -PauseKind 9
+#+end_src
+
+Exact standalone SOURCES-only inline command; substitute CACHE, RESTART,
+PUBLICATION or LEARNING for the single assignment to bisect manually:
+#+begin_src powershell
+foreach ($switch in @('SOURCES','CACHE','RESTART','PUBLICATION','LEARNING')) {
+  [Environment]::SetEnvironmentVariable('DDSKK_HOST_POLICY_'+$switch,'0')
+}
+$env:DDSKK_HOST_POLICY_SOURCES='1'
+$env:DDSKK_HOST_POLICY_SHADOW='0'
+Remove-Item Env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND -ErrorAction SilentlyContinue
+Remove-Item Env:NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS -ErrorAction SilentlyContinue
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/test-inline-preedit.py --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --engine-host build/w/Release/ddskk-engine-host.exe --runtime $env:EH4_RUNTIME --artifacts build/w/inline-SOURCES-only --case emacs --cold-load 45 --repository .
+#+end_src
+For the S4 pause variant set DDSKK_HOST_POLICY_TEST_PAUSE_KIND=9 before that
+command. Keep original thresholds. Return results.json and the full failing
+case's tsf.stdout.log, host.stderr.log and DDSKK/host.log; the final document
+alone cannot distinguish policy output from timing-induced routing changes.
+
+* SHADOW-only follow-up (EH4, 2026-10-09)
+
+Claude's serial evidence in build/claude-verify-eh4/inline-bisect.log and
+build/w/inline-policy-control-2d9ac71c5f8148689ed71c896d298b3b supersedes the
+pending bisect above: OFF, SOURCES, CACHE, RESTART, PUBLICATION, LEARNING and
+ALL pass. ALL consumes policy answers with zero native differences. SHADOW
+alone fails Ctrl-G. Worker replay of the existing cancel predicate against
+all eight full tsf.stdout.log traces accepts seven and rejects SHADOW.
+This is recorded evidence, not eight newly executed integration tests.
+
+The transport hypothesis is contradicted by the failed trace:
+- SHADOW/harness-93070ca19e2e/tsf.stdout.log:224 translates captured Ctrl-G
+  to U+0007 (source=test), then :225 selects provider-accept-and-queue.
+- host.stderr.log:238 already receives V2 CONTROL COMMIT, not CANCEL;
+  :239 dispatches the same COMMIT to the engine. No host rewrite occurs.
+- DDSKK/host.log contains zero mismatches, zero replacements and ten
+  submitted observations (one startup timeout/late discard, nine matches).
+- windows/host/native_adapter.h:66 returns the caller's native decision
+  unconditionally for nonauthoritative kinds; the policy child has its own
+  private pipes and receives only numeric HP1 fields/audit fingerprints.
+- windows/src/text_service.cpp:2677 obtains control_down independently of
+  the captured keyboard snapshot used for translation (:2566). The branch
+  at :2946 excludes ctrl_g, so the failing branch implies ctrl_g=false.
+  The matching key's U+0007 translation and failed Ctrl-G routing show
+  inconsistent event interpretation inside the provider, before transport.
+
+This identifies the observed divergence, not the reason the live modifier
+read differs. One SHADOW failure correlates with that mode; it does not prove
+the host policy consumes/reorders controls. A host workaround that rewrites
+COMMIT cannot distinguish a real Enter/ordinary-key accept and would corrupt
+legitimate input/learning. No causal production fix is claimed. The likely
+corrective routing/snapshot change is in prohibited windows/src, so EH4
+stops before modifying that area, as required by the file-scope prohibition.
+
+Allowed diagnostic changes: tsf_host.cpp logs read-only Ctrl state before
+TestKeyDown, after TestKeyDown, before KeyDown and after KeyDown, emitted only
+after callbacks. It does not set/repair state beyond the existing harness
+behavior. RepeatCount in the serial helper keeps separate SHADOW-01/02/03
+directories and checks process cleanup between cases. Existing cancel
+regression/thresholds remain intact. Worker SHADOW reproduction before edits
+and three repeats after the diagnostic build are blocked at private HKCU
+creation, before any host starts; no started IME processes remain.
+
+Commands and verbatim tails are in build/w/EH4-shadow-validation.md.
+Coordinator commands, one stack at a time:
+#+begin_src powershell
+cmake --build build/w --config Release --target tsf-host --parallel 1
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); pwsh -NoProfile -File windows/test-host/test-host-policy-inline-control.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45 -Cases SHADOW -RepeatCount 3
+#+end_src
+The helper explicitly sets all five S4 switches to 0, SHADOW=1, clears the
+inherited pause/stall controls and supplies this build's tsf-host.exe. Return
+results.json and full failing tsf.stdout.log/DDSKK/dll-debug.log/host.stderr.log,
+especially the KEYSTATE token=CTRLG boundary rows. No evidence is discarded
+if some repetitions pass and others fail.

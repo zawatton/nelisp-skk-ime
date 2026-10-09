@@ -21,6 +21,13 @@ function Gate([string]$name,[string]$exe,[string[]]$arguments) {
   Get-Content -LiteralPath $log -Tail 8
   $remaining=@(Get-Process nelisp,ddskk-engine-host,tsf-host -ErrorAction SilentlyContinue |
     Where-Object {$before -notcontains $_.Id})
+  if($remaining.Count){
+    $attribution=& python (Join-Path $PSScriptRoot 'host-test-process-guard.py') --root $root @($remaining.Id)
+    if($LASTEXITCODE -ne 0){throw "Process attribution failed after $name"}
+    $owned=$attribution | ConvertFrom-Json
+    if($owned.external.Count){Write-Output "GUARD unrelated processes left untouched: $($owned.external -join ',')"}
+    $remaining=@($remaining | Where-Object {$owned.remaining -contains $_.Id})
+  }
   if($remaining.Count){throw "Refuse next stack: new IME processes remain after $name ($($remaining.Id -join ','))"}
   if($code -ne 0){
     $failure="FAIL $name exit=$code log=$log"

@@ -46,7 +46,9 @@ struct ShadowPolicyTest {
     for (uint64_t i = 0; i < 100; ++i) { diagnostic.b = i; policy.Remember(diagnostic, 0); }
     check(policy.decisions_.size() == 1); // Shadow traffic cannot evict authority.
     check(policy.Decide(v) == 2);
+    check(policy.divergent_[static_cast<unsigned>(PolicyKind::Sources)] == 1);
     policy.switches_[0] = false; check(policy.Decide(v) == 1);
+    check(policy.divergent_[static_cast<unsigned>(PolicyKind::Sources)] == 1);
     policy.switches_[0] = true;
     auto changed = v; changed.engine_epoch++; check(policy.Decide(changed) == 1);
     changed = v; changed.publication_generation++; check(policy.Decide(changed) == 2);

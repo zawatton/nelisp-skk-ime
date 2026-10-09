@@ -24,6 +24,13 @@ function Gate([string]$name,[string]$exe,[string[]]$arguments) {
   $code=$LASTEXITCODE;Get-Content -LiteralPath $log -Tail 8
   $remaining=@(Get-Process nelisp,ddskk-engine-host,tsf-host -ErrorAction SilentlyContinue |
     Where-Object {$before -notcontains $_.Id})
+  if($remaining.Count){
+    $attribution=& python (Join-Path $PSScriptRoot 'host-test-process-guard.py') --root $root @($remaining.Id)
+    if($LASTEXITCODE -ne 0){throw "Process attribution failed after $name"}
+    $owned=$attribution | ConvertFrom-Json
+    if($owned.external.Count){Write-Output "GUARD unrelated processes left untouched: $($owned.external -join ',')"}
+    $remaining=@($remaining | Where-Object {$owned.remaining -contains $_.Id})
+  }
   if($remaining.Count){throw "Refuse next stack: new IME processes remain after $name ($($remaining.Id -join ','))"}
   if($code -ne 0){
     $failure="FAIL $name exit=$code log=$log"
@@ -100,10 +107,7 @@ try {
     }
     $env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='9'
     $bin=Join-Path $root "$BuildDir/Release"
-    Gate 'lattice-behavior' 'pwsh' @('-NoProfile','-File',(Join-Path $PSScriptRoot 'test-lattice-behavior.ps1'),
-      '-RepositoryPath',$root,'-DllPath',(Join-Path $bin 'ddskk-ime.dll'),
-      '-TsfHostExe',(Join-Path $bin 'tsf-host.exe'),'-EngineHostPath',(Join-Path $bin 'ddskk-engine-host.exe'),
-      '-EngineExecutablePath',$Runtime,'-ColdLoadSleepSec',"$ColdLoadSleepSec")
+    Write-Output 'KNOWN_RED excluded lattice-behavior: Claude main/native switches-OFF control failed 2/2 (provider control >20 ms; warm first candidate >150 ms). Evidence: docs/contracts/CLAUDE-S4.org. Standalone test and thresholds retained; exclusion authorized 2026-10-09.'
     $existing=@('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-engine-host-s3.ps1'),
       '-Runtime',$Runtime,'-BuildDir',$BuildDir,'-ControlBuildDir',$ControlBuildDir,
       '-Stage','EndToEnd')

@@ -514,7 +514,12 @@ and retains separate command logs under the selected build directory:
 - EndToEnd: the entire existing S3 end-to-end stage with every authority
   switch ON and kind-9 Lisp pauses; eight concurrent clients perform 80
   conversions and 80 acknowledged local learning operations; stateline and
-  lattice ERT run separately. test-lattice-behavior is also required. The private
+  lattice ERT run separately. As authorized on 2026-10-09,
+  test-lattice-behavior is excluded from S4 acceptance as known-red: Claude's
+  main/native switches-OFF control failed 2/2 (provider control >20 ms and
+  warm first candidate >150 ms). This is coordinator-reported evidence;
+  EH4 cannot repeat the TSF control because private HKCU creation is denied.
+  The standalone gate and its thresholds remain intact. The private
   TSF callback IO probe hooks the IME modules' pipe and wait imports and
   counts only OnTestKeyDown/OnKeyDown/OnKeyUp on the calling thread, excluding
   worker IO and message pumps. It requires actual import coverage, zero
@@ -534,6 +539,45 @@ IDs, and checks idempotent local retry. It never retries provider COMMIT.
 Both lost and reversed acknowledged-ID controls must fail; corrupted expected
 policy output must fail the same IPC equivalence check. Existing malformed
 framing, index corruption, stage/outbox/storage-refusal controls remain in use.
+
+Recovery3 stopped at cursor-flushed/policy/crash after 35 passing cases.
+Its failed private directory contains neither outbox nor cursor evidence;
+the engine and policy startup log has a 68-minute gap. The unchanged isolated
+case recovered provider ID 1 with zero acknowledged-ID loss. The previous
+10-second marker deadline also included OPEN/PREPARE/first SPACE, although
+policy readiness does not establish engine readiness. The harness now waits
+up to 60 seconds for preparation separately, then retains the 10-second
+rendezvous deadline. Preparation does not commit or retry learning. Failure
+records include the exact request phase, replies, errors and artifact path.
+Synthetic percentile/ID negative controls print CONTROL expected rejection;
+real positive gate failures continue to print FAIL. Publication bounds stay
+p99 <=500 ms and max <=1000 ms.
+
+The inline cancellation diagnosis remains open: Claude's same-build native
+OFF control passes, and Claude reports main passes. This supersedes the
+earlier worker attribution to an independent core issue. The serial
+test-host-policy-inline-control.ps1 selects each responsibility independently,
+with OFF/ALL/SHADOW controls and optional kind-9 pause injection. All eight
+worker attempts are blocked by private HKCU creation, so no switch is yet
+identified as causal. The targeted inline check requires both keyboard-quit
+steps to preserve the document and rejects a provider COMMIT in either step.
+Actual consumed policy/native differences have a separate diagnostic counter
+written by the policy worker; reply equivalence alone does not detect a memo
+alias. No causal production fix or inline acceptance is claimed yet.
+
+Claude's subsequent serial bisect (inline-policy-control-2d9ac71c5f8148689ed71c896d298b3b)
+passes OFF, every individual S4 switch and ALL (consumed answers differ from
+native zero times); only SHADOW fails. The failed trace selects
+provider-accept-and-queue before the host receives V2 CONTROL COMMIT; all
+shadow comparisons match and no replacement occurs. The captured key
+translates to U+0007 while routing treats it as an ordinary key. This locates
+the observed divergence before host transport; it does not establish why
+the modifier state differs or make a shadow scheduling workaround a fix.
+The private TSF harness now logs modifier state around each callback without
+repairing it. The serial helper's RepeatCount preserves separate artifacts.
+Three worker repeats remain blocked at private HKCU creation. Correcting the
+core control-routing/snapshot code would exceed EH4's windows/host scope;
+no such change or production shadow fix is claimed.
 
 The unchanged-tree source verifier passed 140 responses/8 disk files/239
 sources. An in-memory alternate-EOL reproduction then failed all 239 raw source

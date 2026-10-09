@@ -1088,9 +1088,15 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   }
 
   BOOL eaten = FALSE;
+  const bool key_state_diagnostics = GetEnvironmentVariableW(
+      L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0) != 0;
+  const bool control_before_test = key_state_diagnostics && (GetKeyState(VK_CONTROL) & 0x8000) != 0;
   const auto started = std::chrono::steady_clock::now();
   HRESULT hr = test_down(&eaten);
   const auto tested = std::chrono::steady_clock::now();
+  const bool control_after_test = key_state_diagnostics && (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+  bool control_before_down = control_after_test, control_after_down = control_after_test;
+  bool injected_modifier_change = false;
   auto completed = tested;
   const bool claimed = SUCCEEDED(hr) && eaten;
   if (FAILED(hr)) {
@@ -1103,16 +1109,28 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
         modifier_race[0] == L'1') {
       BYTE changed[256]{};
       SetKeyboardState(changed);
+      injected_modifier_change = true;
       std::printf("KEYSTATE_AFTER_TEST injected=1 token=%s\n", Utf8FromWide(token).c_str());
     }
     eaten = FALSE;
+    control_before_down = key_state_diagnostics && (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     hr = down(&eaten);
     completed = std::chrono::steady_clock::now();
+    control_after_down = key_state_diagnostics && (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     SetKeyboardState(state);
     if (FAILED(hr)) PrintHr("KeyDown", hr);
     std::printf("KEYDOWN vk=%02X eaten=%d\n", key.vk, eaten);
   } else {
     std::printf("TESTKEYDOWN vk=%02X eaten=0 (key not claimed)\n", key.vk);
+  }
+  if (key_state_diagnostics) {
+    // Sample without repairing state, pumping messages or synthesizing input.
+    // Print after callbacks; preserve the callback's observed state.
+    std::printf("KEYSTATE token=%s scripted_ctrl=%d before_test_ctrl=%d "
+                "after_test_ctrl=%d before_down_ctrl=%d after_down_ctrl=%d injected=%d\n",
+                Utf8FromWide(token).c_str(), key.ctrl, control_before_test,
+                control_after_test, control_before_down, control_after_down,
+                injected_modifier_change);
   }
   const auto test_us = std::chrono::duration_cast<std::chrono::microseconds>(
       tested - started).count();
