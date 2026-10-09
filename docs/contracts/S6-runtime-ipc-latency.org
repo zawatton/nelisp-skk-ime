@@ -1,0 +1,193 @@
+#+TITLE: S6 exact Windows runtime HP1 latency diagnosis
+#+DATE: 2026-10-10
+
+* Result and ownership
+The transport does not have a 150--300 ms fixed floor. On the supplied image,
+an unparsed one-byte echo with no newline and no EOF has median 0.0423 ms,
+maximum 0.1695 ms. The red HP1 distribution consists of expensive interpreted
+string/regexp work plus synchronous mid-form collection pauses. The decision
+cond itself is cheap. No NeLisp runtime file was modified.
+
+Runtime SHA256:
+=3fb43697a8bf01e10bc993c468365489ef98a30d5acbe05206f9e9faefdde3db=.
+The unchanged ef7e2e8 policy SHA256 is
+=0cceb29920adf11ccfea9bbb7541356ec8ab47e0495a6087c0afd1400b84c2f0=.
+Each diagnostic process is launched suspended, assigned to an anonymous
+kill-on-close Job Object, resumed, and waited before launching another.
+No engine host, TSF client, registry write or public endpoint is used.
+
+The in-repo fix replaces HP1 regexp splitting/validation with a bounded ASCII
+scan in engine/host-policy.el, preserving decimal conversion, copied reply
+IDs (including leading zeros), kind/context validation, partial/batched frames,
+4096-character frame and 2048-character context limits, and private pause hooks.
+The pause-kind comparison still uses its raw original decimal spelling.
+It does not disable GC, adjust memory/latency thresholds, or change decisions.
+
+* Serial measurement results
+All rows below are exact Windows runtime results, not GNU Emacs tests.
+Ordinary HP1 baseline, host-windows-s6.py, one launch/100 replies:
+p50 43.2794 / p99 140.1334 / max 140.4036 ms (FAIL).
+
+Uninstrumented component probes, 30 exchanges per independently launched loop:
+| Work before echo | p50 ms | p99=max ms |
+|------------------+--------+------------|
+| Nothing; 1 byte, no LF/EOF | 0.0423 | 0.1695 |
+| Nothing; 32 bytes, no LF/EOF | 0.0326 | 0.1581 |
+| Nothing; 4096 bytes, no LF/EOF | 0.0405 | 0.2174 |
+| string-match newline and split-string | 5.0475 | 93.7432 |
+| Only string-match newline | 4.8799 | 88.6710 |
+| Only split-string on a space | 6.4522 | 89.5296 |
+| Eight anchored decimal regexp validations | 36.7880 | 144.3012 |
+| The kind-1 decision cond | 0.1142 | 0.4941 |
+| Copied-ID mapconcat/concat/number formatting | 1.6294 | 2.3908 |
+
+The initial source/clock probe of the full old policy had p50 43.4968 /
+p99=max 218.4387 ms. Lisp work between return from read and beginning the
+response write measured p50 40.2350 / max 180.0492 ms. The apparent write-call
+interval had max 103.3378 ms: this interval includes evaluator/collector work
+around the primitive, not just kernel WriteFile or a flush operation.
+
+After the final ASCII-parser fix, unchanged host-windows-s6.py ran three fresh
+launches, 100 replies each, with NORMAL GC:
+| Launch | p50 ms | p99 ms | max ms |
+|--------+--------+--------+--------|
+| 1 | 6.6785 | 79.1125 | 93.0759 |
+| 2 | 7.0879 | 82.6845 | 112.5291 |
+| 3 | 7.3624 | 90.5995 | 93.5692 |
+The 10 ms p99 / 50 ms max budget is unchanged and remains FAIL. The partial
+fix removes much of the ordinary work; it cannot qualify the runtime tail.
+
+* Clock split and causal collector control
+The diagnostic records float-time immediately before read, after read,
+before response write and after write. Python records time.time at send and
+raw os.read arrival, plus perf_counter for roundtrip and send durations.
+Python does not wait for a newline: it consumes the known response byte count.
+The timing record is emitted AFTER the response and is excluded from response
+roundtrip. Its cost can affect the next read-wakeup interval, so raw echo and
+uninstrumented host-windows-s6.py remain the transport/budget references.
+
+This image's float-time has approximately millisecond granularity. Sub-ms
+cross-clock differences can be negative (observed down to approximately
+-0.6 ms); do not interpret those as negative wakeup latency. The clock split
+locates tens/hundreds of milliseconds; it does not promise microsecond
+precision or isolate time spent inside the kernel write from GC at that call.
+
+Old-policy replay from ef7e2e8 with collector telemetry, 30 exchanges:
+- NORMAL GC: p50 41.6034 / max 197.5651 ms. Exchanges 1, 14 and 26 measured
+  197.565, 153.990 and 138.118 ms respectively, with mid-form-fired counters
+  0->1, 1->2 and 2->3. Lisp-work median 39.0205 ms; read-call max 1.0009 ms;
+  Python send max 0.0133 ms. Write-window max 88.6312 ms occurred in a frame
+  whose collector counter advanced.
+- Diagnostic GC-disarmed control: zero mid-form-counter increments; no
+  distinct collector spike, but median work increased to 101.4801 ms and
+  max 112.3338 ms. Disabling collection also changes allocation/reuse behavior
+  and is neither a performance fix nor an acceptance result.
+
+New-parser telemetry, 100 exchanges with NORMAL GC:
+exchanges 4 and 48 measured 91.0578 and 98.8679 ms, with mid-form-fired
+counters 0->1 and 1->2. All other exchanges stayed below 50 ms. These two
+slow frames spent 90.9479 and 98.3603 ms in the Lisp-work window. Read-call
+max 1.0152 ms and write-window max 1.1086 ms exclude a pipe wake/flush floor.
+With boundary AND mid-form collection disarmed in the finite diagnostic only,
+there were no counter increments and max roundtrip was 19.4952 ms. Median
+roundtrip rose to 13.3753 ms; that control still does not qualify the budget.
+
+Switch 7 alone does NOT disable mid-form collection in this image. A first
+control using only switch 7 reproduced the same slow exchange (55) in both
+runs. Read-only source inspection explains it: nl_gc_midform_collect checks
+its separate enable word and invokes recorded-root collection without the
+boundary collector's collect-disabled check. The final causal control calls
+both nelisp--debug-switch 7 and 6. No such switch appears in production code.
+
+* Read, write and host framing findings
+Real one-byte/no-newline/no-EOF echoes prove read-stdin-bytes 4096 returns a
+short available read. It does not wait to accumulate 4096 bytes or require EOF.
+Raw byte delivery before newline proves nelisp--write-stdout-bytes is not
+line- or block-buffered on the tested anonymous stdout pipe.
+
+Read-only source corroboration, relative to the separate NeLisp checkout
+(these references are explanatory; the measurements identify the exact image):
+- scripts/nelisp-standalone-build.el, nl_bi_read_stdin_bytes: one
+  nl_os_read_stdin call followed by string allocation, no polling loop.
+- Windows nl_os_read_stdin / nl_os_read_file_handle: GetStdHandle and one
+  synchronous ReadFile; no Sleep, PeekNamedPipe or fill-to-limit loop.
+- Windows nl_os_write_stdout: GetStdHandle and one WriteFile; no stdio
+  stream buffer, delayed line flush or buffering threshold.
+- The string-match wrapper calls the pure Lisp nlre-string-match;
+  split-string calls nelisp--split-on-literal. Eight short regexp checks
+  reproduce most of the old-policy work without any decision computation.
+- windows/host/native_adapter.h, Line: PeekNamedPipe followed by Sleep(1)
+  only when empty, then byte reads. This path is absent from the Python-only
+  reproducer and cannot cause the independently reproduced 140--218 ms tail.
+  No native host pipe change is justified by these measurements.
+
+* Proposed runtime fix (outside this repository; not implemented)
+1. Reduce stdlib/evaluator allocation and dispatch overhead for string-search,
+   split-string and nlre matching. Compile those helpers through the supported
+   Windows bytecode/native closure path or add equivalent bounded fast paths;
+   preserve regexp/match-data and string semantics. Use the component matrix
+   above to distinguish steady work from collection pauses.
+2. Profile nl_gc_midform_collect -> nl_gc_collect_from_recorded_roots ->
+   mark/sweep/reclaim on this exact Windows image. Add monotonic phase timings,
+   allocation-debt and collection-count telemetry at those boundaries. The
+   recorded counter/timestamp correlation localizes the remaining tail to a
+   collector invocation, but does not identify its slowest internal phase.
+3. Reduce or bound the synchronous collector pause while preserving live
+   in-flight roots, conservative/recorded-frame safety, allocation reuse and
+   memory bounds. A qualified smaller policy closure or a correctly rooted
+   incremental collector is a candidate; simply raising the debt threshold,
+   disabling collection or omitting roots is not an acceptable fix.
+4. Make the diagnostic collect-disabled control apply consistently to both
+   boundary and mid-form entry points, or explicitly document separate switches.
+   This improves diagnosis only and is not the production latency remedy.
+
+Acceptance of any runtime fix requires re-running host-windows-s6.py on the
+new exact artifact with ordinary GC and unchanged p99<=10/max<=50 ms. The
+new image hash, counts, memory, startup and owned cleanup must be recorded.
+There is no claim that the proposed runtime work already meets those budgets.
+
+* Reproducer and receipts
+From this checkout, set NELISP_RUNTIME to the supplied read-only executable.
+Every command below finishes its one process before the next starts. The
+finite GC control never launches the production host or changes live settings.
+#+begin_src powershell
+$Runtime=$env:NELISP_RUNTIME
+python windows/test-host/diagnose-policy-ipc.py --runtime $Runtime --output-dir build/w/ipc-diagnosis --count 30
+python windows/test-host/diagnose-policy-ipc.py --runtime $Runtime --output-dir build/w/ipc-components --count 30 --components
+git show ef7e2e8:engine/host-policy.el | Set-Content -LiteralPath build/w/ipc-policy-before.el -Encoding utf8
+python windows/test-host/diagnose-policy-ipc.py --runtime $Runtime --output-dir build/w/ipc-before-gc --count 30 --gc-control --policy-source build/w/ipc-policy-before.el
+python windows/test-host/diagnose-policy-ipc.py --runtime $Runtime --output-dir build/w/ipc-gc-telemetry --count 100 --gc-control
+python windows/test-host/diagnose-policy-ipc.py --runtime $Runtime --output-dir build/w/ipc-framing --count 1 --framing-controls
+python windows/test-host/diagnose-policy-ipc.py --runtime $Runtime --output-dir build/w/ipc-stream --count 2 --stream-controls
+python windows/test-host/host-windows-s6.py --runtime $Runtime --output build/w/ipc-after-scan.json --samples 3 --cold-load-sleep-sec 45
+#+end_src
+After the parser fix the default diagnostic matrix profiles the new policy;
+use --policy-source to reproduce the old full-policy timing. The independent
+regexp component probes are unchanged by the production parser fix.
+
+Executed receipts: =build/w/ipc-before.json= (baseline budget FAIL),
+=build/w/ipc-diagnosis/results.json= (six loops / 180 exchanges),
+=build/w/ipc-components/results.json= (five loops / 150 exchanges),
+=build/w/ipc-before-gc/results.json= (two loops / 60 exchanges),
+=build/w/ipc-gc-telemetry/results.json= (two loops / 200 exchanges),
+=build/w/ipc-framing/results.json= (three valid / eleven invalid parser cases
+before READY plus one short echo; repeated with final script metadata in
+=build/w/ipc-framing-final/results.json=), =build/w/ipc-stream/results.json=
+(one split frame, two frames batched in one write, three exact replies),
+and =build/w/ipc-after-scan.json=
+(three launches / 300 verified replies, budget FAIL).
+Intermediate experiments are retained rather than silently counted as passes:
+=build/w/ipc-after.json= (first scanner, 100 replies, p50 5.6662 / p99 9.5740 /
+max 97.1484 ms, FAIL; final scanner subsequently kept original
+string-to-number conversion semantics), and
+=build/w/ipc-gc-control/results.json= (two 100-exchange loops, switch-7-only
+control; maxima 89.8596 and 97.2155 ms, both at exchange 55). Corresponding
+stdout/exception tails are in the same-named .log files under build/w.
+The stream control deliberately waits 10 ms between partial writes and
+measures a batched transfer; its timing is not a single-roundtrip budget result.
+Normal-GC cleanup tail from every completed diagnostic process:
+#+begin_example
+CLEANUP IPC diagnostic leftovers=[]
+#+end_example
+All receipts retain raw per-exchange measurements and runtime_unchanged=true.
+No other gates were run, no runtime was edited, and no commit was made.
