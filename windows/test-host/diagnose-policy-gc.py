@@ -103,6 +103,25 @@ def source(args):
     prefix += '(dolist (name (quote (garbage-collect read-stdin-bytes read-stdin-bytes-into read-stdin-into-buffer nelisp--read-stdin-bytes-into))) (nelisp--write-stdout-bytes (format "S6CAP %s %s\\n" name (fboundp name))))\n'
     if args.discover:
         prefix += '(if (fboundp (quote mapatoms)) (mapatoms (lambda (name) (when (and (fboundp name) (string-match "stdin\\\\|read.*bytes" (symbol-name name))) (nelisp--write-stdout-bytes (format "S6INPUT %s\\n" name))))) (nelisp--write-stdout-bytes "S6INPUT enumeration-unavailable\\n"))\n'
+    if args.execution_fixture_directory:
+        directory = args.execution_fixture_directory.resolve(strict=True)
+        for extension in ('elc', 'nelc'):
+            filename = (directory/f'compiled-smoke.{extension}').as_posix()
+            prefix += (f'(condition-case err (progn (load {json.dumps(filename)}) '
+                       f'(nelisp--write-stdout-bytes (format "S6{extension.upper()} result=%S\\n" '
+                       '(s6-compiled-smoke 41)))) '
+                       f'(error (nelisp--write-stdout-bytes (format "S6{extension.upper()} error=%S\\n" err))))\n')
+        filename = (args.runtime.resolve().parent/'nelisp-artifact-runtime.el').as_posix()
+        prefix += (f'(load {json.dumps(filename)})\n'
+                   '(nelisp--write-stdout-bytes (format "S6ART cell=%S call=%S\\n" '
+                   "(symbol-function 'nelisp-artifact--profile-time) (nelisp-artifact--profile-time)))\n")
+        names = ('byte-compile byte-compile-file byte-code make-byte-code '
+                 'nelisp-bc-compile nelisp-bc-run nelisp-bc-try-compile-lambda '
+                 'nelisp-artifact--try-compile-defun nelisp-artifact--install-function '
+                 'nelisp-cc-runtime-compile-and-allocate nelisp-aot-compile-to-link-unit '
+                 'nelisp-native-load-raw-install nelisp--native-runtime-symbol-addr')
+        prefix += (f'(dolist (name (quote ({names}))) '
+                   '(nelisp--write-stdout-bytes (format "S6EXEC %s %s\\n" name (fboundp name))))\n')
     if args.heap_mib:
         prefix += f'(defvar s6-retained (make-string {args.heap_mib*1024*1024} 97))\n'
     if args.precollect and "(when (fboundp 'garbage-collect) (garbage-collect))" not in text:
@@ -153,11 +172,22 @@ def main():
     parser.add_argument('--policy-source', type=Path)
     parser.add_argument('--discover', action='store_true')
     parser.add_argument('--continuous', action='store_true', help='no per-request telemetry reads or settling; measure uninterrupted IPC')
+    parser.add_argument('--artifact', type=Path, help='experimental CLI artifact, under build; source remains the default')
+    parser.add_argument('--artifact-form', default='t', help='form called after artifact installation')
+    parser.add_argument('--execution-fixture-directory', type=Path,
+                        help='probe real compiled fixtures and the shipped artifact module')
+    parser.add_argument('--reply-observation-sec', type=int, default=5,
+                        help='diagnostic observation bound only; never changes Resources budgets')
     args = parser.parse_args()
     assert args.output.resolve().is_relative_to(ROOT/'build')
     assert 1 <= args.count <= 1000 and 32 <= args.read_limit <= 4096 and 0 <= args.heap_mib <= 32
     assert 1 <= args.payload_bytes <= args.read_limit
     assert not args.continuous or (args.mode == 'policy' and not args.idle_ms)
+    assert 1 <= args.reply_observation_sec <= 60
+    if args.artifact:
+        assert args.mode == 'policy' and args.artifact.resolve().is_relative_to(ROOT/'build')
+        assert args.artifact.suffix in ('.nelc', '.neln')
+        assert not args.execution_fixture_directory, 'artifact commands do not execute the generated source prefix'
     runtime = args.runtime.resolve(strict=True)
     assert hashlib.sha256(runtime.read_bytes()).hexdigest() == IMAGE
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -171,8 +201,13 @@ def main():
                   precollect=args.precollect, heap_mib=args.heap_mib, idle_ms=args.idle_ms,
                   read_limit=args.read_limit, payload_bytes=args.payload_bytes, rows=rows, status='incomplete',
                   continuous=args.continuous,
+                  script_executed=not bool(args.artifact),
                   script_sha256=hashlib.sha256(script.read_bytes()).hexdigest(),
                   policy_sha256=hashlib.sha256((args.policy_source or ROOT/'engine/host-policy.el').read_bytes()).hexdigest())
+    if args.artifact:
+        report.update(artifact=str(args.artifact),
+                      artifact_sha256=hashlib.sha256(args.artifact.read_bytes()).hexdigest(),
+                      reply_observation_sec=args.reply_observation_sec)
     def read():
         for line in process.stdout: replies.put(line)
         replies.put(None)
@@ -180,7 +215,10 @@ def main():
         env = dict(os.environ)
         for name in ('DDSKK_HOST_POLICY_UNIT_ONLY','DDSKK_HOST_POLICY_TEST_PAUSE_KIND'): env.pop(name,None)
         started = time.perf_counter()
-        process = subprocess.Popen([str(runtime),'--load',str(script.resolve())],cwd=ROOT,env=env,
+        command = ([str(runtime),'exec-elisp-artifact',str(args.artifact.resolve()),args.artifact_form]
+                   if args.artifact else [str(runtime),'--load',str(script.resolve())])
+        report['command'] = command
+        process = subprocess.Popen(command,cwd=ROOT,env=env,
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,creationflags=0x08000004)
         assert r.ownership.api('AssignProcessToJobObject',W.BOOL,W.HANDLE,W.HANDLE)(job.handle,int(process._handle))
         resume = C.WinDLL('ntdll').NtResumeProcess
@@ -204,7 +242,7 @@ def main():
             wire=f'HP1 Q {serial} 7 11 13 1 1 0 0 -\n'.encode() if args.mode=='policy' else b'x'*args.payload_bytes
             begin=time.perf_counter()
             process.stdin.write(wire); process.stdin.flush()
-            actual=replies.get(timeout=5)
+            actual=replies.get(timeout=args.reply_observation_sec)
             end=time.perf_counter()
             if args.mode=='policy': assert actual == f'HP1 R {serial} 7 11 13 1 0\n'.encode(), actual
             elif args.mode=='component':

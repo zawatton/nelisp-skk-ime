@@ -458,3 +458,181 @@ All started diagnostic roots were waited/reaped; no owned leftovers. Process
 inventory found seven pre-existing IME-named processes, all started before the
 first 08:03 baseline receipt; they were left untouched. CIM inventory was
 denied, so Get-Process start times were used instead. No commit was made.
+
+* 268c170 follow-up: compiled execution on the exact Windows image
+
+The image has a working CLI .nelc execution path, but it is substantially
+slower than source for HP1. The .neln prototype falls back to the original
+Lisp bodies and does not reduce request allocation. No production policy
+change is justified by these measurements. engine/host-policy.el remains
+unchanged, with identical framing, decisions, startup GC and source fallback.
+The Resources budget remains red; no threshold or collector setting changed.
+
+Runtime SHA256 remains
+=3fb43697a8bf01e10bc993c468365489ef98a30d5acbe05206f9e9faefdde3db=;
+policy SHA256 remains
+=5e755b118b7eb5b01ee5ee4bec8a65e231acc1f318d54cbc9979202fb2e81d21=.
+All compiler outputs were generated under build/eh6-next. Runtime files,
+including its artifact source/cache/manifest/enable marker, were read only.
+
+** Execution decisions and actual runtime evidence
+
+| Path | Exact-image evidence | Decision |
+|------+----------------------+----------|
+| GNU Emacs .elc | Genuine host-Emacs fixture fails ordinary load with invalid-read-syntax. byte-compile, byte-code and make-byte-code are absent. byte-compile-file is a validation stub, not a compiler. | Reject. |
+| Ordinary load of .nelc | Genuine compiled fixture signals (void-function :format). | Use the dedicated CLI instead. |
+| CLI .nelc | eval-elisp-artifact executes the compiled smoke function, emits S6-BCL-CALLED and returns 42. All six policy defuns compile to :fn / nelisp-bcl entries. A real HP1 reply takes 5981.605 ms and allocates 407291048 bytes / 13455477 calls. | Supported, but reject for production latency. |
+| CLI .neln | Host compiler reports all six defuns native. Call serve AFTER module installation. Runtime function cell still contains the original let/body AST; native-dispatch report is unbound. First reply uses exactly 637120 bytes / 22699 calls, matching source. 1000-request totals also match source exactly. | Retains source fallback; reject as an optimization. |
+| Generic native compiler/closure | nelisp-cc-runtime-compile-and-allocate, nelisp-aot-compile-to-link-unit, nelisp-native-load-raw-install and nelisp--native-runtime-symbol-addr are absent in direct runtime probes. --neln-selftest exits 125. | No demonstrated resident native execution for this policy. |
+| Native artifact helper | native-exec-elisp-artifact on a genuine native smoke artifact exits 1: both fast and simple helpers fail creating /tmp directories. Shipped helper source builds and runs separate driver executables; this is not a resident native closure. | No successful native helper measurement; do not treat metadata as execution. |
+| DDSKK fast entry | windows/host/main.cpp selects --ddskk-ime-server only for the DDSKK runner and only when explicitly requested. This exact image rejects that flag with usage and exit 2. engine/ddskk-engine-stdio.el loads engine/ddskk-engine.el, which loads its Lisp dependencies as source. | Cannot reuse that native entry on this image. No DDSKK stack was launched. |
+
+The shipped artifact manifest advertises nelisp-bcl-vm and bytecode. Its cache
+contains :fn entries, but loading the shipped artifact source yields an
+ordinary body-bearing cell, for example:
+#+begin_example
+S6ART cell=#[nil ((if (fboundp 'float-time) (float-time) 0.0)) nil]
+S6NATIVE dispatch-bound=nil functions-bound=t cell=#[nil ((let ((pending (make-string 4096 32)) ...
+#+end_example
+The native policy manifest contains the six native symbols and 17 externs,
+including read-stdin-bytes, nelisp--write-stdout-bytes, garbage-collect and
+nelisp_aot_builtin_calln. Native coverage therefore is not proof that these
+imports have a working Windows resident execution lane. The source raw-unit
+loader's supported predicate explicitly requires GNU/Linux x86_64.
+
+The .nelc prototype kept the serve entry in module initialization. The .neln
+prototype removed ONLY the source footer from its disposable input, then
+called (host-policy-serve) as the CLI FORM after installation. Its parser,
+decision, reply, loop and GC bodies are unchanged. Both returned the exact
+expected HP1 reply. These are execution prototypes, not semantic conformance
+qualification of every decision/input. No artifact is installed or selected
+by the production host.
+
+** Allocation, collections and Resources receipts
+
+| Run | Replies | Allocated bytes | Allocator calls | Collections | RTT p50 / p99 / max ms |
+|-----+---------+-----------------+-----------------+-------------+-----------------------|
+| Source, uninterrupted | 1000 | 673820128 | 24134771 | 11 | 8.747 / 85.864 / 105.645 |
+| .neln source fallback, uninterrupted | 1000 | 673820128 | 24134771 | 3 | 10.047 / 19.646 / 211.182 |
+| .nelc VM, one request | 1 | 407291048 | 13455477 | 1 | 5981.605 / 5981.605 / 5981.605 |
+
+Source and .neln mean request traffic is 673820.128 bytes and 24134.771 calls.
+The lower .neln collection count comes with retained live heap of 86291080
+bytes, versus source's 20137304 bytes; default debt limits remain 3x live
+(258873240 versus 60411912). Private bytes grow from 251543552 to 354787328
+in the .neln run. This is larger retained state and longer pauses, not an
+allocation improvement. No 1000-request .nelc run was attempted after its
+single reply demonstrated roughly six seconds and 407 MB of allocator
+traffic. Do not extrapolate its single collection count to 1000 requests.
+
+Resources was run exactly once with --samples 3, against the retained source
+path, with 100 replies per launch and unchanged budgets (p99 <= 10 ms,
+max <= 50 ms, startup <= 60000 ms, private <= 512 MiB).
+
+| Launch | Startup ms | Private bytes | RTT p50 / p99 / max ms |
+|--------+------------+---------------+-----------------------|
+| 1 | 1884.830 | 153509888 | 8.928 / 82.619 / 104.786 |
+| 2 | 1945.584 | 153522176 | 8.845 / 82.690 / 106.664 |
+| 3 | 1983.143 | 153518080 | 8.389 / 80.021 / 91.106 |
+
+Exit 1; all three launches fail IPC limits. Persisted receipts:
+build/eh6-next/execution-resources-three.json,
+execution-fastest-1000.json, policy-native-1000.json,
+policy-bytecode-observed.json, policy-native-cell.json, and
+execution-reproducer/{discovery,cli}.json. The JSONs retain full command,
+hashes, timestamps, counter snapshots, output and sample counts.
+Verbatim Resources tail (the assertion value is in the JSON):
+#+begin_example
+CLEANUP S6 runtime leftovers=[]
+CLEANUP S6 runtime leftovers=[]
+CLEANUP S6 runtime leftovers=[]
+    assert value['policy_ipc_ms']['p99'] <= 10 and value['policy_ipc_ms']['max'] <= 50, value
+#+end_example
+Both 1000-reply measurements exit 0 and finish with:
+#+begin_example
+CLEANUP GC diagnostic leftovers=[]
+#+end_example
+The CLI discovery exits 0 as an evidence collector, not an acceptance gate:
+fixture VM exit 0 / output S6-BCL-CALLED followed by 42; native helper exit 1;
+self-test exit 125; DDSKK native flag exit 2. Four serial launches, four tails:
+#+begin_example
+CLEANUP execution CLI leftovers=[]
+#+end_example
+
+** Exact serial reproduction commands
+
+Supply Runtime as the exact IME image and CompilerRoot as the read-only
+compiler checkout recorded in that image's report.json. Paths below are
+parameters; no machine path is embedded in repository files. Host Emacs
+only creates fixtures; every execution/allocation measurement uses Runtime.
+Use a fresh PowerShell, bind $runtime and $compilerRoot from these inputs,
+then run each command to completion before the next:
+
+#+begin_src powershell
+python windows/test-host/prepare-policy-execution.py --output-directory build/eh6-next/execution-reproducer
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L "$compilerRoot/lisp" -L "$compilerRoot/src" --load build/eh6-next/execution-reproducer/compile.el
+python windows/test-host/diagnose-policy-gc.py --runtime $runtime --output build/eh6-next/execution-reproducer/discovery.json --execution-fixture-directory build/eh6-next/execution-reproducer --count 1
+python windows/test-host/probe-policy-execution-cli.py --runtime $runtime --fixture-directory build/eh6-next/execution-reproducer --output build/eh6-next/execution-reproducer/cli.json
+python windows/test-host/diagnose-policy-gc.py --runtime $runtime --output build/eh6-next/execution-reproducer/bytecode.json --artifact build/eh6-next/execution-reproducer/policy-bytecode.nelc --policy-source build/eh6-next/execution-reproducer/policy-bytecode.el --count 1 --reply-observation-sec 30
+python windows/test-host/diagnose-policy-gc.py --runtime $runtime --output build/eh6-next/execution-reproducer/native-1000.json --artifact build/eh6-next/execution-reproducer/policy-native.neln --artifact-form '(host-policy-serve)' --policy-source build/eh6-next/execution-reproducer/policy-native.el --count 1000 --continuous
+python windows/test-host/diagnose-policy-gc.py --runtime $runtime --output build/eh6-next/execution-reproducer/source-1000.json --count 1000 --continuous
+python windows/test-host/host-windows-s6.py --runtime $runtime --output build/eh6-next/execution-reproducer/resources-three.json --samples 3 --cold-load-sleep-sec 45
+#+end_src
+
+The measured policy prototypes used identical compiler invocations and inputs
+under build/eh6-next/{policy-bytecode,policy-native}.*, before the preparation
+helper was added. The helper itself and its fixture discovery were then run
+successfully. Its corrected compiler driver creates genuine GNU .elc BEFORE
+requiring nelisp-artifact (which overrides byte-compile-file). An initial
+driver after require produced a NeLisp-specific .elc and correctly failed
+with void-function nelisp-bc--defun-from-elc; that fixture is not GNU VM
+evidence. The corrected GNU fixture fails invalid-read-syntax as above.
+
+The first experimental artifact call omitted FORM and exited before READY:
+#+begin_example
+AssertionError: ['nelisp direct artifact error: (error "artifact command requires at least one FORM")']
+#+end_example
+Adding FORM t reached READY, but the first request exceeded the default
+five-second diagnostic observation window:
+#+begin_example
+    actual=replies.get(timeout=5)
+_queue.Empty
+#+end_example
+A separate one-request diagnostic with --reply-observation-sec 30 measured
+the 5981.605 ms reply. This option only bounds observational waiting in
+diagnose-policy-gc.py; it changes no budget or acceptance runner.
+
+Static validation used ast.parse on the three changed/new Python files:
+#+begin_example
+PASS Python syntax: 3 files
+#+end_example
+The preparer's negative control, --output-directory engine/disallowed-probe-output,
+exits 1 before writing any file:
+#+begin_example
+AssertionError: disposable artifacts must stay under build
+#+end_example
+
+** Runtime work required before another policy optimization
+
+Provide a genuine resident Windows native closure or VM dispatch lane that
+can install the compiled policy defuns into the ordinary function cells and
+resolve the native runtime imports in process. Preserve the Windows calling
+convention, rooted mutable strings/vectors and GC safe points across blocking
+read/write calls. Verify installed code and counters on this image; a :native
+manifest or a source-body function cell cannot qualify compiled execution.
+The existing CLI VM executes successfully but increases allocation by more
+than 600x for this request. The native artifact helper's temporary-path failure
+is a separate defect, and fixing it alone would still leave a subprocess
+executor rather than the required resident loop.
+
+Keep current framing, integer conversion behavior, every decision, startup
+GC, callback/durability gates and Resources budgets. Re-run exact replies,
+1000-request counter measurements and the three-launch resource gate only
+after the runtime has a measurable reduction in interpreter traffic. This
+follow-up does not edit or rebuild the runtime, or install any artifact.
+
+All runtime probes were serial and owned before resumption by kill-on-close
+jobs; diagnostic roots/readers were waited/reaped. Final Get-Process inventory
+contains only the same seven pre-existing IME-named processes (six NeLisp,
+one engine host), all predating this work; none was touched. No owned leftovers,
+TSF/native-host stack, build, Production, DNS or pipe gate. No commit or staging.
