@@ -102,7 +102,6 @@ Metadata slots 8..10 hold prefix end and the raw kind's start/end indices."
 
 (defun host-policy-serve ()
   "Serve private HP1 frames using bounded reusable ASCII storage."
-  (nelisp--write-stdout-bytes "HP1 READY\n")
   (let ((pending (make-string 4096 32)) (used 0) (running t)
         (numbers (make-vector 11 0)) (numeric (make-vector 4097 nil))
         ;; Prefix plus maximum input plus a signed integer result and newline.
@@ -116,6 +115,11 @@ Metadata slots 8..10 hold prefix end and the raw kind's start/end indices."
           (and (equal (getenv "DDSKK_HARNESS_DIAGNOSTICS") "1")
                (>= (length private-key) 24)
                (host-policy-range-equal private-key 0 24 "Software\\NativeIME-test-")))
+    ;; Finish startup and buffer allocation before announcing readiness.
+    ;; Collection remains enabled with the runtime's unchanged debt policy;
+    ;; this removes startup debt, not the recurring interpreted-loop garbage.
+    (when (fboundp 'garbage-collect) (garbage-collect))
+    (nelisp--write-stdout-bytes "HP1 READY\n")
     (while running
       (let ((bytes (read-stdin-bytes 4096)))
         (if (not bytes) (setq running nil)

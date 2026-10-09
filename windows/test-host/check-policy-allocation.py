@@ -64,6 +64,8 @@ def check(source):
     assert counts['host-policy-write-reply'] == {'number-to-string': 1, 'substring': 1}, counts
     assert 'host-policy-frame' not in list(calls(functions['host-policy-serve'])), 'allocating compatibility parser on hot path'
     assert list(calls(functions['host-policy-frame-into'])).count('string-to-number') == 1
+    serving = list(calls(functions['host-policy-serve']))
+    assert serving.index('make-string') < serving.index('garbage-collect') < serving.index('nelisp--write-stdout-bytes'), 'startup collection must follow storage initialization and precede READY'
     return counts
 
 
@@ -74,7 +76,9 @@ def main():
     source = args.source.read_text('utf-8')
     counts = check(source)
     # Negative controls: balanced but forbidden allocation, and broken syntax.
-    controls = [source.replace('(setq used 0)', '(setq used 0) (concat "bad" "allocation")'), source+')']
+    controls = [source.replace('(setq used 0)', '(setq used 0) (concat "bad" "allocation")'), source+')',
+                source.replace('(when (fboundp \'garbage-collect) (garbage-collect))\n    (nelisp--write-stdout-bytes "HP1 READY\\n")',
+                               '(nelisp--write-stdout-bytes "HP1 READY\\n")\n    (when (fboundp \'garbage-collect) (garbage-collect))')]
     for bad in controls:
         try: check(bad)
         except AssertionError: pass
@@ -92,7 +96,7 @@ def main():
                  'match', 'split', 'validate', 'cond', 'format', 'timed-echo'):
         forms(namespace['source'](mode))
     print('PASS policy static allocation sites '+json.dumps(counts, sort_keys=True))
-    print('PASS controls=2; reusable_storage=4; decimal_cache_miss_site=1; exact_reply_slice=1')
+    print('PASS controls=3; reusable_storage=4; decimal_cache_miss_site=1; exact_reply_slice=1; startup_gc_before_ready=1')
     print('PASS generated Lisp syntax modes=12; generator AST only; runtime processes=0')
     print('STATIC ONLY: interpreter binding/number/read-buffer allocations and GC tails require exact-runtime measurement')
 

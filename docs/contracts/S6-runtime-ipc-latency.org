@@ -2,6 +2,14 @@
 #+DATE: 2026-10-10
 
 * Result and ownership
+The current 042f278 follow-up confirms the remaining limit: ordinary HP1
+requests allocate about 676 KB in 24,223 native allocator calls, including
+reused allocations, and cross a roughly 60.4 MB debt limit every 89--90
+requests. These collections are synchronous. Explicit startup collection
+before READY removes the initial growth-triggered pause but leaves eleven
+collections per 1000 requests. The unchanged IPC budget remains FAIL.
+See the final steady-state measurements below; earlier results are historical.
+
 The transport does not have a 150--300 ms fixed floor. On the supplied image,
 an unparsed one-byte echo with no newline and no EOF has median 0.0423 ms,
 maximum 0.1695 ms. The red HP1 distribution consists of expensive interpreted
@@ -191,3 +199,262 @@ CLEANUP IPC diagnostic leftovers=[]
 #+end_example
 All receipts retain raw per-exchange measurements and runtime_unchanged=true.
 No other gates were run, no runtime was edited, and no commit was made.
+
+* 042f278 follow-up: measured steady-state collector trigger
+These runs keep both GC paths enabled, with the original floor and percentage,
+and do not change any budget. The only policy change is one explicit
+garbage-collect after reusable-buffer/diagnostic initialization and before
+HP1 READY. It is guarded by fboundp. READY now means this startup work has
+finished. Framing, decisions and the stdout/read API remain unchanged.
+
+** Measurement method
+diagnose-policy-gc.py uses ReadProcessMemory on its own suspended-launched,
+job-owned process. It never writes remote memory. The exact image hash above
+is mandatory: changed images fail before launch rather than interpreting an
+unqualified memory layout. PE .data bounds, actual module base, the arena-base
+pointer and runtime invariants validate the native counter addresses.
+The native nl_gc_stats layout read is debt, limit, last-sweep live bytes,
+collection count, prior allocation total, floor override, percentage override.
+Total allocated bytes are prior total plus current debt; this counts allocator
+reuse as well as bumps. nl_alloc_diag supplies bucket/linear/bump call counts;
+debug-switch 24 enables/reset these counters only. nl_gc_loop_ctx supplies
+mid-form count, collection-in-progress and growth watermark.
+No switches that disable collection, change limits or change reuse are used.
+
+Counter reads occur outside Lisp, so they do not allocate telemetry lists,
+format strings or timestamps in the policy loop. A settled measurement waits
+for the runtime to block again after each response and attributes the next
+read-buffer allocation to that cycle. Snapshots reject the transient zero-live
+state while a sweep recounts live bytes. Floor/percentage overrides must stay
+zero; collection must stay enabled; the observed limit must equal
+max(16 MiB, 3 * live). This verifies the actual running collector configuration.
+
+Settling can include a collection AFTER a reply. Such a pause is excluded
+from that response's roundtrip but included between native-counter timestamps;
+it must not be called a budget improvement. In the final settled run, request
+361 replied in 8.20 ms but the native snapshot cycle took 89.55 ms and the
+collection count advanced. Therefore a separate --continuous mode reads no
+per-request counters and inserts no settling waits: it sends the next request
+immediately, reads total counters only before/after the 1000 exchanges, and
+measures uninterrupted IPC. The unmodified host-windows-s6.py remains the
+authoritative budget gate. Explicit-GC scaling probes additionally record
+float-time immediately before/after garbage-collect inside Lisp.
+
+** Per-request allocation after numeric-cache warm-up
+Actual full-policy native allocator traffic, not source allocation sites:
+
+| Qid width | Allocated bytes/request | Native allocator calls/request |
+|-----------+-------------------------+--------------------------------|
+| 1 digit   |                 633,712 |                         22,569 |
+| 2 digits  |                 654,896 |                         23,396 |
+| 3 digits  |                 676,080 |                         24,223 |
+
+Observing a new decimal width adds a one-time cache cost. Request 1000 used
+698,968 bytes/25,115 calls and includes first observation of width four;
+it is not a warmed four-digit result. In each complete 1000-request run,
+total request-cycle allocation was exactly 673,820,128 bytes. The continuous
+final run counted 24,134,771 native allocation calls in total. Bytes/calls
+are allocation churn, not process private memory or persistent live objects.
+
+Ten isolated component controls each ran 100 requests with startup GC, no
+collections, identical small-loop framing and matching empty-loop baselines:
+
+| Operation/control          | Total bytes | Total calls | Extra bytes vs empty | Extra calls |
+|----------------------------+-------------+-------------+----------------------+-------------|
+| read 4096 + fixed ACK      |       5,280 |          53 |                    0 |           0 |
+| read 32 + fixed ACK        |       1,216 |          53 |               -4,064 |           0 |
+| number-to-string 12345     |       5,984 |          82 |                  704 |          29 |
+| 24-character substring    |      11,192 |         229 |                5,912 |         176 |
+| additional fixed write    |       5,720 |          75 |                  440 |          22 |
+| parse cached constant HP1 |     402,312 |      13,566 |              397,032 |      13,513 |
+| decision cond             |      12,792 |         283 |                7,512 |         230 |
+| full reused reply writer  |      77,784 |       2,747 |               72,504 |       2,694 |
+
+These are function/operation deltas including interpreter evaluation and call
+temporaries, not just returned string payloads. Components are not a strict
+additive partition of the differently-shaped serving loop. The other two
+controls changed the read payload from 2 bytes to 32 and 1024: totals were
+5,304 and 6,296 bytes with the same 53 calls. This isolates the returned read
+string's payload contribution (+24/+1016 measured bytes) from the separately
+observed 4096-byte scratch-buffer contribution. read-stdin-bytes allocates a
+LIMIT buffer on every call plus the returned string. The copied payload and
+whole-string writer are small next to interpreted parsing/evaluation traffic.
+The actual HP1 run used cached decision "0", so number-to-string was not its
+tail trigger. Reusing explicit buffers does not eliminate the interpreter's
+argument, binding, numeric and evaluation temporaries; the native counters
+measure their aggregate cost. No per-site object-type census was performed.
+
+Exact-image fboundp discovery: garbage-collect and read-stdin-bytes present;
+read-stdin-bytes-into, read-stdin-into-buffer and
+nelisp--read-stdin-bytes-into absent. mapatoms is also absent, so general
+symbol enumeration was unavailable. Read-only inspection of the native
+stdin dispatch corroborates the allocation above and exposes no reused-buffer
+stdin entry. No unsupported low-level memory or syscall workaround was added.
+
+** Trigger, startup and time control
+Without explicit startup GC, the first settled native snapshot showed:
+collections=1, debt=57,016,400, limit=31,640,832, live=10,546,944 bytes and
+reserved=64 MiB. The runtime postpones debt-triggered collection while the
+collection count is below two. Request 7 crossed the growth watermark by
+growing reserved storage to 128 MiB, collected and enabled ordinary debt
+triggering. After that, last-sweep live stayed near 20.14 MB and the limit near
+60.43 MB. Collections occurred at requests:
+7, 99, 188, 278, 367, 457, 546, 635, 725, 814, 904 and 993.
+After the first collection, reserved storage stayed exactly 128 MiB while
+collections continued. Before each, debt approached the unchanged limit and
+after each it reset. This is recurring allocation debt, not repeated growth.
+
+An early startup-GC variant cleared the debt, deferred its first request
+collection to 92, kept reserved storage at 64 MiB throughout and still collected
+eleven times. The final after-buffer-initialization GC left initial debt only
+6,968 bytes, collections=2, live=20,138,128 and limit=60,414,384. Its settled
+collections occurred at 93, 183, 272, 361, 451, 540, 630, 719, 809, 898 and 987.
+Final live=20,151,512; final reserved remained 64 MiB. There is a startup
+residual, but clearing it cannot remove the roughly 676 KB/request churn.
+
+A separate control inserted two seconds of idle before each of ten requests
+after startup GC: twenty seconds elapsed, collection count advanced zero
+times, and ordinary allocation traffic matched the short-qid baseline. Thus
+elapsed wall time alone did not trigger collections within this control.
+Read-only native source corroborates a growth-or-debt test at while backedges,
+not a timer test. Neither collector thresholds nor GC enable flags were changed.
+
+** Live heap and pause scaling
+Private memory is NOT last-sweep live memory. The policy's approximately
+145--154 MB private footprint has only about 20.1 MB of traced live arena
+objects. Three independent five-explicit-collection probes retained additional
+ASCII storage, then measured actual native live/reserved values and Lisp GC
+timestamps. Report the measured live size rather than assuming it equals the
+nominal padding: conservative retention/runtime storage can make them differ.
+
+| Nominal pad | Final native live bytes | Reserved bytes | Private bytes | GC p50 ms | GC max ms |
+|-------------+-------------------------+----------------+---------------+-----------+-----------|
+|       0 MiB |              19,937,576 |     67,108,864 |   143,183,872 |     71.30 |     77.17 |
+|      16 MiB |              36,715,616 |    134,217,728 |   194,387,968 |     80.44 |     84.01 |
+|      32 MiB |              87,047,176 |    167,837,696 |   245,620,736 |     86.01 |     89.11 |
+
+Each probe explicitly collected five times. The 16/32 MiB probes additionally
+had one automatic growth-triggered collection (six total, mid-form count +1),
+which can appear outside the explicit float-time window. These three points
+show larger live heaps increasing pauses, not a linear or asymptotic scaling
+law. At the ordinary heap, even an explicit full collection already exceeds
+the unchanged 50 ms maximum. Startup GC reduced reserved storage but did not
+make recurring synchronous collection sufficiently short.
+
+** Complete 1000-request results and authoritative gate
+All values below are ms. Settled rows are diagnostics, not budget passes.
+
+| Policy/run                  | Replies | Collections | p50   | p99   | max    |
+|-----------------------------+---------+-------------+-------+-------+--------|
+| 042f278 baseline, settled    |    1000 |          12 |  9.25 | 94.14 | 116.38 |
+| GC before initial READY      |    1000 |          11 |  8.77 | 86.80 | 111.96 |
+| final GC after buffers       |    1000 |          11 |  8.37 | 15.58 |  96.18 |
+| final, uninterrupted IPC     |    1000 |          11 |  8.94 | 86.70 | 104.12 |
+
+The final settled row excludes one post-reply collection as explained above;
+its apparently better p99 must not be used as acceptance evidence.
+The baseline authoritative 100-reply gate failed with p50=8.3764,
+p99=94.0756, max=94.8901, startup=1789.43 ms, private=153,518,080 bytes.
+The final authoritative three-launch/300-reply gate also failed:
+
+| Launch | startup ms | private bytes | p50 ms | p99 ms | max ms |
+|--------+------------+---------------+--------+--------+--------|
+|      1 |    1868.46 |   153,513,984 |   8.52 |  84.70 |  92.47 |
+|      2 |    1841.88 |   153,513,984 |   8.52 |  78.82 |  97.91 |
+|      3 |    1919.66 |   153,509,888 |   9.06 |  82.80 |  99.44 |
+
+Budgets remain p99 <=10 ms and max <=50 ms; startup <=60000 ms and private
+<=512 MiB. The same 676 KB/request remains before/after startup GC. The
+remaining steady-state tail is a runtime interpreter/collector limit on this
+artifact. A runtime fix should reduce transient allocations in interpreted
+calls, bindings, numeric primitives and loop evaluation, then measure the
+same debt crossings and budgets; if that cannot meet max latency, implement
+a bounded collector pause while preserving the current root-safety contract.
+A supported read-into API would remove the measured input-buffer allocation
+but saves well under one percent of this HP1 request's traffic by itself.
+Raising debt thresholds or disabling GC merely postpones collection and is
+not a proposed fix. No runtime source/binary was edited.
+
+** Exact serial reproducer and receipts
+Set NELISP_RUNTIME to the supplied runtime path, then execute from this worktree.
+The saved baseline source can be reproduced with:
+#+begin_src powershell
+$Runtime=$env:NELISP_RUNTIME
+python -c "import pathlib,subprocess; pathlib.Path('build/eh6-next/gc-policy-before.el').write_bytes(subprocess.check_output(['git','show','042f278:engine/host-policy.el']))"
+python windows/test-host/host-windows-s6.py --runtime $Runtime --output build/eh6-next/gc-baseline-budget.json --samples 1 --cold-load-sleep-sec 45
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/eh6-next/gc-first-v2.json --count 10 --policy-source build/eh6-next/gc-policy-before.el
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/eh6-next/gc-steady-baseline-1000.json --count 1000 --policy-source build/eh6-next/gc-policy-before.el
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/eh6-next/gc-precollect-1000-v2.json --count 1000 --precollect --policy-source build/eh6-next/gc-policy-before.el
+foreach ($Operation in @('empty','number','slice','write','parse','decision','reply')) {
+  python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output "build/eh6-next/gc-component-$Operation.json" --mode component --operation $Operation --count 100 --precollect --policy-source build/eh6-next/gc-policy-before.el
+  if ($LASTEXITCODE) { throw "component failed: $Operation" }
+}
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/eh6-next/gc-component-read32-v2.json --mode component --operation empty --read-limit 32 --count 100 --precollect --discover --policy-source build/eh6-next/gc-policy-before.el
+foreach ($HeapMiB in @(0,16,32)) {
+  python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output "build/eh6-next/gc-scale-$HeapMiB.json" --mode collect --heap-mib $HeapMiB --count 5
+  if ($LASTEXITCODE) { throw "scale failed: $HeapMiB" }
+}
+foreach ($Payload in @(32,1024)) {
+  python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output "build/eh6-next/gc-input-$Payload.json" --mode component --operation empty --payload-bytes $Payload --count 100 --precollect --policy-source build/eh6-next/gc-policy-before.el
+  if ($LASTEXITCODE) { throw "input failed: $Payload" }
+}
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/eh6-next/gc-idle.json --count 10 --idle-ms 2000 --precollect --policy-source build/eh6-next/gc-policy-before.el
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/eh6-next/gc-ready-final-1000.json --count 1000
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/eh6-next/gc-ready-continuous-1000.json --count 1000 --continuous
+python windows/test-host/host-windows-s6.py --runtime $Runtime --output build/eh6-next/gc-ready-budget.json --samples 3 --cold-load-sleep-sec 45
+python windows/test-host/check-policy-allocation.py
+#+end_src
+The baseline-budget command must run BEFORE the policy startup-GC change to
+reproduce its original receipt; host-windows-s6.py always loads the current
+production source. Baseline diagnostic commands above explicitly select the
+saved 042f278 source. Their executed originals used the then-unchanged default
+source before that file was saved. Each foreach is serial, not a matrix worker.
+Do not run another stack until a command has completed and reaped its job.
+Every completed diagnostic command above exited zero; the two budget commands
+exited one as expected on the unchanged thresholds. Their verbatim cleanup tails:
+#+begin_example
+CLEANUP GC diagnostic leftovers=[]
+CLEANUP S6 runtime leftovers=[]
+#+end_example
+The failing budget assertion is unchanged, verbatim:
+#+begin_example
+assert value['policy_ipc_ms']['p99'] <= 10 and value['policy_ipc_ms']['max'] <= 50, value
+#+end_example
+All named JSON receipts and generated .el files remain under build/eh6-next.
+Each JSON retains per-request data when sampled, initial/final native counters,
+runtime identity/unchanged status and the full failure for incomplete runs.
+Early receipts predating the metadata addition lack script/policy hash fields;
+their exact generated scripts remain present.
+
+Three failed instrumentation attempts are retained rather than counted as
+successful gates: gc-first.json (0 requests; incorrectly assumed fixed arena
+address, WinError 299); gc-precollect-1000.json (359 complete requests; caught
+live=0 during an in-progress sweep, corrected coherent snapshot handling);
+gc-component-read32.json (0 requests; mapatoms absent, corrected guarded
+discovery). All reaped their jobs. These are probe bugs/capability findings,
+not production policy failures. The corrected independent runs above completed.
+An early 10-request pilot, gc-first-v2.json, observed one collection.
+
+Final pure static check exit=0, verbatim tail:
+#+begin_example
+PASS controls=3; reusable_storage=4; decimal_cache_miss_site=1; exact_reply_slice=1; startup_gc_before_ready=1
+PASS generated Lisp syntax modes=12; generator AST only; runtime processes=0
+STATIC ONLY: interpreter binding/number/read-buffer allocations and GC tails require exact-runtime measurement
+#+end_example
+Additional pure AST checks exited zero: only the Telemetry class/hash constant
+were compiled from the probe source; a fake read_bytes provider was rejected
+before any process/memory API. Generated GC scripts were parsed with the same
+static Lisp syntax reader and both modified Python files with ast.parse.
+Verbatim tail:
+#+begin_example
+PASS telemetry wrong-image rejection; runtime launches=0
+PASS generated GC Lisp syntax files=23
+PASS Python AST files=2; runner imports=0; runtime launches=0
+#+end_example
+git diff --check exited zero with no whitespace errors (sandbox Git ignore
+access warnings only). Changes remain unstaged.
+No build, DNS, pipe, Production, TSF or Emacs gate was run during this follow-up.
+All started diagnostic roots were waited/reaped; no owned leftovers. Process
+inventory found seven pre-existing IME-named processes, all started before the
+first 08:03 baseline receipt; they were left untouched. CIM inventory was
+denied, so Get-Process start times were used instead. No commit was made.
