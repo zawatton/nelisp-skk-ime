@@ -138,7 +138,9 @@ class Job:
         return p
 
     def close(self):
-        close(self.handle)
+        if self.handle:
+            close(self.handle)
+            self.handle = None
 
 
 class Host:

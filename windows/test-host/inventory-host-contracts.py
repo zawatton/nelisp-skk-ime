@@ -34,5 +34,5 @@ output = dict(version=2, text_hash='sha256-crlf-to-lf', source_sha256=hashes, in
               command_literals=commands, caller_deadline_sites=deadlines,
               note='Sites include declarations and test callers. Semantic caller summary is deadlines-v1.json; unbounded sites remain explicit.')
 path = ROOT / 'docs/contracts/source-inventory-v2.json'
-path.write_text(json.dumps(output, indent=2, ensure_ascii=True) + '\n', encoding='utf-8')
+path.write_text(json.dumps(output, indent=2, ensure_ascii=True) + '\n', encoding='utf-8', newline='\n')
 print(f'PASS inventory sources={len(hashes)} inputs={len(inputs)} errors={len(errors)} deadlines={len(deadlines)} commands={len(commands)}')

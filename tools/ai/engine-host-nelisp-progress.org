@@ -133,7 +133,7 @@ cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime "$E
 
 ** S4.2 Publication and durable-ID recovery pass policy, engine and adapter crash/pause matrices
 #+NOTE: Real intent-to-publication p99 <=500 ms/max <=1 s and learn-to-publication distribution, real stall control, nine outbox/stage/checkpoint/cursor/ACK points times three processes times two faults plus nine combined managed pauses (63 cases), plus existing storage/crash gates. Worker receipt does not substitute for an unrun complete stage.
-cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime "$EH4_RUNTIME" -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -Stage Recovery
+cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime "$EH4_RUNTIME" -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -MatrixWorkers 1 -Stage Recovery
 
 ** S4.3 End to end: NeLisp policy passes all existing gates and new host gates under multi-client conversion and learning
 #+NOTE: Every policy switch ON; existing S3 private TSF/Emacs/SK1/local/L-stress/durability gates with kind-9 Lisp pause, 8 concurrent clients/80 conversions/80 acknowledged IDs, both ERT suites. Private HKCU is denied in this worker; coordinator must run full stage with EH4_LARGE_DICTIONARY and verify zero callback host waits/acknowledged-ID loss. Preserve the original callback and SPACE thresholds.

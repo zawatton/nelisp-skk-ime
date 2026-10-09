@@ -32,13 +32,27 @@ def host(args):
 
 def cleanup(h):
     pids = re.findall(r'(?:policy-start|child-start) pid=(\d+)', s3.log(h))
-    h.stop()
+    handles = []
+    # Hold identities before closing the job. The log spans adapter restarts;
+    # an old numeric PID can already belong to an unrelated process.
+    for pid in sorted(set(map(int, pids))):
+        handle = s2.api('OpenProcess', W.HANDLE, W.DWORD, W.BOOL, W.DWORD)(0x100400, False, pid)
+        if not handle:
+            continue
+        member = W.BOOL()
+        if h.job.handle and s2.api('IsProcessInJob', W.BOOL, W.HANDLE, W.HANDLE, C.POINTER(W.BOOL))(
+                handle, h.job.handle, C.byref(member)) and member.value:
+            handles.append((pid, handle))
+        else:
+            s2.close(handle)
     leftovers = []
-    for pid in pids:
-        handle = s2.api('OpenProcess', W.HANDLE, W.DWORD, W.BOOL, W.DWORD)(0x100000, False, int(pid))
-        if handle:
+    try:
+        h.stop()
+        for pid, handle in handles:
             if s2.wait(handle, 5000) == 258:
                 leftovers.append(pid)
+    finally:
+        for _, handle in handles:
             s2.close(handle)
     print(f'CLEANUP S4 owned_children={len(pids)} leftovers={leftovers} artifacts={h.run}', flush=True)
     assert not leftovers, leftovers
@@ -277,13 +291,13 @@ def main():
     parser.add_argument('--points', nargs='+', choices=POINTS, default=POINTS)
     parser.add_argument('--targets', nargs='+', choices=['policy', 'engine', 'adapter', 'both'], default=['policy', 'engine', 'adapter', 'both'])
     parser.add_argument('--actions', nargs='+', choices=['crash', 'pause'], default=['crash', 'pause'])
-    parser.add_argument('--workers', type=int, default=1)
+    parser.add_argument('--workers', type=int, choices=[1], default=1)
     args = parser.parse_args()
     controls()
     if args.mode == 'controls':
         return
     if args.mode == 'matrix':
-        assert 1 <= args.workers <= 3, 'matrix workers must be 1..3'
+        assert args.workers == 1, 'one IME test stack at a time'
         cases = [(point, target, action) for point in args.points
                  for target in args.targets for action in args.actions
                  if not (target == 'both' and action == 'crash')]
@@ -294,16 +308,7 @@ def main():
             except Exception as error:
                 print(f'FAIL S4 matrix point={case[0]} target={case[1]} action={case[2]} error={error}', flush=True)
                 raise
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
-            futures = [pool.submit(checked_case, case) for case in cases]
-            results = []
-            try:
-                for future in concurrent.futures.as_completed(futures):
-                    results.append(future.result())
-            except Exception:
-                for future in futures:
-                    future.cancel()
-                raise
+        results = [checked_case(case) for case in cases]
         print(f'PASS S4 matrix cases={len(results)} acknowledged_ID_loss=0', flush=True)
     else:
         h = host(args)

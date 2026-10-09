@@ -549,6 +549,18 @@ checks and retain full evidence before marking S4 accepted. Exact commands,
 verbatim worker tails, failures and cleanup are in docs/contracts/CLAUDE-S4.org.
 The S4 ledger uses executable stage commands; no unrun evidence is hashed.
 
+EH4 follow-up after the RG1/main merge: matrix cases run strictly serially
+(MatrixWorkers=1); each gate verifies no new IME process remains before the
+next stack. Recovery cleanup holds verified Job Object process identities
+through shutdown, ignoring stale/reused PIDs, and job closure is idempotent.
+Positive publication timing clears inherited private stall injection; the
+1500 ms negative sample is labelled as an expected rejection in stage output.
+Publication is also an independently runnable partial stage, retaining the
+original timing bounds. The sequential lattice OFF/ON control runs the same
+existing 150 ms TSF assertion twice. ContinueOnFailure allows diagnostic
+execution of later EndToEnd gates while retaining every failure and a failing
+final exit; it cannot qualify S4 or turn a blocked/missing-input gate green.
+
 ** S5: private deploy, rollback and hot swap
 Package adapter, policy runtime/image, engine and repository as one versioned
 snapshot; preserve host CLI and EngineHost launcher contract. Prewarm new policy

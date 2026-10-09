@@ -14,7 +14,7 @@ cmake -S windows/test-host/s3 -B build/policy-control -G "Visual Studio 17 2022"
 cmake --build build/policy-control --config Release
 python windows/test-host/verify-host-contracts.py
 pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -Stage Equivalence
-pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -MatrixWorkers 3 -Stage Recovery
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -MatrixWorkers 1 -Stage Recovery
 pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -Stage EndToEnd -LargeDictionary $env:EH4_LARGE_DICTIONARY
 ctest --test-dir build/w -C Release --output-on-failure
 #+end_src
@@ -101,3 +101,39 @@ the unchanged 20 ms watchdog, and a real 1 ms blocking-wait negative control.
 The ledger's three S4 lines are executable stage commands. Claude should
 record complete logs/hashes after required qualification; no unrun behavioral
 evidence is asserted in the ledger.
+
+* Follow-up after main/RG1 merge (2026-10-09)
+One IME test stack at a time is mandatory on the user's working PC. The
+matrix default and only accepted worker count are now 1. Never launch runners
+in parallel. Gate runners refuse to start another stack if new IME processes
+remain after the preceding command. Matrix cleanup retains verified Job
+Object process handles before closing the job, rather than checking stale
+numeric PIDs afterwards; Job.close is idempotent across recovery/finally.
+
+Recovery2.log's positive publication passed p99/max 16 ms. The 1500 ms
+assertion is the deliberately injected negative control, followed by PASS
+real publication stall rejected. Recovery2 actually failed in the matrix;
+Recovery1 also reported a cleanup PID failure. The runner now labels expected
+rejections explicitly and removes inherited publication fault injection before
+positive samples, restoring the caller's original environment afterwards.
+The unchanged bounds remain p99 <=500 ms and max <=1000 ms. The new Publication
+stage isolates the two timing commands; it does not accept Recovery.
+
+The worker's OFF/ON TSF control is blocked at private HKCU creation. Pipe-only
+controls are supplementary and do not establish a pre-existing TSF failure.
+Run the identical existing lattice gate sequentially OFF and ON on this same
+merged tree (OFF executes the native policy branches):
+
+#+begin_src powershell
+pwsh -NoProfile -File windows/test-host/test-host-policy-lattice-control.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45 -Stage Publication
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1 -Stage Recovery
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -Stage EndToEnd -LargeDictionary $env:EH4_LARGE_DICTIONARY -ContinueOnFailure
+#+end_src
+
+ContinueOnFailure is diagnostic: later gates run, every failure is retained,
+and the final exit is nonzero if any gate failed. The default still fails
+immediately. Missing large-dictionary input is a failed diagnostic input and
+cannot qualify its two gates. No threshold or existing assertion is relaxed.
+Follow-up commands, outputs, counts and remaining failures are recorded in
+build/w/EH4-followup-validation.md, separately from the historical receipt.
