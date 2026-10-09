@@ -62,6 +62,7 @@ double ProfileMilliseconds() {
   return 1000.0 * static_cast<double>(value.QuadPart) / frequency;
 }
 std::atomic<bool> g_stopping{false};
+std::atomic<bool> g_private_handover{false};
 HANDLE g_child_job = nullptr;
 std::wstring g_log_path;
 std::atomic<const char*> g_stop_reason{"accept-loop-ended"};
@@ -290,6 +291,7 @@ std::wstring EngineRunnerScript(const std::wstring& repository,
 
 #include "native_adapter_transport.h"
 
+#include "policy_bundle.h"
 #include "native_adapter.h"
 
 // The settings UI (docs/design/sumi-indicator-settings.md, the 辞書 and
@@ -1939,7 +1941,7 @@ void ReplacementLoop() {
       {
         EngineTransaction engine_lock;
         std::unique_lock<std::mutex> switch_lock(g_switch_mutex);
-        if (generation != g_switch_generation) break; // superseded
+        if (generation != g_switch_generation || g_private_handover.load()) break; // superseded/quiescing
         if (id == "ddskk" && g_learning_queue &&
             g_learning_queue->Fence().first != learning_fence.first) {
           // A confirmation arrived during cold loading. Retry from the next
@@ -2455,9 +2457,61 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     const auto scoped_id = SessionIdFromRequest(request);
     if (!scoped_id.empty()) engine_request = request.substr(9 + scoped_id.size());
     bool publish_response = true;
-    const bool is_shutdown = request == "SHUTDOWN";
+    bool is_shutdown = request == "SHUTDOWN";
     const bool is_preview = request.rfind("PREVIEW ", 0) == 0;
-    if (is_shutdown) {
+    const bool private_bundle = GetEnvironmentVariableW(L"DDSKK_HOST_BUNDLE_MANIFEST", nullptr, 0) &&
+        NativeImeRegistryKey().starts_with(L"Software\\NativeIME-test-") &&
+        g_pipe_name != L"\\\\.\\pipe\\ddskk-ime-v1";
+    if (request == "PRIVATE OWNER 1") {
+      response = private_bundle ? "OWNER " + std::to_string(GetCurrentProcessId()) : "ERR PRIVATE";
+    } else if (request == "PRIVATE HANDOVER 1") {
+      // Only a private, manifest-selected host exposes this additive control.
+      // Freeze editing under the same transaction gate that tracks composition,
+      // then wait for the native durable fence without holding that gate.
+      std::pair<uint64_t, std::shared_future<bool>> fence;
+      {
+        EngineTransaction lock;
+        if (!private_bundle)
+          response = "ERR PRIVATE";
+        else {
+          bool composing = !g_composing_sessions.empty();
+          if (g_state_owner && g_state_owner->local_owner && g_state_view) {
+            LONG sequence = 0;
+            if (!TryOwnStateMirror(g_state_view, &sequence, g_state_writer)) composing = true;
+            else {
+              std::istringstream state(g_state_view->line);
+              std::string tag, mode, text, pending; int cursor = 0, start = -1;
+              if (!(state >> tag >> mode >> cursor >> start >> text >> pending)) composing = true;
+              else composing = composing || mode == "preedit" || mode == "candidate" ||
+                  mode == "registration" || start >= 0 || pending != "-";
+              ReleaseStateMirror(g_state_view, sequence, g_state_writer);
+            }
+          }
+          if (composing) response = "DEFER COMPOSITION";
+          else {
+            g_private_handover = true;
+            if (g_learning_queue) fence = g_learning_queue->Fence();
+          }
+        }
+      }
+      if (response.empty()) {
+        const bool durable = !fence.second.valid() ||
+            (fence.second.wait_for(std::chrono::seconds(30)) == std::future_status::ready &&
+             fence.second.get());
+        EngineTransaction lock;
+        if (!durable || (g_learning_queue && g_learning_queue->Fence().first != fence.first)) {
+          g_private_handover = false;
+          response = "DEFER STORAGE";
+        } else {
+          response = "OK HANDOVER RECONNECT"; is_shutdown = true;
+          LogEvent("private-handover fence=" + std::to_string(fence.first) +
+              " engine_epoch=" + std::to_string(native_adapter::engine_epoch.load()) +
+              " sessions=reconnect");
+        }
+      }
+    } else if (g_private_handover.load()) {
+      connected = false; break;
+    } else if (is_shutdown) {
       response = "OK";
     } else if (engine_request.starts_with("LOCAL SERVER ")) {
       try {
@@ -2510,6 +2564,7 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
       // Reserve the interpreter for this whole transaction. SERVER cache
       // waits release metadata ownership, preserving publication access.
       EngineTransaction lock;
+      if (g_private_handover.load()) { connected = false; break; }
       if (GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0))
         std::fprintf(stderr, "request-lock tick=%llu wait_ms=%llu qpc_wait_ms=%.6f request=%s\n",
             received, GetTickCount64()-received,
@@ -2676,13 +2731,14 @@ int wmain(int argc, wchar_t** argv) {
   const std::wstring mutex_name = SingletonMutexName(g_pipe_name);
   HANDLE singleton_mutex = CreateMutexW(nullptr, TRUE, mutex_name.c_str());
   if (singleton_mutex == nullptr) {
-    // Extremely unlikely (e.g. object-manager exhaustion). Fail open --
-    // log and keep going -- rather than silently refuse to start the
-    // IME's only engine host over a guard that could not even be set up.
+    // Bundled private replacement fails closed. Preserve the unbundled host's
+    // existing failure behaviour until a separately approved live rollout.
+    const bool bundled = GetEnvironmentVariableW(L"DDSKK_HOST_BUNDLE_MANIFEST", nullptr, 0) != 0;
     std::fwprintf(stderr,
-                  L"ddskk-engine-host: CreateMutexW failed (%lu); continuing "
-                  L"without the singleton guard\n",
-                  static_cast<unsigned long>(GetLastError()));
+                  L"ddskk-engine-host: CreateMutexW failed (%lu); %ls\n",
+                  static_cast<unsigned long>(GetLastError()),
+                  bundled ? L"refusing bundled startup" : L"continuing without the singleton guard");
+    if (bundled) return 4;
   } else if (GetLastError() == ERROR_ALREADY_EXISTS) {
     g_stop_reason.store("singleton-already-owned");
     // Lost the race: another host already owns this pipe name's session.

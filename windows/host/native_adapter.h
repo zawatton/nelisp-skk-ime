@@ -34,6 +34,9 @@ class ShadowPolicy {
       switches_[i] = length ? length == 1 && value[0] == L'1' : flag == 1;
       enabled_ = enabled_ || switches_[i];
     }
+    if (!policy_bundle::Compatible(runtime, repository)) {
+      enabled_ = false; switches_.fill(false);
+    }
     if (!enabled_) return;
     runtime_ = runtime; repository_ = repository; job_ = job;
     worker_ = std::thread([this] { Run(); });
@@ -255,6 +258,8 @@ class ShadowPolicy {
     while (!stop_ && !g_stopping) {
       const auto start = GetTickCount64(); std::string reply;
       if (!Launch() || !Line(reply, 60000) || reply != "HP1 READY") {
+        if (!reply.empty() && reply != "HP1 READY")
+          LogEvent("policy-fallback native reason=incompatible-policy-ready-protocol");
         LogDecisions(); LogEvent("policy-start-failed"); Retire();
         const auto until = GetTickCount64() + backoff;
         while (!stop_ && !g_stopping && GetTickCount64() < until) Sleep(10);

@@ -10,7 +10,8 @@
        (coding-system-for-write 'utf-8-unix)
        (pairing (member (getenv "INLINE_TEST_PAIR") '("1" "2")))
        (imported-text "")
-       (deadline (+ (float-time) 150)))
+       (deadline (+ (float-time) (if (getenv "INLINE_TEST_TIMEOUT_SEC")
+                                   (string-to-number (getenv "INLINE_TEST_TIMEOUT_SEC")) 150))))
   (with-temp-buffer
     (insert (format "EMACS_PID=%d\n" (emacs-pid)))
     (write-region (point-min) (point-max) logfile nil 'silent))

@@ -151,15 +151,21 @@ evidence: build/validation/eh4-s4/EndToEnd-6.log sha256=30721b9836b0789590d24b04
 * S5 Private deployment and rollback
 ** S5.1 Versioned bundles preserve CLI and reject incompatible policy images or internal protocol
 #+NOTE: Prewarm private endpoint; retain old bundle and generation leases; no live scripts in worker lanes.
-pending
+#+NOTE: EH5 private versioned host/runtime/policy manifests, native startup fallback and -DryRun. Worker Compatibility=4 gates PASS; artifacts reject six corrupt fields. Full command receipts and coordinator evidence instructions: docs/contracts/CLAUDE-S5.org. EH5_RUNTIME must be supplied; no live selection.
+#+NOTE: Claude ran Artifacts and Compatibility serially on 4a2930c: 6 incompatible bundles rejected, DryRun writes nothing, real incompatible startup falls back to native policy with no managed children.
+evidence: build/validation/eh5-s5/Compatibility.log sha256=bd61d83abb07c807e23aa3c425f3c96e618bc13362f72f0a5765140c82428daa
 
 ** S5.2 Host and engine replacement reconcile epochs, sessions, fences and durable cursors with one endpoint owner
 #+NOTE: Composition deferral, blocked storage, canceled warmup and crash-before/after handover; no assumed transparent host session transfer.
-pending
+#+NOTE: EH5 serial journal/lease recovery, native handover fence, client reconnect, real host/engine kills; full five-boundary recovery command below. Worker Lifecycle=4 gates, IDs=30/replays=30, exact_order=1, retained_mappings=1 PASS. Five real recovery cases PASS, acknowledged_ID_loss=0; separate final-build blocked checkpoint test preserves old owner and exact ACK replay. No full TSF acceptance inferred. Full serial stage/evidence details in CLAUDE-S5.org.
+#+NOTE: Claude ran Lifecycle and Recovery serially on 4a2930c: 30 exact ACK replays in order, composition deferral, retained mapping, single endpoint owner, blocked storage keeps the old owner.
+evidence: build/validation/eh5-s5/Recovery.log sha256=a21816673fe4548271b06b1427b028ca3e30445eddc2eb6754876f1d6cff4c0e
 
 ** S5.3 End to end: private old-to-new-to-old swap preserves TSF and Emacs input and exact learned order with zero owned-process leaks
 #+NOTE: Hot swap, scoped deployment/rollback, inline, learning bursts, retained mappings and real host/engine restart. Live rollout is separately authorized.
-pending
+#+NOTE: EH5 EndToEnd includes same text store and real Emacs listener across both swaps plus unchanged scoped/core gates. Worker private HKCU creation fails with WinError 5; CTest reaches 0/10 bodies. Both ERT suites pass 31/31 and 14/14. Coordinator must run this command and retain full serial logs/owned cleanup evidence; not accepted by worker.
+#+NOTE: Claude ran EndToEnd on 0238978: 15 gates PASS (TSF, Emacs inline and integration, candidate window, core hot swap) across the private old-new-old swap, zero owned leftovers.
+evidence: build/validation/eh5-s5/EndToEnd-2.log sha256=c5b7ab145e529495e943d008bff7210745f9c1c0dc9a0cf1eff85e3341f5070f
 
 * S6 Windows qualification and adapter retirement decision
 ** S6.1 Exact Windows runtime qualifies each proposed OS1 replacement or documents its retained native boundary

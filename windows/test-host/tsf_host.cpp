@@ -66,6 +66,7 @@
 // CMakeLists.txt's target_compile_definitions(tsf-host ...), matching the
 // rest of this project's targets.
 #include <windows.h>
+#include <fstream>
 #include "callback_io_probe.h"
 #include <tlhelp32.h>
 
@@ -1399,7 +1400,28 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
       UnmapViewOfFile(view); CloseHandle(map);
       continue;
     }
-    if (token == L"KEYSTATE:SHIFT" || token == L"KEYSTATE:CLEAR") {
+    if (token.starts_with(L"BUNDLE:")) {
+      wchar_t root[1024]{}, directory[32768]{};
+      GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", root, _countof(root));
+      GetEnvironmentVariableW(L"NATIVEIME_TEST_BUNDLE_DIRECTORY", directory, _countof(directory));
+      const auto action = token.substr(7);
+      if (!std::wstring(root).starts_with(L"Software\\NativeIME-test-") || !directory[0] ||
+          (action != L"NEW" && action != L"OLD" && action != L"DEFER" && action != L"RESTART")) std::exit(1);
+      const std::wstring request = std::wstring(directory) + L"\\bundle.request";
+      const std::wstring done = std::wstring(directory) + L"\\bundle.done";
+      DeleteFileW(done.c_str());
+      { std::ofstream output(request); output << Utf8FromWide(action); }
+      const auto deadline = GetTickCount64() + 180000;
+      while (GetFileAttributesW(done.c_str()) == INVALID_FILE_ATTRIBUTES && GetTickCount64() < deadline)
+        PumpMessages(10);
+      std::ifstream result(done); std::string response; std::getline(result, response);
+      std::printf("BUNDLE_RESULT action=%s result=%s pid=%lu\n", Utf8FromWide(action).c_str(), response.c_str(), GetCurrentProcessId());
+      std::fflush(stdout);
+      if (response != "OK") std::exit(1);
+      PumpMessages(700);
+      PrintAfterLine(token, stores[active]);
+      continue;
+    } else if (token == L"KEYSTATE:SHIFT" || token == L"KEYSTATE:CLEAR") {
       BYTE ambient[256]{};
       ambient[VK_SHIFT] = token == L"KEYSTATE:SHIFT" ? 0x80 : 0;
       SetKeyboardState(ambient);
@@ -1633,7 +1655,8 @@ int wmain(int argc, wchar_t** argv) {
   GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", private_pipe, _countof(private_pipe));
   GetEnvironmentVariableW(L"DDSKK_HARNESS_DLL_PATH", private_dll, _countof(private_dll));
   if (!std::wstring(private_key).starts_with(L"Software\\NativeIME-test-") ||
-      !std::wstring(private_pipe).starts_with(L"\\\\.\\pipe\\ddskk-test-") || !private_dll[0]) {
+      (!std::wstring(private_pipe).starts_with(L"\\\\.\\pipe\\ddskk-test-") &&
+       !std::wstring(private_pipe).starts_with(L"\\\\.\\pipe\\EH5-")) || !private_dll[0]) {
     std::fprintf(stderr, "tsf-host requires private registry/pipe and an explicit DLL; use run-harness.ps1\n");
     return 2;
   }
