@@ -763,30 +763,34 @@ misses exhaustion after one or more real candidates."
   (aset ddskk-engine--registration-editor 1 0))
 
 (defun ddskk-engine--cancel-registration ()
-  (let ((checkpoint ddskk-engine--registration-checkpoint))
+  (let ((checkpoint ddskk-engine--registration-checkpoint)
+        (had-candidates ddskk-engine--registration-had-candidates))
     (ddskk-engine--end-registration)
     (skk-ime-session-restore ddskk-engine--session checkpoint)
     (setq ddskk-engine--registration-had-candidates nil)
-    ;; The exhausted conversion is restored as ▼READING.  Calling DDSKK's
-    ;; normal `skk-henkan-inactivate' here duplicates READING on NeLisp
-    ;; because its restored markers are static copies.  CorvusSKK restores
-    ;; the pre-registration reading, so perform the equivalent ▼ -> ▽ state
-    ;; transition directly and leave the reading editable.
-    (with-current-buffer (skk-ime-session-buffer ddskk-engine--session)
-      (let* ((marker-pos (and (or (numberp skk-henkan-start-point)
-                                 (markerp skk-henkan-start-point))
-                              (marker-position skk-henkan-start-point)))
-             (marker-char-pos
-              (max (point-min) (1- (or marker-pos (1+ (point-min)))))))
-        (delete-region marker-char-pos (1+ marker-char-pos))
-        (goto-char marker-char-pos)
-        (insert "▽")
-        (setq skk-henkan-mode 'on skk-henkan-count -1
-              skk-henkan-list nil skk-current-search-prog-list nil)
-        (skk-set-marker skk-henkan-start-point (1+ marker-char-pos))
-        (goto-char (point-max))))
-    (ddskk-engine--raw-state-line
-     (skk-ime-session-snapshot ddskk-engine--session))))
+    (if had-candidates
+        ;; Stock cancellation of an exhausted prompt selects the previous
+        ;; candidate, rather than turning the candidate word into a reading.
+        (ddskk-engine--raw-state-line
+         (skk-ime-session-control ddskk-engine--session 'previous))
+      (progn
+        ;; A miss restores the reading. Keep the native marker-safe transition:
+        ;; full DDSKK inactivation duplicates text with NeLisp's static markers.
+        (with-current-buffer (skk-ime-session-buffer ddskk-engine--session)
+          (let* ((marker-pos (and (or (numberp skk-henkan-start-point)
+                                     (markerp skk-henkan-start-point))
+                                  (marker-position skk-henkan-start-point)))
+                 (marker-char-pos
+                  (max (point-min) (1- (or marker-pos (1+ (point-min)))))))
+            (delete-region marker-char-pos (1+ marker-char-pos))
+            (goto-char marker-char-pos)
+            (insert "▽")
+            (setq skk-henkan-mode 'on skk-henkan-count -1
+                  skk-henkan-list nil skk-current-search-prog-list nil)
+            (skk-set-marker skk-henkan-start-point (1+ marker-char-pos))
+            (goto-char (point-max))))
+        (ddskk-engine--raw-state-line
+         (skk-ime-session-snapshot ddskk-engine--session))))))
 
 (defun ddskk-engine--finish-registration (word)
   (let ((checkpoint ddskk-engine--registration-checkpoint))
@@ -860,21 +864,25 @@ misses exhaustion after one or more real candidates."
                 (skk-ime-session-feed-string ddskk-engine--session keys)
                 (ddskk-engine--registration-state-line)))))
          ((equal line "CONTROL COMMIT")
+          ;; Stock exit-minibuffer confirms the inner conversion and exits
+          ;; on the same RET (the default skk-egg-like-newline is nil).
+          (when (ddskk-engine--registration-composing-p state)
+            (skk-ime-session-control ddskk-engine--session 'commit))
+          (ddskk-engine--registration-flush
+           (skk-ime-session-snapshot ddskk-engine--session))
+          (let ((word (aref ddskk-engine--registration-editor 0)))
+            (if (or (= (length word) 0)
+                    (string-match "\\`[ \\t\\r\\n]+\\'" word))
+                (ddskk-engine--cancel-registration)
+              (ddskk-engine--finish-registration word))))
+         ((or (equal line "CONTROL QUIT") (equal line "CONTROL CANCEL"))
+          ;; Like DDSKK's abort-recursive-edit advice: unwind the nested
+          ;; candidate/reading/prefix before leaving the registration editor.
           (if (ddskk-engine--registration-composing-p state)
               (progn
-                (skk-ime-session-control
-                  ddskk-engine--session 'commit)
+                (skk-ime-session-control ddskk-engine--session 'quit)
                 (ddskk-engine--registration-state-line))
-            (let ((word (aref ddskk-engine--registration-editor 0)))
-              (if (or (= (length word) 0)
-                      (string-match "\\`[ \\t\\r\\n]+\\'" word))
-                  (ddskk-engine--cancel-registration)
-                (ddskk-engine--finish-registration word)))))
-         ((or (equal line "CONTROL QUIT") (equal line "CONTROL CANCEL"))
-          ;; CorvusSKK treats Ctrl+G/Escape as cancellation of the whole
-          ;; registration editor.  Do not consume the first press merely to
-          ;; clear a pending romaji or nested conversion.
-          (ddskk-engine--cancel-registration))
+            (ddskk-engine--cancel-registration)))
          ((equal line "CONTROL BACKSPACE")
           (if (ddskk-engine--registration-composing-p state)
               (skk-ime-session-control

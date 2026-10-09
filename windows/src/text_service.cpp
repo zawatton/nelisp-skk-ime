@@ -42,6 +42,7 @@ constexpr UINT kPublishStateMessage = WM_APP + 91;
 constexpr UINT kModeIndicatorMessage = WM_APP + 92;
 constexpr UINT kInlineMessage = WM_APP + 93;
 constexpr UINT kConfirmationReplayMessage = WM_APP + 94;
+constexpr UINT kRegistrationReplayMessage = WM_APP + 95;
 size_t InlineCursor(const ddskk::EngineState& state) {
   const auto display = state.text + state.pending_romaji;
   size_t units = display.size();
@@ -61,6 +62,15 @@ void DelayTestProvider() {
 #ifdef NATIVEIME_CORE_PROVIDER_DELAY_MS
   Sleep(NATIVEIME_CORE_PROVIDER_DELAY_MS);
 #endif
+}
+void DelayRegistrationProvider(bool registration) {
+  if (!registration || !GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) return;
+  wchar_t value[16]{};
+  if (!GetEnvironmentVariableW(L"NATIVEIME_TEST_REGISTRATION_WORKER_DELAY_MS", value, 16)) return;
+  const DWORD delay = std::min<DWORD>(30000, wcstoul(value, nullptr, 10));
+  if (!delay) return;
+  std::printf("REGISTRATION_WORKER delay_ms=%lu\n", delay);
+  Sleep(delay); // Private negative control; runs only on the provider worker.
 }
 std::atomic<DWORD> process_publication_sequence{0};
 std::atomic<unsigned> process_publishers{0};
@@ -304,6 +314,7 @@ struct TextService::ProviderResult {
   std::optional<ddskk::EngineState> state;
   bool apply_state = true;
   uint64_t key_sequence = 0;
+  bool preview_only = false;
 };
 
 TextService::TextService() {
@@ -341,6 +352,12 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
   }
   auto* service = reinterpret_cast<TextService*>(
       GetWindowLongPtrW(window, GWLP_USERDATA));
+  if ((message == kRegistrationReplayMessage || (message == WM_TIMER && wparam == 8)) &&
+      service != nullptr) {
+    KillTimer(window, 8);
+    service->ReplayDeferredProviderKeys();
+    return 0;
+  }
   if (message == kInlineMessage && service != nullptr) {
     service->HandleInlineEvent();
     return 0;
@@ -390,9 +407,8 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
       }
       else {
         const auto saved = conversion; conversion.Reset(); service->provider_composition_active_ = false;
-        const bool unsafe = reply && reply->ready && !reply->supported;
-        if (!service->BeginProviderConversion(service->realtime_frontend_.raw_keys(), !unsafe,
-            unsafe ? saved.State().candidates.size() : 0)) conversion = saved;
+        if (!service->BeginProviderConversion(service->realtime_frontend_.raw_keys(), false,
+            saved.State().candidates.size())) conversion = saved;
       }
     }
     return 0;
@@ -480,7 +496,8 @@ void TextService::PrepareProviderReading() {
   } catch (...) { Release(); }
 }
 
-bool TextService::BeginProviderConversion(const std::u32string& keys, bool registration, size_t skip) {
+bool TextService::BeginProviderConversion(const std::u32string& keys, bool registration, size_t skip,
+                                          std::wstring preview_reading) {
   preparation_sequence_.fetch_add(1);
   CancelLocalRetry();
   local_observer_retry_.reset();
@@ -503,7 +520,39 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
   const bool retry_okuri = okuri_handoff_active_ && okuri_handoff_retry_;
   AddRef();
   try {
-    std::thread([this, keys, sequence, key_sequence, destination, retry_okuri, registration, skip] {
+    std::thread([this, keys, sequence, key_sequence, destination, retry_okuri, registration, skip,
+                 preview_reading = std::move(preview_reading)] {
+      if (!preview_reading.empty()) {
+        TracePhase(L"provider-preview-start", key_sequence, L"engine-worker");
+        std::optional<std::vector<std::wstring>> preview;
+        {
+          std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+          wchar_t delay[16]{};
+          if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0) &&
+              GetEnvironmentVariableW(L"NATIVEIME_TEST_PROVIDER_PREVIEW_DELAY_MS", delay, 16)) {
+            const DWORD ms = std::min<DWORD>(30000, wcstoul(delay, nullptr, 10));
+            std::printf("PROVIDER_PREVIEW_WORKER delay_ms=%lu\n", ms);
+            Sleep(ms); // Private negative control, never on the TSF key callback.
+          }
+          preview = engine_.PreviewCandidates(preview_reading, 8);
+        }
+        TracePhase(L"provider-preview-end", key_sequence, L"engine-worker");
+        if (preview && !preview->empty()) {
+          ddskk::EngineState snapshot;
+          snapshot.mode = L"provider-preview";
+          snapshot.candidate_index = 0;
+          snapshot.candidates = std::move(*preview);
+          auto* interim = new (std::nothrow) ProviderResult{
+              this, sequence, std::move(snapshot), false, key_sequence, true};
+          if (interim) {
+            AddRef(); // Preview and final result have independent message lifetimes.
+            if (!PostMessageW(destination, kProviderResultMessage, 0, reinterpret_cast<LPARAM>(interim))) {
+              delete interim;
+              Release();
+            }
+          }
+        }
+      }
       if (retry_okuri) Sleep(100);
       DelayTestProvider();
       TracePhase(L"engine-lookup-start", key_sequence, L"engine");
@@ -582,13 +631,15 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
   TracePhase(L"engine-lookup-request", key_sequence, L"engine");
   const HWND destination = provider_window_;
   const bool bounded_recovery = local_enabled_;
+  const bool registration = registration_mode_;
   AddRef();
   try {
     std::thread([this, control, sequence, key_sequence, destination, apply_state, test_failure_delay,
-                 candidate, reading, bounded_recovery] {
+                 candidate, reading, bounded_recovery, registration] {
       const ULONGLONG started = GetTickCount64();
       TracePhase(L"engine-lookup-start", key_sequence, L"engine");
       DelayTestProvider();
+      DelayRegistrationProvider(registration);
       std::optional<ddskk::EngineState> state;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
@@ -717,11 +768,13 @@ bool TextService::BeginProviderKey(char32_t key, bool may_convert) {
   const auto key_sequence = key_sequence_;
   TracePhase(L"engine-lookup-request", key_sequence, L"engine");
   const HWND destination = provider_window_;
+  const bool registration = registration_mode_;
   AddRef();
   try {
-    std::thread([this, key, may_convert, sequence, key_sequence, destination] {
+    std::thread([this, key, may_convert, sequence, key_sequence, destination, registration] {
       TracePhase(L"engine-lookup-start", key_sequence, L"engine");
       DelayTestProvider();
+      DelayRegistrationProvider(registration);
       std::optional<ddskk::EngineState> state;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
@@ -905,6 +958,17 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   if (result == nullptr ||
       result->sequence != provider_sequence_.load(std::memory_order_acquire))
     return;
+  if (result->preview_only) {
+    // A preview is advisory UI, not a provider checkpoint. It cannot end the
+    // conversion barrier, consume queued input, or take over registration.
+    if (provider_pending_.load(std::memory_order_acquire) && provider_conversion_active_ &&
+        active_context_ && result->state) {
+      TracePhase(L"provider-preview-ui-start", result->key_sequence, L"pump");
+      UpdateCandidateUI(active_context_, *result->state);
+      TracePhase(L"provider-preview-ui-end", result->key_sequence, L"pump");
+    }
+    return;
+  }
   provider_pending_.store(false, std::memory_order_release);
   provider_deadline_ = 0;
   if (provider_window_) KillTimer(provider_window_, 1);
@@ -958,6 +1022,7 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   }
   provider_conversion_active_ = false;
 
+  ObserveRegistrationLearning(*result->state);
   // Also retain intermediate queued cycling replies: the next control must
   // recover from the latest engine selection even before it is rendered.
   provider_candidate_state_ = result->state->mode == L"candidate"
@@ -967,12 +1032,13 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   // Candidate controls belong to that candidate; a printable key first
   // accepts it and remains queued so it can start the next native episode.
   if (!deferred_provider_keys_.empty() &&
-      (!result->state->candidates.empty() ||
-       result->state->mode == L"candidate")) {
+      ddskk::IsDocumentCandidate(*result->state)) {
     const DeferredProviderKey& key = deferred_provider_keys_.front();
     std::optional<ddskk::EngineControl> control;
     bool consume = true;
-    if (key.virtual_key == VK_RETURN)
+    if (ddskk::IsQuitKey(key.virtual_key, key.control))
+      control = ddskk::EngineControl::kQuit;
+    else if (key.virtual_key == VK_RETURN)
       control = ddskk::EngineControl::kCommit;
     else if (key.virtual_key == VK_SPACE)
       control = ddskk::EngineControl::kConvert;
@@ -1058,32 +1124,19 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   if (registration_mode_) {
     last_engine_mode_ = result->state->mode;
     QueuePublishedState(&*result->state);
+    TracePhase(L"registration-inline-start", result->key_sequence, L"pump");
+    if (inline_epoch_ && inline_channel_.Publish(inline_epoch_,
+          result->state->text + result->state->pending_romaji, InlineCursor(*result->state)))
+      inline_state_ = *result->state;
+    TracePhase(L"registration-inline-end", result->key_sequence, L"pump");
     CloseCandidateUi();
     if (!was_registration && registration_range_ == nullptr &&
         composition_ != nullptr) {
       composition_->GetRange(&registration_range_);
     }
-    if (!deferred_provider_keys_.empty()) {
-      bool started = false;
-      TracePhase(L"provider-key-replay", key_sequence_, L"engine");
-    const DeferredProviderKey key = deferred_provider_keys_.front();
-      if (key.has_codepoint) {
-        std::u32string keys;
-        while (!deferred_provider_keys_.empty() &&
-               deferred_provider_keys_.front().has_codepoint) {
-          keys.push_back(deferred_provider_keys_.front().codepoint);
-          deferred_provider_keys_.pop_front();
-        }
-        started = BeginProviderKeys(keys);
-      } else {
-        deferred_provider_keys_.pop_front();
-      }
-      if (!started && key.virtual_key == VK_RETURN)
-        started = BeginProviderControl(ddskk::EngineControl::kCommit);
-      else if (!started && key.virtual_key == VK_BACK)
-        started = BeginProviderControl(ddskk::EngineControl::kBackspace);
-      if (started) return;
-    }
+    // Replay through registration routing, including every semantic control.
+    // Never run document candidate confirmation on this editor's candidates.
+    ReplayDeferredProviderKeys();
     return;
   }
   if (active_context_ == nullptr) return;
@@ -1123,19 +1176,31 @@ void TextService::ReplayDeferredProviderKeys() {
          !provider_pending_.load(std::memory_order_acquire)) {
     const DeferredProviderKey key = deferred_provider_keys_.front();
     deferred_provider_keys_.pop_front();
-    if (local_enabled_ && kana_mode_ && !provider_composition_active_ && !registration_mode_) {
+    if (registration_mode_ ||
+        (local_enabled_ && kana_mode_ && !provider_composition_active_)) {
       // A late index must use the same local barriers as fresh typing. The
       // old replay loop sent every subsequent SPACE back to the provider,
       // even after the mapped index became available.
       BYTE saved[256]{}, keyboard[256]{};
       GetKeyboardState(saved);
       if (key.shift) keyboard[VK_SHIFT] = 0x80;
-      if (key.ctrl_j) keyboard[VK_CONTROL] = 0x80;
+      if (key.ctrl_j || key.control) keyboard[VK_CONTROL] = 0x80;
+      if (key.caps) keyboard[VK_CAPITAL] = 1;
       SetKeyboardState(keyboard);
       BOOL eaten = FALSE;
       const auto scan = MapVirtualKeyW(static_cast<UINT>(key.virtual_key), MAPVK_VK_TO_VSC);
+      tested_key_valid_ = false;
+      const auto saved_replay = replay_codepoint_;
+      replay_codepoint_ = key.has_codepoint ? std::optional<char32_t>(key.codepoint) : std::nullopt;
+      const bool saved_registration_dispatch = dispatching_registration_key_;
+      dispatching_registration_key_ = registration_mode_;
       OnKeyDown(active_context_, key.virtual_key, (static_cast<LPARAM>(scan) << 16) | 1, &eaten);
+      const bool registration_retry = dispatching_registration_key_ &&
+          !provider_pending_.load(std::memory_order_acquire);
+      dispatching_registration_key_ = saved_registration_dispatch;
+      replay_codepoint_ = saved_replay;
       SetKeyboardState(saved);
+      if (registration_retry) return; // Retry timer, never spin on worker-launch failure.
       continue;
     }
     std::optional<ddskk::EngineState> state;
@@ -1160,7 +1225,7 @@ void TextService::ReplayDeferredProviderKeys() {
         control = ddskk::EngineControl::kBackspace;
       }
       else if (key.ctrl_j) control = ddskk::EngineControl::kCancel;
-      else if (key.virtual_key == VK_ESCAPE) control = ddskk::EngineControl::kQuit;
+      else if (ddskk::IsQuitKey(key.virtual_key, key.control)) control = ddskk::EngineControl::kQuit;
       if (control && BeginProviderControl(*control)) return;
       continue;
     }
@@ -1178,7 +1243,7 @@ void TextService::ReplayDeferredProviderKeys() {
       const auto hiragana = realtime_frontend_.ToHiragana();
       if (state) state->mode = L"hiragana";
       else state = hiragana;
-    } else if (key.virtual_key == VK_ESCAPE) {
+    } else if (ddskk::IsQuitKey(key.virtual_key, key.control)) {
       state = realtime_frontend_.Quit();
     } else if (key.virtual_key >= VK_F6 && key.virtual_key <= VK_F10 &&
                realtime_frontend_.preedit()) {
@@ -1830,14 +1895,20 @@ bool TextService::WouldClaimKey(WPARAM wparam, bool composing) const {
 }
 
 // Only claim printable keys while the out-of-process engine is reachable.
-HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
+HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM lparam,
                                    BOOL* eaten) {
+  TracePhase(L"key-test-receipt", key_sequence_ + 1, registration_mode_ ? L"registration" : L"key");
+  tested_virtual_key_ = wparam;
+  tested_lparam_ = lparam;
+  tested_keyboard_layout_ = GetKeyboardLayout(0);
+  tested_key_valid_ = GetKeyboardState(tested_keyboard_state_) != FALSE;
   FollowSettings();
   if (eaten == nullptr) return E_POINTER;
   tested_control_down_ = ControlDown();
   // Logs (wparam, handled, connect result, final eaten) with -1 for
   // whichever of handled/connect was never evaluated on this exit path.
   const auto debug_exit = [&](int handled, int connect) {
+    TracePhase(L"key-test-return", key_sequence_ + 1, registration_mode_ ? L"registration" : L"key");
     DebugLog(L"OnTestKeyDown vk=%02X handled=%d connect=%d eaten=%d",
              static_cast<unsigned>(wparam), handled, connect, *eaten);
   };
@@ -1878,13 +1949,17 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM,
   // Cancellation belongs to the current document even while its provider
   // owns the transaction mutex or the engine is unavailable. In particular,
   // registration Ctrl+G must not probe Connect on the TSF callback thread.
-  if (realtime_claim || (wparam == 'G' && tested_control_down_) ||
+  // Registration already owns this key. Connect takes the transaction mutex,
+  // so even its short timeout can wait behind an in-flight registration worker.
+  if (registration_mode_ || realtime_claim || (wparam == 'G' && tested_control_down_) ||
       wparam == VK_ESCAPE) {
     *eaten = TRUE;
     debug_exit(1, -1);
     return S_OK;
   }
+  TracePhase(L"key-connect-start", key_sequence_ + 1, L"engine");
   const bool connected = engine_.Connect(kInteractiveTimeoutMs);
+  TracePhase(L"key-connect-end", key_sequence_ + 1, L"engine");
   if (!connected) {
     // Leaking romaji into the document is strictly worse than swallowing a
     // key for one round-trip while the host respawns: OnKeyDown swallows
@@ -2485,6 +2560,32 @@ void TextService::FinishStateEdit(ITfContext* context,
 
 HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
                                BOOL* eaten) {
+  const bool tested_event = tested_key_valid_ && tested_virtual_key_ == wparam && tested_lparam_ == lparam;
+  BYTE event_state[256]{};
+  const bool have_event_state = tested_event || GetKeyboardState(event_state) != FALSE;
+  if (tested_event) std::copy_n(tested_keyboard_state_, 256, event_state);
+  const HKL event_layout = tested_event ? tested_keyboard_layout_ : GetKeyboardLayout(0);
+  const auto replay_codepoint = replay_codepoint_;
+  const bool key_shift = tested_event ? (event_state[VK_SHIFT] & 0x80) != 0 : ShiftDown();
+  const bool key_caps = (event_state[VK_CAPITAL] & 1) != 0;
+  tested_key_valid_ = false;
+  bool translated_event = false;
+  std::optional<char32_t> translated_codepoint;
+  // Translate only when the claim/router needs text, and only once. Merely
+  // testing or passing through a dead key must not consume its keyboard state.
+  const auto event_codepoint = [&]() {
+    if (!translated_event) {
+      translated_codepoint = replay_codepoint ? replay_codepoint
+          : have_event_state ? TranslateKey(wparam, lparam, event_state, event_layout) : std::nullopt;
+      translated_event = true;
+      if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
+        std::printf("KEYINPUT vk=%02X scalar=%08X source=%s shift=%d caps=%d\n",
+            static_cast<unsigned>(wparam), static_cast<unsigned>(translated_codepoint.value_or(0)),
+            replay_codepoint ? "replay" : tested_event ? "test" : "down", key_shift, key_caps);
+      }
+    }
+    return translated_codepoint;
+  };
   struct CallbackTailTrace {
     TextService* owner;
     ~CallbackTailTrace() { owner->TracePhase(L"key-locals-released", owner->KeySequence(), L"host"); }
@@ -2492,7 +2593,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
 
   preparation_sequence_.fetch_add(1);
   ++key_sequence_;
-  TracePhase(L"key-receipt", key_sequence_, L"key");
+  TracePhase(L"key-receipt", key_sequence_, dispatching_registration_key_ ? L"registration-pump" : L"key");
   FollowSettings();
   if (eaten == nullptr) return E_POINTER;
   *eaten = FALSE;
@@ -2568,7 +2669,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
    * having declined it, so those ordinary editor keys disappeared. */
   if (local_conversion_retry_) {
     RetryLocalConversion(); CancelLocalRetry();
-    if (local_conversion_.active() && wparam == VK_SPACE && !ShiftDown()) {
+    if (local_conversion_.active() && wparam == VK_SPACE && !key_shift) {
       *eaten = TRUE; branch = L"local-convert-retry"; state = local_conversion_.State();
       debug_exit(*eaten); return S_OK;
     }
@@ -2612,10 +2713,10 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   }
   const auto skk_mode_key = (!control_down && engine_id_ == "ddskk" &&
       realtime_frontend_.preedit() && !provider_composition_active_ && !local_conversion_.active())
-      ? TranslateKey(wparam, lparam) : std::optional<char32_t>{};
+      ? event_codepoint() : std::optional<char32_t>{};
   const bool katakana_q = engine_id_ == "ddskk" && composing &&
                            last_engine_mode_ == L"candidate" &&
-                           wparam == 'Q' && ShiftDown();
+                           wparam == 'Q' && key_shift;
   const bool claimed = registration_mode_
       ? (ctrl_g || WouldClaimKey(wparam, true))
       : (ctrl_j || (kana_mode_ && WouldClaimKey(wparam, composing)));
@@ -2626,8 +2727,8 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     return S_OK;
   }
   if (!replaying_confirmation_ && (confirmation_pending_ || confirmation_replay_)) {
-    const auto key = !control_down ? TranslateKey(wparam, lparam) : std::optional<char32_t>{};
-    deferred_provider_keys_.push_back({wparam, key.value_or(0), key.has_value(), ShiftDown(), ctrl_j, control_down, (GetKeyState(VK_CAPITAL) & 1) != 0});
+    const auto key = !control_down ? event_codepoint() : std::optional<char32_t>{};
+    deferred_provider_keys_.push_back({wparam, key.value_or(0), key.has_value(), key_shift, ctrl_j, control_down, key_caps});
     ScheduleConfirmationReplay();
     *eaten = TRUE; branch = L"confirmation-queue"; debug_exit(*eaten); return S_OK;
   }
@@ -2644,7 +2745,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     }
   };
   bool cancelled_provider = false;
-  if (local_conversion_.active()) {
+  if (!registration_mode_ && local_conversion_.active()) {
     local_server_next_ = false;
     const auto reply = local_store_.Server(local_conversion_.reading(), local_conversion_.okuri());
     if (reply && reply->ready && reply->supported) local_conversion_.UpdateServer(reply->candidates);
@@ -2671,8 +2772,8 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       apply(*state);
       debug_exit(*eaten); return S_OK;
     }
-    const auto key = !control_down ? TranslateKey(wparam, lparam) : std::optional<char32_t>{};
-    if ((wparam == VK_SPACE && ShiftDown()) || wparam == VK_LEFT || wparam == VK_UP ||
+    const auto key = !control_down ? event_codepoint() : std::optional<char32_t>{};
+    if ((wparam == VK_SPACE && key_shift) || wparam == VK_LEFT || wparam == VK_UP ||
         (control_down && wparam == 'P') || (key && *key == U'x')) {
       if ((wparam == VK_LEFT || wparam == VK_UP) ? local_conversion_.Previous() : local_conversion_.PreviousMenu()) state = local_conversion_.State();
       else { state = realtime_frontend_.okuri_started() ? realtime_frontend_.CancelOkuri() : realtime_frontend_.RestorePreedit(); local_conversion_.Reset(); }
@@ -2703,13 +2804,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
           if (provider_window_) SetTimer(provider_window_, 6, 50, nullptr);
           debug_exit(*eaten); return S_OK;
         }
-        // Registration is an explicit provider barrier. Ordinary local
-        // keys never enter a provider queue or an engine shadow stream.
+        // Exhaustion is a provider barrier. Replay candidate traversal too,
+        // so cancellation retains the previous candidate in its checkpoint.
+        // Ordinary local keys never enter an engine shadow stream.
         local_conversion_.Reset();
         provider_composition_active_ = false;
-        const bool unsafe = reply && reply->ready && !reply->supported;
-        if (!BeginProviderConversion(realtime_frontend_.raw_keys(), !unsafe,
-            unsafe ? saved_conversion.State().candidates.size() : 0))
+        if (!BeginProviderConversion(realtime_frontend_.raw_keys(), false,
+            saved_conversion.State().candidates.size()))
           local_conversion_ = saved_conversion;
       }
       debug_exit(*eaten); return S_OK;
@@ -2733,13 +2834,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       debug_exit(*eaten, hr, hr); return S_OK;
     }
     if (key) {
-      deferred_provider_keys_.push_back({wparam, *key, true, ShiftDown(), ctrl_j, control_down, (GetKeyState(VK_CAPITAL) & 1) != 0});
+      deferred_provider_keys_.push_back({wparam, *key, true, key_shift, ctrl_j, control_down, key_caps});
       confirmation_pending_ = true;
       const HRESULT hr = CommitLocal(context, true);
       debug_exit(*eaten, hr, hr); return S_OK;
     } else { debug_exit(*eaten); return S_OK; }
   }
-  if (local_enabled_ && realtime_frontend_.okuri_started() &&
+  if (!registration_mode_ && local_enabled_ && realtime_frontend_.okuri_started() &&
       !provider_composition_active_ && !provider_pending_.load() &&
       (wparam == VK_RETURN || wparam == VK_SPACE || ctrl_j) &&
       (!realtime_frontend_.RestorePreedit().pending_romaji.empty() ||
@@ -2748,7 +2849,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     // DDSKK's incomplete-okuri semantics rather than committing a '*' marker.
     local_okuri_snapshot_ = {};
     if (BeginProviderKeys(realtime_frontend_.raw_keys(), true)) {
-      deferred_provider_keys_.push_back({wparam, 0, false, ShiftDown(), ctrl_j});
+      deferred_provider_keys_.push_back({wparam, 0, false, key_shift, ctrl_j});
       *eaten = TRUE; branch = L"okuri-prefix-provider";
       debug_exit(*eaten); return S_OK;
     }
@@ -2756,13 +2857,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   }
   const bool cancelled_conversion =
       (ctrl_g || wparam == VK_ESCAPE) && provider_conversion_active_;
-  if (ctrl_g || wparam == VK_ESCAPE) deferred_provider_keys_.clear();
+  if (!registration_mode_ && (ctrl_g || wparam == VK_ESCAPE)) deferred_provider_keys_.clear();
   // Cleanup has no document state to apply. Local typing and its commit
   // must continue while it finishes; otherwise Enter can pass through
   // ahead of the letters held in the provider queue.
   if ((provider_pending_.load(std::memory_order_acquire) &&
        !provider_cleanup_pending_) || okuri_handoff_failed_) {
-    if (ctrl_g || wparam == VK_ESCAPE) {
+    if (!registration_mode_ && (ctrl_g || wparam == VK_ESCAPE)) {
       // Cancellation is local and immediate. The detached lookup may still
       // finish, but its stale sequence can no longer edit the document.
       CancelPendingProvider();
@@ -2776,13 +2877,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       // keyboard translator can also yield CR or a literal space for them;
       // marking that as printable made registration batch Enter into
       // FEED-KEYS and left the modal editor open forever.
-      const bool semantic_control = ctrl_j || wparam == VK_RETURN ||
-          wparam == VK_SPACE || wparam == VK_BACK || wparam == VK_ESCAPE ||
+      const bool semantic_control = ctrl_j || ctrl_g || wparam == VK_RETURN ||
+          wparam == VK_SPACE || wparam == VK_BACK || wparam == VK_DELETE || wparam == VK_ESCAPE ||
           wparam == VK_LEFT || wparam == VK_RIGHT || wparam == VK_UP ||
           wparam == VK_DOWN || wparam == VK_HOME || wparam == VK_END ||
           (wparam >= VK_F6 && wparam <= VK_F10);
       const auto codepoint = semantic_control
-          ? std::optional<char32_t>{} : TranslateKey(wparam, lparam);
+          ? std::optional<char32_t>{} : event_codepoint();
       if ((okuri_handoff_active_ || okuri_handoff_failed_) &&
           (codepoint || wparam == VK_BACK) &&
           deferred_provider_keys_.size() == okuri_mirrored_keys_) {
@@ -2792,8 +2893,8 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
         RenderLocalOkuri(context);
       }
       deferred_provider_keys_.push_back(DeferredProviderKey{
-          wparam, codepoint.value_or(0), codepoint.has_value(), ShiftDown(),
-          ctrl_j});
+          wparam, codepoint.value_or(0), codepoint.has_value(), key_shift,
+          ctrl_j, control_down, key_caps});
       if (okuri_handoff_failed_) {
         okuri_handoff_active_ = true;
         okuri_handoff_retry_ = true;
@@ -2861,12 +2962,12 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       control = ddskk::EngineControl::kCancel;
     else if (wparam == VK_LEFT)
       control = engine_id_ == "lattice"
-          ? (ShiftDown() ? ddskk::EngineControl::kSegmentShrink
+          ? (key_shift ? ddskk::EngineControl::kSegmentShrink
                          : ddskk::EngineControl::kSegmentPrev)
           : ddskk::EngineControl::kPrevious;
     else if (wparam == VK_RIGHT)
       control = engine_id_ == "lattice"
-          ? (ShiftDown() ? ddskk::EngineControl::kSegmentExtend
+          ? (key_shift ? ddskk::EngineControl::kSegmentExtend
                          : ddskk::EngineControl::kSegmentNext)
           : ddskk::EngineControl::kConvert;
     else if (wparam >= VK_F6 && wparam <= VK_F10) {
@@ -2885,7 +2986,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       debug_exit(*eaten);
       return S_OK;
     }
-    const auto codepoint = TranslateKey(wparam, lparam);
+    const auto codepoint = event_codepoint();
     if (codepoint) {
       if (engine_id_ == "ddskk" && last_engine_mode_ == L"preedit" &&
           realtime_frontend_.okuri_started()) {
@@ -2901,7 +3002,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
         return S_OK;
       }
       deferred_provider_keys_.push_back(DeferredProviderKey{
-          wparam, *codepoint, true, ShiftDown(), ctrl_j});
+          wparam, *codepoint, true, key_shift, ctrl_j});
       if (BeginProviderControl(ddskk::EngineControl::kCommit)) {
         confirmation_pending_ = true;
         branch = L"provider-accept-and-queue";
@@ -2921,9 +3022,27 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       debug_exit(*eaten);
       return S_OK;
     }
-    if (!ctrl_g) {
+    if (!dispatching_registration_key_) {
+      const bool semantic_control = ctrl_g || wparam == VK_BACK || wparam == VK_DELETE ||
+          wparam == VK_SPACE || wparam == VK_RETURN || wparam == VK_ESCAPE ||
+          wparam == VK_LEFT || wparam == VK_RIGHT || wparam == VK_UP || wparam == VK_DOWN ||
+          wparam == VK_HOME || wparam == VK_END || wparam == VK_F6 || wparam == VK_F7;
+      const auto codepoint = semantic_control ? std::optional<char32_t>{} : event_codepoint();
+      deferred_provider_keys_.push_back(DeferredProviderKey{
+          wparam, codepoint.value_or(0), codepoint.has_value(), key_shift,
+          ctrl_j, control_down, key_caps});
+      if (provider_window_ && !PostMessageW(provider_window_, kRegistrationReplayMessage, 0, 0))
+        SetTimer(provider_window_, 8, 10, nullptr);
+      branch = L"registration-queue";
+      *eaten = TRUE;
+      debug_exit(*eaten);
+      return S_OK;
+    }
+    {
       std::optional<ddskk::EngineControl> control;
-      if (wparam == VK_BACK)
+      if (ctrl_g)
+        control = ddskk::EngineControl::kQuit;
+      else if (wparam == VK_BACK)
         control = ddskk::EngineControl::kBackspace;
       else if (wparam == VK_DELETE)
         control = ddskk::EngineControl::kDelete;
@@ -2950,7 +3069,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
         debug_exit(*eaten);
         return S_OK;
       }
-      const auto codepoint = TranslateKey(wparam, lparam);
+      const auto codepoint = control ? std::optional<char32_t>{} : event_codepoint();
       if (codepoint && BeginProviderKey(*codepoint)) {
         branch = L"registration-async-key";
         *eaten = TRUE;
@@ -2958,46 +3077,23 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
         return S_OK;
       }
     }
-    if (wparam == VK_BACK) {
-      state = engine_.SendControl(ddskk::EngineControl::kBackspace,
-                                  kInteractiveTimeoutMs);
-    } else if (wparam == VK_DELETE) {
-      state = engine_.SendControl(ddskk::EngineControl::kDelete,
-                                  kInteractiveTimeoutMs);
-    } else if (wparam == VK_SPACE) {
-      state = engine_.SendControl(ddskk::EngineControl::kConvert,
-                                  kConversionTimeoutMs);
-    } else if (wparam == VK_RETURN) {
-      state = engine_.SendControl(ddskk::EngineControl::kCommit,
-                                  kInteractiveTimeoutMs);
-    } else if (ctrl_g) {
-      // Restore the parked reading immediately. Provider checkpoint cleanup
-      // is asynchronous so Ctrl+G never waits behind dictionary work.
-      BeginProviderControl(ddskk::EngineControl::kQuit);
-      state = realtime_frontend_.RestorePreedit();
-    } else if (wparam == VK_ESCAPE) {
-      state = engine_.SendControl(ddskk::EngineControl::kQuit,
-                                  kInteractiveTimeoutMs);
-    } else if (wparam == VK_LEFT) {
-      state = engine_.SendControl(ddskk::EngineControl::kLeft,
-                                  kInteractiveTimeoutMs);
-    } else if (wparam == VK_RIGHT) {
-      state = engine_.SendControl(ddskk::EngineControl::kRight,
-                                  kInteractiveTimeoutMs);
-    } else if (wparam == VK_UP || wparam == VK_HOME) {
-      state = engine_.SendControl(ddskk::EngineControl::kHome,
-                                  kInteractiveTimeoutMs);
-    } else if (wparam == VK_DOWN || wparam == VK_END) {
-      state = engine_.SendControl(ddskk::EngineControl::kEnd,
-                                  kInteractiveTimeoutMs);
-    } else if (wparam == VK_F6 || wparam == VK_F7) {
-      state = engine_.SendControl(wparam == VK_F6
-          ? ddskk::EngineControl::kToHiragana
-          : ddskk::EngineControl::kToKatakana, kInteractiveTimeoutMs);
-    } else {
-      const auto codepoint = TranslateKey(wparam, lparam);
-      if (codepoint) state = engine_.SendKey(*codepoint, kInteractiveTimeoutMs);
+    // Failure to launch the worker never falls back to a synchronous pipe
+    // transaction on the callback. Retain the exact key and retry from the pump.
+    const bool semantic_control = ctrl_g || wparam == VK_BACK || wparam == VK_DELETE ||
+        wparam == VK_SPACE || wparam == VK_RETURN || wparam == VK_ESCAPE ||
+        wparam == VK_LEFT || wparam == VK_RIGHT || wparam == VK_UP || wparam == VK_DOWN ||
+        wparam == VK_HOME || wparam == VK_END || wparam == VK_F6 || wparam == VK_F7;
+    const auto codepoint = semantic_control ? std::optional<char32_t>{} : event_codepoint();
+    if (semantic_control || codepoint) {
+      deferred_provider_keys_.push_front(DeferredProviderKey{
+          wparam, codepoint.value_or(0), codepoint.has_value(), key_shift,
+          ctrl_j, control_down, key_caps});
+      if (provider_window_) SetTimer(provider_window_, 8, 10, nullptr);
     }
+    branch = L"registration-retry";
+    *eaten = TRUE;
+    debug_exit(*eaten);
+    return S_OK;
   } else if (ctrl_j) {
     branch = L"ctrlj";
     // C-j is not a toggle in DDSKK. `skk-kakutei' (bound to C-j via
@@ -3123,19 +3219,12 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
             captured.index ? captured.index->header().capabilities : 0, local_reading.c_str());
         TracePhase(L"lookup-miss", key_sequence_, L"local");
         branch = L"provider-convert";
-        std::optional<std::vector<std::wstring>> preview;
-        const std::wstring reading = realtime_frontend_.preview_reading();
-        if (!local_enabled_ && !reading.empty()) preview = engine_.PreviewCandidates(reading, 8);
-        if (BeginProviderConversion(realtime_frontend_.raw_keys())) {
-          if (preview && !preview->empty()) {
-            ddskk::EngineState preview_state;
-            preview_state.mode = L"provider-preview";
-            preview_state.candidate_index = 0;
-            preview_state.candidates = std::move(*preview);
-            UpdateCandidateUI(context, preview_state);
-          } else {
-            ShowProviderBusy(context);
-          }
+        const auto preview_reading = local_enabled_ ? std::wstring{} : realtime_frontend_.preview_reading();
+        TracePhase(L"provider-dispatch-start", key_sequence_, L"key");
+        const bool dispatched = BeginProviderConversion(realtime_frontend_.raw_keys(), false, 0, preview_reading);
+        TracePhase(L"provider-dispatch-end", key_sequence_, L"key");
+        if (dispatched) {
+          ShowProviderBusy(context);
           *eaten = TRUE;
           debug_exit(*eaten);
           return S_OK;
@@ -3201,7 +3290,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
                !provider_composition_active_ &&
                last_engine_mode_ != L"candidate") {
       deferred_provider_keys_.push_back(DeferredProviderKey{
-          wparam, 0, false, ShiftDown(), false});
+          wparam, 0, false, key_shift, false});
       if (BeginProviderConversion(realtime_frontend_.raw_keys())) {
         ShowProviderBusy(context);
         *eaten = TRUE;
@@ -3314,7 +3403,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     }
   } else {
     branch = L"key";
-    const auto codepoint = TranslateKey(wparam, lparam);
+    const auto codepoint = event_codepoint();
     if (!codepoint) {
       // FIELD BUG this branch used to cause: the harness (and any
       // well-behaved host) only ever reaches OnKeyDown for a VK
@@ -3452,6 +3541,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   // this exact path produced the "▽Kana " leak.
   *eaten = TRUE;
   engine_roundtrip_failed_ = false;
+  ObserveRegistrationLearning(*state);
   // Single point of truth for engine_pending_ and kana_mode_: every branch
   // above that reaches here (including the Ctrl+J case) has just obtained
   // a fresh state from the engine, so this always reflects the latest
@@ -3486,6 +3576,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   if (registration_mode_) {
     last_engine_mode_ = state->mode;
     QueuePublishedState(&*state);
+    if (inline_epoch_ && inline_channel_.Publish(inline_epoch_,
+          state->text + state->pending_romaji, InlineCursor(*state)))
+      inline_state_ = *state;
     CloseCandidateUi();
     if (!was_registration && registration_range_ == nullptr &&
         composition_ != nullptr) {
@@ -3961,6 +4054,22 @@ void TextService::RetryLocalConversion() {
   } else local_conversion_.Reset();
 }
 
+void TextService::ObserveRegistrationLearning(const ddskk::EngineState& state) {
+  if (state.mode == L"registration") {
+    registration_reading_ = state.registration_reading;
+    if (!registration_mode_) registration_okuri_ = realtime_frontend_.okuri_text();
+    return;
+  }
+  if (!registration_mode_) return;
+  if (local_enabled_) {
+    const bool queued = local_store_.LearnRegistration(state, registration_reading_, registration_okuri_);
+    if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
+      std::printf("REGISTRATION_LEARNING queued=%d pending=%zu\n", queued ? 1 : 0, local_store_.Unsaved());
+  }
+  registration_reading_.clear();
+  registration_okuri_.clear();
+}
+
 HRESULT TextService::CommitLocal(ITfContext* context, bool confirmation) {
   if (confirmation) confirmation_pending_ = true;
   const auto saved = local_conversion_;
@@ -3998,6 +4107,7 @@ HRESULT TextService::RequestStateEdit(const ddskk::EngineState& state) {
   return request;
 }
 HRESULT TextService::OnTestKeyUp(ITfContext*, WPARAM wparam, LPARAM, BOOL* eaten) {
+  tested_key_valid_ = false;
   if (eaten == nullptr) return E_POINTER;
   (void)wparam;
   tested_control_down_ = false;
@@ -4123,14 +4233,17 @@ HRESULT TextService::OnCompositionTerminated(TfEditCookie edit_cookie,
 }
 
 std::optional<char32_t> TextService::TranslateKey(WPARAM wparam,
-                                                  LPARAM lparam) {
+                                                  LPARAM lparam,
+                                                  const BYTE* event_state,
+                                                  HKL event_layout) {
   BYTE keyboard_state[256]{};
-  if (!GetKeyboardState(keyboard_state)) return std::nullopt;
+  if (event_state) std::copy_n(event_state, 256, keyboard_state);
+  else if (!GetKeyboardState(keyboard_state)) return std::nullopt;
   WCHAR text[4]{};
   const UINT scan_code = (static_cast<UINT>(lparam) >> 16) & 0xff;
   const int count = ToUnicodeEx(static_cast<UINT>(wparam), scan_code,
                                 keyboard_state, text, 4, 0,
-                                GetKeyboardLayout(0));
+                                event_layout ? event_layout : GetKeyboardLayout(0));
   if (count == 1) return static_cast<char32_t>(text[0]);
   if (count == 2 && IS_HIGH_SURROGATE(text[0]) && IS_LOW_SURROGATE(text[1]))
     return static_cast<char32_t>(0x10000 +

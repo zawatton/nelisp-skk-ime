@@ -1096,9 +1096,19 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   if (FAILED(hr)) {
     PrintHr("TestKeyDown", hr);
   } else if (eaten) {
+    // Private regression model: the host updates modifier state after
+    // TestKeyDown. The core must consume the original tested key event.
+    wchar_t modifier_race[2]{};
+    if (GetEnvironmentVariableW(L"NATIVEIME_TEST_KEYSTATE_AFTER_TEST", modifier_race, 2) &&
+        modifier_race[0] == L'1') {
+      BYTE changed[256]{};
+      SetKeyboardState(changed);
+      std::printf("KEYSTATE_AFTER_TEST injected=1 token=%s\n", Utf8FromWide(token).c_str());
+    }
     eaten = FALSE;
     hr = down(&eaten);
     completed = std::chrono::steady_clock::now();
+    SetKeyboardState(state);
     if (FAILED(hr)) PrintHr("KeyDown", hr);
     std::printf("KEYDOWN vk=%02X eaten=%d\n", key.vk, eaten);
   } else {

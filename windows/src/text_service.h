@@ -135,7 +135,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   void UnadviseOpenCloseCompartment();
   bool ReadKeyboardOpen(bool fallback) const;
   void ApplyKeyboardOpenChange();
-  static std::optional<char32_t> TranslateKey(WPARAM wparam, LPARAM lparam);
+  static std::optional<char32_t> TranslateKey(WPARAM wparam, LPARAM lparam,
+                                     const BYTE* event_state = nullptr, HKL event_layout = nullptr);
   // Whether this VK would be part of OnTestKeyDown's claimed set, given
   // `composing' (= composition_ != nullptr || engine_pending_, computed
   // identically at every call site). Assumes ddskk_engine_ && kana_mode_
@@ -221,7 +222,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   bool CreateProviderWindow();
   void ResolveLocalFallback();
   ULONGLONG provider_deadline_ = 0;
-  bool BeginProviderConversion(const std::u32string& keys, bool registration = false, size_t skip = 0);
+  bool BeginProviderConversion(const std::u32string& keys, bool registration = false, size_t skip = 0,
+                               std::wstring preview_reading = {});
   bool BeginProviderControl(ddskk::EngineControl control, bool apply_state = true);
   bool BeginProviderKey(char32_t key, bool may_convert = false);
   void PrepareProviderReading();
@@ -235,6 +237,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   HRESULT ApplyLocalState(ITfContext* context, const ddskk::EngineState& state,
                           bool confirmation = false);
   HRESULT CommitLocal(ITfContext* context, bool confirmation = true);
+  void ObserveRegistrationLearning(const ddskk::EngineState& state);
   void CancelLocalRetry();
   void ScheduleLocalRetry();
   void RetryLocalConversion();
@@ -297,6 +300,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   bool confirmation_pending_ = false;
   bool confirmation_replay_ = false;
   bool replaying_confirmation_ = false;
+  bool dispatching_registration_key_ = false;
   bool confirmation_resume_posted_ = false;
   uint64_t confirmation_dispatch_sequence_ = 0;
   ITfRange* confirmation_anchor_ = nullptr;
@@ -334,6 +338,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // editor owns input. The document composition remains parked on the
   // reading while its checkpointed engine session edits registration text.
   bool registration_mode_ = false;
+  std::wstring registration_reading_, registration_okuri_;
   // TSF may release/update Ctrl between OnTestKeyDown and OnKeyDown.
   // Remember the modifier decision made for G so a claimed Ctrl+G cannot
   // turn into an ordinary "g" by the time the real key callback arrives.
@@ -341,6 +346,17 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // the thread keyboard state before the paired OnKeyDown arrives; keeping
   // it makes every Ctrl chord (not only Ctrl+G) reliably pass through.
   bool tested_control_down_ = false;
+  // Preserve the event translation across TestKeyDown/KeyDown. Settings,
+  // connection work and message dispatch may update thread keyboard state.
+  WPARAM tested_virtual_key_ = 0;
+  LPARAM tested_lparam_ = 0;
+  BYTE tested_keyboard_state_[256]{};
+  HKL tested_keyboard_layout_ = nullptr;
+  bool tested_key_valid_ = false;
+  // Queued printable keys already have an exact translation; do not
+  // translate their VK again against a later keyboard layout/modifier state.
+  std::optional<char32_t> replay_codepoint_;
+
   // Mirrors TSF's standard keyboard-open compartment.  External clients
   // such as Emacs' `w32-set-ime-open-status' change this value; false is
   // CorvusSKK's direct/"--" state and must claim no keys.
