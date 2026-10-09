@@ -3,9 +3,10 @@
   "text_hash": "sha256-crlf-to-lf",
   "source_sha256": {
     "windows/host/learning_queue.h": "65d91836911ed74e10f785ea2765adbff22c9bf0fb588a18868bcbe2cdfca166",
-    "windows/host/main.cpp": "6b94b0ece3d9349b96be13c14d19216d92d6c1985b149920d25f0f4ff1211833",
-    "windows/host/native_adapter.h": "0939a3f2d48b4430c5573abd12e3e35ed3c41fa8b5cc3ef42c3ad1883976c7eb",
+    "windows/host/main.cpp": "ffcb65d112b0223f4f04c3c57bc5151663b7898fdd5bba413958194887bc248a",
+    "windows/host/native_adapter.h": "f3f17a8950367b1950a5c31c254927e1f62c06599e47b76b077a034cb5344438",
     "windows/host/native_adapter_transport.h": "cd41813e9d9c4c4b7cbf509c8c873d2ed12eb86dad75b7fcbddb50810439b256",
+    "windows/host/policy_bundle.h": "34f246dded119390b896fd378213a61fe1d79a87675e3542302d22c1d666f712",
     "windows/host/policy_fault.h": "e89371b994ee4732b4e069b69ab31e6273e13aa6dfc1ff601d957e02ccd4c2f4",
     "windows/host/provider_outbox.h": "cfb7b15a282e22050006dc3de0d094a42b179bccf77894f7ac86c144a3eac4c8",
     "windows/src/auto_pair.cpp": "9fbc69f15f754f09dea20eb090c768721e9963855ae3e3f6bdd1703f4a9a4860",
@@ -173,7 +174,7 @@
     "windows/test-host/host_policy_unit.cpp": "89fc463865185229f4c9b6016fef2c9374d4f9000b00389048eb95f29f2a961c",
     "windows/test-host/host_utf8_protocol_test.cpp": "0efc6c940d0a66f4937aa05872fbfe76a0e808d18d76f040fe8dcf30ba42f416",
     "windows/test-host/inline-drop-subscriber.py": "d368bcdd285400ded49e38347935279a4c077894b3da1a149e9a25fb506a03b1",
-    "windows/test-host/inline-emacs-subscriber.el": "6eb8fba4d4584a5905937f44179b741ee62838a6fe7f18c43ba6a06db9a83275",
+    "windows/test-host/inline-emacs-subscriber.el": "d81953d3b3c43fda1dc4892b3f44ddc123ae054e6cfaa366c47245d83c3eaf74",
     "windows/test-host/inline_context_alias.h": "f20b82549dfa9872498a9b45ec98b59c825970de15240ca5765193fa17bd3d13",
     "windows/test-host/input-rules/actions.h": "07e2c9d2be75a7e4a442309cfb2782361c00e359aa19d057ecc110b4047f033d",
     "windows/test-host/input-rules/check-modes.ps1": "982b03c17de683355cc9fbe7c255711f808d5be9978ac40250b4c28d7031aa51",
@@ -189,6 +190,10 @@
     "windows/test-host/measure-latency.ps1": "437b438e1cc34daeb7e18451bdd9deaaced8b01bf30c675877d369ede5a8ddd8",
     "windows/test-host/measure-live-input-log.ps1": "40d53c96cf747f9bf4a2b8c5be8ba5ddbac0317a2bcfd3bbb92ee0a54d9fb33c",
     "windows/test-host/mode-indicator/regression.cpp": "5dc2dae2bad4e33410e82ff6bada2097a951fd71259a4a797aa0b0b8978ed928",
+    "windows/test-host/private-host-bundle-controls.py": "fc2b729cc43ce726e890e8afdd9de96481efab53f9e7ee445975782ffc8a7252",
+    "windows/test-host/private-host-bundle-e2e.py": "c79d1b277db122bc605c48dfdad9409d868d252f7bc6c5ad1f396c231af1e4e7",
+    "windows/test-host/private-host-bundle-recovery.py": "3954817dba19bed9910a1475b3585a4ab6900034af2ef5a1454c1619dd4bd84f",
+    "windows/test-host/private-host-bundle.py": "ab49cf87232be4496cb729c8a4d93e6bebb8c219e7fdae20088aa14ce9efc360",
     "windows/test-host/profile-eg1-server.py": "0feed983e3170da5c400e0f8acc37df9ec47ba875b92b8710a2911b56c3e9c4b",
     "windows/test-host/profile-eg1.py": "9b6cb469031a10f1790db3053355fb2d0e6690b459ccad40a08774f175f39944",
     "windows/test-host/report-inline-preedit.py": "d6fe08f17dc253ee29a554e3aa2eb52cdc8d8b12956eb6dc1c541b3de6d51906",
@@ -225,7 +230,7 @@
     "windows/test-host/test-host-policy.ps1": "62e1f4cfb3688429af1afc1130f283caa8b46aa4f72da1375ad90c7d30961c6e",
     "windows/test-host/test-host-process-ownership.py": "b800bcd58369fc48f85fe9f5b5e015151f3482b5472289666f79c67fba680bfa",
     "windows/test-host/test-hot-swap.ps1": "50970fb72e3a3b3158e2af2139758b750fb12d38c638034692317d69a5784b71",
-    "windows/test-host/test-inline-preedit.py": "8efa2cabd2ccda5a8b85cbddc64183a1a19185a7f9e4510877b259e5388eac9c",
+    "windows/test-host/test-inline-preedit.py": "2cf33d604eb1b4872dd66a63813efb78fc84b29ff5ba696080fe6e9d88f6aff0",
     "windows/test-host/test-lattice-behavior.ps1": "853a87af94d33c5e1d98d04bd3a693aa838eae06ca95a330f44858350c0cc919",
     "windows/test-host/test-live-host-selection.ps1": "48367548b630c0a246431499a827e5e1433d44c2dbc6f600463dbd62a9b2c74f",
     "windows/test-host/test-live-settings.ps1": "2afcfbd8b49c56c51f2b8c788057d24d034413bcad54575640b8b6ced23d80f3",
@@ -241,6 +246,8 @@
     "windows/test-host/test-local-two-source.ps1": "b7d92d6245ad7f0198dcbcc2a923c16d1c21d15454a49df49ec65aee9550b48f",
     "windows/test-host/test-okuri-conversion.ps1": "cdc42d7729b918e00e07383e1c386f9bab87f2e11821e86509f700d2164e6f4f",
     "windows/test-host/test-okuri-handoff.ps1": "d056b7d889eca40cd828455e47ffaaf70e4f0804f380c0d60d5e1e303a42cf52",
+    "windows/test-host/test-private-host-bundle-parameters.ps1": "1c07d3cf124b1fd85c9e32bc4546efcfd7f52599fbfa139f130a890e0b7f0c69",
+    "windows/test-host/test-private-host-bundle.ps1": "124ef42e31d4d3bd1dcf425a57336f76d5b300bad3af40116bf165aea9aa4665",
     "windows/test-host/test-private-pipe-soak.ps1": "3f59b7423cad31e4345d339242d985b67ad8bfd2946e4a96bd3557ec74b2aabd",
     "windows/test-host/test-punct-commit-parser.ps1": "44d0ede29e76a96fe6af79b2927c70ed7f7623121b01644a038fb1eba0314941",
     "windows/test-host/test-punct-commit.ps1": "57a99bddcb93ecce77660ef322e8170a3962b99d0eb9d5903e9d7b09aa363efb",
@@ -255,7 +262,7 @@
     "windows/test-host/test-scripted-keyboard.ps1": "70df798690e7ff6ebcc3ecd52b74bd76534989b2227dd3fa8449894fe9935146",
     "windows/test-host/test-sk1-provider-relay.ps1": "2d1f0d5c31fae1a3be40c5699e7dee36b1b77eb3a5fd7ba5f41c0aafa814f4e5",
     "windows/test-host/test-sk1-skkserv.ps1": "ec829cac5eae00f3ad801396192a3696a2f9d01d7e97606b054324c837757189",
-    "windows/test-host/tsf_host.cpp": "3894830fda97ea53f000791331acf8f542ebd5a7f7bde750649e56d730a0673d",
+    "windows/test-host/tsf_host.cpp": "2747b3c16c12d41e68a4faee43a45574b07f2df1fac21abc5132966e0b6f2d44",
     "windows/test-host/verify-host-contracts.py": "50fabd909d82e98d5afc5e9b05db0294ff2adee779d63e854d2079780783d237"
   },
   "inputs": [
@@ -276,368 +283,378 @@
     },
     {
       "name": "DDSKK_HOST_LOG",
-      "source": "windows/host/main.cpp:102",
+      "source": "windows/host/main.cpp:103",
       "declaration": "DWORD size = GetEnvironmentVariableW(L\"DDSKK_HOST_LOG\", path, _countof(path));"
     },
     {
       "name": "DDSKK_PIPE_NAME",
-      "source": "windows/host/main.cpp:183",
+      "source": "windows/host/main.cpp:184",
       "declaration": "const DWORD size = GetEnvironmentVariableW(L\"DDSKK_PIPE_NAME\", value, 256);"
     },
     {
       "name": "DDSKK_PIPE_NAME",
-      "source": "windows/host/main.cpp:202",
+      "source": "windows/host/main.cpp:203",
       "declaration": "// step, or DDSKK_PIPE_NAME overrides generally) never collides with the"
     },
     {
       "name": "DDSKK_NELISP_ENTRY",
-      "source": "windows/host/main.cpp:213",
+      "source": "windows/host/main.cpp:214",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_NELISP_ENTRY\", value, 16);"
     },
     {
       "name": "NELISP_IME_ENGINE",
-      "source": "windows/host/main.cpp:231",
+      "source": "windows/host/main.cpp:232",
       "declaration": "const DWORD size = GetEnvironmentVariableW(L\"NELISP_IME_ENGINE\", value, 64);"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:235",
+      "source": "windows/host/main.cpp:236",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ,"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:242",
+      "source": "windows/host/main.cpp:243",
       "declaration": "RegQueryValueExW(key, L\"Engine\", nullptr, nullptr,"
     },
     {
       "name": "NELISP_IME_ENGINE",
-      "source": "windows/host/main.cpp:271",
+      "source": "windows/host/main.cpp:272",
       "declaration": "// NELISP_IME_ENGINE in the child's own environment block."
     },
     {
       "name": "DDSKK_USER_JISYO",
-      "source": "windows/host/main.cpp:302",
+      "source": "windows/host/main.cpp:304",
       "declaration": "// engine child's own environment (DDSKK_USER_JISYO,"
     },
     {
       "name": "DDSKK_USER_JISYO_SAVE_BATCH_SIZE",
-      "source": "windows/host/main.cpp:303",
+      "source": "windows/host/main.cpp:305",
       "declaration": "// DDSKK_USER_JISYO_SAVE_BATCH_SIZE, DDSKK_OKURI_STRICTLY,"
     },
     {
       "name": "DDSKK_OKURI_STRICTLY",
-      "source": "windows/host/main.cpp:303",
+      "source": "windows/host/main.cpp:305",
       "declaration": "// DDSKK_USER_JISYO_SAVE_BATCH_SIZE, DDSKK_OKURI_STRICTLY,"
     },
     {
       "name": "DDSKK_DELETE_OKURI_ON_CANCEL",
-      "source": "windows/host/main.cpp:304",
+      "source": "windows/host/main.cpp:306",
       "declaration": "// DDSKK_DELETE_OKURI_ON_CANCEL, DDSKK_SEARCH_KATAKANA,"
     },
     {
       "name": "DDSKK_SEARCH_KATAKANA",
-      "source": "windows/host/main.cpp:304",
+      "source": "windows/host/main.cpp:306",
       "declaration": "// DDSKK_DELETE_OKURI_ON_CANCEL, DDSKK_SEARCH_KATAKANA,"
     },
     {
       "name": "DDSKK_LEARN_DISABLED",
-      "source": "windows/host/main.cpp:305",
+      "source": "windows/host/main.cpp:307",
       "declaration": "// DDSKK_LEARN_DISABLED). This bridges registry -> env right before the"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:323",
+      "source": "windows/host/main.cpp:325",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ,"
     },
     {
       "name": "DDSKK_USER_JISYO",
-      "source": "windows/host/main.cpp:330",
+      "source": "windows/host/main.cpp:332",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_USER_JISYO\", nullptr, 0) == 0) {"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:333",
+      "source": "windows/host/main.cpp:335",
       "declaration": "if (RegQueryValueExW(key, L\"UserJisyoPath\", nullptr, nullptr,"
     },
     {
       "name": "DDSKK_USER_JISYO",
-      "source": "windows/host/main.cpp:346",
+      "source": "windows/host/main.cpp:348",
       "declaration": "set_imported(L\"DDSKK_USER_JISYO\", expanded.data());"
     },
     {
       "name": "DDSKK_USER_JISYO",
-      "source": "windows/host/main.cpp:348",
+      "source": "windows/host/main.cpp:350",
       "declaration": "set_imported(L\"DDSKK_USER_JISYO\", path);"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:357",
+      "source": "windows/host/main.cpp:359",
       "declaration": "struct DwordBridge {"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:358",
+      "source": "windows/host/main.cpp:360",
       "declaration": "const wchar_t* registry_name;"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:361",
+      "source": "windows/host/main.cpp:363",
       "declaration": "static constexpr DwordBridge kDwordBridges[] = {"
     },
     {
       "name": "DDSKK_USER_JISYO_SAVE_BATCH_SIZE",
-      "source": "windows/host/main.cpp:362",
+      "source": "windows/host/main.cpp:364",
       "declaration": "{L\"UserJisyoBatch\", L\"DDSKK_USER_JISYO_SAVE_BATCH_SIZE\"},"
     },
     {
       "name": "DDSKK_OKURI_STRICTLY",
-      "source": "windows/host/main.cpp:363",
+      "source": "windows/host/main.cpp:365",
       "declaration": "{L\"BehaviorOkuriStrictly\", L\"DDSKK_OKURI_STRICTLY\"},"
     },
     {
       "name": "DDSKK_DELETE_OKURI_ON_CANCEL",
-      "source": "windows/host/main.cpp:364",
+      "source": "windows/host/main.cpp:366",
       "declaration": "{L\"BehaviorDeleteOkuriOnCancel\", L\"DDSKK_DELETE_OKURI_ON_CANCEL\"},"
     },
     {
       "name": "DDSKK_SEARCH_KATAKANA",
-      "source": "windows/host/main.cpp:365",
+      "source": "windows/host/main.cpp:367",
       "declaration": "{L\"BehaviorAddKatakanaCand\", L\"DDSKK_SEARCH_KATAKANA\"},"
     },
     {
       "name": "DDSKK_LEARN_DISABLED",
-      "source": "windows/host/main.cpp:366",
+      "source": "windows/host/main.cpp:368",
       "declaration": "{L\"BehaviorLearnDisabled\", L\"DDSKK_LEARN_DISABLED\"},"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:368",
+      "source": "windows/host/main.cpp:370",
       "declaration": "for (const DwordBridge& bridge : kDwordBridges) {"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:371",
+      "source": "windows/host/main.cpp:373",
       "declaration": "if (RegQueryValueExW(key, bridge.registry_name, nullptr, nullptr,"
     },
     {
       "name": "NELISP_IME_ENGINE",
-      "source": "windows/host/main.cpp:420",
+      "source": "windows/host/main.cpp:422",
       "declaration": "if (_wcsnicmp(entry, L\"NELISP_IME_ENGINE=\", 18) == 0) continue;"
     },
     {
       "name": "NELISP_IME_ENGINE",
-      "source": "windows/host/main.cpp:424",
+      "source": "windows/host/main.cpp:426",
       "declaration": "const std::wstring selection = L\"NELISP_IME_ENGINE=\" + id;"
     },
     {
       "name": "DDSKK_SKKSERV_START_COMMAND",
-      "source": "windows/host/main.cpp:494",
+      "source": "windows/host/main.cpp:496",
       "declaration": "// wmain(). Env DDSKK_SKKSERV_START_COMMAND takes precedence over the"
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/host/main.cpp:507",
+      "source": "windows/host/main.cpp:509",
       "declaration": "// stock candidate union order. Network work belongs to ServerCache. Env DDSKK_DICTIONARY_FILES takes precedence over"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:524",
+      "source": "windows/host/main.cpp:526",
       "declaration": "// Mirrors the RegOpenKeyExW/RegQueryValueExW idiom used by"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:526",
+      "source": "windows/host/main.cpp:528",
       "declaration": "// in the locals, RegQueryValueExW return values are ignored (a missing or"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:539",
-      "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,"
-    },
-    {
-      "kind": "registry",
       "source": "windows/host/main.cpp:541",
-      "declaration": "RegQueryValueExW(key, L\"SkkServHost\", nullptr, nullptr,"
+      "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,"
     },
     {
       "kind": "registry",
       "source": "windows/host/main.cpp:543",
-      "declaration": "RegQueryValueExW(key, L\"SkkServPort\", nullptr, nullptr,"
+      "declaration": "RegQueryValueExW(key, L\"SkkServHost\", nullptr, nullptr,"
     },
     {
       "kind": "registry",
       "source": "windows/host/main.cpp:545",
-      "declaration": "RegQueryValueExW(key, L\"SkkServEnable\", nullptr, nullptr,"
+      "declaration": "RegQueryValueExW(key, L\"SkkServPort\", nullptr, nullptr,"
     },
     {
       "kind": "registry",
       "source": "windows/host/main.cpp:547",
-      "declaration": "RegQueryValueExW(key, L\"SkkServStartCommand\", nullptr, nullptr,"
+      "declaration": "RegQueryValueExW(key, L\"SkkServEnable\", nullptr, nullptr,"
     },
     {
       "kind": "registry",
       "source": "windows/host/main.cpp:549",
+      "declaration": "RegQueryValueExW(key, L\"SkkServStartCommand\", nullptr, nullptr,"
+    },
+    {
+      "kind": "registry",
+      "source": "windows/host/main.cpp:551",
       "declaration": "RegQueryValueExW(key, L\"DictionaryFiles\", nullptr, nullptr,"
     },
     {
       "name": "DDSKK_SKKSERV_START_COMMAND",
-      "source": "windows/host/main.cpp:563",
+      "source": "windows/host/main.cpp:565",
       "declaration": "L\"DDSKK_SKKSERV_START_COMMAND\", env_start_command, 32768);"
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/host/main.cpp:571",
+      "source": "windows/host/main.cpp:573",
       "declaration": "L\"DDSKK_DICTIONARY_FILES\", env_dictionary_files, 32768);"
     },
     {
       "name": "DDSKK_SKKSERV_HOST",
-      "source": "windows/host/main.cpp:576",
+      "source": "windows/host/main.cpp:578",
       "declaration": "// DDSKK_SKKSERV_HOST/PORT: unlike the two bridges above, host/port have"
     },
     {
       "name": "DDSKK_SKKSERV_HOST",
-      "source": "windows/host/main.cpp:585",
+      "source": "windows/host/main.cpp:587",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_SKKSERV_HOST\", env_host, 256);"
     },
     {
       "name": "DDSKK_SKKSERV_PORT",
-      "source": "windows/host/main.cpp:590",
+      "source": "windows/host/main.cpp:592",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_SKKSERV_PORT\", env_port, 16);"
     },
     {
       "name": "DDSKK_SKKSERV_ENABLE",
-      "source": "windows/host/main.cpp:597",
+      "source": "windows/host/main.cpp:599",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_SKKSERV_ENABLE\", env_enabled, 8);"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:859",
+      "source": "windows/host/main.cpp:861",
       "declaration": "// The dictionary host name is read from the registry as UTF-16 (RegQueryValueExW)"
     },
     {
       "name": "DDSKK_HOST_DEBUG",
-      "source": "windows/host/main.cpp:1064",
+      "source": "windows/host/main.cpp:1066",
       "declaration": "const bool debug = GetEnvironmentVariableW(L\"DDSKK_HOST_DEBUG\", nullptr, 0) > 0;"
     },
     {
       "name": "DDSKK_HOST_DEBUG",
-      "source": "windows/host/main.cpp:1125",
+      "source": "windows/host/main.cpp:1127",
       "declaration": "const bool debug = GetEnvironmentVariableW(L\"DDSKK_HOST_DEBUG\", nullptr, 0) > 0;"
     },
     {
       "name": "DDSKK_HOST_DEBUG",
-      "source": "windows/host/main.cpp:1202",
+      "source": "windows/host/main.cpp:1204",
       "declaration": "const bool debug = GetEnvironmentVariableW(L\"DDSKK_HOST_DEBUG\", nullptr, 0) > 0;"
     },
     {
       "name": "DDSKK_USER_JISYO",
-      "source": "windows/host/main.cpp:1449",
+      "source": "windows/host/main.cpp:1451",
       "declaration": "DWORD size = GetEnvironmentVariableW(L\"DDSKK_USER_JISYO\", value, _countof(value));"
     },
     {
       "name": "DDSKK_HOST_DEBUG",
-      "source": "windows/host/main.cpp:1486",
+      "source": "windows/host/main.cpp:1488",
       "declaration": "const bool debug = GetEnvironmentVariableW(L\"DDSKK_HOST_DEBUG\", nullptr, 0) > 0;"
     },
     {
       "name": "DDSKK_USER_JISYO",
-      "source": "windows/host/main.cpp:1540",
+      "source": "windows/host/main.cpp:1542",
       "declaration": "DWORD length = GetEnvironmentVariableW(L\"DDSKK_USER_JISYO\", value, _countof(value));"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:1823",
+      "source": "windows/host/main.cpp:1825",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0,"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:2002",
+      "source": "windows/host/main.cpp:2004",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,"
     },
     {
       "name": "DDSKK_ENGINE_IDLE_GC_MS",
-      "source": "windows/host/main.cpp:2033",
+      "source": "windows/host/main.cpp:2035",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_ENGINE_IDLE_GC_MS\", env_value, 16);"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:2044",
+      "source": "windows/host/main.cpp:2046",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ,"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:2046",
+      "source": "windows/host/main.cpp:2048",
       "declaration": "RegQueryValueExW(key, L\"IdleGcMs\", nullptr, nullptr,"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/host/main.cpp:2166",
+      "source": "windows/host/main.cpp:2168",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0) &&"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/host/main.cpp:2167",
+      "source": "windows/host/main.cpp:2169",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", registry, 256) &&"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_CONVERSION",
-      "source": "windows/host/main.cpp:2169",
+      "source": "windows/host/main.cpp:2171",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_LOCAL_CONVERSION\", test_enabled, 2)) return test_enabled[0] == L'1';"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:2171",
+      "source": "windows/host/main.cpp:2173",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ, &key) != ERROR_SUCCESS)"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:2174",
+      "source": "windows/host/main.cpp:2176",
       "declaration": "bool enabled = RegQueryValueExW(key, L\"LocalConversion\", nullptr, &type,"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:2177",
+      "source": "windows/host/main.cpp:2179",
       "declaration": "if (!enabled && RegOpenKeyExW(key, L\"Apps\", 0, KEY_READ, &apps) == ERROR_SUCCESS) {"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:2182",
+      "source": "windows/host/main.cpp:2184",
       "declaration": "if (RegOpenKeyExW(apps, name, 0, KEY_READ, &app) == ERROR_SUCCESS) {"
     },
     {
       "kind": "registry",
-      "source": "windows/host/main.cpp:2184",
+      "source": "windows/host/main.cpp:2186",
       "declaration": "enabled = RegQueryValueExW(app, L\"LocalConversion\", nullptr, &type,"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/host/main.cpp:2399",
+      "source": "windows/host/main.cpp:2401",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0) &&"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/host/main.cpp:2400",
+      "source": "windows/host/main.cpp:2402",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", registry, 128) &&"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS",
-      "source": "windows/host/main.cpp:2402",
+      "source": "windows/host/main.cpp:2404",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS\", delay, 16)) {"
     },
     {
       "name": "NATIVEIME_POLICY_SYNCHRONOUS_CONTROL",
-      "source": "windows/host/main.cpp:2451",
+      "source": "windows/host/main.cpp:2453",
       "declaration": "#ifdef NATIVEIME_POLICY_SYNCHRONOUS_CONTROL"
     },
     {
+      "name": "DDSKK_HOST_BUNDLE_MANIFEST",
+      "source": "windows/host/main.cpp:2462",
+      "declaration": "const bool private_bundle = GetEnvironmentVariableW(L\"DDSKK_HOST_BUNDLE_MANIFEST\", nullptr, 0) &&"
+    },
+    {
       "name": "DDSKK_HOST_DEBUG",
-      "source": "windows/host/main.cpp:2513",
+      "source": "windows/host/main.cpp:2568",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HOST_DEBUG\", nullptr, 0))"
     },
     {
       "name": "DDSKK_HOST_DEBUG",
-      "source": "windows/host/main.cpp:2611",
+      "source": "windows/host/main.cpp:2666",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HOST_DEBUG\", nullptr, 0))"
+    },
+    {
+      "name": "DDSKK_HOST_BUNDLE_MANIFEST",
+      "source": "windows/host/main.cpp:2736",
+      "declaration": "const bool bundled = GetEnvironmentVariableW(L\"DDSKK_HOST_BUNDLE_MANIFEST\", nullptr, 0) != 0;"
     },
     {
       "name": "DDSKK_HOST_POLICY_SHADOW",
@@ -653,6 +670,11 @@
       "kind": "registry",
       "source": "windows/host/native_adapter.h:32",
       "declaration": "if (!length) RegGetValueW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(),"
+    },
+    {
+      "name": "DDSKK_HOST_BUNDLE_MANIFEST",
+      "source": "windows/host/policy_bundle.h:32",
+      "declaration": "const auto length = GetEnvironmentVariableW(L\"DDSKK_HOST_BUNDLE_MANIFEST\", path, 32768);"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
@@ -3150,6 +3172,166 @@
       "declaration": "$env:NELISP_IME_HARNESS_COMPACT = $previousCompact"
     },
     {
+      "name": "DDSKK_PIPE_NAME",
+      "source": "windows/test-host/private-host-bundle-controls.py:22",
+      "declaration": "env = dict(bundle.os.environ, DDSKK_PIPE_NAME=deployment.name, NATIVEIME_REGISTRY_KEY=args.key,"
+    },
+    {
+      "name": "NATIVEIME_REGISTRY_KEY",
+      "source": "windows/test-host/private-host-bundle-controls.py:22",
+      "declaration": "env = dict(bundle.os.environ, DDSKK_PIPE_NAME=deployment.name, NATIVEIME_REGISTRY_KEY=args.key,"
+    },
+    {
+      "name": "DDSKK_HOST_BUNDLE_MANIFEST",
+      "source": "windows/test-host/private-host-bundle-controls.py:23",
+      "declaration": "DDSKK_HOST_BUNDLE_MANIFEST=str(manifest), DDSKK_HOST_LOG=str(args.state / 'host.log'),"
+    },
+    {
+      "name": "DDSKK_HOST_LOG",
+      "source": "windows/test-host/private-host-bundle-controls.py:23",
+      "declaration": "DDSKK_HOST_BUNDLE_MANIFEST=str(manifest), DDSKK_HOST_LOG=str(args.state / 'host.log'),"
+    },
+    {
+      "name": "DDSKK_USER_JISYO",
+      "source": "windows/test-host/private-host-bundle-controls.py:24",
+      "declaration": "LOCALAPPDATA=str(args.state), DDSKK_USER_JISYO=str(args.state / 'user.jisyo'),"
+    },
+    {
+      "name": "DDSKK_SKKSERV_ENABLE",
+      "source": "windows/test-host/private-host-bundle-controls.py:25",
+      "declaration": "DDSKK_SKKSERV_ENABLE='0', NELISP_IME_ENGINE='ddskk', DDSKK_HOST_POLICY_SHADOW='1')"
+    },
+    {
+      "name": "NELISP_IME_ENGINE",
+      "source": "windows/test-host/private-host-bundle-controls.py:25",
+      "declaration": "DDSKK_SKKSERV_ENABLE='0', NELISP_IME_ENGINE='ddskk', DDSKK_HOST_POLICY_SHADOW='1')"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_SHADOW",
+      "source": "windows/test-host/private-host-bundle-controls.py:25",
+      "declaration": "DDSKK_SKKSERV_ENABLE='0', NELISP_IME_ENGINE='ddskk', DDSKK_HOST_POLICY_SHADOW='1')"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_",
+      "source": "windows/test-host/private-host-bundle-controls.py:27",
+      "declaration": "env['DDSKK_HOST_POLICY_' + switch] = '1'"
+    },
+    {
+      "name": "NATIVEIME_REGISTRY_KEY",
+      "source": "windows/test-host/private-host-bundle-e2e.py:71",
+      "declaration": "env = dict(os.environ, NATIVEIME_REGISTRY_KEY=args.key, DDSKK_PIPE_NAME=deployment.name,"
+    },
+    {
+      "name": "DDSKK_PIPE_NAME",
+      "source": "windows/test-host/private-host-bundle-e2e.py:71",
+      "declaration": "env = dict(os.environ, NATIVEIME_REGISTRY_KEY=args.key, DDSKK_PIPE_NAME=deployment.name,"
+    },
+    {
+      "name": "DDSKK_HARNESS_DLL_PATH",
+      "source": "windows/test-host/private-host-bundle-e2e.py:72",
+      "declaration": "DDSKK_HARNESS_DLL_PATH=str(args.dll), DDSKK_HARNESS_DIAGNOSTICS='1',"
+    },
+    {
+      "name": "DDSKK_HARNESS_DIAGNOSTICS",
+      "source": "windows/test-host/private-host-bundle-e2e.py:72",
+      "declaration": "DDSKK_HARNESS_DLL_PATH=str(args.dll), DDSKK_HARNESS_DIAGNOSTICS='1',"
+    },
+    {
+      "name": "NELISP_IME_DISABLE_HOST_SPAWN",
+      "source": "windows/test-host/private-host-bundle-e2e.py:73",
+      "declaration": "NELISP_IME_DISABLE_HOST_SPAWN='1', NATIVEIME_TEST_BUNDLE_DIRECTORY=str(args.state),"
+    },
+    {
+      "name": "NATIVEIME_TEST_BUNDLE_DIRECTORY",
+      "source": "windows/test-host/private-host-bundle-e2e.py:73",
+      "declaration": "NELISP_IME_DISABLE_HOST_SPAWN='1', NATIVEIME_TEST_BUNDLE_DIRECTORY=str(args.state),"
+    },
+    {
+      "name": "NATIVEIME_HARNESS_TSF_OUTPUT",
+      "source": "windows/test-host/private-host-bundle-e2e.py:74",
+      "declaration": "NATIVEIME_HARNESS_TSF_OUTPUT=str(args.state / 'tsf.log'),"
+    },
+    {
+      "name": "NELISP_IME_INLINE_DIR",
+      "source": "windows/test-host/private-host-bundle-e2e.py:75",
+      "declaration": "LOCALAPPDATA=str(args.state), NELISP_IME_INLINE_DIR=str(inline),"
+    },
+    {
+      "name": "DDSKK_PIPE_NAME",
+      "source": "windows/test-host/private-host-bundle.py:100",
+      "declaration": "env = dict(os.environ, DDSKK_PIPE_NAME=name, NATIVEIME_REGISTRY_KEY=self.args.key,"
+    },
+    {
+      "name": "NATIVEIME_REGISTRY_KEY",
+      "source": "windows/test-host/private-host-bundle.py:100",
+      "declaration": "env = dict(os.environ, DDSKK_PIPE_NAME=name, NATIVEIME_REGISTRY_KEY=self.args.key,"
+    },
+    {
+      "name": "DDSKK_USER_JISYO",
+      "source": "windows/test-host/private-host-bundle.py:101",
+      "declaration": "LOCALAPPDATA=str(self.root), DDSKK_USER_JISYO=str(self.root / 'user.jisyo'),"
+    },
+    {
+      "name": "DDSKK_HOST_BUNDLE_MANIFEST",
+      "source": "windows/test-host/private-host-bundle.py:102",
+      "declaration": "DDSKK_HOST_BUNDLE_MANIFEST=str(bundle / 'bundle.manifest'),"
+    },
+    {
+      "name": "DDSKK_HOST_LOG",
+      "source": "windows/test-host/private-host-bundle.py:103",
+      "declaration": "DDSKK_HOST_LOG=str(log), DDSKK_HOST_POLICY_SHADOW='0',"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_SHADOW",
+      "source": "windows/test-host/private-host-bundle.py:103",
+      "declaration": "DDSKK_HOST_LOG=str(log), DDSKK_HOST_POLICY_SHADOW='0',"
+    },
+    {
+      "name": "DDSKK_SKKSERV_ENABLE",
+      "source": "windows/test-host/private-host-bundle.py:104",
+      "declaration": "DDSKK_SKKSERV_ENABLE='0', NELISP_IME_ENGINE='ddskk',"
+    },
+    {
+      "name": "NELISP_IME_ENGINE",
+      "source": "windows/test-host/private-host-bundle.py:104",
+      "declaration": "DDSKK_SKKSERV_ENABLE='0', NELISP_IME_ENGINE='ddskk',"
+    },
+    {
+      "name": "NATIVEIME_TEST_LOCAL_CONVERSION",
+      "source": "windows/test-host/private-host-bundle.py:105",
+      "declaration": "NATIVEIME_TEST_LOCAL_CONVERSION='1',"
+    },
+    {
+      "name": "DDSKK_HARNESS_DIAGNOSTICS",
+      "source": "windows/test-host/private-host-bundle.py:106",
+      "declaration": "DDSKK_HARNESS_DIAGNOSTICS='1',"
+    },
+    {
+      "name": "DDSKK_DICTIONARY_FILES",
+      "source": "windows/test-host/private-host-bundle.py:107",
+      "declaration": "DDSKK_DICTIONARY_FILES=str(transport.ROOT / 'windows/test-host/data/behavior-jisyo.utf8'))"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_",
+      "source": "windows/test-host/private-host-bundle.py:109",
+      "declaration": "env['DDSKK_HOST_POLICY_' + switch] = '1' if fields['mode'] == 'policy' else '0'"
+    },
+    {
+      "name": "DDSKK_PIPE_NAME",
+      "source": "windows/test-host/private-host-bundle.py:320",
+      "declaration": "str(old / 'repository')], dict(os.environ, DDSKK_PIPE_NAME=deployment.name,"
+    },
+    {
+      "name": "NATIVEIME_REGISTRY_KEY",
+      "source": "windows/test-host/private-host-bundle.py:321",
+      "declaration": "NATIVEIME_REGISTRY_KEY=args.key, LOCALAPPDATA=str(deployment.root),"
+    },
+    {
+      "name": "DDSKK_USER_JISYO",
+      "source": "windows/test-host/private-host-bundle.py:322",
+      "declaration": "DDSKK_USER_JISYO=str(deployment.root / 'user.jisyo')),"
+    },
+    {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
       "source": "windows/test-host/run-engine-host-s2.ps1:33",
       "declaration": "$env:DDSKK_HARNESS_DIAGNOSTICS='1'"
@@ -4486,82 +4668,82 @@
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/test-inline-preedit.py:286",
+      "source": "windows/test-host/test-inline-preedit.py:289",
       "declaration": "env['DDSKK_HARNESS_DIAGNOSTICS'] = '1'"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_MAP_DELAY_MS",
-      "source": "windows/test-host/test-inline-preedit.py:294",
+      "source": "windows/test-host/test-inline-preedit.py:297",
       "declaration": "env['NATIVEIME_TEST_LOCAL_MAP_DELAY_MS'] = '3000'"
     },
     {
       "name": "NATIVEIME_TEST_SELECTION_UNAVAILABLE",
-      "source": "windows/test-host/test-inline-preedit.py:298",
+      "source": "windows/test-host/test-inline-preedit.py:301",
       "declaration": "env['NATIVEIME_TEST_SELECTION_UNAVAILABLE'] = '1'"
     },
     {
       "name": "NATIVEIME_TEST_CANDIDATE_CONTROL_FAIL_MS",
-      "source": "windows/test-host/test-inline-preedit.py:300",
+      "source": "windows/test-host/test-inline-preedit.py:303",
       "declaration": "env['NATIVEIME_TEST_CANDIDATE_CONTROL_FAIL_MS'] = '1600'"
     },
     {
       "name": "NELISP_IME_INLINE_DIR",
-      "source": "windows/test-host/test-inline-preedit.py:303",
+      "source": "windows/test-host/test-inline-preedit.py:306",
       "declaration": "env['NELISP_IME_INLINE_DIR'] = str(directory)"
     },
     {
       "name": "NELISP_IME_INPUT_RULES",
-      "source": "windows/test-host/test-inline-preedit.py:315",
+      "source": "windows/test-host/test-inline-preedit.py:318",
       "declaration": "env['NELISP_IME_INPUT_RULES'] = str(rules)"
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/test-host/test-inline-preedit.py:322",
+      "source": "windows/test-host/test-inline-preedit.py:325",
       "declaration": "env['DDSKK_DICTIONARY_FILES'] = str(personal) + ';' + str(source)"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_WORKER_STALL_MS",
-      "source": "windows/test-host/test-inline-preedit.py:323",
+      "source": "windows/test-host/test-inline-preedit.py:326",
       "declaration": "env['NATIVEIME_TEST_LOCAL_WORKER_STALL_MS'] = '5000'"
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/test-host/test-inline-preedit.py:328",
+      "source": "windows/test-host/test-inline-preedit.py:331",
       "declaration": "env['DDSKK_DICTIONARY_FILES'] = str(first) + ';' + str(second)"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_REMAP_DELAY_MS",
-      "source": "windows/test-host/test-inline-preedit.py:329",
+      "source": "windows/test-host/test-inline-preedit.py:332",
       "declaration": "env['NATIVEIME_TEST_LOCAL_REMAP_DELAY_MS'] = '400'"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_MAP_DELAY_MS",
-      "source": "windows/test-host/test-inline-preedit.py:332",
+      "source": "windows/test-host/test-inline-preedit.py:335",
       "declaration": "env['NATIVEIME_TEST_LOCAL_MAP_DELAY_MS'] = '6000'"
     },
     {
       "name": "NATIVEIME_TEST_KEYSTATE_AFTER_TEST",
-      "source": "windows/test-host/test-inline-preedit.py:334",
+      "source": "windows/test-host/test-inline-preedit.py:337",
       "declaration": "env['NATIVEIME_TEST_KEYSTATE_AFTER_TEST'] = '1'"
     },
     {
       "name": "NATIVEIME_TEST_REGISTRATION_WORKER_DELAY_MS",
-      "source": "windows/test-host/test-inline-preedit.py:335",
+      "source": "windows/test-host/test-inline-preedit.py:338",
       "declaration": "env['NATIVEIME_TEST_REGISTRATION_WORKER_DELAY_MS'] = '75'"
     },
     {
       "name": "NATIVEIME_TEST_PROVIDER_PREVIEW_DELAY_MS",
-      "source": "windows/test-host/test-inline-preedit.py:337",
+      "source": "windows/test-host/test-inline-preedit.py:340",
       "declaration": "env['NATIVEIME_TEST_PROVIDER_PREVIEW_DELAY_MS'] = '75'"
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/test-host/test-inline-preedit.py:341",
+      "source": "windows/test-host/test-inline-preedit.py:344",
       "declaration": "env['DDSKK_DICTIONARY_FILES'] = str(source)"
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/test-host/test-inline-preedit.py:343",
+      "source": "windows/test-host/test-inline-preedit.py:346",
       "declaration": "env['DDSKK_DICTIONARY_FILES'] = str(root / 'windows/test-host/data/okuri-jisyo.utf8')"
     },
     {
@@ -4995,6 +5177,16 @@
       "declaration": "$env:NATIVEIME_TEST_OKURI_SYNC_DELAY_MS = if ($case.Delay -eq 'reply') { '5500' } else { '' }"
     },
     {
+      "name": "DDSKK_HOST_BUNDLE_MANIFEST",
+      "source": "windows/test-host/test-private-host-bundle.ps1:111",
+      "declaration": "$env:DDSKK_HOST_BUNDLE_MANIFEST = Join-Path $bundle 'bundle.manifest'"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_",
+      "source": "windows/test-host/test-private-host-bundle.ps1:113",
+      "declaration": "[Environment]::SetEnvironmentVariable(\"DDSKK_HOST_POLICY_$switch\", $(if ($bundle -eq $new) {'1'} else {'0'}))"
+    },
+    {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
       "source": "windows/test-host/test-punct-commit.ps1:60",
       "declaration": "$saved=$env:DDSKK_HARNESS_DIAGNOSTICS"
@@ -5381,224 +5573,242 @@
     },
     {
       "name": "DDSKK_HARNESS_DLL_PATH",
-      "source": "windows/test-host/tsf_host.cpp:101",
+      "source": "windows/test-host/tsf_host.cpp:102",
       "declaration": "// DDSKK_HARNESS_DLL_PATH, if set, loads the TIP directly from that DLL"
     },
     {
       "name": "DDSKK_HARNESS_DLL_PATH",
-      "source": "windows/test-host/tsf_host.cpp:169",
+      "source": "windows/test-host/tsf_host.cpp:170",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_HARNESS_DLL_PATH\", dll_path, MAX_PATH);"
     },
     {
       "name": "DDSKK_HARNESS_DLL_PATH",
-      "source": "windows/test-host/tsf_host.cpp:174",
+      "source": "windows/test-host/tsf_host.cpp:175",
       "declaration": "std::printf(\"HR LoadLibraryW(DDSKK_HARNESS_DLL_PATH)=%08lx\\n\","
     },
     {
       "name": "DDSKK_HARNESS_DLL_PATH",
-      "source": "windows/test-host/tsf_host.cpp:188",
+      "source": "windows/test-host/tsf_host.cpp:189",
       "declaration": "PrintHr(\"DllGetClassObject(DDSKK_HARNESS_DLL_PATH)\", hr);"
     },
     {
       "name": "DDSKK_HARNESS_DLL_PATH",
-      "source": "windows/test-host/tsf_host.cpp:197",
+      "source": "windows/test-host/tsf_host.cpp:198",
       "declaration": "PrintHr(\"IClassFactory::CreateInstance(DDSKK_HARNESS_DLL_PATH)\", hr);"
     },
     {
       "name": "DDSKK_HARNESS_DLL_PATH",
-      "source": "windows/test-host/tsf_host.cpp:200",
+      "source": "windows/test-host/tsf_host.cpp:201",
       "declaration": "std::printf(\"TIP_DIRECT loaded from DDSKK_HARNESS_DLL_PATH\\n\");"
     },
     {
       "name": "NATIVEIME_TEST_SELECTION_UNAVAILABLE",
-      "source": "windows/test-host/tsf_host.cpp:399",
+      "source": "windows/test-host/tsf_host.cpp:400",
       "declaration": "if (GetEnvironmentVariableW(L\"NATIVEIME_TEST_SELECTION_UNAVAILABLE\", nullptr, 0)) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/tsf_host.cpp:462",
+      "source": "windows/test-host/tsf_host.cpp:463",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0))"
     },
     {
       "name": "DDSKK_HARNESS_DIRECT_KEYDOWN",
-      "source": "windows/test-host/tsf_host.cpp:908",
+      "source": "windows/test-host/tsf_host.cpp:909",
       "declaration": "// DDSKK_HARNESS_DIRECT_KEYDOWN=1 makes SendScriptedKey() below skip"
     },
     {
       "name": "DDSKK_HARNESS_DIRECT_KEYDOWN",
-      "source": "windows/test-host/tsf_host.cpp:923",
+      "source": "windows/test-host/tsf_host.cpp:924",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIRECT_KEYDOWN\", value, 8);"
     },
     {
       "name": "NELISP_IME_HARNESS_COMPACT",
-      "source": "windows/test-host/tsf_host.cpp:935",
+      "source": "windows/test-host/tsf_host.cpp:936",
       "declaration": "L\"NELISP_IME_HARNESS_COMPACT\", value,"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/tsf_host.cpp:1028",
+      "source": "windows/test-host/tsf_host.cpp:1029",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/tsf_host.cpp:1092",
+      "source": "windows/test-host/tsf_host.cpp:1093",
       "declaration": "L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0) != 0;"
     },
     {
       "name": "NATIVEIME_TEST_KEYSTATE_AFTER_TEST",
-      "source": "windows/test-host/tsf_host.cpp:1108",
+      "source": "windows/test-host/tsf_host.cpp:1109",
       "declaration": "if (GetEnvironmentVariableW(L\"NATIVEIME_TEST_KEYSTATE_AFTER_TEST\", modifier_race, 2) &&"
     },
     {
       "name": "NATIVEIME_HARNESS_TSF_OUTPUT",
-      "source": "windows/test-host/tsf_host.cpp:1182",
+      "source": "windows/test-host/tsf_host.cpp:1183",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_HARNESS_TSF_OUTPUT\", path, _countof(path));"
-    },
-    {
-      "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/tsf_host.cpp:1193",
-      "declaration": "L\"DDSKK_HARNESS_DIAGNOSTICS\", diagnostics, _countof(diagnostics));"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
       "source": "windows/test-host/tsf_host.cpp:1194",
+      "declaration": "L\"DDSKK_HARNESS_DIAGNOSTICS\", diagnostics, _countof(diagnostics));"
+    },
+    {
+      "name": "DDSKK_HARNESS_DIAGNOSTICS",
+      "source": "windows/test-host/tsf_host.cpp:1195",
       "declaration": "SetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", L\"1\");"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/tsf_host.cpp:1230",
+      "source": "windows/test-host/tsf_host.cpp:1231",
       "declaration": "SetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\","
     },
     {
       "name": "NATIVEIME_HARNESS_TSF_OUTPUT",
-      "source": "windows/test-host/tsf_host.cpp:1244",
+      "source": "windows/test-host/tsf_host.cpp:1245",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_HARNESS_TSF_OUTPUT\", path, _countof(path));"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1362",
+      "source": "windows/test-host/tsf_host.cpp:1363",
       "declaration": "wchar_t key_name[256]{}; GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", key_name, 256);"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1365",
+      "source": "windows/test-host/tsf_host.cpp:1366",
       "declaration": "RegOpenKeyExW(HKEY_CURRENT_USER, key_name, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {"
     },
     {
       "name": "DDSKK_PIPE_NAME",
-      "source": "windows/test-host/tsf_host.cpp:1374",
+      "source": "windows/test-host/tsf_host.cpp:1375",
       "declaration": "wchar_t pipe[256]{}; const DWORD n = GetEnvironmentVariableW(L\"DDSKK_PIPE_NAME\", pipe, 256);"
     },
     {
       "name": "DDSKK_PIPE_NAME",
-      "source": "windows/test-host/tsf_host.cpp:1386",
+      "source": "windows/test-host/tsf_host.cpp:1387",
       "declaration": "const DWORD n = GetEnvironmentVariableW(L\"DDSKK_PIPE_NAME\", pipe, 256);"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1427",
+      "source": "windows/test-host/tsf_host.cpp:1405",
+      "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", root, _countof(root));"
+    },
+    {
+      "name": "NATIVEIME_TEST_BUNDLE_DIRECTORY",
+      "source": "windows/test-host/tsf_host.cpp:1406",
+      "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_BUNDLE_DIRECTORY\", directory, _countof(directory));"
+    },
+    {
+      "name": "NATIVEIME_REGISTRY_KEY",
+      "source": "windows/test-host/tsf_host.cpp:1449",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", root, _countof(root));"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1434",
+      "source": "windows/test-host/tsf_host.cpp:1456",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", root, _countof(root));"
     },
     {
       "name": "NATIVEIME_TEST_CORE_DIRECTORY",
-      "source": "windows/test-host/tsf_host.cpp:1435",
+      "source": "windows/test-host/tsf_host.cpp:1457",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_CORE_DIRECTORY\", directory, _countof(directory));"
     },
     {
       "name": "NATIVEIME_TEST_CORE_ACTION_SCRIPT",
-      "source": "windows/test-host/tsf_host.cpp:1440",
+      "source": "windows/test-host/tsf_host.cpp:1462",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_CORE_ACTION_SCRIPT\", action_script, _countof(action_script));"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1468",
+      "source": "windows/test-host/tsf_host.cpp:1490",
       "declaration": "LONG status = RegOpenKeyExW(HKEY_CURRENT_USER, root, 0, KEY_SET_VALUE, &key);"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1480",
+      "source": "windows/test-host/tsf_host.cpp:1502",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", root, _countof(root));"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1485",
+      "source": "windows/test-host/tsf_host.cpp:1507",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_READ, &key) != ERROR_SUCCESS) {"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1490",
+      "source": "windows/test-host/tsf_host.cpp:1512",
       "declaration": "RegQueryValueExW(key, L\"mode\", nullptr, nullptr, reinterpret_cast<BYTE*>(mode), &bytes);"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1493",
+      "source": "windows/test-host/tsf_host.cpp:1515",
       "declaration": "RegQueryValueExW(key, name, nullptr, nullptr, reinterpret_cast<BYTE*>(value), &size);"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1502",
+      "source": "windows/test-host/tsf_host.cpp:1524",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", path, _countof(path));"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1505",
+      "source": "windows/test-host/tsf_host.cpp:1527",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {"
     },
     {
       "name": "NATIVEIME_TEST_HOST_PID",
-      "source": "windows/test-host/tsf_host.cpp:1514",
+      "source": "windows/test-host/tsf_host.cpp:1536",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_HOST_PID\", value, _countof(value));"
     },
     {
       "name": "NATIVEIME_TEST_ENGINE_NAME",
-      "source": "windows/test-host/tsf_host.cpp:1519",
+      "source": "windows/test-host/tsf_host.cpp:1541",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_ENGINE_NAME\", engine_name, _countof(engine_name));"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1632",
+      "source": "windows/test-host/tsf_host.cpp:1654",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", private_key, _countof(private_key));"
     },
     {
       "name": "DDSKK_PIPE_NAME",
-      "source": "windows/test-host/tsf_host.cpp:1633",
+      "source": "windows/test-host/tsf_host.cpp:1655",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_PIPE_NAME\", private_pipe, _countof(private_pipe));"
     },
     {
       "name": "DDSKK_HARNESS_DLL_PATH",
-      "source": "windows/test-host/tsf_host.cpp:1634",
+      "source": "windows/test-host/tsf_host.cpp:1656",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_HARNESS_DLL_PATH\", private_dll, _countof(private_dll));"
     }
   ],
   "error_tokens": [
     {
       "token": "ERR LOCAL STORAGE",
-      "source": "windows/host/main.cpp:1440"
+      "source": "windows/host/main.cpp:1442"
     },
     {
       "token": "ERR LOCAL STORAGE",
-      "source": "windows/host/main.cpp:1443"
+      "source": "windows/host/main.cpp:1445"
     },
     {
       "token": "ERR LOCAL STORAGE\\n",
-      "source": "windows/host/main.cpp:1555"
+      "source": "windows/host/main.cpp:1557"
     },
     {
       "token": "ERR GC ...",
-      "source": "windows/host/main.cpp:2095"
+      "source": "windows/host/main.cpp:2097"
+    },
+    {
+      "token": "ERR PRIVATE",
+      "source": "windows/host/main.cpp:2466"
+    },
+    {
+      "token": "ERR PRIVATE",
+      "source": "windows/host/main.cpp:2475"
     },
     {
       "token": "ERR RULES NOT-READY",
-      "source": "windows/host/main.cpp:2477"
+      "source": "windows/host/main.cpp:2531"
     },
     {
       "token": "ERR ENGINE",
-      "source": "windows/host/main.cpp:2494"
+      "source": "windows/host/main.cpp:2548"
     },
     {
       "token": "ERR SESSION LOST",
@@ -5864,399 +6074,403 @@
     },
     {
       "literal": "LOCALAPPDATA",
-      "source": "windows/host/main.cpp:104"
+      "source": "windows/host/main.cpp:105"
     },
     {
       "literal": "STATE ",
-      "source": "windows/host/main.cpp:161"
+      "source": "windows/host/main.cpp:162"
     },
     {
       "literal": "SERVER <midasi>",
-      "source": "windows/host/main.cpp:475"
+      "source": "windows/host/main.cpp:477"
     },
     {
       "literal": "PREVIEW ",
-      "source": "windows/host/main.cpp:847"
+      "source": "windows/host/main.cpp:849"
     },
     {
       "literal": "PREVIEW -",
-      "source": "windows/host/main.cpp:852"
+      "source": "windows/host/main.cpp:854"
     },
     {
       "literal": "PREVIEW -",
-      "source": "windows/host/main.cpp:855"
+      "source": "windows/host/main.cpp:857"
     },
     {
       "literal": "PREVIEW ",
-      "source": "windows/host/main.cpp:855"
+      "source": "windows/host/main.cpp:857"
     },
     {
       "literal": "STATE2",
-      "source": "windows/host/main.cpp:1278"
+      "source": "windows/host/main.cpp:1280"
     },
     {
       "literal": "STATE ",
-      "source": "windows/host/main.cpp:1326"
+      "source": "windows/host/main.cpp:1328"
     },
     {
       "literal": "LEARNING2",
-      "source": "windows/host/main.cpp:1339"
+      "source": "windows/host/main.cpp:1341"
     },
     {
       "literal": "LEARNING2 ",
-      "source": "windows/host/main.cpp:1357"
+      "source": "windows/host/main.cpp:1359"
     },
     {
       "literal": "STATE2 ",
-      "source": "windows/host/main.cpp:1364"
+      "source": "windows/host/main.cpp:1366"
     },
     {
       "literal": "LEARNING2 ",
-      "source": "windows/host/main.cpp:1364"
+      "source": "windows/host/main.cpp:1366"
     },
     {
       "literal": "LEARNING2 ",
-      "source": "windows/host/main.cpp:1375"
+      "source": "windows/host/main.cpp:1377"
     },
     {
       "literal": "SESSION ",
-      "source": "windows/host/main.cpp:1382"
+      "source": "windows/host/main.cpp:1384"
     },
     {
       "literal": "REGISTER",
-      "source": "windows/host/main.cpp:1387"
+      "source": "windows/host/main.cpp:1389"
     },
     {
       "literal": "CONTROL ",
-      "source": "windows/host/main.cpp:1388"
+      "source": "windows/host/main.cpp:1390"
     },
     {
       "literal": "CONTROL ",
-      "source": "windows/host/main.cpp:1419"
+      "source": "windows/host/main.cpp:1421"
     },
     {
       "literal": "LOCALAPPDATA",
-      "source": "windows/host/main.cpp:1451"
+      "source": "windows/host/main.cpp:1453"
     },
     {
       "literal": "WIRE UTF8 1\\n",
-      "source": "windows/host/main.cpp:1461"
+      "source": "windows/host/main.cpp:1463"
     },
     {
       "literal": "PHASE ",
-      "source": "windows/host/main.cpp:1464"
-    },
-    {
-      "literal": "OK WIRE UTF8 1",
-      "source": "windows/host/main.cpp:1465"
-    },
-    {
-      "literal": "WIRE LEARNING 2\\n",
       "source": "windows/host/main.cpp:1466"
     },
     {
+      "literal": "OK WIRE UTF8 1",
+      "source": "windows/host/main.cpp:1467"
+    },
+    {
+      "literal": "WIRE LEARNING 2\\n",
+      "source": "windows/host/main.cpp:1468"
+    },
+    {
       "literal": "PHASE ",
-      "source": "windows/host/main.cpp:1469"
+      "source": "windows/host/main.cpp:1471"
     },
     {
       "literal": "OK WIRE LEARNING 2",
-      "source": "windows/host/main.cpp:1470"
+      "source": "windows/host/main.cpp:1472"
     },
     {
       "literal": "LOCAL STATUS\\n",
-      "source": "windows/host/main.cpp:1475"
+      "source": "windows/host/main.cpp:1477"
     },
     {
       "literal": "PHASE ",
-      "source": "windows/host/main.cpp:1476"
+      "source": "windows/host/main.cpp:1478"
     },
     {
       "literal": "SERVER ",
-      "source": "windows/host/main.cpp:1503"
+      "source": "windows/host/main.cpp:1505"
     },
     {
       "literal": "PHASE ",
-      "source": "windows/host/main.cpp:1514"
+      "source": "windows/host/main.cpp:1516"
     },
     {
       "literal": "LOCAL-PUBLISH",
-      "source": "windows/host/main.cpp:1534"
+      "source": "windows/host/main.cpp:1536"
     },
     {
       "literal": "LOCALAPPDATA",
-      "source": "windows/host/main.cpp:1544"
+      "source": "windows/host/main.cpp:1546"
     },
     {
       "literal": "LOCAL-PUBLISHED\\n",
-      "source": "windows/host/main.cpp:1555"
+      "source": "windows/host/main.cpp:1557"
     },
     {
       "literal": "LEARNING2 ",
-      "source": "windows/host/main.cpp:1558"
+      "source": "windows/host/main.cpp:1560"
     },
     {
       "literal": "LOCAL LEARN ",
-      "source": "windows/host/main.cpp:1564"
+      "source": "windows/host/main.cpp:1566"
     },
     {
       "literal": "SERVER ",
-      "source": "windows/host/main.cpp:1575"
+      "source": "windows/host/main.cpp:1577"
     },
     {
       "literal": "LOCAL LEARN ",
-      "source": "windows/host/main.cpp:1591"
+      "source": "windows/host/main.cpp:1593"
     },
     {
       "literal": "CONTROL CONVERT-KEYS ",
-      "source": "windows/host/main.cpp:1608"
+      "source": "windows/host/main.cpp:1610"
     },
     {
       "literal": "KEY ",
-      "source": "windows/host/main.cpp:1633"
+      "source": "windows/host/main.cpp:1635"
     },
     {
       "literal": "STATE candidate ",
-      "source": "windows/host/main.cpp:1644"
+      "source": "windows/host/main.cpp:1646"
     },
     {
       "literal": "STATE registration ",
-      "source": "windows/host/main.cpp:1645"
+      "source": "windows/host/main.cpp:1647"
     },
     {
       "literal": "CONTROL CONVERT",
-      "source": "windows/host/main.cpp:1649"
+      "source": "windows/host/main.cpp:1651"
     },
     {
       "literal": "SESSION ",
-      "source": "windows/host/main.cpp:1790"
+      "source": "windows/host/main.cpp:1792"
     },
     {
       "literal": "ENGINE CURRENT\\n",
-      "source": "windows/host/main.cpp:1889"
+      "source": "windows/host/main.cpp:1891"
     },
     {
       "literal": "ROMAJI RULES 1\\n",
-      "source": "windows/host/main.cpp:1893"
+      "source": "windows/host/main.cpp:1895"
     },
     {
       "literal": "ENGINE ",
-      "source": "windows/host/main.cpp:1896"
-    },
-    {
-      "literal": "ENGINE SET ",
-      "source": "windows/host/main.cpp:1897"
-    },
-    {
-      "literal": "OK ENGINE ",
       "source": "windows/host/main.cpp:1898"
     },
     {
-      "literal": "SESSION host-warmup-",
-      "source": "windows/host/main.cpp:1901"
-    },
-    {
-      "literal": "STATE ",
-      "source": "windows/host/main.cpp:1905"
-    },
-    {
-      "literal": "OK CLOSED",
-      "source": "windows/host/main.cpp:1907"
-    },
-    {
-      "literal": "SESSION legacy CLOSE\\n",
-      "source": "windows/host/main.cpp:1910"
-    },
-    {
-      "literal": "OK CLOSED",
-      "source": "windows/host/main.cpp:1911"
-    },
-    {
-      "literal": "SESSION ",
-      "source": "windows/host/main.cpp:1922"
-    },
-    {
-      "literal": "STATE ",
-      "source": "windows/host/main.cpp:1923"
-    },
-    {
-      "literal": "SESSION ",
-      "source": "windows/host/main.cpp:1990"
-    },
-    {
-      "literal": "OK GC",
-      "source": "windows/host/main.cpp:2095"
-    },
-    {
-      "literal": "LOCAL LEARN ",
-      "source": "windows/host/main.cpp:2252"
-    },
-    {
-      "literal": "LOCAL spool recovery unavailable: %s\\n",
-      "source": "windows/host/main.cpp:2277"
-    },
-    {
-      "literal": "LOCAL STATUS",
-      "source": "windows/host/main.cpp:2350"
-    },
-    {
-      "literal": "LOCAL ",
-      "source": "windows/host/main.cpp:2352"
-    },
-    {
-      "literal": "LOCAL SNAPSHOT",
-      "source": "windows/host/main.cpp:2353"
-    },
-    {
-      "literal": "LOCAL ",
-      "source": "windows/host/main.cpp:2357"
-    },
-    {
-      "literal": "LOCAL ",
-      "source": "windows/host/main.cpp:2365"
-    },
-    {
-      "literal": "LOCAL 0 ",
-      "source": "windows/host/main.cpp:2389"
-    },
-    {
-      "literal": "LOCAL",
-      "source": "windows/host/main.cpp:2394"
-    },
-    {
-      "literal": "LOCAL_PUBLICATION stalled_ms=%lu\\n",
-      "source": "windows/host/main.cpp:2405"
-    },
-    {
-      "literal": "LOCAL publication status=%s capabilities=%llu\\n",
-      "source": "windows/host/main.cpp:2415"
-    },
-    {
-      "literal": "LOCAL publication unavailable: %s\\n",
-      "source": "windows/host/main.cpp:2419"
-    },
-    {
-      "literal": "PREVIEW ",
-      "source": "windows/host/main.cpp:2459"
-    },
-    {
-      "literal": "OK",
-      "source": "windows/host/main.cpp:2461"
-    },
-    {
-      "literal": "LOCAL SERVER ",
-      "source": "windows/host/main.cpp:2462"
-    },
-    {
-      "literal": "SERVER 4",
-      "source": "windows/host/main.cpp:2468"
-    },
-    {
-      "literal": "SERVER ",
-      "source": "windows/host/main.cpp:2471"
-    },
-    {
-      "literal": "SERVER PENDING",
-      "source": "windows/host/main.cpp:2471"
-    },
-    {
-      "literal": "SERVER 4",
-      "source": "windows/host/main.cpp:2473"
-    },
-    {
-      "literal": "ROMAJI RULES 1",
-      "source": "windows/host/main.cpp:2474"
-    },
-    {
-      "literal": "ENGINE CURRENT",
-      "source": "windows/host/main.cpp:2478"
-    },
-    {
-      "literal": "ENGINE ",
-      "source": "windows/host/main.cpp:2484"
-    },
-    {
-      "literal": "ENGINE RELOAD",
-      "source": "windows/host/main.cpp:2485"
-    },
-    {
-      "literal": "OK RELOADING",
-      "source": "windows/host/main.cpp:2489"
-    },
-    {
-      "literal": "ENGINE SWITCH ",
-      "source": "windows/host/main.cpp:2490"
-    },
-    {
       "literal": "ENGINE SET ",
-      "source": "windows/host/main.cpp:2491"
-    },
-    {
-      "literal": "ENGINE SWITCH ",
-      "source": "windows/host/main.cpp:2492"
-    },
-    {
-      "literal": "OK SWITCHING ",
-      "source": "windows/host/main.cpp:2499"
+      "source": "windows/host/main.cpp:1899"
     },
     {
       "literal": "OK ENGINE ",
-      "source": "windows/host/main.cpp:2499"
+      "source": "windows/host/main.cpp:1900"
     },
     {
-      "literal": "DIAG CHILD-PID",
-      "source": "windows/host/main.cpp:2501"
-    },
-    {
-      "literal": "KEY ",
-      "source": "windows/host/main.cpp:2524"
-    },
-    {
-      "literal": "CONTROL CONVERT-KEYS ",
-      "source": "windows/host/main.cpp:2525"
-    },
-    {
-      "literal": "CONTROL ",
-      "source": "windows/host/main.cpp:2526"
-    },
-    {
-      "literal": "STATE hiragana 0 -1 - - -1 -",
-      "source": "windows/host/main.cpp:2536"
-    },
-    {
-      "literal": "CONTROL CONVERT-KEYS ",
-      "source": "windows/host/main.cpp:2550"
-    },
-    {
-      "literal": "OK GC",
-      "source": "windows/host/main.cpp:2563"
-    },
-    {
-      "literal": "STATE ...",
-      "source": "windows/host/main.cpp:2563"
+      "literal": "SESSION host-warmup-",
+      "source": "windows/host/main.cpp:1903"
     },
     {
       "literal": "STATE ",
-      "source": "windows/host/main.cpp:2565"
+      "source": "windows/host/main.cpp:1907"
     },
     {
-      "literal": "KEY ",
-      "source": "windows/host/main.cpp:2588"
+      "literal": "OK CLOSED",
+      "source": "windows/host/main.cpp:1909"
     },
     {
-      "literal": "CONTROL ",
-      "source": "windows/host/main.cpp:2588"
+      "literal": "SESSION legacy CLOSE\\n",
+      "source": "windows/host/main.cpp:1912"
+    },
+    {
+      "literal": "OK CLOSED",
+      "source": "windows/host/main.cpp:1913"
     },
     {
       "literal": "SESSION ",
-      "source": "windows/host/main.cpp:2590"
+      "source": "windows/host/main.cpp:1924"
+    },
+    {
+      "literal": "STATE ",
+      "source": "windows/host/main.cpp:1925"
     },
     {
       "literal": "SESSION ",
-      "source": "windows/host/main.cpp:2636"
+      "source": "windows/host/main.cpp:1992"
+    },
+    {
+      "literal": "OK GC",
+      "source": "windows/host/main.cpp:2097"
+    },
+    {
+      "literal": "LOCAL LEARN ",
+      "source": "windows/host/main.cpp:2254"
+    },
+    {
+      "literal": "LOCAL spool recovery unavailable: %s\\n",
+      "source": "windows/host/main.cpp:2279"
+    },
+    {
+      "literal": "LOCAL STATUS",
+      "source": "windows/host/main.cpp:2352"
+    },
+    {
+      "literal": "LOCAL ",
+      "source": "windows/host/main.cpp:2354"
+    },
+    {
+      "literal": "LOCAL SNAPSHOT",
+      "source": "windows/host/main.cpp:2355"
+    },
+    {
+      "literal": "LOCAL ",
+      "source": "windows/host/main.cpp:2359"
+    },
+    {
+      "literal": "LOCAL ",
+      "source": "windows/host/main.cpp:2367"
+    },
+    {
+      "literal": "LOCAL 0 ",
+      "source": "windows/host/main.cpp:2391"
+    },
+    {
+      "literal": "LOCAL",
+      "source": "windows/host/main.cpp:2396"
+    },
+    {
+      "literal": "LOCAL_PUBLICATION stalled_ms=%lu\\n",
+      "source": "windows/host/main.cpp:2407"
+    },
+    {
+      "literal": "LOCAL publication status=%s capabilities=%llu\\n",
+      "source": "windows/host/main.cpp:2417"
+    },
+    {
+      "literal": "LOCAL publication unavailable: %s\\n",
+      "source": "windows/host/main.cpp:2421"
+    },
+    {
+      "literal": "PREVIEW ",
+      "source": "windows/host/main.cpp:2461"
+    },
+    {
+      "literal": "OK HANDOVER RECONNECT",
+      "source": "windows/host/main.cpp:2506"
+    },
+    {
+      "literal": "OK",
+      "source": "windows/host/main.cpp:2515"
+    },
+    {
+      "literal": "LOCAL SERVER ",
+      "source": "windows/host/main.cpp:2516"
+    },
+    {
+      "literal": "SERVER 4",
+      "source": "windows/host/main.cpp:2522"
+    },
+    {
+      "literal": "SERVER ",
+      "source": "windows/host/main.cpp:2525"
+    },
+    {
+      "literal": "SERVER PENDING",
+      "source": "windows/host/main.cpp:2525"
+    },
+    {
+      "literal": "SERVER 4",
+      "source": "windows/host/main.cpp:2527"
     },
     {
       "literal": "ROMAJI RULES 1",
-      "source": "windows/host/main.cpp:2743"
+      "source": "windows/host/main.cpp:2528"
+    },
+    {
+      "literal": "ENGINE CURRENT",
+      "source": "windows/host/main.cpp:2532"
+    },
+    {
+      "literal": "ENGINE ",
+      "source": "windows/host/main.cpp:2538"
+    },
+    {
+      "literal": "ENGINE RELOAD",
+      "source": "windows/host/main.cpp:2539"
+    },
+    {
+      "literal": "OK RELOADING",
+      "source": "windows/host/main.cpp:2543"
+    },
+    {
+      "literal": "ENGINE SWITCH ",
+      "source": "windows/host/main.cpp:2544"
+    },
+    {
+      "literal": "ENGINE SET ",
+      "source": "windows/host/main.cpp:2545"
+    },
+    {
+      "literal": "ENGINE SWITCH ",
+      "source": "windows/host/main.cpp:2546"
+    },
+    {
+      "literal": "OK SWITCHING ",
+      "source": "windows/host/main.cpp:2553"
+    },
+    {
+      "literal": "OK ENGINE ",
+      "source": "windows/host/main.cpp:2553"
+    },
+    {
+      "literal": "DIAG CHILD-PID",
+      "source": "windows/host/main.cpp:2555"
+    },
+    {
+      "literal": "KEY ",
+      "source": "windows/host/main.cpp:2579"
+    },
+    {
+      "literal": "CONTROL CONVERT-KEYS ",
+      "source": "windows/host/main.cpp:2580"
+    },
+    {
+      "literal": "CONTROL ",
+      "source": "windows/host/main.cpp:2581"
+    },
+    {
+      "literal": "STATE hiragana 0 -1 - - -1 -",
+      "source": "windows/host/main.cpp:2591"
+    },
+    {
+      "literal": "CONTROL CONVERT-KEYS ",
+      "source": "windows/host/main.cpp:2605"
+    },
+    {
+      "literal": "OK GC",
+      "source": "windows/host/main.cpp:2618"
+    },
+    {
+      "literal": "STATE ...",
+      "source": "windows/host/main.cpp:2618"
+    },
+    {
+      "literal": "STATE ",
+      "source": "windows/host/main.cpp:2620"
+    },
+    {
+      "literal": "KEY ",
+      "source": "windows/host/main.cpp:2643"
+    },
+    {
+      "literal": "CONTROL ",
+      "source": "windows/host/main.cpp:2643"
+    },
+    {
+      "literal": "SESSION ",
+      "source": "windows/host/main.cpp:2645"
+    },
+    {
+      "literal": "SESSION ",
+      "source": "windows/host/main.cpp:2691"
+    },
+    {
+      "literal": "ROMAJI RULES 1",
+      "source": "windows/host/main.cpp:2799"
     },
     {
       "literal": "LEARNING",
@@ -6637,131 +6851,131 @@
       "declaration": "// Diagnostics only; scheduling and timeout clocks retain GetTickCount64."
     },
     {
-      "source": "windows/host/main.cpp:166",
+      "source": "windows/host/main.cpp:167",
       "declaration": "const bool alive = process && WaitForSingleObject(process, 0) == WAIT_TIMEOUT;"
     },
     {
-      "source": "windows/host/main.cpp:917",
+      "source": "windows/host/main.cpp:919",
       "declaration": "FD_ZERO(&errors); FD_SET(socket_handle, &errors); timeval timeout{0, 150000};"
     },
     {
-      "source": "windows/host/main.cpp:918",
+      "source": "windows/host/main.cpp:920",
       "declaration": "if (select(0, nullptr, &writes, &errors, &timeout) > 0) {"
     },
     {
-      "source": "windows/host/main.cpp:933",
-      "declaration": "const DWORD timeout_ms = 150;"
-    },
-    {
       "source": "windows/host/main.cpp:935",
-      "declaration": "reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));"
+      "declaration": "const DWORD timeout_ms = 150;"
     },
     {
       "source": "windows/host/main.cpp:937",
       "declaration": "reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));"
     },
     {
-      "source": "windows/host/main.cpp:1006",
+      "source": "windows/host/main.cpp:939",
+      "declaration": "reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));"
+    },
+    {
+      "source": "windows/host/main.cpp:1008",
       "declaration": "// too). Returns false on any send/recv error, timeout, graceful close, or"
     },
     {
-      "source": "windows/host/main.cpp:1010",
+      "source": "windows/host/main.cpp:1012",
       "declaration": "const auto deadline = GetTickCount64() + 150;"
     },
     {
-      "source": "windows/host/main.cpp:1012",
+      "source": "windows/host/main.cpp:1014",
       "declaration": "const auto now = GetTickCount64(); if (now >= deadline) return false;"
     },
     {
-      "source": "windows/host/main.cpp:1013",
+      "source": "windows/host/main.cpp:1015",
       "declaration": "const DWORD remaining = static_cast<DWORD>(deadline - now);"
     },
     {
-      "source": "windows/host/main.cpp:1030",
+      "source": "windows/host/main.cpp:1032",
       "declaration": "if (received <= 0) return false;  // 0 = peer closed, <0 = error/timeout"
     },
     {
-      "source": "windows/host/main.cpp:1365",
+      "source": "windows/host/main.cpp:1367",
       "declaration": "const ULONGLONG deadline = GetTickCount64() + 90000;"
     },
     {
-      "source": "windows/host/main.cpp:1369",
+      "source": "windows/host/main.cpp:1371",
       "declaration": "if (g_stopping.load() || GetTickCount64() >= deadline ||"
     },
     {
-      "source": "windows/host/main.cpp:1752",
+      "source": "windows/host/main.cpp:1754",
       "declaration": "// `WaitForSingleObject' timeout already does elsewhere in this file, so"
     },
     {
-      "source": "windows/host/main.cpp:1836",
+      "source": "windows/host/main.cpp:1838",
       "declaration": "dead = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;"
     },
     {
-      "source": "windows/host/main.cpp:1867",
+      "source": "windows/host/main.cpp:1869",
       "declaration": "if (g_child.process && WaitForSingleObject(g_child.process, 0) == WAIT_TIMEOUT) continue;"
     },
     {
-      "source": "windows/host/main.cpp:1937",
+      "source": "windows/host/main.cpp:1939",
       "declaration": "const ULONGLONG deadline = GetTickCount64() + 5000;"
     },
     {
-      "source": "windows/host/main.cpp:1950",
+      "source": "windows/host/main.cpp:1952",
       "declaration": "const bool swap_due = g_composing_sessions.empty() || GetTickCount64() >= deadline;"
     },
     {
-      "source": "windows/host/main.cpp:1952",
+      "source": "windows/host/main.cpp:1954",
       "declaration": "1, !g_composing_sessions.empty(), GetTickCount64() >= deadline, swap_due,"
     },
     {
-      "source": "windows/host/main.cpp:2013",
+      "source": "windows/host/main.cpp:2015",
       "declaration": "do { result = WaitForSingleObject(changed, 100); }"
     },
     {
-      "source": "windows/host/main.cpp:2227",
+      "source": "windows/host/main.cpp:2229",
       "declaration": "const bool exited = process ? WaitForSingleObject(process, 0) == WAIT_OBJECT_0 : GetLastError() == ERROR_INVALID_PARAMETER;"
     },
     {
-      "source": "windows/host/main.cpp:2634",
+      "source": "windows/host/main.cpp:2689",
       "declaration": "WaitForSingleObject(g_child.process, 0) == WAIT_TIMEOUT) {"
     },
     {
-      "source": "windows/host/native_adapter.h:118",
+      "source": "windows/host/native_adapter.h:121",
       "declaration": "bool healthy_ = false; // guarded by mutex_; cleared on timeout/crash/retirement"
     },
     {
-      "source": "windows/host/native_adapter.h:164",
+      "source": "windows/host/native_adapter.h:167",
       "declaration": "void Timeout(const Observation& value) {"
     },
     {
-      "source": "windows/host/native_adapter.h:188",
+      "source": "windows/host/native_adapter.h:191",
       "declaration": "TerminateProcess(process_, 1); WaitForSingleObject(process_, 5000);"
     },
     {
-      "source": "windows/host/native_adapter.h:237",
+      "source": "windows/host/native_adapter.h:240",
       "declaration": "bool Line(std::string& line, DWORD timeout) {"
     },
     {
-      "source": "windows/host/native_adapter.h:238",
+      "source": "windows/host/native_adapter.h:241",
       "declaration": "line.clear(); const auto deadline = GetTickCount64() + timeout;"
     },
     {
-      "source": "windows/host/native_adapter.h:239",
+      "source": "windows/host/native_adapter.h:242",
       "declaration": "while (!stop_ && !g_stopping && GetTickCount64() < deadline) {"
     },
     {
-      "source": "windows/host/native_adapter.h:240",
+      "source": "windows/host/native_adapter.h:243",
       "declaration": "if (WaitForSingleObject(process_, 0) != WAIT_TIMEOUT) return false;"
     },
     {
-      "source": "windows/host/native_adapter.h:279",
+      "source": "windows/host/native_adapter.h:284",
       "declaration": "if (WaitForSingleObject(process_, 0) != WAIT_TIMEOUT) break;"
     },
     {
-      "source": "windows/host/native_adapter.h:308",
+      "source": "windows/host/native_adapter.h:313",
       "declaration": "Timeout(v);"
     },
     {
-      "source": "windows/host/native_adapter.h:310",
+      "source": "windows/host/native_adapter.h:315",
       "declaration": "LogEvent(\"policy-timeout-discard request=\" + std::to_string(id));"
     },
     {
@@ -8002,18 +8216,18 @@
     },
     {
       "source": "windows/test-host/inline-emacs-subscriber.el:13",
-      "declaration": "(deadline (+ (float-time) 150)))"
+      "declaration": "(deadline (+ (float-time) (if (getenv \"INLINE_TEST_TIMEOUT_SEC\")"
     },
     {
-      "source": "windows/test-host/inline-emacs-subscriber.el:18",
+      "source": "windows/test-host/inline-emacs-subscriber.el:19",
       "declaration": "(not (file-exists-p stopfile)) (< (float-time) deadline))"
     },
     {
-      "source": "windows/test-host/inline-emacs-subscriber.el:57",
+      "source": "windows/test-host/inline-emacs-subscriber.el:58",
       "declaration": "(while (and (not (file-exists-p stopfile)) (< (float-time) deadline))"
     },
     {
-      "source": "windows/test-host/inline-emacs-subscriber.el:58",
+      "source": "windows/test-host/inline-emacs-subscriber.el:59",
       "declaration": "(accept-process-output nil 0.02)"
     },
     {
@@ -8067,6 +8281,94 @@
     {
       "source": "windows/test-host/measure-latency.ps1:58",
       "declaration": "-TsfHostTimeoutSec 300 2>&1"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle-e2e.py:89",
+      "declaration": "deadline = time.monotonic() + 600"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle-e2e.py:92",
+      "declaration": "if time.monotonic() > deadline:"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle-e2e.py:93",
+      "declaration": "raise TimeoutError('same-client bundle cycle')"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle-e2e.py:117",
+      "declaration": "assert tsf.wait(timeout=10) == 0"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle-e2e.py:126",
+      "declaration": "assert listener.wait(timeout=15) == 0"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:85",
+      "declaration": "pipe.transfer(request.encode(), timeout=35000)"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:86",
+      "declaration": "reply, more = pipe.transfer(timeout=35000)"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:124",
+      "declaration": "deadline = time.monotonic() + 65"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:126",
+      "declaration": "if self.host.poll() is not None or time.monotonic() > deadline:"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:136",
+      "declaration": "self.host.wait(timeout=60)"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:146",
+      "declaration": "self.host.wait(timeout=60)"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:151",
+      "declaration": "deadline = time.monotonic() + 10"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:180",
+      "declaration": "if time.monotonic() >= deadline:"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:224",
+      "declaration": "self.host.wait(timeout=10)"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:241",
+      "declaration": "self.host.wait(timeout=10)"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:294",
+      "declaration": "deadline = time.monotonic() + 10"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:296",
+      "declaration": "if time.monotonic() > deadline:"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:297",
+      "declaration": "raise TimeoutError('real blocked checkpoint')"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:305",
+      "declaration": "reply, more = pending.transfer(timeout=35000)"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:324",
+      "declaration": "assert collision.wait(timeout=10) == 0"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:349",
+      "declaration": "deadline = time.monotonic() + 15"
+    },
+    {
+      "source": "windows/test-host/private-host-bundle.py:351",
+      "declaration": "while not generations and time.monotonic() < deadline:"
     },
     {
       "source": "windows/test-host/run-harness.ps1:31",
@@ -8457,39 +8759,39 @@
       "declaration": "Require ($hostProcess.WaitForExit(5000)) 'Shutdown did not terminate host'"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:135",
+      "source": "windows/test-host/test-inline-preedit.py:138",
       "declaration": "listener.settimeout(.2)"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:171",
+      "source": "windows/test-host/test-inline-preedit.py:174",
       "declaration": "except socket.timeout:"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:174",
+      "source": "windows/test-host/test-inline-preedit.py:177",
       "declaration": "conn.settimeout(.2)"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:179",
+      "source": "windows/test-host/test-inline-preedit.py:182",
       "declaration": "except socket.timeout:"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:277",
+      "source": "windows/test-host/test-inline-preedit.py:280",
       "declaration": "'-ArtifactDirectory', str(artifacts), '-TsfHostTimeoutSec', '90']"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:358",
+      "source": "windows/test-host/test-inline-preedit.py:361",
       "declaration": "stdout, stderr = harness.communicate(timeout=240)"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:359",
+      "source": "windows/test-host/test-inline-preedit.py:362",
       "declaration": "except subprocess.TimeoutExpired:"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:375",
+      "source": "windows/test-host/test-inline-preedit.py:378",
       "declaration": "except subprocess.TimeoutExpired:"
     },
     {
-      "source": "windows/test-host/test-inline-preedit.py:381",
+      "source": "windows/test-host/test-inline-preedit.py:384",
       "declaration": "except subprocess.TimeoutExpired:"
     },
     {
@@ -8649,27 +8951,35 @@
       "declaration": "} finally {if($fixture){if(-not $fixture.HasExited){Stop-Process -Id $fixture.Id -Force}; $fixture.WaitForExit(); $fixture.Dispose()}}"
     },
     {
-      "source": "windows/test-host/tsf_host.cpp:959",
+      "source": "windows/test-host/tsf_host.cpp:960",
       "declaration": "const ULONGLONG deadline = GetTickCount64() + duration_ms;"
     },
     {
-      "source": "windows/test-host/tsf_host.cpp:966",
+      "source": "windows/test-host/tsf_host.cpp:967",
       "declaration": "} while (GetTickCount64() < deadline);"
     },
     {
-      "source": "windows/test-host/tsf_host.cpp:1011",
+      "source": "windows/test-host/tsf_host.cpp:1012",
       "declaration": "const auto deadline = GetTickCount64() + 10000;"
     },
     {
-      "source": "windows/test-host/tsf_host.cpp:1012",
+      "source": "windows/test-host/tsf_host.cpp:1013",
       "declaration": "while (physical_modifiers() && GetTickCount64() < deadline) PumpMessages(5);"
     },
     {
-      "source": "windows/test-host/tsf_host.cpp:1451",
+      "source": "windows/test-host/tsf_host.cpp:1414",
+      "declaration": "const auto deadline = GetTickCount64() + 180000;"
+    },
+    {
+      "source": "windows/test-host/tsf_host.cpp:1415",
+      "declaration": "while (GetFileAttributesW(done.c_str()) == INVALID_FILE_ATTRIBUTES && GetTickCount64() < deadline)"
+    },
+    {
+      "source": "windows/test-host/tsf_host.cpp:1473",
       "declaration": "const DWORD wait = WaitForSingleObject(process.hProcess, 15000);"
     },
     {
-      "source": "windows/test-host/tsf_host.cpp:1453",
+      "source": "windows/test-host/tsf_host.cpp:1475",
       "declaration": "if (wait != WAIT_OBJECT_0) { TerminateProcess(process.hProcess, 1); WaitForSingleObject(process.hProcess, 5000); }"
     }
   ],
