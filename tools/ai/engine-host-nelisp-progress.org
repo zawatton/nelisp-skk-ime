@@ -170,12 +170,15 @@ evidence: build/validation/eh5-s5/EndToEnd-2.log sha256=c5b7ab145e529495e943d008
 * S6 Windows qualification and adapter retirement decision
 ** S6.1 Exact Windows runtime qualifies each proposed OS1 replacement or documents its retained native boundary
 #+NOTE: Named-pipe security/cancel, mmap leases, flush/replace, TCP/DNS, process jobs, event loop and Unicode; source presence or GNU Emacs ERT alone is insufficient.
-pending
+cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime "$env:NELISP_RUNTIME" -Stage Qualification -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+#+NOTE: EH6 retains all seven boundaries. Exact Unicode/HP1 and native soak/isolation measured; policy IPC red, private HKCU blocks CTest, explicit pipe security/server cancel and DNS cancellation remain unqualified. Runner deliberately refuses aggregate OS1 PASS.
 
 ** S6.2 CW1 and RW4 artifact choices meet measured memory/startup and host-tail budgets without weakening durability or callback gates
 #+NOTE: AOT/minimal image optional; retain adapter where OS1/VAL1 is unqualified. RW3 needed only for stronger managed pause promises, not local isolation.
-pending
+cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime "$env:NELISP_RUNTIME" -Stage Resources -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+#+NOTE: EH6 three supplied-image launches / 300 replies; startup max 2394.4919 ms, policy private max 155082752 bytes; standalone IPC p99 up to 302.5963 ms / max 329.0077 ms fails provisional 10/50 ms ceiling. Separate adapter isolation: 801 cached replies, p99 0.2425 ms/max 0.5706 ms; zero owned leftovers. No alternate CW1/RW4 image qualified.
 
 ** S6.3 End to end: production-shaped private Windows multi-app run passes VAL1 with L dictionary, hostile lifecycle and bundle rollback
 #+NOTE: Repeat existing and new host gates with GC/network/storage pressure, cold restart, zero callback host waits, acknowledged-ID loss or owned-process leaks; live acceptance not inferred.
-pending
+cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime "$env:NELISP_RUNTIME" -Stage Production -LargeDictionary "$env:SKK_L_DICTIONARY" -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+#+NOTE: EH6 adds S5 three-client/L-dictionary cycle plus real Emacs inline, exact peer commits and unchanged callback/durability gates. Parameter audits only; worker HKCU denies execution. Simultaneous GC/network/storage pressure across the bundle cycle still missing; runner explicitly refuses aggregate S6.3 PASS.

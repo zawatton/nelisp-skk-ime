@@ -740,6 +740,88 @@ GC/network/storage/client lifecycle, cold restart and bundle rollback passes
 VAL1 with bounded service tails, zero callback host waits, acknowledged-ID loss
 or owned-process leaks. Future live proof is separate, not inferred here.
 
+*** S6 decision: EH6 exact Windows artifact (2026-10-10)
+Decision: retain every native OS1 boundary. No adapter or ABI change is made.
+S6 is not accepted: worker HKCU denies all ten CTest wrappers before their
+test bodies, the policy-only IPC budget is red, and several OS1 scenarios
+need additional qualification. Callable runtime symbols are discovery only.
+The new runner fails explicitly for the missing security/DNS and simultaneous
+production pressure evidence; a serial collection of older gates is not
+claimed to prove the entire S6 end-to-end requirement.
+
+Runtime identity: SHA256
+=3fb43697a8bf01e10bc993c468365489ef98a30d5acbe05206f9e9faefdde3db=.
+Policy identity: SHA256
+=0cceb29920adf11ccfea9bbb7541356ec8ab47e0495a6087c0afd1400b84c2f0=.
+All commands take Runtime as a parameter, leave that image read-only and run
+one stack at a time. JSON receipts include commands, exit codes, log hashes
+and per-launch measurements; raw artifacts stay under the worker build root.
+
+| OS1 component | Decision / owner | Byte, latency or durability evidence | Remaining acceptance evidence |
+|---------------+------------------+--------------------------------------+-------------------------------|
+| Named pipe security/cancel | Retain native public endpoint | Exact runtime + adapter soak: 32 clients, 100000 exact ENGINE ddskk replies, 20 controls; p50 2.4071 / p99 13.3743 / max 43.9165 ms. Client cancellation drains and preserves next reply; shutdown/squatter/first-owner controls retained | Explicit ACL/low-IL compatibility and server overlapped cancellation are not established by client CancelIoEx; no security retirement |
+| mmap leases | Retain native index/view owner | Exact-runtime S4 publication: 21 intent samples p99=max 16 ms; 20 learn samples p99=max 398.8129 ms. Policy pause permits native durable publication (359.8966 ms in isolation) | Held old mappings, offsets/bounds, Unicode filenames, torn index rejection and lease cleanup need coordinator local-cleanup gate; publication timing alone is not a lease proof |
+| Flush/replace | Retain native durable writer | Two targeted adapter crash/restart cases passed: checkpoint-replaced retries return the same ACK twice; cursor-replaced preserves received learning-bearing STATE/provider ID 1; acknowledged_ID_loss=0 | Full append/stage/checkpoint/cursor/ACK crash matrix and storage-refusal gates must pass; generic Lisp rename is insufficient |
+| TCP/DNS | Retain native network worker | Existing test-sk1-skkserv and test-sk1-provider-relay are serial qualification commands with exact runtime, fragmented response and encoding assertions | Worker has not run these in EH6; bounded DNS cancellation/shutdown evidence still missing |
+| Process jobs | Retain native suspended-child job owner | Isolation: policy pause/kill/restart, two policy startup samples (2750/1797 ms); job guard and owned-child cleanup both report leftovers=[] | Full engine/adapter/both lifecycle matrix, inheritance/descendant fencing and bundle rollback require coordinator runs |
+| Event loop | Retain native callback/cache/publication owner | 801 cached replies during real 3 s policy suspension: p50 0.1033 / p99 0.2425 / max 0.5706 ms; killed-policy cached reply 0.2849 ms | Real TSF zero pipe IO/blocking waits and synchronous negative control still mandatory; cached pipe timing does not prove callback isolation |
+| Unicode | Retain native Windows conversion/framing boundary | Exact supplied image encodes and decodes kana + supplementary U+1F600 + combining U+0301, checked as exact UTF-8 stdout bytes; 300 exact HP1 replies across three launches | Native UTF-8 protocol CTest body was blocked; UTF-16 paths, malformed framing and EUC/UTF8 network equivalence remain required |
+
+S6.2 measurements from =build/w/s6-runtime.json=: three serial fresh
+policy launches, each with 100 sequential decision roundtrips. These are
+process-cold, not filesystem-cache-cold; no cache flush is attempted on the
+user's PC. Startup p50 2197.6025 / p99=max 2394.4919 ms. Private bytes
+p50 155066368 / p99=max 155082752. IPC p99/max per launch:
+156.4586/156.6511, 157.5436/164.9209, 302.5963/329.0077 ms.
+The provisional standalone policy ceilings (60 s, 512 MiB, IPC p99 10 ms /
+max 50 ms) are explicit in the receipt; the IPC ceiling fails. These are
+not substitutes for existing adapter, callback or durable storage budgets.
+Adapter isolation separately measured host private bytes 2220032 -> 2433024,
+policy 143065088 and engine 385560576 bytes, plus unchanged host tails above.
+An integration rerun through =run-engine-host-s6.ps1 -Stage Resources=
+also failed the same IPC gate after three launches/300 replies. Its receipt
+=build/w/s6-b75c90725edd4098b28ee3a97a2b0126/runtime.json= records
+startup max 1869.2187 ms, private max 155287552 bytes, IPC p99 up to
+159.2099 ms/max 162.9609 ms, status FAIL and runtime_unchanged=true.
+Do not infer callback delays from the standalone IPC failure. No CW1 or RW4
+alternate image was supplied; this probe does not establish alternative
+availability or qualify an AOT/minimal alternative.
+
+S6.3 extends the S5 same-client cycle with optional =--clients 3= and a real
+=--large-dictionary= SKK-JISYO.L: additional independent TSF text stores run
+against the policy bundle while the main client and real Emacs inline listener
+remain alive. Exact peer committed suffixes and the unchanged 20 ms ordinary
+key ceiling are checked. Old-new-restart-old and Job Object cleanup remain
+unchanged. Defaults preserve S5's existing single-client fixture. This path
+is parameter-audited, not executed in the worker because private HKCU is denied.
+GC/network/storage pressure is currently covered by serial S4 gates; concurrent
+pressure across the three-client bundle cycle remains an explicit S6.3 gap.
+
+Coordinator serial commands (set NELISP_RUNTIME and SKK_L_DICTIONARY to the
+supplied read-only artifact and real dictionary; never use live defaults):
+#+begin_src powershell
+$Runtime=$env:NELISP_RUNTIME
+$LargeDictionary=$env:SKK_L_DICTIONARY
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+ctest --test-dir build/w -C Release --output-on-failure -j 1
+pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $Runtime -Stage Qualification -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $Runtime -Stage Resources -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $Runtime -Stage Production -LargeDictionary $LargeDictionary -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+#+end_src
+The policy budget failure stops the Qualification/Resources runners early.
+To collect retained-boundary evidence independently of that known red, run
+these unchanged gates serially, waiting for each ownership guard to finish:
+#+begin_src powershell
+python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $Runtime -BuildDir build/w -Stage Recovery -ColdLoadSleepSec 45 -MatrixWorkers 1
+python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/test-sk1-skkserv.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/test-sk1-provider-relay.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/test-local-cleanup.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+#+end_src
+No failure changes a threshold or provides authorization to retire a boundary.
+Qualification can finish with retained components only when their missing
+byte/latency/durability scenarios above have real measured receipts.
+
 ** Existing gate matrix and reproduction recipes (not executed in EH1)
 Future lanes may write artifacts only under their authorized build directory.
 Set private NATIVEIME_REGISTRY_KEY, DDSKK_PIPE_NAME, LOCALAPPDATA,

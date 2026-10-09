@@ -35,8 +35,13 @@ def main():
     for name in ('bundle', 'previous', 'runtime', 'state', 'dll', 'core', 'tsf-host'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--inline', action='store_true')
+    parser.add_argument('--large-dictionary', type=Path)
+    parser.add_argument('--clients', type=int, choices=range(1, 9), default=1)
     parser.add_argument('--cold-load-sleep-sec', type=int, default=45)
     args = parser.parse_args()
+    if args.large_dictionary:
+        args.large_dictionary = args.large_dictionary.resolve(strict=True)
+        assert args.large_dictionary.name == 'SKK-JISYO.L', 'real L dictionary required'
     for name in ('bundle','previous','runtime','state','dll','core','tsf_host'):
         setattr(args, name, getattr(args, name).resolve())
     args.key = 'Software\\NativeIME-test-' + uuid.uuid4().hex
@@ -46,6 +51,7 @@ def main():
     deployment = None
     listener = None
     tsf = None
+    peers = []
     inline = args.state / 'inline'
     inline.mkdir(exist_ok=True)
     for file in (inline / 'pid', inline / 'stop', args.state / 'bundle.request', args.state / 'bundle.done'):
@@ -55,7 +61,9 @@ def main():
             created = True
             for name, value in dict(EngineHost=str(args.previous / 'ddskk-engine-host.exe'),
                                     Repository=str(args.previous / 'repository'), EngineExecutable=str(args.runtime),
-                                    CoreDll=str(args.core), DictionaryFiles=str(bundle.transport.ROOT / 'windows/test-host/data/behavior-jisyo.utf8'),
+                                    CoreDll=str(args.core), DictionaryFiles=';'.join(
+                                        [str(bundle.transport.ROOT / 'windows/test-host/data/behavior-jisyo.utf8')] +
+                                        ([str(args.large_dictionary)] if args.large_dictionary else [])),
                                     UserJisyoPath=str(args.state / 'user.jisyo'), Engine='ddskk').items():
                 winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
             for name, value in dict(LocalConversion=1, SkkServEnable=0, InitialKanaMode=1).items():
@@ -112,6 +120,26 @@ def main():
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, args.key, 0, winreg.KEY_SET_VALUE) as key:
                     winreg.SetValueEx(key, 'EngineHost', 0, winreg.REG_SZ, str(current / 'ddskk-engine-host.exe'))
                     winreg.SetValueEx(key, 'Repository', 0, winreg.REG_SZ, str(current / 'repository'))
+                if action == 'NEW':
+                    # Independent TSF text stores share one policy bundle and
+                    # engine stack. No second host or runner is launched.
+                    for number in range(1, args.clients):
+                        log = args.state / f'peer-{number}.log'
+                        peer_env = dict(env, NATIVEIME_HARNESS_TSF_OUTPUT=str(log))
+                        peer_keys = 'WAIT1500 a i SPACE WAIT3000 ENTER ' + ' '.join(
+                            ['K a n a SPACE WAIT3000 ENTER WAIT700'] * 4)
+                        peer = deployment.job.spawn([str(args.tsf_host), peer_keys], peer_env, log)
+                        peers.append((peer, log))
+                    # Keep all text stores alive together before the next
+                    # cold restart closes the engine/policy stack.
+                    for peer, log in peers:
+                        assert peer.wait(timeout=120) == 0
+                        peer_text = log.read_text('utf-8')
+                        peer_documents = re.findall(r'^AFTER WAIT700 BUF=\[(.*?)\].*COMP=-', peer_text, re.MULTILINE)
+                        assert peer_documents and peer_documents[-1].endswith('仮名仮名仮名仮名'), peer_documents
+                        peer_times = [int(value) for value in re.findall(
+                            r'KEYLAT token=[A-Za-z] .*?total_us=(\d+)', peer_text)]
+                        assert peer_times and max(peer_times) < 20000, peer_times
             transitions.append(action)
             (args.state / 'bundle.done').write_text('OK')
         assert tsf.wait(timeout=10) == 0
@@ -128,7 +156,7 @@ def main():
             assert rendered.count('▼仮名') >= 4 and 'BUFFER_UNCHANGED=t' in rendered, rendered
             assert 'COMPOSITION START' not in text
         deployment.stop()
-        print(f'PASS same-client bundle cycle inline={int(args.inline)} transitions=4 exact_document=1 real_restarts=2 ordinary_max_us={max(ordinary)}', flush=True)
+        print(f'PASS same-client bundle cycle inline={int(args.inline)} clients={args.clients} L_dictionary={int(bool(args.large_dictionary))} transitions=4 exact_document=1 real_restarts=2 ordinary_max_us={max(ordinary)}', flush=True)
     finally:
         (inline / 'stop').write_text('stop')
         if deployment:
