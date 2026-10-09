@@ -1,0 +1,274 @@
+#+TITLE: EH5 private bundle qualification and coordinator commands
+#+DATE: 2026-10-10
+
+* Change anchors
+| File:line | Change |
+|-----------+--------|
+| windows/host/policy_bundle.h:1 | SHA256 and bounded/versioned bundle startup validation |
+| windows/host/native_adapter.h:37 | Disable every managed switch on incompatible bundle |
+| windows/host/native_adapter.h:261 | Clear actual READY protocol rejection log |
+| windows/host/main.cpp:65 | Private handover freeze state |
+| windows/host/main.cpp:294 | Bundle compatibility include |
+| windows/host/main.cpp:1944 | Block child publication during host handover |
+| windows/host/main.cpp:2460 | Private owner PID, provider/local composition checks, durable fence and reconnect control |
+| windows/host/main.cpp:2567 | Prevent new session editing after handover freeze |
+| windows/host/main.cpp:2734 | Bundled singleton failure refuses startup; preserve unbundled behaviour |
+| windows/scripts/private-host-bundle.ps1:1 | New private Pack/Deploy/Rollback/Recover/Cycle and DryRun entry point |
+| windows/test-host/private-host-bundle.py:1 | Owned serial host lifecycle, durable journal/lease, recovery and storage fixture |
+| windows/test-host/private-host-bundle-controls.py:1 | Manifest/private-name/dry-run/journal controls and real native fallback |
+| windows/test-host/private-host-bundle-recovery.py:1 | Serial crash/cancellation recovery matrix and exact durable rows |
+| windows/test-host/private-host-bundle-e2e.py:1 | Same TSF text store and real Emacs listener across both swaps |
+| windows/test-host/test-private-host-bundle.ps1:1 | Stage runner, unchanged scoped/core gates and owned cleanup |
+| windows/test-host/tsf_host.cpp:69 | File-stream include for private test rendezvous |
+| windows/test-host/tsf_host.cpp:1403 | Private BUNDLE NEW/OLD/DEFER/RESTART test tokens |
+| windows/test-host/tsf_host.cpp:1658 | Accept explicit EH5 private pipes in test host |
+| windows/test-host/inline-emacs-subscriber.el:13 | Configurable listener lifetime for multiple cold loads |
+| windows/test-host/test-inline-preedit.py:114 | Separate engine snapshot from test/Emacs helper repository (default unchanged) |
+| docs/contracts/private-host-bundle-v1.json:1 | Additive manifest, handover and journal contract |
+| docs/contracts/CLAUDE-S5.org:1 | Exact coordinator commands, qualification receipts and limitations |
+| docs/design/engine-host-nelisp.org:662 | S5 implementation, private sequence, recovery and later live approval |
+| tools/ai/engine-host-nelisp-progress.org:152 | S5.1--S5.3 executable commands and real evidence boundary |
+
+* Boundary and invocation
+All changes are unstaged. No live registry, pipe, data root or deployment wrapper
+was operated. Runtime is supplied through EH5_RUNTIME, never embedded in a
+repository file. Run each command serially from the repository root; retain the
+complete stdout/stderr and owned-job cleanup tail. Do not run matrix workers or
+background test jobs. Private HKCU is unavailable in the worker sandbox.
+
+The standalone private entry point is windows/scripts/private-host-bundle.ps1.
+Pack requires a new immutable directory and copies the host, policy/engine
+repository and read-only substrate dependencies. Deploy/Rollback/Recover are
+foreground scoped tests, not live pointer installers. They require explicit
+private key/pipe/data names, and stop every process when their lifetime ends.
+Cycle runs old -> new -> old. Old/new may contain the same adapter executable:
+mode=native runs native decisions; mode=policy enables all five S4 switches.
+This is a native-policy reference, not a claim to have built a pre-S3 executable.
+
+#+begin_src powershell
+$bundleRoot = Join-Path (Resolve-Path build/w) ('manual-eh5-' + [guid]::NewGuid().ToString('N'))
+$native = Join-Path $bundleRoot 'native'
+$policy = Join-Path $bundleRoot 'policy'
+pwsh -NoProfile -File windows/scripts/private-host-bundle.ps1 -Action Pack -BundleDirectory $native -Runtime $EH5_RUNTIME -HostPath build/w/Release/ddskk-engine-host.exe -Mode native
+pwsh -NoProfile -File windows/scripts/private-host-bundle.ps1 -Action Pack -BundleDirectory $policy -Runtime $EH5_RUNTIME -HostPath build/w/Release/ddskk-engine-host.exe -Mode policy
+$state = Join-Path $bundleRoot 'state'
+$key = 'Software\NativeIME-test-' + [guid]::NewGuid().ToString('N')
+$pipe = 'EH5-' + [guid]::NewGuid().ToString('N')
+pwsh -NoProfile -File windows/scripts/private-host-bundle.ps1 -Action Deploy -BundleDirectory $policy -PreviousBundleDirectory $native -Runtime $EH5_RUNTIME -StateDirectory $state -RegistryKey $key -PipeName $pipe -DryRun
+pwsh -NoProfile -File windows/scripts/private-host-bundle.ps1 -Action Deploy -BundleDirectory $policy -PreviousBundleDirectory $native -Runtime $EH5_RUNTIME -StateDirectory $state -RegistryKey $key -PipeName $pipe -ColdLoadSleepSec 45 -LifetimeSec 60
+pwsh -NoProfile -File windows/scripts/private-host-bundle.ps1 -Action Rollback -BundleDirectory $policy -Runtime $EH5_RUNTIME -StateDirectory $state -RegistryKey $key -PipeName $pipe -ColdLoadSleepSec 45 -LifetimeSec 60
+pwsh -NoProfile -File windows/scripts/private-host-bundle.ps1 -Action Recover -BundleDirectory $policy -Runtime $EH5_RUNTIME -StateDirectory $state -RegistryKey $key -PipeName $pipe -ColdLoadSleepSec 45 -LifetimeSec 60
+#+end_src
+
+These manual commands are coordinator recipes, not worker execution claims.
+SubstrateSource can explicitly select the read-only source directory containing
+nelisp-buffer.el; default is resolved relative to Repository. No sibling file
+is edited. Never substitute live key/pipe names; bounded private guards reject
+them, including oversized names which could otherwise fall back to host defaults.
+
+* Worker commands and receipts
+Unchanged-tree reproduction, exit 1 (missing S5 deliverable, not behavioral proof):
+#+begin_src powershell
+pwsh -NoProfile -File windows/test-host/test-private-host-bundle.ps1
+#+end_src
+#+begin_example
+The argument 'windows/test-host/test-private-host-bundle.ps1' is not recognized as the name of a script file. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+#+end_example
+Count: zero S5 runner files found. No processes started by this check.
+
+Build/configuration, both exit 0:
+#+begin_src powershell
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+#+end_src
+One project configured and built; final build log: build/w/eh5-build.log.
+Verbatim compilation line from the test-host build (full path-producing tails
+remain in the build log; machine-specific paths are not embedded here):
+#+begin_example
+  tsf_host.cpp
+#+end_example
+The new private BUNDLE tokens are compiled in the test host only; no core or
+shim/ABI change. Existing compiler conversion warnings were not suppressed.
+
+Artifact, compatibility and lifecycle commands (one runner at a time):
+#+begin_src powershell
+pwsh -NoProfile -File windows/test-host/test-private-host-bundle.ps1 -Runtime $EH5_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45 -Stage Artifacts
+pwsh -NoProfile -File windows/test-host/test-private-host-bundle.ps1 -Runtime $EH5_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45 -Stage Compatibility
+pwsh -NoProfile -File windows/test-host/test-private-host-bundle.ps1 -Runtime $EH5_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45 -Stage Lifecycle
+#+end_src
+Initial Artifacts exit 0, gates=3: two bundles and one control gate. Original
+Compatibility attempt exited 1: snapshot lacked ../nelisp/src/nelisp-buffer.el
+(full log build/w/eh5-96245b34eba64f52bbce32fe89a7477d/startup-fallback.log).
+Packaging now includes substrate and vendor dependencies without modifying
+either source checkout. Next Compatibility exit 0, gates=4; full receipt
+build/w/eh5-compatibility.log (initial repaired run tests actual protocol fallback).
+#+begin_example
+PASS bundle controls incompatible_rejected=6 dryrun_no_writes=1
+PASS real startup incompatible_protocol_native_fallback=1 managed_children=0
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+#+end_example
+Lifecycle exit 0, gates=4; build/w/eh5-lifecycle.log. Verbatim gate tail:
+#+begin_example
+PASS private cycle acknowledged_ids=30 exact_replays=30 starts=6 composition_deferrals=1 retained_mappings=1 exact_order=1
+CLEANUP owned job closed
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+#+end_example
+This lifecycle includes both actual engine and host kills. Later helper changes
+add current-PID readiness, explicit engine lost-session checks, a singleton
+collision loser, private-name guards and closed-job handle waits; full final
+stage receipts must identify which tree they ran. Burst producers use distinct
+32-byte client IDs so all original ACK revisions remain checkable. Both swaps
+receive ten learning operations in their prepared phase; exact final row is
+checked as かな /加奈/仮名/. The retained mmap is a real generation-*.index.
+
+Recovery command (five interruption points plus blocked-storage gate):
+#+begin_src powershell
+pwsh -NoProfile -File windows/test-host/test-private-host-bundle.ps1 -Runtime $EH5_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45 -Stage Recovery
+#+end_src
+Full worker matrix log: build/w/eh5-recovery.log. Individual interrupted/recovered
+logs retain real job cleanup and each durable journal phase. The blocked storage
+gate holds the actual user dictionary without delete/write sharing and requires
+DEFER STORAGE, unchanged old endpoint PID, then exact ACK replay after release.
+No ACK is assumed for the blocked operation until storage succeeds.
+Worker matrix exit 0, gates=4 (the stage was started before the separate storage
+gate was appended). Five real interruption/recovery cases passed:
+#+begin_example
+PASS bundle recovery point=before-handover phase=prepared retained_learning_rows=11 duplicate_rows=0
+PASS bundle recovery point=after-release phase=released retained_learning_rows=21 duplicate_rows=0
+PASS bundle recovery point=during-prewarm phase=released retained_learning_rows=21 duplicate_rows=0
+PASS bundle recovery point=after-prewarm phase=released retained_learning_rows=21 duplicate_rows=0
+PASS bundle recovery point=after-commit phase=committed retained_learning_rows=21 duplicate_rows=0
+PASS S5 recovery cases=5 acknowledged_ID_loss=0
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+#+end_example
+Storage was then run serially against the final build, exit 0; one blocked
+checkpoint and one original durable ACK/replay pair, build/w/eh5-storage.log:
+#+begin_src powershell
+python windows/test-host/host-test-process-guard.py run --root . -- python windows/test-host/private-host-bundle.py --action storage --bundle build/w/eh5-cb5ebf6ba1754f6893dcb655c88bc2e3/policy --runtime $EH5_RUNTIME --state build/w/eh5-storage --key Software\NativeIME-test-EH5-storage --pipe EH5-storage --cold-load-sleep-sec 45
+#+end_src
+#+begin_example
+PASS blocked storage real_checkpoint_refusal=1 old_owner_preserved=1 exact_ack_replay=1
+CLEANUP owned_pids=[12920] leftovers=[]
+CLEANUP owned job closed
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+#+end_example
+Final Compatibility exit 0, gates=4; build/w/eh5-compatibility-final.log. Both
+actual host rejection paths run with shadow and every authoritative switch
+requested ON, with no policy child launched. Verbatim bounded gate tails:
+#+begin_example
+PASS bundle controls incompatible_rejected=6 private_guard_rejections=3 dryrun_no_writes=1 durable_journal_phases=3 invalid_phase_rejected=1
+PASS real startup incompatible_field=policy_ipc native_fallback=1 managed_children=0
+CLEANUP owned_pids=[6256] leftovers=[]
+PASS real startup incompatible_field=policy_sha256 native_fallback=1 managed_children=0
+CLEANUP owned_pids=[13012] leftovers=[]
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+#+end_example
+The private guards reject a live key, a live pipe and an oversized pipe; none
+is opened. Runtime remains supplied as the parameter above. Build was repeated
+after preserving the unbundled singleton-error path; final build exit 0.
+
+CTest command, exit 8; 0/10 bodies reached because every isolated test wrapper
+was denied its private registry key. Full log build/w/eh5-ctest.log and
+build/w/Testing/Temporary/LastTest.log:
+#+begin_src powershell
+python windows/test-host/host-test-process-guard.py run --root . -- ctest --test-dir build/w -C Release -j 1
+#+end_src
+#+begin_example
+0% tests passed, 10 tests failed out of 10
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+#+end_example
+This is an access boundary, not ten observed assertion regressions.
+
+ERT commands, both exit 0; full logs build/w/eh5-stateline-ert.log and
+build/w/eh5-lattice-ert.log. Required HOME prefix is used for every Emacs launch:
+#+begin_src powershell
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/host-test-process-guard.py run --root . -- emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); python windows/test-host/host-test-process-guard.py run --root . -- emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+#+end_src
+#+begin_example
+Ran 31 tests, 31 results as expected, 0 unexpected (2026-10-10 01:07:52+0900, 0.062098 sec)
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+Ran 14 tests, 14 results as expected, 0 unexpected (2026-10-10 01:08:05+0900, 0.036083 sec)
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+#+end_example
+
+* Final worker stage and static checks
+The final EndToEnd command below exited 1 after four completed gates; its
+same-client TSF gate was denied private HKCU before starting the IME. The final
+cycle uses the latest helper assertions and final host build. Full log:
+build/w/eh5-endtoend-final2.log. Verbatim bounded gate tails:
+#+begin_example
+PASS private cycle acknowledged_ids=30 exact_replays=30 starts=6 composition_deferrals=1 retained_mappings=1 exact_order=1 endpoint_collision_losers=1
+CLEANUP owned_pids=[19620] leftovers=[]
+CLEANUP owned job closed
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+PermissionError: [WinError 5] Access is denied
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+#+end_example
+Two preceding EndToEnd attempts stopped at the first swap with test-helper
+teardown errors (build/w/eh5-endtoend.log and build/w/eh5-endtoend-final.log):
+the first got WinError 5 while inspecting an already-exited owned process;
+the next exposed an incorrectly ordered handle assignment in that correction.
+Both guards reported empty leftovers. Final handling uses minimal handle rights,
+checks exit on the retained handle before inspection, and treats an alive but
+uninspectable job member as a blocker for the next stack. No leak threshold or
+learning assertion was relaxed. The corrected final cycle above passed.
+
+Static checks, exit 0, Python files=5 / PowerShell files=2:
+#+begin_src powershell
+python -c "import ast,pathlib; files=list(pathlib.Path('windows/test-host').glob('private-host-bundle*.py'))+[pathlib.Path('windows/test-host/test-inline-preedit.py')]; [ast.parse(p.read_text(encoding='utf-8'),filename=str(p)) for p in files]; print('PASS EH5 Python syntax files='+str(len(files)))"
+$tokens=$null; $errors=$null; $count=0; foreach($file in @('windows/scripts/private-host-bundle.ps1','windows/test-host/test-private-host-bundle.ps1')) { [void][Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $file),[ref]$tokens,[ref]$errors); if($errors.Count){throw $errors}; $count++ }; Write-Output "PASS EH5 PowerShell syntax files=$count"
+git diff --check
+git diff --cached --name-only
+#+end_src
+Git reads used command-local safe.directory for this checkout; no global Git
+configuration changed. Verbatim static-check tails:
+#+begin_example
+PASS EH5 Python syntax files=5
+PASS EH5 PowerShell syntax files=2
+#+end_example
+Whitespace diagnostics=0; staged names=0. Every owned job was closed and all
+reported leftover lists are empty. No live process was attached to or killed.
+The design's whole-file hash changed as requested; earlier S1 design evidence
+hash reconciliation belongs to Claude, since this lane edits only S5 ledger lines.
+
+* Coordinator-only private acceptance
+Run final build, CTest, Compatibility, Recovery, Lifecycle and EndToEnd serially.
+S5.3 remains unaccepted until the real TSF/Emacs gates pass; the new same-client
+worker attempt failed at winreg.CreateKey with PermissionError WinError 5 before
+any IME stack started (build/w/eh5-private-tsf.log). Verbatim tail:
+#+begin_example
+PermissionError: [WinError 5] Access is denied
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+#+end_example
+Exact same-client fixture invocation used existing successful-cycle artifacts:
+#+begin_src powershell
+$fixture = 'build/w/eh5-20f0cf9a4d224a9d9094e057b976c6de'
+python windows/test-host/host-test-process-guard.py run --root . -- python windows/test-host/private-host-bundle-e2e.py --bundle "$fixture/policy" --previous "$fixture/native" --runtime $EH5_RUNTIME --state build/w/eh5-private-tsf --dll build/w/Release/ddskk-ime.dll --core build/w/Release/ddskk-ime-core.dll --tsf-host build/w/Release/tsf-host.exe --cold-load-sleep-sec 45
+#+end_src
+Use the fresh full-stage command below for acceptance, not this older artifact:
+#+begin_src powershell
+pwsh -NoProfile -File windows/test-host/test-private-host-bundle.ps1 -Runtime $EH5_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45 -Stage EndToEnd
+#+end_src
+It runs one TSF client/text store across native -> policy -> native, once for
+TSF composition and once with the real Emacs inline listener. BUNDLE:DEFER
+requires a live composition; BUNDLE:RESTART kills actual engine and host.
+The 20 ms ordinary callback watchdog stays unchanged. Subscriber lifetime
+is extended for the multiple 45-second cold loads, not a callback threshold.
+It then reuses scoped rollback, core deployment/core hot swap and the existing
+Emacs/inline fixtures on old/new/old bundles. All helper/Emacs paths stay in the
+checkout; --engine-repository selects only the versioned engine snapshot.
+
+Also retain the existing durability and child-replacement receipts:
+#+begin_src powershell
+python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/test-hot-swap.ps1 -EngineHostPath build/w/Release/ddskk-engine-host.exe -EngineExecutablePath $EH5_RUNTIME -BuildDirectory build/w/Release -StressKeys
+python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/test-engine-learning-crash-v2.ps1 -Runtime $EH5_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45
+python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/test-engine-provider-outbox-v2.ps1 -Runtime $EH5_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45
+#+end_src
+These additional existing gates were not run by the worker in this task.
+Claude must record whole logs, bundle/runtime hashes, counts and final owned
+PID lists as evidence before accepting the S5 ledger commands. Live rollout
+requires separate user approval and separate launcher/registry integration;
+the private guards and deploy-live.ps1 are not changed to permit it here.

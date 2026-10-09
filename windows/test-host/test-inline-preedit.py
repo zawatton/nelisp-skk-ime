@@ -111,12 +111,15 @@ def main():
     p.add_argument('--cold-load', type=int, default=45)
     p.add_argument('--local-conversion', action='store_true')
     p.add_argument('--repository', default=None)
+    p.add_argument('--engine-repository', default=None,
+                   help='Versioned engine snapshot; harness and Emacs helpers remain in --repository')
     p.add_argument('--cycle-regression', action='store_true',
                    help='Cycle to candidate five, lose its commit reply, then settle')
     p.add_argument('--q-regression', action='store_true',
                    help='Check immediate local q commit and the following reading')
     args = p.parse_args()
     root = Path(args.repository).resolve() if args.repository else Path(__file__).resolve().parents[2]
+    engine_repository = Path(args.engine_repository).resolve() if args.engine_repository else root
     artifacts = Path(args.artifacts).resolve()
     artifacts.mkdir(parents=True, exist_ok=True)
     directory = artifacts / ('inline-' + args.case)
@@ -271,7 +274,7 @@ def main():
                str(root / 'windows/test-host/run-harness.ps1'), '-Script', script,
                '-DllPath', str(Path(args.dll).resolve()), '-CoreDllPath', str(Path(args.core).resolve()),
                '-TsfHostExe', str(Path(args.tsf_host).resolve()), '-EngineHostPath', str(Path(args.engine_host).resolve()),
-               '-EngineExecutablePath', str(Path(args.runtime).resolve()), '-RepositoryPath', str(root),
+               '-EngineExecutablePath', str(Path(args.runtime).resolve()), '-RepositoryPath', str(engine_repository),
                '-ColdLoadSleepSec', str(args.cold_load), '-InlinePreedit', '-InlineDirectory', str(directory),
                '-InlinePidFile', str(pidfile), '-CaretMapName', caret_map,
                '-ArtifactDirectory', str(artifacts), '-TsfHostTimeoutSec', '90']

@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "scope": "private test deployments only",
+  "manifest": {
+    "encoding": "UTF-8 without BOM; one unique key=value per line; at most 16384 bytes",
+    "keys": ["schema", "contract", "policy_ipc", "mode", "host_sha256", "runtime_sha256", "policy_sha256"],
+    "schema": "1",
+    "contract": "engine-host-v1",
+    "policy_ipc": "HP1",
+    "mode": ["native", "policy"],
+    "hashes": "lowercase SHA256 of host executable, supplied runtime and repository/engine/host-policy.el"
+  },
+  "host_cli": "ddskk-engine-host.exe RUNTIME [REPOSITORY] (unchanged)",
+  "selection": "DDSKK_HOST_BUNDLE_MANIFEST; absent preserves S1-S4; incompatible disables every managed switch before child launch and logs native fallback",
+  "private_controls": {
+    "PRIVATE OWNER 1": "OWNER <host PID>; verify the public endpoint belongs to the process just spawned",
+    "PRIVATE HANDOVER 1": ["ERR PRIVATE", "DEFER COMPOSITION", "DEFER STORAGE", "OK HANDOVER RECONNECT"],
+    "guard": "manifest environment present, Software\\NativeIME-test- registry branch, non-live pipe",
+    "barrier": "freeze engine transactions; native fence outside interpreter gate; unchanged fence before shutdown; process exit/drain before the next owner",
+    "sessions": "never transferred across hosts; clients reconnect, OPEN 2 and re-establish prepared state; never blindly retry editing"
+  },
+  "deployment_journal": {
+    "publication": "fsync temporary file, then MoveFileExW REPLACE_EXISTING|WRITE_THROUGH",
+    "exclusive_lease": "Windows file handle with no sharing; OS releases on coordinator crash",
+    "prepared": "old authoritative; composition/storage deferral keeps old",
+    "released": "old authoritative; canceled warmup/crash recovers old from durable journals",
+    "committed": "new authoritative; rollback commits inverse selection",
+    "retention": "never delete old bundles, user dictionary, provider cursors, client spools or generation files in this script"
+  },
+  "execution": "foreground scoped deployment; own suspended hosts in kill-on-close job; no registry/registration writes, live paths or live wrapper calls; one IME stack at a time",
+  "limits": "sequential private prewarm follows old drain to respect one-stack machine-load constraint; disconnected interval is explicit, not seamless host session transfer"
+}

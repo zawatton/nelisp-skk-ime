@@ -659,6 +659,77 @@ learning, provider outbox append and blocked worker; recover exact dictionary
 order and IDs, continue TSF/Emacs input, retain leased mappings, reap every owned
 process. Live rollout requires a separate coordinator-authorized round.
 
+*** S5 worker implementation and private execution boundary
+windows/scripts/private-host-bundle.ps1 is a separate private-only entry point.
+Pack creates a new versioned directory containing the host, repository engine,
+framework/lattice and DDSKK vendor sources, plus a copied NeLisp substrate next
+to the repository (the existing runner loads ../nelisp/src/nelisp-buffer.el).
+SubstrateSource can be supplied explicitly; no sibling checkout is modified.
+The runtime remains an explicit parameter and its SHA256 pins the exact image.
+bundle.manifest pins host/policy/runtime bytes, engine-host-v1 and HP1. The
+additive specification is docs/contracts/private-host-bundle-v1.json. The public
+host CLI is unchanged. A supplied incompatible manifest disables shadow and all
+five authoritative switches before policy launch, logs
+policy-fallback native reason=incompatible-bundle-image-or-protocol and uses
+native policy. A mismatched actual READY banner also logs protocol fallback.
+With no manifest, existing S1--S4 switch selection remains unchanged.
+
+Deploy, Rollback and Recover are foreground scoped test deployments. Explicit
+Software\\NativeIME-test-* registry names, EH5-* pipe names and bundle/state
+directories under this checkout's build directory are required. No registry pointers,
+registrations, live settings or live deployment scripts are written or invoked.
+The coordinator supplies private TSF settings. -DryRun prints the operation
+without writing state or starting any process. LifetimeSec bounds a foreground
+deployment; Cycle performs native -> five-switches-ON -> native and stops.
+Every host is assigned suspended to an owned kill-on-close job. Private owner
+PID verification prevents mistaking a collision loser for readiness. A failed
+singleton creation refuses bundled startup rather than creating a second owner;
+the unbundled host's existing failure behaviour is preserved.
+
+PRIVATE HANDOVER 1 is available only on manifest-selected private endpoints.
+The native interpreter gate checks provider composition plus local core mirror
+composition (writer contention conservatively defers). It freezes new engine
+editing, captures the learning fence, waits up to 30 s outside the interpreter
+gate, and checks the sequence again. Composition or failed/changed storage
+returns DEFER and preserves the old host. Successful handover replies
+OK HANDOVER RECONNECT, then drains/stops the old host. The deployment waits for
+process exit and owned managed children before starting the next stack. New
+hosts recover native checkpoints/outboxes/cursors and clients open fresh
+sessions; process-local engine/policy epochs are not treated as durable IDs.
+An engine restart explicitly tests ERR SESSION LOST followed by OPEN 2.
+
+The state-directory lease is an exclusive Windows file handle, not a stale PID
+lock. deployment.json is fsynced and replaced with WRITE_THROUGH: prepared and
+released select old on recovery; committed selects new. Rollback commits the
+inverse selection. Before handover, during warm-up cancellation, after release,
+after prewarm and after commit are serial real process-interruption test points.
+Prewarm uses a fresh private endpoint after old-host drain, then releases it
+before public endpoint acquisition. This explicit disconnect is required by the
+one-stack machine-load rule; it does not claim simultaneous blue/green stacks
+or transparent host session transfer. Old bundles, user data and generation
+files are never deleted by the deployment script. Core generation leases remain
+the native mechanism; the pipe cycle retains an actual mmap across both swaps.
+
+windows/test-host/test-private-host-bundle.ps1 has Artifacts, Compatibility,
+Lifecycle, Recovery and EndToEnd stages. Lifecycle checks 30 independently
+acknowledged producer IDs, learning bursts in prepared swaps, original ACK
+replies, exact candidate row order, composition deferral, retained mapping bytes
+and real engine/host kills. Recovery checks exact durable learning rows at all
+five boundaries. EndToEnd adds same-TSF-text-store swaps and a real Emacs inline
+listener, plus the unchanged scoped deployment/rollback and core swap gates.
+No pipe-only pass certifies real TSF input. CTest and the same-client test are
+private-HKCU-blocked in this worker. Exact commands, receipts and outstanding
+coordinator gates are in docs/contracts/CLAUDE-S5.org. S5 ledger command lines
+remain executable checks; Claude must record the complete evidence and hashes.
+
+For a later live rollout, first qualify the full private EndToEnd and Recovery
+stages, preserve the versioned artifacts and retained old bundle, then obtain
+separate user approval for live launcher/registry integration. That later
+implementation must coordinate clients, select the compatible manifest and
+runtime, fence/drain the old owner, reconnect sessions and retain rollback data.
+The private script deliberately refuses live names and must not be repurposed
+by weakening those guards. deploy-live.ps1 behaviour is unchanged here.
+
 ** S6: qualify and optionally shrink native adapter
 Replace one OS1 component only after exact Windows image testing; CW1/RW4 may
 reduce policy cost. A stage can finish with justified retained native contracts:
