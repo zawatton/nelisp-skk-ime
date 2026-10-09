@@ -1,0 +1,137 @@
+#+TITLE: EH4 SK1 extra evidence correction (2026-10-09)
+
+* Finding
+Claude's be7296d EndToEnd extra/THIRD failure is aggregate-log decoding,
+not an authoritative policy decision difference. In the saved case
+build/w/sk1-tsf-530beea668ab4c778a00a195c4fc6f27/extra/harness-f0d68188b3ef/tsf.stdout.log,
+FIRST=あい▼仮名, SECOND=あい▼哉, THIRD=あい▼serverExtra,
+END=あいserverExtra, LEARNED=あいserverExtra▼serverExtra.
+Its extra.log misdecodes Japanese as code-page-932 mojibake. No policy
+comparison difference appears in that case. CREATE_NO_WINDOW removed the
+inherited console; guarded pwsh defaulted to 932 and decoded nested Windows
+PowerShell UTF-8 using that page. Initialize the shell's input/output encoding
+before invoking its script. No production host/policy change is justified.
+
+* Worker checks, serial
+Change anchors (all unstaged; no commit):
+- windows/test-host/host-test-process-guard.py:21 UTF-8 PowerShell bootstrap,
+  :66 owned suspended spawn uses it.
+- windows/test-host/test-host-process-ownership.py:69 nested UTF-8, parameter,
+  literal, switch and exit-status regressions.
+- windows/test-host/test-sk1-skkserv.ps1:5 optional equivalence fixture,
+  :12 checksum/load, :60 five extra checkpoints in addition to existing checks.
+- windows/test-host/run-engine-host-s4.ps1:54 policy and live SK1 extra S4.1 gates.
+- windows/test-host/verify-host-contracts.py:52 byte-exact SK1 fixture integrity.
+- docs/contracts/host-policy-sk1-extra-v1.json:1 additive numeric/checkpoint corpus.
+- docs/contracts/host-policy-sk1-extra-v1.sha256:1 byte-exact fixture digest.
+- docs/contracts/source-inventory-v2.json:1 refreshed normalized source hashes
+  and derived source anchors; unchanged inventory format and fixture bytes.
+- docs/design/engine-host-nelisp.org:630 S4 finding, fix and acceptance limits.
+- tools/ai/engine-host-nelisp-progress.org:134 S4.1 evidence, :140 attributed
+  coordinator Recovery-5 evidence.
+- docs/contracts/CLAUDE-S4-SK1.org:1 this receipt and coordinator commands.
+
+All commands below were run in this worktree. Full logs stay under build/w.
+The first reproduction with an omitted child ExecutionPolicy Bypass was
+invalid (script execution blocked); it was corrected before any code change.
+
+Corrected unchanged-code reproduction: guarded pwsh -File
+build/w/eh4-utf8-parent.ps1 invokes a nested UTF-8 powershell and writes
+build/w/eh4-utf8-nested.txt; Python asserts the exact Japanese THIRD marker.
+Parent and child are ASCII generated files, using char 0x3042/0x3044/0x25bc.
+Command: python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File build/w/eh4-utf8-parent.ps1
+Then: Python UTF-8-sig read/assert of eh4-utf8-nested.txt.
+Log build/w/eh4-sk1-encoding-before2.log; combined exit=1, tail:
+#+begin_example
+CODEPAGE=932
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+AssertionError: UTF-8 nested PowerShell evidence corrupted
+"AFTER THIRD BUF=[\u7e3a\u3085\uff1e\u7b06\uff7cserverExtra]"
+#+end_example
+Same corrected reproduction after the launcher change, exit=0;
+build/w/eh4-sk1-encoding-after.log:
+#+begin_example
+CODEPAGE=65001
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+"AFTER THIRD BUF=[\u3042\u3044\u25bcserverExtra]"
+PASS nested UTF-8 candidate evidence preserved
+#+end_example
+
+cmd: python windows/test-host/test-host-process-ownership.py --build-dir build/w
+Log build/w/eh4-sk1-ownership-final.log, exit=0; verbatim tail:
+#+begin_example
+PASS unrelated process survives strict and cleanup controls
+PASS child stdout/stderr evidence preserved by launcher
+PASS PowerShell parameters/switch/literals/exit code preserved
+PASS nested PowerShell UTF-8 SK1 THIRD text preserved
+PASS ownership checks=14 failures=0 artifacts=D:\Cowork\Notes\dev\nelisp-skk-ime-worker-eh4\build\w\ownership-f5bf0685ae77482a8fbfd9840c022e3a
+#+end_example
+During development the new exit-status assertion caught wrapper exit 7
+becoming 1; corrected. The subsequent text assertion caught a Python read
+using the default encoding; corrected to explicit UTF-8. Neither test was
+removed. Existing strict leaked-child rejection remains in the 14 checks.
+
+cmd: python windows/test-host/host-policy-ipc.py --runtime "$EH4_RUNTIME" --records docs/contracts/host-policy-sk1-extra-v1.json
+EH4_RUNTIME identified the supplied runtime; log build/w/eh4-sk1-equivalence.log,
+exit=0. Seven owned policy children ran sequentially, verbatim tail:
+#+begin_example
+PASS S4 equivalence negative control wrong-native-decision rejected=1
+PASS Windows HP1 IPC {'decisions': 12, 'split_frame': 1, 'batched_frames': 11, 'startup_ms': 1698.4066000004532, 'lisp_pause_ms': 3056.0021999990568} malformed_rejected=5 owned_children=7 leftovers=0
+#+end_example
+
+Offline Python checked each fixture checkpoint marker against the saved raw
+TSF trace and asserted its absence from the corrupted aggregate, exit=0;
+build/w/eh4-sk1-saved-corpus.log:
+#+begin_example
+PASS saved SK1 extra checkpoints=5 raw_matches=5 corrupted_aggregate_rejected=5
+#+end_example
+
+cmd: python windows/test-host/inventory-host-contracts.py
+cmd: python windows/test-host/verify-host-contracts.py
+Both exit=0, build/w/eh4-sk1-inventory.log and eh4-sk1-verify.log:
+#+begin_example
+PASS inventory sources=255 inputs=1063 errors=67 deadlines=510 commands=196
+PASS integrity transcripts=2 responses=140 disk_files=8 sources=255 bad_response_rejected=1 eol_controls=2 source_corruption_rejected=1
+#+end_example
+Existing frozen fixtures remain byte-exact. New SK1 fixture has its own
+byte-exact SHA256; source inventory v2 still normalizes text CRLF to LF.
+
+* Coordinator live rerun (one stack at a time)
+The worker ran this guarded ALL case, exit=1: private HKCU creation denied
+before engine startup. Log build/w/eh4-sk1-authoritative.log and
+build/w/sk1-tsf-fb0bfdd119684eec94f1a6deee7495f8/extra.log. Verbatim cause:
+#+begin_example
+New-Item : Access to the registry key 'HKEY_CURRENT_USER\Software\NativeIME-test-da828037a6df' is denied.
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+#+end_example
+The fixture server exited through finally and the command job closed. The
+policy probe reported leftovers=0; no owned IME leftovers are reported.
+Global CIM process enumeration is denied in the worker, so cleanup evidence
+comes from positively owned job membership, never global process-name kills.
+
+Set EH4_RUNTIME to the supplied runtime and run this exact private case:
+#+begin_src powershell
+$names=@('SOURCES','CACHE','RESTART','PUBLICATION','LEARNING')
+$saved=@{}
+foreach($n in $names){
+  $key='DDSKK_HOST_POLICY_'+$n
+  $saved[$key]=[Environment]::GetEnvironmentVariable($key)
+  [Environment]::SetEnvironmentVariable($key,'1')
+}
+$shadow=$env:DDSKK_HOST_POLICY_SHADOW
+$env:DDSKK_HOST_POLICY_SHADOW='0'
+try {
+  python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/test-sk1-skkserv.ps1 -Runtime "$EH4_RUNTIME" -BuildDir build/w -ColdLoadSleepSec 45 -Cases extra -EquivalenceFixture docs/contracts/host-policy-sk1-extra-v1.json
+  if($LASTEXITCODE -ne 0){throw 'SK1 extra authoritative failed'}
+} finally {
+  foreach($key in $saved.Keys){[Environment]::SetEnvironmentVariable($key,$saved[$key])}
+  $env:DDSKK_HOST_POLICY_SHADOW=$shadow
+}
+#+end_src
+Then serial full stages, retaining logs and their exit codes:
+#+begin_src powershell
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime "$EH4_RUNTIME" -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -MatrixWorkers 1 -Stage Equivalence
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime "$EH4_RUNTIME" -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -MatrixWorkers 1 -Stage EndToEnd -LargeDictionary "$EH4_LARGE_DICTIONARY"
+#+end_src
+Run the next command only after the previous command and owned cleanup have
+finished. No local full EndToEnd or live SK1 acceptance is claimed.

@@ -51,6 +51,11 @@ try {
       (Join-Path $root "$ControlBuildDir/Release/callback-io-fixture.dll"))
     Gate 'recorded-equivalence' 'python' @((Join-Path $PSScriptRoot 'host-policy-ipc.py'),'--runtime',$Runtime,
       '--records',(Join-Path $root 'docs/contracts/host-policy-inputs-v2.json'))
+    Gate 'sk1-extra-policy-equivalence' 'python' @((Join-Path $PSScriptRoot 'host-policy-ipc.py'),'--runtime',$Runtime,
+      '--records',(Join-Path $root 'docs/contracts/host-policy-sk1-extra-v1.json'))
+    Gate 'sk1-extra-authoritative' 'pwsh' @('-NoProfile','-File',(Join-Path $PSScriptRoot 'test-sk1-skkserv.ps1'),
+      '-Runtime',$Runtime,'-BuildDir',$BuildDir,'-ColdLoadSleepSec',"$ColdLoadSleepSec",'-Cases','extra',
+      '-EquivalenceFixture','docs/contracts/host-policy-sk1-extra-v1.json')
     ERT 'policy-ert' @('-l',(Join-Path $PSScriptRoot 'host-policy-test.el'))
     Gate 'source-and-fixture-integrity' 'python' @((Join-Path $PSScriptRoot 'verify-host-contracts.py'))
     # Native replay, each responsibility alone, and all responsibilities together.

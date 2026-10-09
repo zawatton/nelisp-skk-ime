@@ -1,13 +1,22 @@
 ﻿[CmdletBinding()]
 param([Parameter(Mandatory)][string]$Runtime, [string]$BuildDir='build/w',
       [int]$ColdLoadSleepSec=45,
-      [string[]]$Cases=@('extra','server-only','slow','unreachable','toggle'))
+      [string[]]$Cases=@('extra','server-only','slow','unreachable','toggle'),
+      [string]$EquivalenceFixture='')
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $build=[IO.Path]::GetFullPath((Join-Path $root $BuildDir))
 $run=Join-Path $build ('sk1-tsf-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $run | Out-Null
 $utf8=[Text.UTF8Encoding]::new($false)
+$corpus=$null
+if($EquivalenceFixture) {
+ $path=[IO.Path]::GetFullPath((Join-Path $root $EquivalenceFixture))
+ $expected=([IO.File]::ReadAllText([IO.Path]::ChangeExtension($path,'.sha256')) -split '\s+')[0]
+ if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected){throw 'SK1 equivalence fixture checksum changed'}
+ $corpus=[IO.File]::ReadAllText($path) | ConvertFrom-Json
+ if($corpus.version -ne 1 -or $Cases -notcontains 'extra'){throw 'SK1 extra equivalence fixture requires extra case'}
+}
 $file=Join-Path $run 'files.utf8'
 [IO.File]::WriteAllText($file,";; okuri-ari entries.`n;; okuri-nasi entries.`nかな /仮名/哉/`nあい /愛/`n",$utf8)
 $names=@('DDSKK_DICTIONARY_FILES','DDSKK_HARNESS_DIAGNOSTICS','DDSKK_SKKSERV_ENABLE','DDSKK_SKKSERV_HOST','DDSKK_SKKSERV_PORT')
@@ -48,6 +57,10 @@ try {
    elseif($case -in @('slow','unreachable')){Expect END 'あい仮名'}
    else {Expect THIRD 'あい▼serverExtra'; Expect END 'あいserverExtra'}
    if($case -eq 'extra'){Expect FIRST 'あい▼仮名'; Expect SECOND 'あい▼哉'; Expect LEARNED 'あいserverExtra▼serverExtra'}
+   if($case -eq 'extra' -and $corpus) {
+    foreach($checkpoint in $corpus.checkpoints.PSObject.Properties){Expect $checkpoint.Name $checkpoint.Value}
+    Write-Output "PASS SK1 extra corpus checkpoints=$($corpus.checkpoints.PSObject.Properties.Name.Count)"
+   }
    if($case -eq 'toggle') {
     if($text -notmatch 'SKKSERV toggle status=0' -or $text -notmatch 'MIRROR stable=1 line=STATE candidate .* 0 004eee00540d,0054c9' -or $text -notmatch '000073000065000072000076000065000072000045000078000074000072000061'){throw "Config toggle vectors failed: $log"}; $checks++
    }

@@ -49,6 +49,8 @@ for name in ('native-v1', 'native-legacy-v1', 'native-disk-v1'):
         canonical(base64.b64decode(fixture['files']['overlay']['bytes_base64'], validate=True), config)
 policy_fixture = contracts / 'host-policy-inputs-v2.json'
 assert sha(policy_fixture.read_bytes()) == policy_fixture.with_suffix('.sha256').read_text().split()[0]
+sk1_fixture = contracts / 'host-policy-sk1-extra-v1.json'
+assert sha(sk1_fixture.read_bytes()) == sk1_fixture.with_suffix('.sha256').read_text().split()[0]
 record = json.loads((contracts / 'native-v1.json').read_text())['records'][0]
 record['response_base64'] = base64.b64encode(b'wrong').decode()
 try:

@@ -627,6 +627,23 @@ existing 150 ms TSF assertion twice. ContinueOnFailure allows diagnostic
 execution of later EndToEnd gates while retaining every failure and a failing
 final exit; it cannot qualify S4 or turn a blocked/missing-input gate green.
 
+*** S4 SK1 extra equivalence and guarded UTF-8 evidence
+The EndToEnd SK1 extra/THIRD failure on be7296d was an evidence-encoding
+failure: the saved raw TSF trace contains FIRST 仮名, SECOND 哉, THIRD
+serverExtra and the expected learned candidate; all policy comparisons match.
+The guarded no-console pwsh defaulted to code page 932 and misdecoded nested
+UTF-8 Windows PowerShell output in the aggregate log. The job launcher now
+initializes UTF-8 before invoking PowerShell scripts, retaining literal
+arguments, switches and exit status. Ownership checks include the exact
+Japanese THIRD marker across that nested shell boundary.
+The additive host-policy-sk1-extra-v1 fixture freezes five conversion/learning
+checkpoints and eleven source/order/cache admission and TTL inputs. S4.1 runs
+both its policy IPC replay and the existing extra TSF case with every switch
+ON; existing assertions and local SPACE thresholds remain in force. No host
+policy decision or server merge behavior was changed. Worker policy IPC and
+offline trace checks pass; private HKCU blocks the live rerun. Commands and
+verbatim evidence are in docs/contracts/CLAUDE-S4-SK1.org.
+
 ** S5: private deploy, rollback and hot swap
 Package adapter, policy runtime/image, engine and repository as one versioned
 snapshot; preserve host CLI and EngineHost launcher contract. Prewarm new policy

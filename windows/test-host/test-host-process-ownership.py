@@ -66,6 +66,28 @@ def main():
             capture_output=True, text=True)
         check(output.returncode == 0 and 'OWNED_STDOUT' in output.stdout and 'OWNED_STDERR' in output.stderr,
               'child stdout/stderr evidence preserved by launcher')
+        # Reproduce the SK1 aggregate-log boundary: a no-console pwsh reads
+        # UTF-8 from nested Windows PowerShell. ASCII markers alone miss it.
+        shell = artifacts / 'unicode-parent.ps1'
+        expected = artifacts / 'unicode-value.txt'
+        value = "Japanese あい; literal 'quote' $HOME $(Get-Date)"
+        expected.write_text(value, encoding='utf-8')
+        shell.write_text('param([string]$Value,[int]$Number,[switch]$Flag)\n'
+            'if($Value -cne [IO.File]::ReadAllText((Join-Path $PSScriptRoot "unicode-value.txt")) '
+            '-or $Number -ne -7 -or -not $Flag){throw "Argument forwarding changed"}\n'
+            '$line=& powershell -NoProfile -ExecutionPolicy Bypass -Command '
+            '\'[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); '
+            '[Console]::WriteLine("AFTER THIRD BUF=["+[char]0x3042+[char]0x3044+'
+            '[char]0x25bc+"serverExtra]")\'\n'
+            '[IO.File]::WriteAllText((Join-Path $PSScriptRoot "unicode-result.txt"),$line)\n'
+            'exit 7\n', encoding='ascii')
+        unicode_result = subprocess.run([sys.executable,
+            str(Path(__file__).with_name('host-test-process-guard.py')), 'run', '--root', str(root),
+            '--', 'pwsh', '-NoProfile', '-File', str(shell), '-Value', value, '-Number', '-7', '-Flag'],
+            capture_output=True, text=True, encoding='utf-8')
+        check(unicode_result.returncode == 7, 'PowerShell parameters/switch/literals/exit code preserved')
+        check((artifacts / 'unicode-result.txt').read_text(encoding='utf-8') == 'AFTER THIRD BUF=[あい▼serverExtra]',
+              'nested PowerShell UTF-8 SK1 THIRD text preserved')
         print(f'PASS ownership checks={checks} failures=0 artifacts={artifacts}', flush=True)
     finally:
         job.close()

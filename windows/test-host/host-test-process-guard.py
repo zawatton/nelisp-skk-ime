@@ -4,9 +4,11 @@ The anonymous kill-on-close job cannot include live IME/MCP/other sessions.
 Gate failures close that same job; no process-name or stale-PID kill is used.
 """
 import argparse
+import base64
 import ctypes as C
 from ctypes import wintypes as W
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -14,6 +16,31 @@ import time
 
 IME_NAMES = {'nelisp.exe', 'ddskk-engine-host.exe', 'tsf-host.exe', 'input-rules-host.exe',
              'host-policy-sync-control.exe'}
+
+
+def utf8_command(arguments):
+    # CREATE_NO_WINDOW has no inherited console code page. PowerShell then
+    # defaults to the system ANSI page (e.g. 932) and misdecodes nested UTF-8
+    # harness output. Initialize the test shell before invoking its script.
+    if Path(arguments[0]).stem.lower() not in ('pwsh', 'powershell'):
+        return arguments
+    position = next((i for i, value in enumerate(arguments) if value.lower() == '-file'), None)
+    if position is None:
+        return arguments
+    if position + 1 >= len(arguments):
+        raise ValueError('PowerShell -File requires a script')
+    def literal(value):
+        return "'" + value.replace("'", "''") + "'"
+    invocation = literal(arguments[position + 1])
+    for value in arguments[position + 2:]:
+        invocation += ' ' + (value if re.fullmatch(r'-[A-Za-z][A-Za-z0-9_-]*', value) else literal(value))
+    script = ('$global:LASTEXITCODE=0; '
+              '[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); '
+              '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); '
+              '$OutputEncoding=[Console]::OutputEncoding; & ' + invocation +
+              '; if (-not $? -and $global:LASTEXITCODE -eq 0) { exit 1 }; exit $global:LASTEXITCODE')
+    encoded = base64.b64encode(script.encode('utf-16le')).decode('ascii')
+    return arguments[:position] + ['-EncodedCommand', encoded]
 
 
 def api(name, result, *arguments):
@@ -36,7 +63,7 @@ class CommandJob:
 
     def spawn(self, arguments):
         # No child runs (or can respawn) until ownership has been established.
-        process = subprocess.Popen(arguments, stdout=sys.stdout, stderr=sys.stderr,
+        process = subprocess.Popen(utf8_command(arguments), stdout=sys.stdout, stderr=sys.stderr,
                                    creationflags=0x08000004)
         try:
             if not api('AssignProcessToJobObject', W.BOOL, W.HANDLE, W.HANDLE)(

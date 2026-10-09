@@ -169,7 +169,7 @@
     "windows/test-host/host-policy-s4.py": "a093472bfdcc2e787a73051c723b9ae4389e5e502654fa33876cf719c2fdf8de",
     "windows/test-host/host-policy-test.el": "20346532caa5b4aae417968ce6bc88963630ce8e3625137ba770008e80d328fb",
     "windows/test-host/host-policy.py": "c6cf06f36c8fd5fb5fc29182ef6e48641c35b86072c0719ff03a3c5a9144634f",
-    "windows/test-host/host-test-process-guard.py": "0174356badef053de031faf7387517cf2f9d517366d92eff92765e9a579871b4",
+    "windows/test-host/host-test-process-guard.py": "d33e7904586edb6370613cb868c96eb0c33e78441ddbe66029ad987db3ae3c5d",
     "windows/test-host/host_policy_unit.cpp": "89fc463865185229f4c9b6016fef2c9374d4f9000b00389048eb95f29f2a961c",
     "windows/test-host/host_utf8_protocol_test.cpp": "0efc6c940d0a66f4937aa05872fbfe76a0e808d18d76f040fe8dcf30ba42f416",
     "windows/test-host/inline-drop-subscriber.py": "d368bcdd285400ded49e38347935279a4c077894b3da1a149e9a25fb506a03b1",
@@ -194,7 +194,7 @@
     "windows/test-host/report-inline-preedit.py": "d6fe08f17dc253ee29a554e3aa2eb52cdc8d8b12956eb6dc1c541b3de6d51906",
     "windows/test-host/run-engine-host-s2.ps1": "fc5c19f9abe29641a2be698133b9123fdee0071d2c6cef8c636ce2155b820815",
     "windows/test-host/run-engine-host-s3.ps1": "793b19f119541ccf08884757ffbd26dbdf18d713119671c431d2e439e150b071",
-    "windows/test-host/run-engine-host-s4.ps1": "9d2f72b98d9a60321e3831be53841b4d02b27b3521c67f3ec655eb6a65da3590",
+    "windows/test-host/run-engine-host-s4.ps1": "c959dbe6b420a878b4271fe540b0d2aa3ef751bcc2e7c08c81527c19d47f50ab",
     "windows/test-host/run-harness.ps1": "2822441da93b0d0c17105d112a085cfca04b93786b5cef94fe1502ed2c7b8cb8",
     "windows/test-host/settings-request-probe.cpp": "9b1efd5cd9088664abafa09ea58807f3246a95e93e59cd58dc7d6ea911312810",
     "windows/test-host/sk1-skkserv-fixture.py": "e4e3aa6e58344f56d593cb776b5ba3be08ddaa7c839ec7ed89ade0eb87b53b90",
@@ -223,7 +223,7 @@
     "windows/test-host/test-host-policy-inline-control.ps1": "224c7dad6a29c19008eb85fc33a4e76b2796433f54aa7e6aaf4d40b85aa7c004",
     "windows/test-host/test-host-policy-lattice-control.ps1": "f22b92e2df659e9ff3d0d73ec32e4c91e3ceb5c0bf0a3bcdb81b233c8c5a066c",
     "windows/test-host/test-host-policy.ps1": "62e1f4cfb3688429af1afc1130f283caa8b46aa4f72da1375ad90c7d30961c6e",
-    "windows/test-host/test-host-process-ownership.py": "86acf3f26192fe18deafed9c52d25983afea054df577130d05beff87f105ff52",
+    "windows/test-host/test-host-process-ownership.py": "b800bcd58369fc48f85fe9f5b5e015151f3482b5472289666f79c67fba680bfa",
     "windows/test-host/test-hot-swap.ps1": "50970fb72e3a3b3158e2af2139758b750fb12d38c638034692317d69a5784b71",
     "windows/test-host/test-inline-preedit.py": "8efa2cabd2ccda5a8b85cbddc64183a1a19185a7f9e4510877b259e5388eac9c",
     "windows/test-host/test-lattice-behavior.ps1": "853a87af94d33c5e1d98d04bd3a693aa838eae06ca95a330f44858350c0cc919",
@@ -254,9 +254,9 @@
     "windows/test-host/test-scoped-rollback.ps1": "7db5ea97e8cd4bb8d7e768a4cf152437c43c037fb2c29be172caba7d00eacef5",
     "windows/test-host/test-scripted-keyboard.ps1": "70df798690e7ff6ebcc3ecd52b74bd76534989b2227dd3fa8449894fe9935146",
     "windows/test-host/test-sk1-provider-relay.ps1": "2d1f0d5c31fae1a3be40c5699e7dee36b1b77eb3a5fd7ba5f41c0aafa814f4e5",
-    "windows/test-host/test-sk1-skkserv.ps1": "ecbd135c51431fe9bc3383152ca197a6979147162ebd83e33315552e49a3199c",
+    "windows/test-host/test-sk1-skkserv.ps1": "ec829cac5eae00f3ad801396192a3696a2f9d01d7e97606b054324c837757189",
     "windows/test-host/tsf_host.cpp": "3894830fda97ea53f000791331acf8f542ebd5a7f7bde750649e56d730a0673d",
-    "windows/test-host/verify-host-contracts.py": "fadcdfeaafe48c217da1cc28326d784f5625a5e9118b93693097feecbe887312"
+    "windows/test-host/verify-host-contracts.py": "50fabd909d82e98d5afc5e9b05db0294ff2adee779d63e854d2079780783d237"
   },
   "inputs": [
     {
@@ -3236,27 +3236,27 @@
     },
     {
       "name": "DDSKK_HOST_POLICY_",
-      "source": "windows/test-host/run-engine-host-s4.ps1:59",
+      "source": "windows/test-host/run-engine-host-s4.ps1:64",
       "declaration": "$on=$selected -eq 'ALL' -or $name -eq ('DDSKK_HOST_POLICY_'+$selected)"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS",
-      "source": "windows/test-host/run-engine-host-s4.ps1:71",
+      "source": "windows/test-host/run-engine-host-s4.ps1:76",
       "declaration": "$env:NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS='1500'"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS",
-      "source": "windows/test-host/run-engine-host-s4.ps1:84",
+      "source": "windows/test-host/run-engine-host-s4.ps1:89",
       "declaration": "Remove-Item Env:NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/run-engine-host-s4.ps1:98",
+      "source": "windows/test-host/run-engine-host-s4.ps1:103",
       "declaration": "$env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='9'"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/run-engine-host-s4.ps1:120",
+      "source": "windows/test-host/run-engine-host-s4.ps1:125",
       "declaration": "Remove-Item Env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND -ErrorAction SilentlyContinue"
     },
     {
@@ -5331,52 +5331,52 @@
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/test-host/test-sk1-skkserv.ps1:13",
+      "source": "windows/test-host/test-sk1-skkserv.ps1:22",
       "declaration": "$names=@('DDSKK_DICTIONARY_FILES','DDSKK_HARNESS_DIAGNOSTICS','DDSKK_SKKSERV_ENABLE','DDSKK_SKKSERV_HOST','DDSKK_SKKSERV_PORT')"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/test-sk1-skkserv.ps1:13",
+      "source": "windows/test-host/test-sk1-skkserv.ps1:22",
       "declaration": "$names=@('DDSKK_DICTIONARY_FILES','DDSKK_HARNESS_DIAGNOSTICS','DDSKK_SKKSERV_ENABLE','DDSKK_SKKSERV_HOST','DDSKK_SKKSERV_PORT')"
     },
     {
       "name": "DDSKK_SKKSERV_ENABLE",
-      "source": "windows/test-host/test-sk1-skkserv.ps1:13",
+      "source": "windows/test-host/test-sk1-skkserv.ps1:22",
       "declaration": "$names=@('DDSKK_DICTIONARY_FILES','DDSKK_HARNESS_DIAGNOSTICS','DDSKK_SKKSERV_ENABLE','DDSKK_SKKSERV_HOST','DDSKK_SKKSERV_PORT')"
     },
     {
       "name": "DDSKK_SKKSERV_HOST",
-      "source": "windows/test-host/test-sk1-skkserv.ps1:13",
+      "source": "windows/test-host/test-sk1-skkserv.ps1:22",
       "declaration": "$names=@('DDSKK_DICTIONARY_FILES','DDSKK_HARNESS_DIAGNOSTICS','DDSKK_SKKSERV_ENABLE','DDSKK_SKKSERV_HOST','DDSKK_SKKSERV_PORT')"
     },
     {
       "name": "DDSKK_SKKSERV_PORT",
-      "source": "windows/test-host/test-sk1-skkserv.ps1:13",
+      "source": "windows/test-host/test-sk1-skkserv.ps1:22",
       "declaration": "$names=@('DDSKK_DICTIONARY_FILES','DDSKK_HARNESS_DIAGNOSTICS','DDSKK_SKKSERV_ENABLE','DDSKK_SKKSERV_HOST','DDSKK_SKKSERV_PORT')"
     },
     {
       "name": "DDSKK_DICTIONARY_FILES",
-      "source": "windows/test-host/test-sk1-skkserv.ps1:17",
+      "source": "windows/test-host/test-sk1-skkserv.ps1:26",
       "declaration": "$env:DDSKK_DICTIONARY_FILES=$file; $env:DDSKK_HARNESS_DIAGNOSTICS='1'"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/test-sk1-skkserv.ps1:17",
+      "source": "windows/test-host/test-sk1-skkserv.ps1:26",
       "declaration": "$env:DDSKK_DICTIONARY_FILES=$file; $env:DDSKK_HARNESS_DIAGNOSTICS='1'"
     },
     {
       "name": "DDSKK_SKKSERV_ENABLE",
-      "source": "windows/test-host/test-sk1-skkserv.ps1:18",
+      "source": "windows/test-host/test-sk1-skkserv.ps1:27",
       "declaration": "foreach($name in @('DDSKK_SKKSERV_ENABLE','DDSKK_SKKSERV_HOST','DDSKK_SKKSERV_PORT')){[Environment]::SetEnvironmentVariable($name,$null)}"
     },
     {
       "name": "DDSKK_SKKSERV_HOST",
-      "source": "windows/test-host/test-sk1-skkserv.ps1:18",
+      "source": "windows/test-host/test-sk1-skkserv.ps1:27",
       "declaration": "foreach($name in @('DDSKK_SKKSERV_ENABLE','DDSKK_SKKSERV_HOST','DDSKK_SKKSERV_PORT')){[Environment]::SetEnvironmentVariable($name,$null)}"
     },
     {
       "name": "DDSKK_SKKSERV_PORT",
-      "source": "windows/test-host/test-sk1-skkserv.ps1:18",
+      "source": "windows/test-host/test-sk1-skkserv.ps1:27",
       "declaration": "foreach($name in @('DDSKK_SKKSERV_ENABLE','DDSKK_SKKSERV_HOST','DDSKK_SKKSERV_PORT')){[Environment]::SetEnvironmentVariable($name,$null)}"
     },
     {
@@ -7945,19 +7945,19 @@
       "declaration": "until(lambda: log(h).count('policy-timeout-discard') > timeout_count, 2)"
     },
     {
-      "source": "windows/test-host/host-test-process-guard.py:77",
+      "source": "windows/test-host/host-test-process-guard.py:104",
       "declaration": "if member.value and api('WaitForSingleObject', W.DWORD, W.HANDLE,"
     },
     {
-      "source": "windows/test-host/host-test-process-guard.py:105",
+      "source": "windows/test-host/host-test-process-guard.py:132",
       "declaration": "deadline = time.monotonic() + 5"
     },
     {
-      "source": "windows/test-host/host-test-process-guard.py:106",
+      "source": "windows/test-host/host-test-process-guard.py:133",
       "declaration": "while self.members() and time.monotonic() < deadline:"
     },
     {
-      "source": "windows/test-host/host-test-process-guard.py:135",
+      "source": "windows/test-host/host-test-process-guard.py:162",
       "declaration": "process.wait(timeout=10)"
     },
     {
@@ -8413,7 +8413,7 @@
       "declaration": "parent.wait(timeout=10)"
     },
     {
-      "source": "windows/test-host/test-host-process-ownership.py:73",
+      "source": "windows/test-host/test-host-process-ownership.py:95",
       "declaration": "outside.wait(timeout=10)"
     },
     {
@@ -8645,7 +8645,7 @@
       "declaration": "if($child){if(-not $child.WaitForExit(3000)){Stop-Process -Id $childPid -Force; $child.WaitForExit()}; $child.Dispose()}"
     },
     {
-      "source": "windows/test-host/test-sk1-skkserv.ps1:60",
+      "source": "windows/test-host/test-sk1-skkserv.ps1:73",
       "declaration": "} finally {if($fixture){if(-not $fixture.HasExited){Stop-Process -Id $fixture.Id -Force}; $fixture.WaitForExit(); $fixture.Dispose()}}"
     },
     {
