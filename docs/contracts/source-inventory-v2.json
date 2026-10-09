@@ -166,10 +166,10 @@
     "windows/test-host/crlf-parser/host_crlf_parser_test.cpp": "7aa360c9c963311cf7c071bf0401f0cbe9cd42fe533170ccf8cb602173bbf9a4",
     "windows/test-host/host-disk-contracts.py": "7bd8b36d7b995ff87b21e35d2b9d98bd7a30db4a9fd3dbd60078c6d63110a83e",
     "windows/test-host/host-policy-ipc.py": "55a8e2e535fdf81a14f5a4f8b4c561eec33579b2be1e39a4cf450b381ecdf970",
-    "windows/test-host/host-policy-s4.py": "ac5b5753781c3dc66985d12ed2e0f18d764fbc4cb53e36aa9d32845253fdbdf4",
+    "windows/test-host/host-policy-s4.py": "a093472bfdcc2e787a73051c723b9ae4389e5e502654fa33876cf719c2fdf8de",
     "windows/test-host/host-policy-test.el": "20346532caa5b4aae417968ce6bc88963630ce8e3625137ba770008e80d328fb",
     "windows/test-host/host-policy.py": "c6cf06f36c8fd5fb5fc29182ef6e48641c35b86072c0719ff03a3c5a9144634f",
-    "windows/test-host/host-test-process-guard.py": "85bbe50ce0c9515de42128c05bf6190f196d5c5d0df6e119809023ef122924fc",
+    "windows/test-host/host-test-process-guard.py": "0174356badef053de031faf7387517cf2f9d517366d92eff92765e9a579871b4",
     "windows/test-host/host_policy_unit.cpp": "89fc463865185229f4c9b6016fef2c9374d4f9000b00389048eb95f29f2a961c",
     "windows/test-host/host_utf8_protocol_test.cpp": "0efc6c940d0a66f4937aa05872fbfe76a0e808d18d76f040fe8dcf30ba42f416",
     "windows/test-host/inline-drop-subscriber.py": "d368bcdd285400ded49e38347935279a4c077894b3da1a149e9a25fb506a03b1",
@@ -193,8 +193,8 @@
     "windows/test-host/profile-eg1.py": "9b6cb469031a10f1790db3053355fb2d0e6690b459ccad40a08774f175f39944",
     "windows/test-host/report-inline-preedit.py": "d6fe08f17dc253ee29a554e3aa2eb52cdc8d8b12956eb6dc1c541b3de6d51906",
     "windows/test-host/run-engine-host-s2.ps1": "fc5c19f9abe29641a2be698133b9123fdee0071d2c6cef8c636ce2155b820815",
-    "windows/test-host/run-engine-host-s3.ps1": "b41c58f1ef13fdd4f317c2e8ed4886692cf4d0bc790ca7e5cb83dc100f633b2a",
-    "windows/test-host/run-engine-host-s4.ps1": "eabb03184f407ae3a16737cda5cc3066351113f7cbdf57ceac6c2e47967c6814",
+    "windows/test-host/run-engine-host-s3.ps1": "793b19f119541ccf08884757ffbd26dbdf18d713119671c431d2e439e150b071",
+    "windows/test-host/run-engine-host-s4.ps1": "9d2f72b98d9a60321e3831be53841b4d02b27b3521c67f3ec655eb6a65da3590",
     "windows/test-host/run-harness.ps1": "2822441da93b0d0c17105d112a085cfca04b93786b5cef94fe1502ed2c7b8cb8",
     "windows/test-host/settings-request-probe.cpp": "9b1efd5cd9088664abafa09ea58807f3246a95e93e59cd58dc7d6ea911312810",
     "windows/test-host/sk1-skkserv-fixture.py": "e4e3aa6e58344f56d593cb776b5ba3be08ddaa7c839ec7ed89ade0eb87b53b90",
@@ -220,9 +220,10 @@
     "windows/test-host/test-host-disk-normalization.py": "153722ee9f32a27e090d0907541b90ea0a2971200a54939892af4af658cb17c4",
     "windows/test-host/test-host-policy-callbacks.ps1": "25aa842dae4eb62bf4abb2128f3d3745c070a05084ff9ae6d131eb558808aa7b",
     "windows/test-host/test-host-policy-disk.py": "74f342bdccc253a8befef3430b198786675d478e8611bde85d5b00966144b1aa",
-    "windows/test-host/test-host-policy-inline-control.ps1": "0ff50cf00993edd05c75121a9cb03f618e143b8a8ba44aab34f5e03811ee4099",
+    "windows/test-host/test-host-policy-inline-control.ps1": "224c7dad6a29c19008eb85fc33a4e76b2796433f54aa7e6aaf4d40b85aa7c004",
     "windows/test-host/test-host-policy-lattice-control.ps1": "f22b92e2df659e9ff3d0d73ec32e4c91e3ceb5c0bf0a3bcdb81b233c8c5a066c",
     "windows/test-host/test-host-policy.ps1": "62e1f4cfb3688429af1afc1130f283caa8b46aa4f72da1375ad90c7d30961c6e",
+    "windows/test-host/test-host-process-ownership.py": "86acf3f26192fe18deafed9c52d25983afea054df577130d05beff87f105ff52",
     "windows/test-host/test-hot-swap.ps1": "50970fb72e3a3b3158e2af2139758b750fb12d38c638034692317d69a5784b71",
     "windows/test-host/test-inline-preedit.py": "8efa2cabd2ccda5a8b85cbddc64183a1a19185a7f9e4510877b259e5388eac9c",
     "windows/test-host/test-lattice-behavior.ps1": "853a87af94d33c5e1d98d04bd3a693aa838eae06ca95a330f44858350c0cc919",
@@ -231,7 +232,7 @@
     "windows/test-host/test-local-cleanup.ps1": "c8e079263eced05f543143f0d37c1951613852f51e1cc3970b989b741aaa6589",
     "windows/test-host/test-local-conversion.ps1": "2c37c0798b8e87e7ad7f6056171a6a0fceb9067dbda243d79a78cba85c5a3382",
     "windows/test-host/test-local-edit-recovery.ps1": "041a28152ce7ffdab99dd91e7f011461500a99bf6ff6b40cd95497e00d4508a7",
-    "windows/test-host/test-local-fallback.ps1": "c1b2e8fee13f22443c6809537cecec77acc62f4e29323e6a1af234fd4b1a7e8b",
+    "windows/test-host/test-local-fallback.ps1": "d2bf6eca032dcd8b3e4b5ec4ed3a219e69a48eed19bed2929b109fab6e379ef3",
     "windows/test-host/test-local-idle-spool.ps1": "5153973c243e17d70f1154666f50b7b5c9be084bb76a3c108ff2cbc687b62280",
     "windows/test-host/test-local-key-refusal.ps1": "65c87036c51108c309d357855d06c3dab277b6c6c3c14c84fdc078c20ab4f0d0",
     "windows/test-host/test-local-navigation.ps1": "a8bef54605e759326fef69ebdbc7af61ad021e0ab80591265cbcac26427c1af3",
@@ -2790,7 +2791,7 @@
     },
     {
       "name": "NATIVEIME_TEST_HOST_POINT",
-      "source": "windows/test-host/host-policy-s4.py:244",
+      "source": "windows/test-host/host-policy-s4.py:245",
       "declaration": "h.env.pop('NATIVEIME_TEST_HOST_POINT')"
     },
     {
@@ -3155,32 +3156,32 @@
     },
     {
       "name": "DDSKK_HOST_POLICY_SHADOW",
-      "source": "windows/test-host/run-engine-host-s3.ps1:63",
+      "source": "windows/test-host/run-engine-host-s3.ps1:53",
       "declaration": "$env:DDSKK_HOST_POLICY_SHADOW=$shadow"
     },
     {
       "name": "DDSKK_HOST_POLICY_SHADOW",
-      "source": "windows/test-host/run-engine-host-s3.ps1:73",
+      "source": "windows/test-host/run-engine-host-s3.ps1:63",
       "declaration": "$env:DDSKK_HOST_POLICY_SHADOW='1'"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/run-engine-host-s3.ps1:74",
+      "source": "windows/test-host/run-engine-host-s3.ps1:64",
       "declaration": "if(-not $env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND){$env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='5'}"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/run-engine-host-s3.ps1:74",
+      "source": "windows/test-host/run-engine-host-s3.ps1:64",
       "declaration": "if(-not $env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND){$env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='5'}"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/run-engine-host-s3.ps1:75",
+      "source": "windows/test-host/run-engine-host-s3.ps1:65",
       "declaration": "$env:DDSKK_HARNESS_DIAGNOSTICS='1'"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/run-engine-host-s3.ps1:100",
+      "source": "windows/test-host/run-engine-host-s3.ps1:90",
       "declaration": "Remove-Item Env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND -ErrorAction SilentlyContinue"
     },
     {
@@ -3225,37 +3226,37 @@
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS",
-      "source": "windows/test-host/run-engine-host-s4.ps1:52",
+      "source": "windows/test-host/run-engine-host-s4.ps1:41",
       "declaration": "Remove-Item Env:NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS -ErrorAction SilentlyContinue"
     },
     {
       "name": "DDSKK_HOST_POLICY_SHADOW",
-      "source": "windows/test-host/run-engine-host-s4.ps1:54",
+      "source": "windows/test-host/run-engine-host-s4.ps1:43",
       "declaration": "$env:DDSKK_HOST_POLICY_SHADOW='0'"
     },
     {
       "name": "DDSKK_HOST_POLICY_",
-      "source": "windows/test-host/run-engine-host-s4.ps1:69",
+      "source": "windows/test-host/run-engine-host-s4.ps1:59",
       "declaration": "$on=$selected -eq 'ALL' -or $name -eq ('DDSKK_HOST_POLICY_'+$selected)"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS",
-      "source": "windows/test-host/run-engine-host-s4.ps1:81",
+      "source": "windows/test-host/run-engine-host-s4.ps1:71",
       "declaration": "$env:NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS='1500'"
     },
     {
       "name": "NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS",
-      "source": "windows/test-host/run-engine-host-s4.ps1:94",
+      "source": "windows/test-host/run-engine-host-s4.ps1:84",
       "declaration": "Remove-Item Env:NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/run-engine-host-s4.ps1:108",
+      "source": "windows/test-host/run-engine-host-s4.ps1:98",
       "declaration": "$env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND='9'"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/run-engine-host-s4.ps1:130",
+      "source": "windows/test-host/run-engine-host-s4.ps1:120",
       "declaration": "Remove-Item Env:DDSKK_HOST_POLICY_TEST_PAUSE_KIND -ErrorAction SilentlyContinue"
     },
     {
@@ -4355,17 +4356,17 @@
     },
     {
       "name": "DDSKK_HOST_POLICY_SHADOW",
-      "source": "windows/test-host/test-host-policy-inline-control.ps1:38",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:37",
       "declaration": "Write-Output \"CASE=$case ITERATION=$iteration PAUSE_KIND=$PauseKind SHADOW=$env:DDSKK_HOST_POLICY_SHADOW\""
     },
     {
       "name": "DDSKK_HOST_POLICY_",
-      "source": "windows/test-host/test-host-policy-inline-control.ps1:39",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:38",
       "declaration": "foreach($switch in $switches){Write-Output ('env: DDSKK_HOST_POLICY_'+$switch+'='+[Environment]::GetEnvironmentVariable('DDSKK_HOST_POLICY_'+$switch))}"
     },
     {
       "name": "DDSKK_HOST_POLICY_",
-      "source": "windows/test-host/test-host-policy-inline-control.ps1:39",
+      "source": "windows/test-host/test-host-policy-inline-control.ps1:38",
       "declaration": "foreach($switch in $switches){Write-Output ('env: DDSKK_HOST_POLICY_'+$switch+'='+[Environment]::GetEnvironmentVariable('DDSKK_HOST_POLICY_'+$switch))}"
     },
     {
@@ -7912,11 +7913,11 @@
       "declaration": "p.wait(timeout=10)"
     },
     {
-      "source": "windows/test-host/host-policy-s4.py:163",
+      "source": "windows/test-host/host-policy-s4.py:164",
       "declaration": "def evidence(predicate, timeout):"
     },
     {
-      "source": "windows/test-host/host-policy-s4.py:174",
+      "source": "windows/test-host/host-policy-s4.py:175",
       "declaration": "s3.until(check, timeout)"
     },
     {
@@ -7942,6 +7943,22 @@
     {
       "source": "windows/test-host/host-policy.py:104",
       "declaration": "until(lambda: log(h).count('policy-timeout-discard') > timeout_count, 2)"
+    },
+    {
+      "source": "windows/test-host/host-test-process-guard.py:77",
+      "declaration": "if member.value and api('WaitForSingleObject', W.DWORD, W.HANDLE,"
+    },
+    {
+      "source": "windows/test-host/host-test-process-guard.py:105",
+      "declaration": "deadline = time.monotonic() + 5"
+    },
+    {
+      "source": "windows/test-host/host-test-process-guard.py:106",
+      "declaration": "while self.members() and time.monotonic() < deadline:"
+    },
+    {
+      "source": "windows/test-host/host-test-process-guard.py:135",
+      "declaration": "process.wait(timeout=10)"
     },
     {
       "source": "windows/test-host/host_policy_unit.cpp:61",
@@ -8382,6 +8399,22 @@
     {
       "source": "windows/test-host/test-host-policy-callbacks.ps1:33",
       "declaration": "# CreateFile/ReadFile/WriteFile/WaitForSingleObject/GetOverlappedResult:"
+    },
+    {
+      "source": "windows/test-host/test-host-process-ownership.py:41",
+      "declaration": "deadline = time.monotonic() + 10"
+    },
+    {
+      "source": "windows/test-host/test-host-process-ownership.py:42",
+      "declaration": "while not pidfile.exists() and time.monotonic() < deadline:"
+    },
+    {
+      "source": "windows/test-host/test-host-process-ownership.py:48",
+      "declaration": "parent.wait(timeout=10)"
+    },
+    {
+      "source": "windows/test-host/test-host-process-ownership.py:73",
+      "declaration": "outside.wait(timeout=10)"
     },
     {
       "source": "windows/test-host/test-hot-swap.ps1:22",

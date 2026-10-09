@@ -33,21 +33,13 @@ try {
       '--tsf-host',(Join-Path $bin 'tsf-host.exe'),'--engine-host',(Join-Path $bin 'ddskk-engine-host.exe'),
       '--runtime',$Runtime,'--artifacts',(Join-Path $run $caseDirectory),'--case','emacs',
       '--cold-load',"$ColdLoadSleepSec",'--repository',$root)
-    $before=@(Get-Process nelisp,ddskk-engine-host,tsf-host -ErrorAction SilentlyContinue | ForEach-Object Id)
     $log=Join-Path $run ($caseDirectory+'.log')
     Write-Output "CASE=$case ITERATION=$iteration PAUSE_KIND=$PauseKind SHADOW=$env:DDSKK_HOST_POLICY_SHADOW"
     foreach($switch in $switches){Write-Output ('env: DDSKK_HOST_POLICY_'+$switch+'='+[Environment]::GetEnvironmentVariable('DDSKK_HOST_POLICY_'+$switch))}
     Write-Output ('cmd: python '+($arguments -join ' '))
-    & python @arguments *> $log
+    & python (Join-Path $PSScriptRoot 'host-test-process-guard.py') run --root $root -- python @arguments *> $log
     $code=$LASTEXITCODE
     Get-Content -LiteralPath $log -Tail 4
-    $remaining=@(Get-Process nelisp,ddskk-engine-host,tsf-host -ErrorAction SilentlyContinue | Where-Object {$before -notcontains $_.Id})
-    if($remaining.Count){
-      $attribution=& python (Join-Path $PSScriptRoot 'host-test-process-guard.py') --root $root @($remaining.Id)
-      if($LASTEXITCODE -ne 0){throw 'Process attribution failed'}
-      $owned=$attribution | ConvertFrom-Json
-      if($owned.remaining.Count){throw "Refuse next stack: owned/unknown IME processes remain ($($owned.remaining -join ','))"}
-    }
     $text=Get-Content -LiteralPath $log -Raw
     $status=if($code -eq 0){'PASS'}elseif($text -match 'registry key.*denied|UnauthorizedAccessException'){'BLOCKED'}else{'FAIL'}
     $trace=@(Get-ChildItem -LiteralPath (Join-Path $run $caseDirectory) -Filter host.log -Recurse -File |

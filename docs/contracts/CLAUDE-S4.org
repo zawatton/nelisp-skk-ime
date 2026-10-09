@@ -336,3 +336,73 @@ inherited pause/stall controls and supplies this build's tsf-host.exe. Return
 results.json and full failing tsf.stdout.log/DDSKK/dll-debug.log/host.stderr.log,
 especially the KEYSTATE token=CTRLG boundary rows. No evidence is discarded
 if some repetitions pass and others fail.
+
+* Recovery-4 and EndToEnd-4 follow-up (EH4, 2026-10-09)
+
+Claude's SHADOW 3/3 and OFF 3/3 repetition passes supersede the earlier
+single SHADOW failure: that failure was a flake; no production shadow fix
+was needed or made. Current work addresses the following serial gates only.
+
+Recovery-4's matrix has 49 passing cases, then fails
+ack-before / policy / crash in eh2-a86688070c7f42f9b7e529dc9f3c4378.
+Its received ACK is 4a0300f825f44dbf89a2ad041eab3c18.1 revision 1.
+The saved checkpoint contains exactly one local-ack row with that origin,
+operation 1, revision 1 and the expected candidate. This does not show ID
+renumbering/reordering. The old failure records neither first nor second
+replay reply, so it cannot distinguish a changed ACK from an ERR/non-ACK
+response. The original exact response comparison includes the immutable
+per-origin revision; it is appropriate for this one-operation fixture.
+
+Unchanged focused reproduction: PASS, one case, zero acknowledged-ID loss.
+With additional evidence, ack-before/policy/crash passes again, with both
+replay responses byte-identical to the original ACK. The final guarded run
+passes ack-before/policy/crash and ack-written/policy/crash, cases=2/loss=0;
+all cleanup reports have leftovers=[]. The earlier guarded one-case run's
+stdout was not forwarded by the initial launcher; its s4-case.json records
+the accepted/replay ACKs, but it is not presented as a captured gate tail.
+The launcher stdout/stderr forwarding is corrected and regression-tested.
+
+The matrix now records an ID replay phase, both replay responses on success
+or failure, and their actual values in the assertion. It retains exact
+replay equality and additionally requires equality to the original accepted
+ACK (including revision), preserving the one-row durable identity check.
+No thresholds/ID assertions were relaxed. No production replay bug has been
+reproduced or repaired; the original mismatch remains unclassified without
+its missing reply values. A full 63-case serial matrix is still required.
+
+EndToEnd-4 stops after two passing local-fallback cases on global new named
+PIDs 36980/38016. Their old executable/ancestry evidence was not saved, so
+they cannot now be classified as test or other-session processes. The old
+guard inferred ownership from name/PID differences and treated unknowns as
+ours. That inference is removed from serial gates. Each command is launched
+suspended into a private kill-on-close job, then resumed; only this command's
+positively owned descendants can be counted or terminated. Other sessions'
+live IME, Anvil and M365 processes are never members. Surviving owned IME
+processes fail strict gates; the same job is closed/reaped before returning.
+
+test-local-fallback now owns each run-harness invocation in a nested private
+job and explicitly closes it after that case. This covers DLL-spawned hosts
+after KILLHOST, unlike the harness's original-host-only child snapshot.
+Case cleanup does not bypass behavior assertions or callback thresholds.
+The launcher cleans its job on exceptions too, preserves exit codes and
+forwards stdout/stderr. A 1 s teardown grace permits the command's conhost
+to exit; this is outside every callback/publication timing measurement.
+
+Ownership controls: 12 PASS, including exclusion of an unrelated running
+process, orphan ownership/reaping, strict leak rejection, cleanup mode,
+clean-command acceptance, failure-code preservation and stdout/stderr.
+The controls run in S3 Boundary and S4 Equivalence. Local fallback is still
+blocked here at private HKCU creation before any host starts; its wrapper
+reports remaining=[]/leftovers=[]. No actual post-change fallback PASS is
+claimed. Full commands, tails/counts and file:line anchors are in
+build/w/EH4-recovery4-validation.md. All changes remain unstaged.
+
+Coordinator commands, sequential only (EH4_RUNTIME is the supplied runtime):
+#+begin_src powershell
+python windows/test-host/test-host-process-ownership.py --build-dir build/w
+python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/test-local-fallback.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ColdLoadSleepSec 45
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -MatrixWorkers 1 -Stage Recovery
+pwsh -NoProfile -File windows/test-host/run-engine-host-s4.ps1 -Runtime $env:EH4_RUNTIME -BuildDir build/w -ControlBuildDir build/policy-control -ColdLoadSleepSec 45 -Stage EndToEnd -LargeDictionary $env:EH4_LARGE_DICTIONARY
+#+end_src
+Return the new s4-failure.json if replay is red: its first/second responses
+and accepted ACK are required to choose a causal production correction.

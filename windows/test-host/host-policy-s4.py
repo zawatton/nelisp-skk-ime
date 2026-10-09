@@ -157,6 +157,7 @@ def matrix_case(args, point, target, action):
     secondary = None
     resumed = False
     captured_ids = []
+    replay_replies = []
     prepared = threading.Event()
     phase = ['startup']
     started = time.monotonic()
@@ -256,21 +257,30 @@ def matrix_case(args, point, target, action):
             if accepted:
                 assert f';; local-ack {op[:-2]} 1 ' in stored, 'acknowledged local ID lost'
                 assert 'かな /仮名/' in stored, 'acknowledged candidate lost'
+            phase[0] = 'ID replay'
             first = s3.request(h, f'LOCAL LEARN {op} 00304b00306a 004eee00540d'.encode())
+            replay_replies.append(first.decode(errors='replace'))
             second = s3.request(h, f'LOCAL LEARN {op} 00304b00306a 004eee00540d'.encode())
-            assert first == second and first.startswith(f'ACK {op} '.encode()), 'ID replay changed'
+            replay_replies.append(second.decode(errors='replace'))
+            assert first == second and first.startswith(f'ACK {op} '.encode()), \
+                f'ID replay changed: accepted={accepted} first={first!r} second={second!r}'
+            if accepted:
+                assert first.decode() == accepted[-1], \
+                    f'accepted ID replay changed: accepted={accepted} replay={replay_replies}'
             recovered = (h.run / 'user.jisyo').read_text('utf-8')
             assert recovered.count(f';; local-ack {op[:-2]} 1 ') == 1, 'duplicate ID row'
         result = dict(point=point, target=target, action=action, accepted=accepted,
                       provider_IDs=captured_ids,
-                      interrupted=errors, acknowledged_ID_loss=0, artifacts=str(h.run))
+                      interrupted=errors, replay_replies=replay_replies,
+                      acknowledged_ID_loss=0, artifacts=str(h.run))
         (h.run / 's4-case.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
         print('PASS S4 matrix ' + json.dumps(result), flush=True)
         return result
     except Exception as error:
         failure = dict(point=point, target=target, action=action, phase=phase[0],
                        error=str(error), interrupted=errors, replies=[r.decode() for r in replies],
-                       prepared=prepared.is_set(), artifacts=str(h.run))
+                       prepared=prepared.is_set(), replay_replies=replay_replies,
+                       artifacts=str(h.run))
         (h.run / 's4-failure.json').write_text(json.dumps(failure, indent=2), encoding='utf-8')
         print('FAIL S4 matrix evidence ' + json.dumps(failure), flush=True)
         raise

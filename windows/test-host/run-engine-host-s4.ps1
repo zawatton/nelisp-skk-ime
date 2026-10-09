@@ -17,21 +17,10 @@ $names=@('DDSKK_HOST_POLICY_SOURCES','DDSKK_HOST_POLICY_CACHE','DDSKK_HOST_POLIC
   'DDSKK_HOST_POLICY_SHADOW','HOME','NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS')
 $saved=@{};foreach($name in $names){$saved[$name]=[Environment]::GetEnvironmentVariable($name)}
 function Gate([string]$name,[string]$exe,[string[]]$arguments) {
-  $before=@(Get-Process nelisp,ddskk-engine-host,tsf-host -ErrorAction SilentlyContinue | ForEach-Object Id)
   $log=Join-Path $run ("$attempts-$name.log");$script:attempts++
   Write-Output ("cmd: $exe "+($arguments -join ' '))
-  & $exe @arguments *> $log
+  & python (Join-Path $PSScriptRoot 'host-test-process-guard.py') run --root $root -- $exe @arguments *> $log
   $code=$LASTEXITCODE;Get-Content -LiteralPath $log -Tail 8
-  $remaining=@(Get-Process nelisp,ddskk-engine-host,tsf-host -ErrorAction SilentlyContinue |
-    Where-Object {$before -notcontains $_.Id})
-  if($remaining.Count){
-    $attribution=& python (Join-Path $PSScriptRoot 'host-test-process-guard.py') --root $root @($remaining.Id)
-    if($LASTEXITCODE -ne 0){throw "Process attribution failed after $name"}
-    $owned=$attribution | ConvertFrom-Json
-    if($owned.external.Count){Write-Output "GUARD unrelated processes left untouched: $($owned.external -join ',')"}
-    $remaining=@($remaining | Where-Object {$owned.remaining -contains $_.Id})
-  }
-  if($remaining.Count){throw "Refuse next stack: new IME processes remain after $name ($($remaining.Id -join ','))"}
   if($code -ne 0){
     $failure="FAIL $name exit=$code log=$log"
     if(-not $ContinueOnFailure){throw $failure}
@@ -54,6 +43,7 @@ try {
   $env:DDSKK_HOST_POLICY_SHADOW='0'
   Gate 'negative-controls' 'python' (@((Join-Path $PSScriptRoot 'host-policy-s4.py'),'controls')+$common)
   if($Stage -eq 'Equivalence') {
+    Gate 'process-ownership-controls' 'python' @((Join-Path $PSScriptRoot 'test-host-process-ownership.py'),'--build-dir',$BuildDir)
     Gate 'control-config' 'cmake' @('-S',(Join-Path $PSScriptRoot 's3'),'-B',(Join-Path $root $ControlBuildDir),'-G','Visual Studio 17 2022','-A','x64')
     Gate 'control-build' 'cmake' @('--build',(Join-Path $root $ControlBuildDir),'--config','Release')
     Gate 'authority-unit' (Join-Path $root "$ControlBuildDir/Release/host-policy-unit.exe") @()
@@ -81,7 +71,7 @@ try {
     $env:NATIVEIME_TEST_LOCAL_PUBLICATION_STALL_MS='1500'
     $log=Join-Path $run 'publication-negative.log'
     Write-Output 'cmd (expected timing failure): host-policy-s4.py publication; private publication stall=1500 ms'
-    & python (Join-Path $PSScriptRoot 'host-policy-s4.py') publication @common *> $log
+    & python (Join-Path $PSScriptRoot 'host-test-process-guard.py') run --root $root -- python (Join-Path $PSScriptRoot 'host-policy-s4.py') publication @common *> $log
     $code=$LASTEXITCODE
     $output=Get-Content -LiteralPath $log -Raw
     $rejection=($output -split "`n" | Where-Object {$_ -match '^FAIL S4 publication .*"samples": 21'} | Select-Object -Last 1)
@@ -118,7 +108,7 @@ try {
       '-Runtime',$Runtime,'-BuildDir',$BuildDir,'-ColdLoadSleepSec',"$ColdLoadSleepSec")
     Gate 'callback-io' 'pwsh' $callback
     $log=Join-Path $run 'callback-negative.log'
-    & pwsh @callback -NegativeControl *> $log
+    & python (Join-Path $PSScriptRoot 'host-test-process-guard.py') run --root $root -- pwsh @callback -NegativeControl *> $log
     $code=$LASTEXITCODE;Get-Content -LiteralPath $log -Tail 8
     if($code -eq 0 -or (Get-Content -LiteralPath $log -Raw) -notmatch 'FAIL S4 callback pipe_io=\d+ blocking_waits=[1-9]') {
       $failure="Synchronous callback wait control was not rejected by the probe: $log"

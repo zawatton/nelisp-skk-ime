@@ -13,22 +13,11 @@ $checks=0
 $attempts=0
 $failures=@()
 function Gate([string]$name,[string]$exe,[string[]]$arguments) {
-  $before=@(Get-Process nelisp,ddskk-engine-host,tsf-host -ErrorAction SilentlyContinue | ForEach-Object Id)
   $log=Join-Path $run ("$attempts-$name.log");$script:attempts++
   Write-Output ("cmd: $exe "+($arguments -join ' '))
-  & $exe @arguments *> $log
+  & python (Join-Path $PSScriptRoot 'host-test-process-guard.py') run --root $root -- $exe @arguments *> $log
   $code=$LASTEXITCODE
   Get-Content -LiteralPath $log -Tail 8
-  $remaining=@(Get-Process nelisp,ddskk-engine-host,tsf-host -ErrorAction SilentlyContinue |
-    Where-Object {$before -notcontains $_.Id})
-  if($remaining.Count){
-    $attribution=& python (Join-Path $PSScriptRoot 'host-test-process-guard.py') --root $root @($remaining.Id)
-    if($LASTEXITCODE -ne 0){throw "Process attribution failed after $name"}
-    $owned=$attribution | ConvertFrom-Json
-    if($owned.external.Count){Write-Output "GUARD unrelated processes left untouched: $($owned.external -join ',')"}
-    $remaining=@($remaining | Where-Object {$owned.remaining -contains $_.Id})
-  }
-  if($remaining.Count){throw "Refuse next stack: new IME processes remain after $name ($($remaining.Id -join ','))"}
   if($code -ne 0){
     $failure="FAIL $name exit=$code log=$log"
     if(-not $ContinueOnFailure){throw $failure}
@@ -41,6 +30,7 @@ function ScriptGate([string]$name,[string[]]$arguments) {
 }
 $common=@('-Runtime',$Runtime,'-BuildDir',$BuildDir,'-ColdLoadSleepSec','45')
 if($Stage -eq 'Boundary') {
+  Gate 'process-ownership-controls' 'python' @((Join-Path $PSScriptRoot 'test-host-process-ownership.py'),'--build-dir',$BuildDir)
   Gate 'control-config' 'cmake' @('-S',(Join-Path $PSScriptRoot 's3'),'-B',(Join-Path $root $ControlBuildDir),'-G','Visual Studio 17 2022','-A','x64')
   Gate 'control-build' 'cmake' @('--build',(Join-Path $root $ControlBuildDir),'--config','Release')
   Gate 'policy-unit' (Join-Path $root "$ControlBuildDir/Release/host-policy-unit.exe") @()
@@ -50,7 +40,7 @@ if($Stage -eq 'Boundary') {
 } elseif($Stage -eq 'Isolation') {
   ScriptGate 'test-host-policy' $common
   $log=Join-Path $run 'negative-control.log'
-  & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'test-host-policy.ps1') @common -HostExecutable $control *> $log
+  & python (Join-Path $PSScriptRoot 'host-test-process-guard.py') run --root $root -- pwsh -NoProfile -File (Join-Path $PSScriptRoot 'test-host-policy.ps1') @common -HostExecutable $control *> $log
   $code=$LASTEXITCODE; Get-Content -LiteralPath $log -Tail 12
   $text=Get-Content -LiteralPath $log -Raw
   if($code -eq 0 -or $text -notmatch 'FAIL pause isolation cached_max_ms=([0-9.]+)' -or [double]$Matches[1] -le 50 -or $text -notmatch 'leftovers=\[\]') {

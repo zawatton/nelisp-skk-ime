@@ -553,6 +553,25 @@ Synthetic percentile/ID negative controls print CONTROL expected rejection;
 real positive gate failures continue to print FAIL. Publication bounds stay
 p99 <=500 ms and max <=1000 ms.
 
+Recovery4 fails at ack-before/policy/crash. Its sealed checkpoint contains
+the accepted origin's operation 1 exactly once, revision 1, and the expected
+candidate. The old failure omitted both replay responses, so it cannot prove
+renumbering or identify a non-ACK/storage response. The unchanged isolated
+case passes. The check retains exact replay equality and now also requires
+the replay ACK to equal the original accepted ACK; success/failure evidence
+includes both replies and a distinct ID replay phase. No production replay
+change or full-matrix acceptance is claimed without a reproduced mismatch.
+
+Serial gates now launch each command suspended into an anonymous kill-on-close
+job before resuming it. Ownership follows descendants, including DLL-spawned
+replacement hosts after KILLHOST, and never uses global process-name changes
+to infer ownership. Strict gates reject surviving owned IME processes after
+command teardown and close that same job before returning. Local fallback
+closes each harness case's job, covering replacement hosts absent from the
+original host's child snapshot. Other sessions' live IME/MCP processes are
+outside these jobs. Real ownership controls cover exclusion, orphan cleanup,
+leak rejection, command exit codes and stdout/stderr preservation.
+
 The inline cancellation diagnosis remains open: Claude's same-build native
 OFF control passes, and Claude reports main passes. This supersedes the
 earlier worker attribution to an independent core issue. The serial
@@ -578,6 +597,9 @@ repairing it. The serial helper's RepeatCount preserves separate artifacts.
 Three worker repeats remain blocked at private HKCU creation. Correcting the
 core control-routing/snapshot code would exceed EH4's windows/host scope;
 no such change or production shadow fix is claimed.
+
+Claude's subsequent SHADOW 3/3 and OFF 3/3 repetition passes supersede that
+single failure: it was a flake, with no production shadow fix required.
 
 The unchanged-tree source verifier passed 140 responses/8 disk files/239
 sources. An in-memory alternate-EOL reproduction then failed all 239 raw source

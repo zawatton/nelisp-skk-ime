@@ -1,13 +1,138 @@
-"""Read-only attribution for new IME-named processes after a serial gate.
+"""Own each serial command and its descendants before any child can run.
 
-Uninspectable processes remain failures. Only a verified executable or loaded
-Elisp script outside this worktree is excluded; no process is terminated.
+The anonymous kill-on-close job cannot include live IME/MCP/other sessions.
+Gate failures close that same job; no process-name or stale-PID kill is used.
 """
 import argparse
 import ctypes as C
 from ctypes import wintypes as W
 import json
 from pathlib import Path
+import subprocess
+import sys
+import time
+
+IME_NAMES = {'nelisp.exe', 'ddskk-engine-host.exe', 'tsf-host.exe', 'input-rules-host.exe',
+             'host-policy-sync-control.exe'}
+
+
+def api(name, result, *arguments):
+    function = getattr(C.WinDLL('kernel32', use_last_error=True), name)
+    function.restype, function.argtypes = result, arguments
+    return function
+
+
+class CommandJob:
+    def __init__(self):
+        self.handle = api('CreateJobObjectW', W.HANDLE, W.LPVOID, W.LPCWSTR)(None, None)
+        if not self.handle:
+            raise C.WinError(C.get_last_error())
+        info = C.create_string_buffer(144)  # x64 EXTENDED_LIMIT_INFORMATION
+        C.c_uint32.from_buffer(info, 16).value = 0x2000  # KILL_ON_JOB_CLOSE
+        if not api('SetInformationJobObject', W.BOOL, W.HANDLE, C.c_int, W.LPVOID, W.DWORD)(
+                self.handle, 9, info, len(info)):
+            self.close()
+            raise C.WinError(C.get_last_error())
+
+    def spawn(self, arguments):
+        # No child runs (or can respawn) until ownership has been established.
+        process = subprocess.Popen(arguments, stdout=sys.stdout, stderr=sys.stderr,
+                                   creationflags=0x08000004)
+        try:
+            if not api('AssignProcessToJobObject', W.BOOL, W.HANDLE, W.HANDLE)(
+                    self.handle, int(process._handle)):
+                raise C.WinError(C.get_last_error())
+            resume = C.WinDLL('ntdll').NtResumeProcess
+            resume.argtypes, resume.restype = [W.HANDLE], W.LONG
+            if resume(int(process._handle)) != 0:
+                raise RuntimeError('owned command resume failed')
+            return process
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+
+    def members(self):
+        capacity = 64
+        while True:
+            data = C.create_string_buffer(8 + capacity * C.sizeof(C.c_size_t))
+            if api('QueryInformationJobObject', W.BOOL, W.HANDLE, C.c_int,
+                   W.LPVOID, W.DWORD, W.LPVOID)(self.handle, 3, data, len(data), None):
+                count = C.c_uint32.from_buffer(data, 4).value
+                alive = []
+                for pid in (C.c_size_t * count).from_buffer(data, 8):
+                    process = api('OpenProcess', W.HANDLE, W.DWORD, W.BOOL, W.DWORD)(
+                        0x101000, False, pid)
+                    if not process:
+                        if C.get_last_error() != 87:  # exited, no longer in PID table
+                            alive.append(pid)
+                        continue
+                    try:
+                        member = W.BOOL()
+                        if not api('IsProcessInJob', W.BOOL, W.HANDLE, W.HANDLE,
+                                   C.POINTER(W.BOOL))(process, self.handle, C.byref(member)):
+                            raise C.WinError(C.get_last_error())
+                        # The job list may retain an exited process while a
+                        # parent still holds its handle. It is not a leftover.
+                        if member.value and api('WaitForSingleObject', W.DWORD, W.HANDLE,
+                                                W.DWORD)(process, 0) == 258:
+                            alive.append(pid)
+                    finally:
+                        api('CloseHandle', W.BOOL, W.HANDLE)(process)
+                return alive
+            if C.get_last_error() != 234:
+                raise C.WinError(C.get_last_error())
+            capacity *= 2
+
+    def cleanup(self, names=None):
+        # Windows can retain this command's conhost briefly after the runner
+        # exits. This is teardown only, outside every callback/timing gate.
+        settle = time.monotonic() + 1
+        while self.members() and time.monotonic() < settle:
+            time.sleep(.01)
+        remaining = self.members()
+        guarded = []
+        for pid in remaining:
+            try:
+                if names is None or Path(command_line(pid)[0]).name.lower() in names:
+                    guarded.append(pid)
+            except Exception:
+                # This PID is positively job-owned, never an unrelated user
+                # process. Always close the job even if image inspection fails.
+                guarded.append(pid)
+        if remaining and not api('TerminateJobObject', W.BOOL, W.HANDLE, W.UINT)(self.handle, 1):
+            raise C.WinError(C.get_last_error())
+        deadline = time.monotonic() + 5
+        while self.members() and time.monotonic() < deadline:
+            time.sleep(.01)
+        leftovers = self.members()
+        print('GUARD owned-command cleanup ' + json.dumps(
+            dict(remaining=remaining, guarded=guarded, terminated=remaining, leftovers=leftovers)), flush=True)
+        if leftovers:
+            raise RuntimeError(f'owned command processes did not exit: {leftovers}')
+        return guarded
+
+    def close(self):
+        if self.handle:
+            api('CloseHandle', W.BOOL, W.HANDLE)(self.handle)
+            self.handle = None
+
+
+def run_command(arguments, cleanup, names=IME_NAMES):
+    job = CommandJob()
+    process = None
+    try:
+        process = job.spawn(arguments)
+        code = process.wait()
+        remaining = job.cleanup(names)
+        if remaining and not cleanup:
+            print(f'Refuse next stack: command-owned processes remained: {remaining}', flush=True)
+            return code or 1
+        return code
+    finally:
+        job.close()
+        if process is not None:
+            process.wait(timeout=10)
 
 
 def external_script(arguments, root):
@@ -59,6 +184,16 @@ def command_line(pid):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == 'run':
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--root', type=Path, required=True)
+        parser.add_argument('--cleanup', action='store_true')
+        parser.add_argument('command', nargs=argparse.REMAINDER)
+        args = parser.parse_args(sys.argv[2:])
+        command = args.command[1:] if args.command[:1] == ['--'] else args.command
+        if not command or not args.root.resolve().is_dir():
+            parser.error('existing worktree root and command required')
+        sys.exit(run_command(command, args.cleanup))
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('pids', nargs='*', type=int)
@@ -69,10 +204,14 @@ def main():
         try:
             argv = command_line(pid)
             executable = Path(argv[0]).resolve()
-            unrelated = (executable.name.lower() in ('ddskk-engine-host.exe', 'tsf-host.exe') and
-                         not executable.is_relative_to(root)) or external_script(argv, root)
+            # Legacy read-only inspection is positive executable attribution,
+            # never "unknown means ours". Serial gates use job ownership above,
+            # which also covers orphaned children and excludes other sessions.
+            ours = executable.name.lower() in ('ddskk-engine-host.exe', 'tsf-host.exe') and \
+                executable.is_relative_to(root / 'build')
+            unrelated = not ours
         except Exception:
-            unrelated = False
+            unrelated = True
         (external if unrelated else remaining).append(pid)
     print(json.dumps(dict(remaining=remaining, external=external)))
 
