@@ -21,6 +21,12 @@ if($resources -notmatch 'host-windows-s6.py' -or $resources -notmatch "'--sample
   throw 'Three-launch policy resource gate is missing'
 }
 $baseline=StageBody 'NativeBaseline'
+if($ast.Extent.Text -match 'INCOMPLETE S6 Production'){throw 'Obsolete serial-only Production guard remains'}
+if($ast.Extent.Text -notmatch "ScriptGate 'test-concurrent-pressure'" -or
+   $ast.Extent.Text -notmatch 'if\(-not \$ConcurrentPressureOnly\)' -or
+   $ast.Extent.Text -notmatch 'PASS concurrent gate only'){
+  throw 'Missing mandatory concurrent gate / isolated-only receipt distinction'
+}
 if($baseline -match 'run-engine-host-s[34].ps1|host-policy-s4.py'){throw 'Baseline forces policy ON through an aggregate'}
 if($ast.Extent.Text -notmatch '\$policyEnabled=\$Stage -in @\(''Resources'',''Production''\)'){
   throw 'Native baseline/Qualification policy OFF selection changed'

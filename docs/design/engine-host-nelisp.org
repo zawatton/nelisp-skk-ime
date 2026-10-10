@@ -802,8 +802,14 @@ The gate thresholds, fixture variants and recovery assertions are unchanged.
 S6.3 remains separate: Claude reported the serial S5 cycle (15 gates) and S4
 EndToEnd pressure set (7 gates, UTF-8 L) PASS. Serial pressure alone does not
 prove simultaneous GC/network/storage pressure across the multi-client bundle
-cycle; the existing Production INCOMPLETE guard is retained. No live acceptance
-or aggregate S6 completion is inferred from S6.1 success.
+cycle. Production now requires =test-concurrent-pressure= after those serial
+gates; its observed collection/fault intervals must overlap in every lifecycle
+phase. =-ConcurrentPressureOnly= reuses Claude's retained serial evidence and
+reports only the concurrent gate result, never a new aggregate Production PASS.
+The worker ran stack-free controls/audits only; actual S6.3 acceptance remains
+unexecuted here. Design and receipt requirements are in
+[[file:../contracts/S6-concurrent-pressure.org][S6-concurrent-pressure.org]]. No live acceptance or aggregate S6 completion
+is inferred from S6.1 success.
 
 Exact serial build, S1.5, Qualification and Resources commands, expected
 known-red handling and receipt requirements are in

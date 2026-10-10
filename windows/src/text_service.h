@@ -151,6 +151,10 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   HRESULT AddLangBarButton();
   void RemoveLangBarButton();
   void LoadSettings();
+  void QueueProviderSettings(const std::string& engine);
+  bool ApplyProviderSettings(DWORD timeout_ms = 5000); // provider mutex, worker only
+  bool WaitForProviderSettings(ULONGLONG deadline); // same mutex, worker only
+  bool TryLocalConversionFallback();
   void LoadApplicationSettings();
   void QueuePublishedState(const ddskk::EngineState* state);
   void FlushPublishedState();
@@ -277,12 +281,15 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   ddskk::AutoPairCaret auto_pair_caret_ = ddskk::AutoPairCaret::Selection;
   HWND provider_window_ = nullptr;
   std::mutex provider_engine_mutex_;
+  std::atomic<std::shared_ptr<const std::string>> provider_settings_;
+  std::shared_ptr<const std::string> applied_provider_settings_; // worker mutex
   std::atomic<uint64_t> provider_sequence_{0};
   std::atomic<uint64_t> preparation_sequence_{0};
   std::atomic<bool> provider_pending_{false};
   // Retain a failed lookup's identity until cancellation or a new request,
   // so Ctrl+G restores its reading even after the worker has timed out.
   bool provider_conversion_active_ = false;
+  bool provider_conversion_retry_ = false;
   void TraceOkuriCandidate(bool local);
   LONGLONG okuri_conversion_started_qpc_ = 0;
   uint64_t okuri_conversion_sequence_ = 0;

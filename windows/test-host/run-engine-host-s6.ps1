@@ -3,8 +3,10 @@ param([Parameter(Mandatory)][string]$Runtime,
       [ValidateSet('Qualification','Resources','Production','Os1','NativeBaseline')][string]$Stage='Qualification',
       [string]$BuildDir='build/w', [string]$LargeDictionary='', [string]$LargeDictionaryUtf8='',
       [int]$ColdLoadSleepSec=45, [ValidateRange(1,1)][int]$MatrixWorkers=1,
-      [switch]$ValidateParametersOnly)
+      [switch]$ValidateParametersOnly, [switch]$ConcurrentPressureOnly,
+      [string]$SubstrateSource='')
 $ErrorActionPreference='Stop'
+if($ConcurrentPressureOnly -and $Stage -ne 'Production'){throw '-ConcurrentPressureOnly requires -Stage Production'}
 $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $run=Join-Path $root ($BuildDir+'/s6-'+[guid]::NewGuid().ToString('N'))
 if (-not [IO.Path]::GetFullPath($run).StartsWith((Join-Path $root 'build')+[IO.Path]::DirectorySeparatorChar)) {
@@ -142,6 +144,7 @@ try {
       SelectLargeDictionary
       $qualifiedDictionary=$dictionary.utf8.path
     }
+    if(-not $ConcurrentPressureOnly){
     ScriptGate 'test-private-host-bundle' @('-Stage','Recovery')
     Gate 'production-clients' 'pwsh' @('-NoProfile','-File',(Join-Path $PSScriptRoot 'test-private-host-bundle.ps1'),
       '-Runtime',$Runtime,'-BuildDir',$BuildDir,'-Stage','EndToEnd','-ColdLoadSleepSec',"$ColdLoadSleepSec",
@@ -154,10 +157,14 @@ try {
     Gate 'val1-durability' 'pwsh' @('-NoProfile','-File',(Join-Path $PSScriptRoot 'run-engine-host-s4.ps1'),
       '-Runtime',$Runtime,'-BuildDir',$BuildDir,'-Stage','Recovery',
       '-ColdLoadSleepSec',"$ColdLoadSleepSec",'-MatrixWorkers','1')
-    if(-not $ValidateParametersOnly){throw 'INCOMPLETE S6 Production: serial pressure gates are not simultaneous GC/network/storage pressure across the bundle cycle; see S6 decision section'}
+    }
+    $concurrentExtra=@('-LargeDictionary',$qualifiedDictionary)
+    if($SubstrateSource){$concurrentExtra+=@('-SubstrateSource',$SubstrateSource)}
+    ScriptGate 'test-concurrent-pressure' $concurrentExtra
   }
-  $stageStatus=$(if($ValidateParametersOnly){'parameter audit only'}else{'PASS'})
+  $stageStatus=$(if($ValidateParametersOnly){'parameter audit only'}elseif($ConcurrentPressureOnly){'PASS concurrent gate only'}else{'PASS'})
   if($ValidateParametersOnly){Write-Output "PASS S6 $Stage parameter audit gates=$($results.Count) stacks=0"}
+  elseif($ConcurrentPressureOnly){Write-Output "PASS S6 concurrent gate only gates=$($results.Count) serial_evidence=reused artifacts=$run"}
   else {Write-Output "PASS S6 stage=$Stage gates=$($results.Count) artifacts=$run"}
 } catch {
   $stageStatus='FAIL'
@@ -165,6 +172,8 @@ try {
 } finally {
   foreach($variable in $saved.Keys){[Environment]::SetEnvironmentVariable($variable,$saved[$variable])}
   @{stage=$Stage;status=$stageStatus;runtime_sha256=(Get-FileHash -LiteralPath $Runtime).Hash;
-    policy_enabled=$policyEnabled;dictionary=$dictionary;gates=$results;os1_coverage=$coverage} |
+    policy_enabled=$policyEnabled;dictionary=$dictionary;gates=$results;os1_coverage=$coverage;
+    concurrent_pressure_only=[bool]$ConcurrentPressureOnly;serial_gates_executed=($Stage -eq 'Production' -and -not $ConcurrentPressureOnly -and -not $ValidateParametersOnly);
+    serial_evidence_reused=[bool]$ConcurrentPressureOnly} |
     ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $run 'evidence.json') -Encoding utf8
 }
