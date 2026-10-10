@@ -315,6 +315,7 @@ struct TextService::ProviderResult {
   bool apply_state = true;
   uint64_t key_sequence = 0;
   bool preview_only = false;
+  bool settings_pending = false;
 };
 
 TextService::TextService() {
@@ -488,7 +489,7 @@ void TextService::PrepareProviderReading() {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
         // Coalesce typing bursts. Conversion/focus cancellation invalidates
         // queued preparation before it can modify the live context.
-        if (preparation_sequence_.load() == sequence)
+        if (preparation_sequence_.load() == sequence && ApplyProviderSettings())
           engine_.PrepareKeys(keys, kConversionTimeoutMs);
       }
       Release();
@@ -534,7 +535,7 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
             std::printf("PROVIDER_PREVIEW_WORKER delay_ms=%lu\n", ms);
             Sleep(ms); // Private negative control, never on the TSF key callback.
           }
-          preview = engine_.PreviewCandidates(preview_reading, 8);
+          if (ApplyProviderSettings()) preview = engine_.PreviewCandidates(preview_reading, 8);
         }
         TracePhase(L"provider-preview-end", key_sequence, L"engine-worker");
         if (preview && !preview->empty()) {
@@ -559,10 +560,24 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
       DebugLog(L"Provider convert begin seq=%llu keys=%zu",
                static_cast<unsigned long long>(sequence), keys.size());
       std::optional<ddskk::EngineState> state;
+      bool settings_ready = false;
+      bool selection_waited = false;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
-        state = registration ? engine_.RegisterLocal(keys, kModeReplayTimeoutMs)
-                             : engine_.ConvertKeys(keys, kConversionTimeoutMs);
+        selection_waited = provider_settings_.load() != applied_provider_settings_;
+        const ULONGLONG deadline = GetTickCount64() +
+            (registration ? kModeReplayTimeoutMs : kConversionTimeoutMs);
+        // An unavailable selector is a transient worker condition, not an
+        // empty conversion reply. Retain this request while it reconnects.
+        settings_ready = WaitForProviderSettings(deadline);
+        if (settings_ready) {
+          const auto now = GetTickCount64();
+          if (now < deadline) {
+            const auto remaining = static_cast<DWORD>(deadline - now);
+            state = registration ? engine_.RegisterLocal(keys, remaining)
+                                 : engine_.ConvertKeys(keys, remaining);
+          } else settings_ready = false;
+        }
         for (size_t n = 0; n < skip && state && state->mode == L"candidate"; ++n)
           state = engine_.SendControl(ddskk::EngineControl::kConvert, kConversionTimeoutMs);
       }
@@ -578,8 +593,9 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
                     engine_.last_response().c_str());
         std::fflush(stdout);
       }
+      const bool settings_pending = !settings_ready || (selection_waited && !state);
       auto* result = new (std::nothrow) ProviderResult{this, sequence,
-                                                       std::move(state), true, key_sequence};
+                                                       std::move(state), true, key_sequence, false, settings_pending};
       if (result == nullptr ||
           !PostMessageW(destination, kProviderResultMessage, 0,
                         reinterpret_cast<LPARAM>(result))) {
@@ -645,8 +661,9 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
         // A new conversion resets the engine session itself. If it acquired
         // the mutex first, an old cleanup must not cancel that new episode.
-        if (apply_state ||
-            sequence == provider_sequence_.load(std::memory_order_acquire))
+        const bool settings_ready = (apply_state ||
+            sequence == provider_sequence_.load(std::memory_order_acquire)) && ApplyProviderSettings();
+        if (settings_ready)
           state = engine_.SendControl(control, kConversionTimeoutMs);
         if (test_failure_delay) {
           // Simulate a timed-out read after the engine accepted the control.
@@ -658,7 +675,7 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
                       static_cast<unsigned long long>(sequence), test_failure_delay);
           std::fflush(stdout);
         }
-        if (candidate && !reading.empty() && candidate->candidate_index >= 0 &&
+        if (settings_ready && candidate && !reading.empty() && candidate->candidate_index >= 0 &&
             static_cast<size_t>(candidate->candidate_index) < candidate->candidates.size() &&
             (control == ddskk::EngineControl::kConvert ||
              control == ddskk::EngineControl::kPrevious ||
@@ -778,7 +795,7 @@ bool TextService::BeginProviderKey(char32_t key, bool may_convert) {
       std::optional<ddskk::EngineState> state;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
-        state = engine_.SendKey(key, may_convert ? kConversionTimeoutMs
+        if (ApplyProviderSettings()) state = engine_.SendKey(key, may_convert ? kConversionTimeoutMs
                                                : kInteractiveTimeoutMs);
       }
       TracePhase(L"engine-lookup-end", key_sequence, L"engine", state ? S_OK : E_FAIL);
@@ -853,7 +870,7 @@ bool TextService::BeginProviderKeys(const std::u32string& keys, bool sync) {
                       static_cast<unsigned long long>(sequence), test_failure_delay);
           std::fflush(stdout);
         }
-        if (!test_drop_reply) {
+        if (!test_drop_reply && ApplyProviderSettings()) {
           state = sync ? engine_.SyncKeys(keys, kModeReplayTimeoutMs)
                        : engine_.SendKeys(keys, kConversionTimeoutMs);
         }
@@ -902,6 +919,7 @@ void TextService::ResolveLocalFallback() {
 }
 
 void TextService::CancelPendingProvider() {
+  provider_conversion_retry_ = false;
   confirmation_resume_posted_ = false;
   confirmation_state_.reset();
   if (provider_window_) KillTimer(provider_window_, 7);
@@ -1017,6 +1035,16 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   if (!result->state) {
     engine_roundtrip_failed_ = true;
     CloseCandidateUi();
+    if (result->settings_pending) {
+      // An unsent conversion must not replay queued Enter against a reading.
+      // Prefer the same certified native candidate path used by Space.
+      if (TryLocalConversionFallback()) ReplayDeferredProviderKeys();
+      else {
+        provider_conversion_retry_ = true;
+        std::printf("PROVIDER_SETTINGS pending=1 conversion_retained=1\n");
+      }
+      return;
+    }
     if (local_enabled_) ResolveLocalFallback();
     return;
   }
@@ -1173,7 +1201,7 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
 void TextService::ReplayDeferredProviderKeys() {
   if (confirmation_pending_ || confirmation_replay_) { ScheduleConfirmationReplay(); return; }
   while (!deferred_provider_keys_.empty() && active_context_ != nullptr &&
-         !provider_pending_.load(std::memory_order_acquire)) {
+         !provider_pending_.load(std::memory_order_acquire) && !provider_conversion_retry_) {
     const DeferredProviderKey key = deferred_provider_keys_.front();
     deferred_provider_keys_.pop_front();
     if (registration_mode_ ||
@@ -1548,6 +1576,7 @@ HRESULT TextService::Deactivate() {
     // A provider worker may still be finishing a cancelled lookup. Do not
     // close its pipe underneath it; this wait is confined to deactivation,
     // never to the keystroke path.
+    provider_settings_.store(nullptr);
     std::lock_guard<std::mutex> lock(provider_engine_mutex_);
     engine_.Disconnect();
   }
@@ -1894,7 +1923,7 @@ bool TextService::WouldClaimKey(WPARAM wparam, bool composing) const {
            wparam == VK_ESCAPE) && composing);
 }
 
-// Only claim printable keys while the out-of-process engine is reachable.
+// Key ownership is native; provider availability is resolved asynchronously.
 HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM lparam,
                                    BOOL* eaten) {
   TracePhase(L"key-test-receipt", key_sequence_ + 1, registration_mode_ ? L"registration" : L"key");
@@ -1926,8 +1955,8 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM lparam,
     return S_OK;
   }
   if (ctrl_j && !registration_mode_) {
-    *eaten = engine_.Connect(kInteractiveTimeoutMs);
-    debug_exit(-1, *eaten);
+    *eaten = TRUE;
+    debug_exit(-1, -1);
     return S_OK;
   }
   if (!kana_mode_) {
@@ -1957,19 +1986,10 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM lparam,
     debug_exit(1, -1);
     return S_OK;
   }
-  TracePhase(L"key-connect-start", key_sequence_ + 1, L"engine");
-  const bool connected = engine_.Connect(kInteractiveTimeoutMs);
-  TracePhase(L"key-connect-end", key_sequence_ + 1, L"engine");
-  if (!connected) {
-    // Leaking romaji into the document is strictly worse than swallowing a
-    // key for one round-trip while the host respawns: OnKeyDown swallows
-    // any key this function claimed but can't complete (see its "never
-    // leak a claimed key" failure paths), and the respawned host is
-    // reachable by the next keystroke.
-    EnsureEngineHost();
-  }
+  // Claiming is native. The provider worker owns availability/reconnect;
+  // probing here could wait behind a settings selection or a stale pipe.
   *eaten = TRUE;
-  debug_exit(1, connected ? 1 : 0);
+  debug_exit(1, -1);
   return S_OK;
 }
 
@@ -2401,10 +2421,9 @@ void TextService::LoadSettings() {
   deferred_provider_keys_.clear();
   debug_log_ = debug_log == 1;
   if (debug_log_ && provider_window_) SetTimer(provider_window_, 5, 100, nullptr);
-  // Activate runs on the application's UI thread.  Do not add a one-second
-  // startup stall when the shared engine is still cold; the background
-  // warm-up in Activate retries and selects the configured engine.
-  engine_.SelectEngine(engine_id_, 25);
+  // Registry reload also runs inside TSF callbacks. Publish the desired
+  // engine; pipe selection/reconnect belongs to the serialized provider worker.
+  QueueProviderSettings(engine_id_);
 
   // CorvusSKK documents a [1, 60000] ms range for its equivalent setting.
   if (indicator_ms < 1) indicator_ms = 1;
@@ -2425,16 +2444,94 @@ void TextService::LoadSettings() {
 
 void TextService::FollowSettings() {
   if (composition_ || engine_pending_ || registration_mode_ ||
-      provider_pending_.load() || provider_composition_active_ ||
-      realtime_frontend_.preedit()) return;
+      provider_pending_.load() || provider_composition_active_ || provider_conversion_retry_ ||
+      realtime_frontend_.preedit() || !deferred_provider_keys_.empty() ||
+      confirmation_pending_ || confirmation_replay_) return;
   if (!settings_watcher_.dirty.exchange(false)) return;
-  std::unique_lock<std::mutex> lock(provider_engine_mutex_, std::defer_lock);
-  if (local_enabled_) {
-    if (!lock.try_lock()) { settings_watcher_.dirty = true; return; }
-  } else lock.lock();
   LoadSettings();
-  engine_.MarkNeedsResync();
   MaybeShowModeIndicator(nullptr, nullptr);
+}
+
+void TextService::QueueProviderSettings(const std::string& engine) {
+  // A fresh identity is required even when the engine id is unchanged: a
+  // bundle/endpoint change invalidates the old connection too.
+  provider_settings_.store(std::make_shared<const std::string>(engine));
+  AddRef();
+  try {
+    std::thread([this] {
+      // Cover the measured 45-second cold load without delaying native input.
+      const ULONGLONG deadline = GetTickCount64() + 60000;
+      do {
+        bool applied;
+        {
+          std::lock_guard<std::mutex> lock(provider_engine_mutex_);
+          applied = ApplyProviderSettings(kInteractiveTimeoutMs);
+        }
+        if (applied) break;
+        Sleep(100); // Retry only on the provider worker; never delay a key.
+      } while (GetTickCount64() < deadline);
+      Release();
+    }).detach();
+  } catch (...) { Release(); }
+  // If scheduling fails, the next provider request applies the same snapshot.
+}
+
+bool TextService::ApplyProviderSettings(DWORD timeout_ms) {
+  for (;;) {
+    const auto desired = provider_settings_.load();
+    if (!desired || desired == applied_provider_settings_) return true;
+    // Never probe/write the stale pipe from a replaced host. Discard the old
+    // context before reconnecting; an engine selection is not a replayable key.
+    engine_.Disconnect();
+    engine_.MarkNeedsResync();
+    EnsureEngineHost();
+    if (!engine_.SelectEngine(*desired, timeout_ms)) return false;
+    engine_.MarkNeedsResync();
+    applied_provider_settings_ = desired;
+    if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
+      std::printf("PROVIDER_SETTINGS engine=%s applied=1\n", desired->c_str());
+      std::fflush(stdout);
+    }
+    // Another refresh may have arrived during IPC. Apply it before this worker
+    // consumes any keys, regardless of detached-thread scheduling order.
+    if (desired == provider_settings_.load()) return true;
+  }
+}
+
+bool TextService::WaitForProviderSettings(ULONGLONG deadline) {
+  for (;;) {
+    const auto started = GetTickCount64();
+    if (started >= deadline) break;
+    const auto remaining = static_cast<DWORD>(deadline - started);
+    if (ApplyProviderSettings(std::min<DWORD>(remaining, kInteractiveTimeoutMs)))
+      return GetTickCount64() < deadline;
+    const auto now = GetTickCount64();
+    if (now >= deadline) break;
+    Sleep(static_cast<DWORD>(std::min<ULONGLONG>(10, deadline - now)));
+  }
+  return false;
+}
+
+bool TextService::TryLocalConversionFallback() {
+  if (!local_enabled_ || !active_context_ || !realtime_frontend_.preedit()) return false;
+  const auto captured = local_store_.Capture();
+  if (!captured.available || !captured.index || !local_rule_snapshot_ ||
+      captured.index->Rules() != local_rule_snapshot_->Rules()) return false;
+  const auto reading = realtime_frontend_.preview_reading();
+  std::vector<std::wstring> pending;
+  for (const auto& item : captured.pending) if (item.key == reading) {
+    pending.erase(std::remove(pending.begin(), pending.end(), item.candidate), pending.end());
+    pending.insert(pending.begin(), item.candidate);
+  }
+  if (!local_conversion_.Begin(captured.index, reading, pending)) return false;
+  provider_conversion_active_ = false;
+  provider_conversion_retry_ = false;
+  provider_composition_active_ = false;
+  provider_candidate_state_.reset();
+  const HRESULT result = ApplyLocalState(active_context_, local_conversion_.State());
+  if (FAILED(result)) ScheduleLocalRetry();
+  std::printf("LOCAL_FALLBACK resolved=candidate pending=0\n");
+  return true;
 }
 
 void TextService::EnsureEngineHost() {
@@ -2862,13 +2959,20 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
   // must continue while it finishes; otherwise Enter can pass through
   // ahead of the letters held in the provider queue.
   if ((provider_pending_.load(std::memory_order_acquire) &&
-       !provider_cleanup_pending_) || okuri_handoff_failed_) {
+       !provider_cleanup_pending_) || okuri_handoff_failed_ || provider_conversion_retry_) {
     if (!registration_mode_ && (ctrl_g || wparam == VK_ESCAPE)) {
       // Cancellation is local and immediate. The detached lookup may still
       // finish, but its stale sequence can no longer edit the document.
       CancelPendingProvider();
       cancelled_provider = true;
     } else {
+      if (provider_conversion_retry_ && wparam == VK_SPACE) {
+        auto keys = realtime_frontend_.raw_keys();
+        if (realtime_frontend_.katakana()) keys.insert(keys.begin(), U'q');
+        if (BeginProviderConversion(keys)) provider_conversion_retry_ = false;
+        *eaten = TRUE; branch = L"provider-settings-retry";
+        debug_exit(*eaten); return S_OK;
+      }
       // Preserve every claimed key that arrives behind an asynchronous
       // provider request.  Mutating realtime_frontend_ here used to mix the
       // next word into the raw-key snapshot of the preceding conversion;
@@ -3125,8 +3229,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       if (state) state->mode = L"hiragana";
       else state = hiragana;
     } else {
-      state = engine_.SendControl(ddskk::EngineControl::kCancel,
-                                  kInteractiveTimeoutMs);
+      if (BeginProviderControl(ddskk::EngineControl::kCancel)) {
+        *eaten = TRUE;
+        debug_exit(*eaten);
+        return S_OK;
+      }
+      // Keep an idle Ctrl+J local even if the worker could not be scheduled.
+      state = realtime_frontend_.ToHiragana();
     }
     if (!state) {
       // OnTestKeyDown already claimed Ctrl+J; letting it fall through here

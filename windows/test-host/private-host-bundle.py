@@ -110,8 +110,11 @@ class Deployment:
         print('BUNDLE_DICTIONARY_FILES '+env['DDSKK_DICTIONARY_FILES'], flush=True)
         for switch in ('SOURCES', 'CACHE', 'RESTART', 'PUBLICATION', 'LEARNING'):
             env['DDSKK_HOST_POLICY_' + switch] = '1' if fields['mode'] == 'policy' else '0'
+        # An optional private pressure fixture supplies only this owned stack's environment.
+        env.update(getattr(self.args, 'pressure_env', {}))
+        stderr = self.root / (f'stderr-{self.count}.log' if getattr(self.args, 'concurrent_pressure', False) else 'stderr.log')
         self.host = self.job.spawn([str(bundle / 'ddskk-engine-host.exe'), str(self.args.runtime),
-                                   str(bundle / 'repository')], env, self.root / 'stderr.log')
+                                   str(bundle / 'repository')], env, stderr)
         if prewarm:
             self.fault('during-prewarm')
         time.sleep(self.args.cold_load_sleep_sec)
@@ -144,6 +147,11 @@ class Deployment:
         if self.host is None:
             return
         response = self.request('PRIVATE HANDOVER 1')
+        if getattr(self.args, 'concurrent_pressure', False):
+            deadline = time.monotonic() + 35
+            while response == b'DEFER STORAGE' and time.monotonic() < deadline:
+                time.sleep(.02)
+                response = self.request('PRIVATE HANDOVER 1')
         if response != b'OK HANDOVER RECONNECT':
             raise RuntimeError('handover deferred: ' + repr(response))
         self.host.wait(timeout=60)

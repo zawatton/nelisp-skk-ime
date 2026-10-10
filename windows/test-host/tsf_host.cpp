@@ -1023,9 +1023,17 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   // Shift/Ctrl/Caps Lock from the harness thread changes lowercase readings
   // into okuri or shortcuts. Restore that state only after dispatch finishes.
   BYTE state[256]{};
-  if (key.shift) state[VK_SHIFT] |= 0x80;
-  if (key.ctrl) state[VK_CONTROL] |= 0x80;
-  SetKeyboardState(state);
+  if (key.shift) state[VK_SHIFT] = state[VK_LSHIFT] = 0x80;
+  if (key.ctrl) state[VK_CONTROL] = state[VK_LCONTROL] = 0x80;
+  const auto install_script_state = [&] {
+    BYTE observed[256]{};
+    if (!SetKeyboardState(state) || !GetKeyboardState(observed) ||
+        ((observed[VK_SHIFT] & 0x80) != 0) != key.shift ||
+        ((observed[VK_CONTROL] & 0x80) != 0) != key.ctrl) {
+      std::printf("SCRIPTKEY FAIL modifier delivery token=%s\n", Utf8FromWide(token).c_str());
+      std::fflush(stdout); std::exit(1);
+    }
+  };
   if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
     std::printf("SCRIPTKEY token=%s inherited_shift=%d shift=%d control=%d tick=%llu utc_us=%llu async_shift=%d async_control=%d\n",
                 Utf8FromWide(token).c_str(), (state_before[VK_SHIFT] & 0x80) != 0,
@@ -1041,6 +1049,10 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   // needs no TSF-side routing); fall back to ITfKeystrokeMgr when TSF's
   // own instance already owns the key sink registration.
   const auto test_down = [&](BOOL* e) {
+    // Inject at the dispatch boundary, after diagnostic/system calls, with
+    // generic and side-specific modifier bits consistent. Never repair state
+    // between TestKeyDown and KeyDown: the production event cache owns that.
+    install_script_state();
     callback_io_probe::Scope scope;
     return key_sink != nullptr
         ? key_sink->OnTestKeyDown(context, key.vk, lparam_down, e)
@@ -1057,6 +1069,7 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
     // Ill-behaved-app repro: call KeyDown directly, never consulting
     // TestKeyDown at all, for every token -- see DirectKeyDownMode().
     BOOL eaten = FALSE;
+    install_script_state();
     const auto started = std::chrono::steady_clock::now();
     HRESULT hr = down(&eaten);
     const auto completed = std::chrono::steady_clock::now();
@@ -1091,6 +1104,7 @@ void SendScriptedKey(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   BOOL eaten = FALSE;
   const bool key_state_diagnostics = GetEnvironmentVariableW(
       L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0) != 0;
+  install_script_state();
   const bool control_before_test = key_state_diagnostics && (GetKeyState(VK_CONTROL) & 0x8000) != 0;
   const auto started = std::chrono::steady_clock::now();
   HRESULT hr = test_down(&eaten);
@@ -1519,6 +1533,20 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
         std::printf("CLIENT mode=%s open=%lu composing=%lu sequence=%lu\n",
                     Utf8FromWide(mode).c_str(), open, composing, sequence);
       }
+    } else if (token == L"SETTINGSREFRESH") {
+      // Change a real native setting after a private host replacement. The
+      // next key must consume the watcher notification without reconnecting.
+      wchar_t path[1024]{};
+      GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", path, _countof(path));
+      if (!std::wstring(path).starts_with(L"Software\\NativeIME-test-")) std::exit(1);
+      HKEY key = nullptr;
+      if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) std::exit(1);
+      const DWORD scale = 90;
+      const LSTATUS written = RegSetValueExW(key, L"ModeIndicatorScale", 0, REG_DWORD,
+          reinterpret_cast<const BYTE*>(&scale), sizeof(scale));
+      RegCloseKey(key);
+      if (written != ERROR_SUCCESS) std::exit(1);
+      std::printf("SETTINGS_REFRESH scale=90\n");
     } else if (token.starts_with(L"ENGINE:")) {
       wchar_t path[1024]{};
       GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", path, _countof(path));
@@ -1551,12 +1579,16 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
         CloseHandle(snapshot); pid = child;
       }
       if (pid != 0) {
-        HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+        HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
         const BOOL killed = process && TerminateProcess(process, 1);
         std::printf("TEST_KILL token=%s parent=%lu target=%lu success=%d error=%lu\n",
             Utf8FromWide(token).c_str(), parent_pid, pid, killed, killed ? 0 : GetLastError());
+        // A replacement must not overlap the process just terminated by this
+        // owned test token. This wait is outside every TSF callback scope.
+        const bool exited = killed && WaitForSingleObject(process, 5000) == WAIT_OBJECT_0;
         if (process) CloseHandle(process);
         if (!killed) std::exit(1);
+        if (!exited) std::exit(1);
       } else {
         std::printf("TEST_KILL token=%s parent=%lu target=0 success=0\n", Utf8FromWide(token).c_str(), parent_pid);
         std::exit(1);

@@ -1,0 +1,287 @@
+#+TITLE: S6.3 simultaneous private bundle pressure (EH8)
+#+DATE: 2026-10-10
+
+* Acceptance boundary
+
+The retained Claude serial receipts on 2e24b50-equivalent code remain evidence:
+S5 Recovery 5 gates, S5 EndToEnd 15 gates with three clients, S4 EndToEnd 7
+gates with UTF-8 L, and S4 Recovery 6 gates / 63-case durability matrix. They
+were not rerun by EH8. No ledger is edited. Actual concurrent acceptance has
+not been executed by this worker; audits and synthetic receipts cannot satisfy it.
+
+Production executes those four serial gates followed by the new concurrent
+gate. Only five successful executed gates yield aggregate Production PASS.
+=-ConcurrentPressureOnly= skips all four serial gates, records
+=serial_evidence_reused=true=, =serial_gates_executed=false= and status
+=PASS concurrent gate only=. Claude must link the preserved serial log in the
+ledger when reconciling that result. The switch does not verify the external
+serial evidence or declare aggregate S6 completion by itself.
+
+* Private cycle and pressure sources
+
+=test-concurrent-pressure.ps1= packs two distinct immutable private policy-ON
+bundles from the current production binaries, using the existing Pack action
+only. These are previous/next identities of the same product revision, not a
+claim of historical binary-version interoperability. All five policy
+responsibilities stay ON, shadow stays OFF, and both manifests require HP2.
+No deployment/live/registration script is executed. Artifacts and copied
+source are under this checkout's build directory. Runtime and substrate paths
+are caller inputs; the runtime is never modified or rebuilt.
+
+The single =private-host-bundle-e2e.py --concurrent-pressure= cycle runs three
+real TSF text stores and the existing real Emacs inline listener. All three
+text stores remain alive through deploy, rollback and cold restart; individual
+private rendezvous files prove they reached each boundary. It validates
+the UTF-8 L input by content/encoding, uses 45-second cold loads and
+=a i SPACE WAIT3000 ENTER= warm-up. The cycle deploys previous -> next,
+runs peer traffic, rolls back to previous, then kills/restarts the engine and
+cold restarts the rolled-back host. Handover/prewarm stop and drain the prior
+owned engine/policy before starting another stack. TSF clients and Emacs are
+owned by the same Windows job.
+
+GC: =prepare-concurrent-pressure.py= adds a diagnostic function to disposable
+bundle copies of =ddskk-engine.el= and =host-policy.el=. Every engine dispatch
+and HP2 decision allocates 32 KiB and invokes the real =garbage-collect=.
+Completed collections append start/end Unix wall-clock timestamps to separate
+=engine.gc= / =policy.gc= files. Missing logs fail; no surrogate collector
+process, GC-disable option, runtime patch or product-source modification is
+used. The HP2 envelope/replies and policy decision logic remain unchanged.
+The copied policy manifest hash is refreshed; =pressure-artifacts.json=
+records original and instrumented engine/policy hashes. Collection logging is
+part of this deliberately hostile fixture, not production overhead evidence.
+
+Network: the existing =test-os1-private.py= exclusive loopback DNS fixture
+receives real GetAddrInfoExW packets at 127.0.0.2:53. It alternates withheld
+answers (real cancellable DNS deadlines) with zero-TTL loopback answers. Its
+TCP skkserv waits 300 ms and closes without returning a response. Unique
+=LOCAL SERVER= readings keep provider traffic active. The host's exclusive
+per-query DNS server prevents external resolution; start-command is empty,
+=SKKSERV_AUTOSTART=0= and =SKKSERV_GOOGLE_BACKEND=0=. Busy UDP/53, unsupported
+custom DNS, missing packets/cancellation or fixture errors fail acceptance.
+
+Storage: an independent thread repeatedly opens existing real =user.jisyo= and
+=user.jisyo.eg2-checkpoint= with OPEN_EXISTING / FILE_SHARE_READ only for 300 ms, releasing for
+200 ms. This permits cold readers but denies checkpoint writers/rename/delete.
+It reuses the blocked-storage / real_checkpoint_refusal method rather than
+mocking success or sleeping in the callback. LOCAL LEARN producers and the
+existing SESSION V2 PREPARE/SPACE/CONTROL COMMIT sequence exercise the checkpoint
+and sealed provider outbox while replacement/retirement is blocked. Refusal
+must appear as =LEARNING_IO retry= and real =LEARNING_OUTBOX append ... ok=1=
+identities must reach the recovered provider watermark.
+
+* Overlap proof and assertions
+
+The receipt distinguishes armed-source envelopes from actual operations.
+GC instrumentation, DNS fixture and periodic sharing refusal stay armed from
+before deployment until after the cycle. Actual collection and file-handle
+intervals are separate from those envelopes. During disconnected host intervals
+there is no engine/policy process to collect; the storage and DNS fixtures
+continue running. The request producer drains its current transaction before
+an endpoint is closed and resumes on the next owned stack. No disconnected
+interval is falsely reported as an actual engine/policy collection.
+
+Four phase windows (deploy, traffic, rollback, cold-restart) require actual
+network submissions, storage-handle intervals, engine collections and policy
+collections. For each process in every phase, the checker requires a nonempty
+three-way intersection of a completed collection, a storage refusal interval
+and a network observation window. Network windows run from real submission
+through the producer/ack sequence and at least 300 ms of observation; real
+DNS packets and native cancellation are additionally mandatory. This is
+periodic simultaneous pressure across all phases, not continuous collection
+at every instant. Missing/disjoint intervals fail even when source envelopes
+look complete. Cycle wall time over 1800 seconds fails.
+
+The existing S4 callback checker is reused via its additive =-CheckLogOnly=
+path for each warmed TSF log: import mask 271, >=10 probes, zero pipe IO and
+blocking waits, the unchanged 20 ms callback watchdog, local conversion
+branches, local ACK and no settle timeout. Existing exact main/peer document
+and Emacs unchanged-buffer/render checks remain in the E2E fixture; concurrent
+mode also checks exact warm-prefix plus four peer commits. Ordinary letter
+latencies retain the existing <20000 us check. DNS drains retain <=1000 ms.
+S4 =publication_gate= retains p99 <=500 ms and max <=1000 ms on actual native
+policy-intent-publication samples; missing timing samples fail.
+
+Each received LOCAL ACK is replayed twice after each stable lifecycle boundary
+and again at cycle end, byte-for-byte. The recovered checkpoint must contain
+exactly one local-ack marker per producer. Provider IDs must be unique and
+the existing S4 =ack_gate= checks all sealed IDs against the final recovered
+watermark. The bundle journal's authority must select the requested rollback
+identity; the private registry pointers follow it. Real child PID/session-loss
+checks and final recovered rows establish cold recovery. The existing
+=host-test-process-guard.py= surrounds the gate, and Deployment.close verifies
+owned handles exited. No pressure thread may survive cleanup.
+
+Receipts: =build/w/eh8-*/pressure-artifacts.json=, =cycle/concurrent-pressure.json=,
+=cycle/{engine,policy}.gc=, all uniquely numbered host stderr logs, host log,
+three TSF logs, Emacs log and =gate.log=. The concurrent JSON includes sources,
+cycle, phase windows, operations, collection intervals, ACK counts, provider
+IDs/watermark, callback and publication timings, rollback/restart flags and
+owned-process leak count. A successful JSON alone is insufficient: require
+exit 0 and the process guard's no-leftover receipt. The outer S6 evidence.json
+records dictionary metadata, runtime SHA, command, exit status and log SHA.
+
+* Coordinator invocation (one stack, serial evidence reused)
+
+Build production binaries into build/w using the user's prescribed CMake
+commands before running the new gate. Do not run the long serial gates again.
+Set NELISP_RUNTIME to the supplied exact image and SKK_L_DICTIONARY to the
+qualified UTF-8 L; optionally supply NELISP_SUBSTRATE_SOURCE to Pack.
+
+#+begin_src powershell
+pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $env:NELISP_RUNTIME -Stage Production -LargeDictionary $env:SKK_L_DICTIONARY -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1 -ConcurrentPressureOnly -SubstrateSource $env:NELISP_SUBSTRATE_SOURCE
+#+end_src
+
+The source fixture is targeted at <=30 minutes; no coordinator wall-time
+measurement is claimed. Keep the ledger's acceptance red until this command
+actually passes and its receipts are linked to Claude's retained serial log.
+
+* Worker short checks (2026-10-10)
+
+Before edits, executing only the unchanged AST guard statement (no runner body,
+no host stack) exited 1 with the verbatim tail:
+#+begin_example
+INCOMPLETE S6 Production: serial pressure gates are not simultaneous GC/network/storage pressure across the bundle cycle; see S6 decision section
+#+end_example
+
+=python -B windows/test-host/test-concurrent-pressure-unit.py= exited 0:
+5 unit tests, 23 rejecting receipt controls, three callback-log rejection
+controls, two copied-source instrumentation
+checks, four Python syntax checks; stacks=0 and runtime_launches=0.
+=pwsh -NoProfile -File windows/test-host/test-s6-wiring.ps1= exited 0:
+#+begin_example
+PASS EH8 copied-source instrumentation processes=2 source_edits=0 runtime_launches=0
+PASS EH8 overlap negative controls=23 synthetic_receipts_only=1 stacks=0
+PASS EH8 reused callback log checker negative_controls=3 synthetic_logs_only=1 stacks=0
+PASS PowerShell AST files=4 stacks=0
+PASS S6 static wiring components=7 coverage_controls=4 audits_not_execution=1 stacks=0
+#+end_example
+
+Parameter audits used the supplied runtime parameter, an intentionally nonexistent
+=audit-L.utf8= placeholder, build/w and ColdLoadSleepSec=45. They audit command
+metadata only; they do not qualify that dictionary. The gate audit, dry run,
+S6 isolated audit and S6 full-plan audit exited 0 with these verbatim tails:
+#+begin_src powershell
+# $runtime is the externally supplied exact image (no repository machine path).
+pwsh -NoProfile -File windows/test-host/test-concurrent-pressure.ps1 -Runtime $runtime -LargeDictionary 'audit-L.utf8' -BuildDir build/w -ColdLoadSleepSec 45 -ValidateParametersOnly
+pwsh -NoProfile -File windows/test-host/test-concurrent-pressure.ps1 -Runtime $runtime -LargeDictionary 'audit-L.utf8' -BuildDir build/w -ColdLoadSleepSec 45 -DryRun
+pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $runtime -Stage Production -LargeDictionary 'audit-L.utf8' -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1 -ConcurrentPressureOnly -ValidateParametersOnly
+pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $runtime -Stage Production -LargeDictionary 'audit-L.utf8' -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1 -ValidateParametersOnly
+#+end_src
+
+#+begin_example
+PASS EH8 concurrent pressure parameter audit packs=2 cycles=1 clients=3 inline=1 stacks=0
+DRYRUN EH8 sources=GC(engine+HP2),loopback-DNS+slow-failing-skkserv,sharing-refusal(checkpoint+outbox) phases=deploy,traffic,rollback,cold-restart clients=3 inline=1 stacks=0 executed=false
+PASS S6 Production parameter audit gates=1 stacks=0
+PASS S6 Production parameter audit gates=5 stacks=0
+#+end_example
+
+No build, ctest, runtime/GC process, DNS socket fixture, TSF, Emacs, Pack,
+Recovery, durability matrix, actual Production or EndToEnd runner was executed.
+No live settings or other checkout was changed. No IME processes were started
+by the worker, so there are no owned IME leftovers. Changes remain unstaged.
+
+* Coordinator deploy failure: connection ownership and fabricated checkpoint
+
+Retained artifacts: =build/w/eh8-acb4c08a37a14a3285de2e8e0384900d/=.
+=gate.log:17= records =AssertionError: b'ERR SESSION LOST'= in the provider
+sequence; line 18 records empty guard leftovers. =cycle/host.log:4= has the
+only child-start (PID 34484); lines 46, 49 and 53 are policy timeouts, not
+engine replacements. =cycle/engine.gc:1= is the only completed collection,
+1791636172.574646711--1791636172.751938581, before the deploy operation starts
+at 1791636172.781891 in the concurrent receipt.
+
+Root cause is the fixture's use of =Deployment.request= for every provider
+SESSION command. That method opens and closes a fresh pipe for each request
+(=private-host-bundle.py:81--91=). On disconnect, the host closes sessions
+still owned by that connection (=windows/host/main.cpp:2764--2778=). If that
+cleanup wins the race before the next pipe's V2 command, the engine correctly
+returns SESSION LOST. OPEN was acknowledged on the right host; its owner then
+disconnected. No product change is justified by this failure.
+
+The provider OPEN/PREPARE/SPACE/COMMIT/CLOSE sequence now uses one persistent
+pipe, independent of the asynchronous LOCAL LEARN pipe. Both pipes are closed
+on failure and success. No retry or acceptance assertion is weakened.
+
+Separately, =cycle/host.log:2= records learning-pending-recovery-failed, and
+the retained =user.jisyo.eg2-checkpoint= is zero bytes. The storage driver used
+OPEN_ALWAYS before startup, fabricating an invalid pending recovery file.
+=LearningQueue::RecoverPending= correctly rejects an empty file. The driver
+now uses OPEN_EXISTING and skips absent or busy targets, applying sharing
+refusal only to files created by real durable work. The source remains armed
+while a target is absent; absence is not recorded as actual storage pressure.
+
+Short regression command:
+#+begin_src sh
+python -B windows/test-host/test-concurrent-pressure-unit.py Controls.test_provider_session_connection Controls.test_storage_does_not_create_checkpoint
+#+end_src
+Before the harness fix it failed two tests in 0.002 s, reproducing the exact
+=ERR SESSION LOST= assertion and OPEN_ALWAYS value 4 instead of OPEN_EXISTING
+value 3. After the fix both tests passed; no host/runtime/TSF/Emacs process or
+socket fixture was launched. The provider model exercises actual fixture
+request routing with deterministic disconnect-owned session cleanup.
+#+begin_example
+PASS EH8 provider session connection requests=5 persistent_pipes=1 all_closed=1 stacks=0
+PASS EH8 storage missing targets=2 fabricated_checkpoints=0 stacks=0
+#+end_example
+
+The gate itself, Production, Recovery and matrices were not rerun. Existing
+failed coordinator artifacts are preserved unchanged; actual simultaneous
+pressure acceptance remains outstanding.
+
+* Post-swap callback settings defect
+The completed coordinator cycle retained two =pipe_io=3= probes at
+=build/w/eh8-9bd87979fb90428e9d562ed20a1ace5c/cycle/tsf.log:163,245=.
+Registry reload selected the engine synchronously inside OnTestKeyDown:
+the stale pipe write failed, and its failure handler called WaitNamedPipeW
+and CreateFileW. This was production callback I/O, not Python-client traffic.
+
+LoadSettings now publishes an immutable desired-engine identity. The existing
+serialized provider workers disconnect, reconnect, select and mark resync
+before their next request, applying newer settings before consuming input.
+Same-id refreshes also discard the old handle. Ordinary native keys continue;
+idle Ctrl+J uses the existing asynchronous provider path. Reload waits for
+queued document keys/confirmation to drain, without taking a provider lock.
+No callback, latency, receipt or acknowledgement threshold changes.
+
+=python -B windows/test-host/test-provider-settings-unit.py= compiles production
+settings method bodies against a deterministic engine. Negative controls for
+callback I/O, stale handles and stale selection ordering must all be rejected.
+This unit check is not an actual-stack acceptance receipt.
+
+The short real-host regression replaces the private host, changes a native
+setting with the engine id unchanged, then switches lattice -> ddskk. It checks
+the unchanged S4 callback checker on the local segment, zero callback I/O/waits
+and the existing 20 ms budget throughout, both selected engines, exact document
+content (including each first key), and job-owned cleanup. Coordinator command:
+#+begin_src powershell
+pwsh -NoProfile -File windows/test-host/test-post-swap-callbacks.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+#+end_src
+Worker HKCU creation is denied (WinError 5): real TSF/host execution remains
+unverified here. The four fast ctest wrappers also fail before launching their
+executables at private registry creation; direct isolated fast binaries and
+the stack-free settings regression are reported separately. Production,
+concurrent pressure, Recovery and matrices are not rerun for this fix.
+
+The later =eh8-7ad810b7227744519228434eee978ed2= failure occurs before a
+provider conversion: =peer-1.log:195,197= records scripted uppercase K but
+delivered lowercase k/shift=0; =:221,256= commits the individual kana and
+=:266= leaves Space unclaimed. OLD repeats this at =:287,289,358=.
+There is no skipped provider request in these failed episodes. The precise
+modifier-reset trigger is not established by the retained diagnostics.
+The fixture now supplies consistent generic/left modifier bits immediately
+at dispatch and checks their delivery. The focused test requires all three
+K events to arrive uppercase and the immediate SWAP document to contain 仮名,
+with Enter sent directly behind Space (no candidate wait). Coordinator fixes
+for lattice 愛 and the cleanup JSON are retained.
+
+Independently, a transient failed selection no longer skips a requested
+conversion immediately: its worker retries selection within the existing
+1500 ms conversion deadline and uses only the remaining budget for conversion.
+The source-derived unit has twelve cases, including one transient selector
+failure followed by exactly one conversion and deadline exhaustion; the old
+skip-once behavior is a required failing negative control. If the budget is
+exhausted, the result tries the existing certified native candidate lookup;
+if unavailable it retains the reading and queued keys for Space retry or
+explicit cancellation. Queued Enter cannot silently commit raw kana. Callback work and
+checkers remain unchanged. The real focused run is blocked before startup at
+private HKCU creation; its job receipt reports ="leftovers": []=.
