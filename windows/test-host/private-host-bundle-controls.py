@@ -50,7 +50,7 @@ def main():
     fields = bundle.manifest(args.bundle, args.runtime)
     manifest = args.bundle / 'bundle.manifest'
     original = manifest.read_bytes()
-    cases = [('policy_ipc', 'HP999'), ('contract', 'engine-host-v999'),
+    cases = [('policy_ipc', 'HP1'), ('contract', 'engine-host-v999'),
              ('policy_sha256', '0' * 64), ('runtime_sha256', '0' * 64),
              ('host_sha256', '0' * 64), ('schema', '999')]
     rejected = 0
@@ -97,7 +97,7 @@ def main():
         if args.startup:
             # Bypass the script-side rejection to test the real startup fallback.
             state = args.state
-            for field, incompatible in [('policy_ipc','HP999'),('policy_sha256','0' * 64)]:
+            for field, incompatible in [('policy_ipc','HP1'),('policy_sha256','0' * 64)]:
                 args.state = state / field
                 args.state.mkdir()
                 startup_case(args, manifest, original, field, fields[field], incompatible)

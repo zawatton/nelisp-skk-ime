@@ -1,0 +1,67 @@
+#+TITLE: HP2 private policy IPC
+#+DATE: 2026-10-10
+
+* Ownership and compatibility
+HP2 replaces HP1 only on the native adapter's anonymous private policy pipes.
+The public engine-host-v1 protocol, runtime, ABI, decisions and latency budgets
+are unchanged. S5 manifests require =policy_ipc=HP2=; an HP1 manifest or policy
+image hash mismatch disables all managed switches and retains native fallback.
+Without a manifest, development startup still verifies =HP2 READY=.
+
+One request is outstanding per child. The adapter retains the request ID,
+policy epoch, engine epoch, publication generation, kind and context in its
+pending observation. Epochs/context do not enter host-policy-decision and are
+not interpreted in the child. The full 64-bit ID is echoed verbatim; IDs
+continue monotonically across child retirement. Timeout invalidates the input's
+memoized answer; the late reply is discarded before another write. Retirement
+clears cached answers. There is no new public endpoint.
+
+* Fixed frames
+Offsets are zero-based bytes. The wire is ASCII, including spaces as digits;
+LF is the sole delimiter and cannot occur in payload digits.
+
+| Request offset | Length | Content |
+|----------------+--------+---------|
+| 0              |      4 | HP2Q |
+| 4              |     11 | Full unsigned 64-bit correlation ID |
+| 15             |      1 | 32 + kind (1..12) |
+| 16             |      1 | 32 + min(a,2) |
+| 17             |      1 | 32 + min(b,2) |
+| 18             |      1 | 32 + min(c,2) |
+| 19             |      3 | Quantitative scalar |
+| 22             |      1 | LF |
+
+Base-64 digits are bytes 32..95, most significant first, with no alphabet lookup
+or decimal conversion. Three digits encode 0..262143 exactly. Eleven digits
+encode the full uint64 ID; the first digit is at most 47. The scalar is a for
+Restart/Capacity (kinds 3/8), b for Cache (kind 4), and zero otherwise.
+Saturation at two preserves zero, one, other and positive predicates. Config
+(kind 1) accepts only a<=1 because its result can return a itself. Values
+outside the lossless scalar range, invalid kinds, or oversized contexts are
+rejected by the native encoder and stay native; no value is silently truncated.
+Original numeric inputs remain the native memoization key.
+
+Replies are exactly 19 bytes: =HP2R=, the same eleven ID digits, three base-64
+decision digits, LF. Native validation requires the exact pending prefix,
+length and digit range, then checks existing per-kind decision bounds.
+A malformed/mismatched reply retires the child and clears managed answers.
+
+The child checks length, magic/version, kind and trailing LF. It bounds-checks
+quantitative digits when decoding them. Canonical predicate bytes and ID digits
+are constructed/validated by the native owner; the child does not scan them.
+This is a trusted private adapter channel, not a public input parser.
+Fragmented requests accumulate at most 45 bytes with a 23-byte bounded read;
+batched frames advance by complete widths. EOF with a partial frame fails.
+No serving-path character loop, regexp, split or decimal parse remains.
+
+* Startup and measurement
+Initialize all twelve codec/decision branches before the existing startup
+garbage-collect and READY. This initializes the exact runtime's lazy evaluator
+caches without disabling collection, changing limits, or recognizing test inputs.
+Finite HP1 parser helpers remain available for historical component diagnostics;
+the serving loop never calls them.
+
+The frozen S4.1 corpus and checksum remain unchanged. Its HP2 replay adds six
+scalar/noncanonical-boolean boundaries, split/batched frames, malformed controls
+and the deliberately wrong expected-decision negative control.
+See =EH7-hp2-receipts.org= for exact-image evidence and remaining limitations.

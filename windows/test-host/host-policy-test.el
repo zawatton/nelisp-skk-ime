@@ -57,3 +57,18 @@
 (ert-deftest host-policy-cache-duration ()
   (should (= (host-policy-decision 12 1 0 0) 60000))
   (should (= (host-policy-decision 12 0 0 0) 2000)))
+
+(ert-deftest host-policy-hp2-correlation ()
+  (should (equal (host-policy-hp2-reply "HP2Q/__________!!!    \n" nil)
+                 "HP2R/__________  !\n")))
+
+(ert-deftest host-policy-hp2-scalars ()
+  (should (= (host-policy-hp2-number "___" 0) 262143))
+  (should (= (host-policy-hp2-number ".I@" 0) 60000))
+  (should-error (host-policy-hp2-number "`  " 0))
+  (should-error (host-policy-hp2-number "\037  " 0)))
+
+(ert-deftest host-policy-hp2-framing ()
+  (should-error (host-policy-hp2-reply "HP1 Q 1 7 11 13 1 1 0 0 -\n" nil))
+  (should-error (host-policy-hp2-reply "HP2Q" nil))
+  (should-error (host-policy-hp2-reply "HP2Q/__________ !!    \n" nil)))

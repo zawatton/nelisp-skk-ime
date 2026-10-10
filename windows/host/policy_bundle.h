@@ -47,11 +47,11 @@ inline bool Compatible(const std::wstring& runtime, const std::wstring& reposito
     return !actual.empty() && fields[key] == actual;
   };
   valid = valid && input.eof() && fields.size() == 7 && fields["schema"] == "1" &&
-      fields["contract"] == "engine-host-v1" && fields["policy_ipc"] == "HP1" &&
+      fields["contract"] == "engine-host-v1" && fields["policy_ipc"] == "HP2" &&
       (fields["mode"] == "native" || fields["mode"] == "policy") &&
       matches("host_sha256", executable) && matches("runtime_sha256", runtime) &&
       matches("policy_sha256", (std::filesystem::path(repository) / "engine/host-policy.el").wstring());
-  LogEvent(valid ? "bundle-compatible contract=engine-host-v1 ipc=HP1" :
+  LogEvent(valid ? "bundle-compatible contract=engine-host-v1 ipc=HP2" :
       "policy-fallback native reason=incompatible-bundle-image-or-protocol");
   return valid && fields["mode"] == "policy";
 }

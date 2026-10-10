@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import host_policy_hp2 as hp2
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
@@ -170,6 +171,8 @@ def main():
     parser.add_argument('--heap-mib', type=int, default=0)
     parser.add_argument('--idle-ms', type=int, default=0)
     parser.add_argument('--policy-source', type=Path)
+    parser.add_argument('--policy-ipc', choices=('HP1', 'HP2'),
+                        help='explicit protocol for a source that loads the policy indirectly')
     parser.add_argument('--discover', action='store_true')
     parser.add_argument('--continuous', action='store_true', help='no per-request telemetry reads or settling; measure uninterrupted IPC')
     parser.add_argument('--artifact', type=Path, help='experimental CLI artifact, under build; source remains the default')
@@ -193,6 +196,8 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     script = args.output.with_suffix('.el')
     script.write_text(';;; -*- lexical-binding: t; -*-\n'+source(args),encoding='utf-8')
+    hp2_policy = args.mode == 'policy' and (args.policy_ipc == 'HP2' or
+                 (args.policy_ipc is None and 'HP2 READY' in script.read_text('utf-8')))
     job = r.ownership.CommandJob()
     process = reader = None
     replies = queue.Queue()
@@ -227,7 +232,7 @@ def main():
         reader=threading.Thread(target=read); reader.start()
         while True:
             line=replies.get(timeout=60)
-            if line == b'HP1 READY\n': break
+            if line == (b'HP2 READY\n' if hp2_policy else b'HP1 READY\n'): break
             assert line is not None, discovery
             discovery.append(line.decode('utf-8',errors='replace').strip())
         report.update(startup_ms=(time.perf_counter()-started)*1000, discovery=discovery,
@@ -239,12 +244,15 @@ def main():
             if args.idle_ms: time.sleep(args.idle_ms/1000)
             before=previous if args.continuous else telemetry.snapshot()
             assert before['collections'] == previous['collections'], 'idle alone collected'
-            wire=f'HP1 Q {serial} 7 11 13 1 1 0 0 -\n'.encode() if args.mode=='policy' else b'x'*args.payload_bytes
+            wire=(hp2.request(serial, 1, 1, 0, 0) if hp2_policy else
+                  f'HP1 Q {serial} 7 11 13 1 1 0 0 -\n'.encode()) if args.mode=='policy' else b'x'*args.payload_bytes
             begin=time.perf_counter()
             process.stdin.write(wire); process.stdin.flush()
             actual=replies.get(timeout=args.reply_observation_sec)
             end=time.perf_counter()
-            if args.mode=='policy': assert actual == f'HP1 R {serial} 7 11 13 1 0\n'.encode(), actual
+            if args.mode=='policy':
+                expected = hp2.reply(serial, 0) if hp2_policy else f'HP1 R {serial} 7 11 13 1 0\n'.encode()
+                assert actual == expected, actual
             elif args.mode=='component':
                 if args.operation=='reply': assert actual == b'HP1 R 1 7 11 13 1 0\n', actual
                 else: assert actual == b'ACK\n', actual

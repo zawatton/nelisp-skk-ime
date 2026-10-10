@@ -43,7 +43,7 @@ def manifest(bundle, runtime):
         raise ValueError('bundle must be under this checkout build directory')
     pairs = [line.split('=', 1) for line in (bundle / 'bundle.manifest').read_text('utf-8').splitlines()]
     fields = dict(pairs)
-    if len(fields) != 7 or len(pairs) != 7 or fields.get('schema') != '1' or fields.get('contract') != 'engine-host-v1' or fields.get('policy_ipc') != 'HP1' or fields.get('mode') not in ('native', 'policy'):
+    if len(fields) != 7 or len(pairs) != 7 or fields.get('schema') != '1' or fields.get('contract') != 'engine-host-v1' or fields.get('policy_ipc') != 'HP2' or fields.get('mode') not in ('native', 'policy'):
         raise ValueError('incompatible bundle manifest')
     for name, file in [('host', bundle / 'ddskk-engine-host.exe'), ('runtime', runtime),
                        ('policy', bundle / 'repository/engine/host-policy.el')]:

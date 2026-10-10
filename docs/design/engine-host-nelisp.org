@@ -902,3 +902,19 @@ This reproduces missing design artifacts only. NC1 saved Debian results and
 historical IME logs were read, not rerun. No ctest, ERT, host, engine or TSF
 harness was run in this design-only round. The two-file write scope excludes
 build/test artifacts. Later acceptance remains pending in the companion ledger.
+
+* EH7: S6.2 compact private HP2 (2026-10-10)
+The private adapter now carries a 23-byte HP2 request and 19-byte reply rather
+than scanning HP1 decimal envelopes. Native correlation, epoch ownership,
+input bounds and fallback remain in the adapter. S5 packs/pins HP2 and rejects
+HP1 manifests. Public engine-host-v1 and host-policy-decision are unchanged.
+The additive frame specification is =docs/contracts/policy-ipc-v2.org=;
+commands and receipts are =docs/contracts/EH7-hp2-receipts.org=.
+
+The supplied unmodified Windows runtime measured 63,232 bytes / 2,164 allocator
+calls per warmed request, versus approximately 676,080 / 24,223 for HP1.
+The unchanged three-launch S6.2 gate passes after initializing every codec and
+decision branch before startup GC. GC remains enabled at its original limits.
+An uninterrupted 1000-request diagnostic still collects once with a 78.7942 ms
+maximum: this qualifies the specified 3x100-request S6.2 gate, not a claim of
+eliminating every future collector pause or qualifying long-run host tails.
