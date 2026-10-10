@@ -177,7 +177,8 @@ evidence: build/validation/eh6-s6/Qualification-5.log sha256=d44d62ff3a844e49018
 
 ** S6.2 CW1 and RW4 artifact choices meet measured memory/startup and host-tail budgets without weakening durability or callback gates
 #+NOTE: AOT/minimal image optional; retain adapter where OS1/VAL1 is unqualified. RW3 needed only for stronger managed pause promises, not local isolation.
-cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime "$env:NELISP_RUNTIME" -Stage Resources -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+#+NOTE: Claude ran Resources serially on ab97b32 (HP2 compact policy frame): 4 gates PASS with the unchanged budget (policy IPC p99 about 1 ms on 3 launches; host soak 32 clients/100k p99 4.7 ms; cached replies during a 3 s policy pause p99 0.34 ms). Policy per-request allocation fell about 11x; collections went from 11 to 1 per 1000 requests. The S4/S5 matrices ran earlier on HP1; HP2 was rechecked by the S4.1 equivalence corpus (97 decisions) and S5 Compatibility.
+evidence: build/validation/eh7-s6/Resources.log sha256=7344dcd80add80be051c5a18f7e2f802a3752667c17ca20fef0aaa29fd5073b7
 #+NOTE: EH6 three supplied-image launches / 300 replies; startup max 2394.4919 ms, policy private max 155082752 bytes; standalone IPC p99 up to 302.5963 ms / max 329.0077 ms fails provisional 10/50 ms ceiling. Separate adapter isolation: 801 cached replies, p99 0.2425 ms/max 0.5706 ms; zero owned leftovers. No alternate CW1/RW4 image qualified.
 
 ** S6.3 End to end: production-shaped private Windows multi-app run passes VAL1 with L dictionary, hostile lifecycle and bundle rollback
