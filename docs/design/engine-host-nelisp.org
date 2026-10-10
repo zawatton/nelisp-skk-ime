@@ -740,6 +740,77 @@ GC/network/storage/client lifecycle, cold restart and bundle rollback passes
 VAL1 with bounded service tails, zero callback host waits, acknowledged-ID loss
 or owned-process leaks. Future live proof is separate, not inferred here.
 
+*** S6 decision: retained native OS1 boundaries (2026-10-10)
+Decision: retain all seven native OS1 components. No Lisp replacement,
+shim/ABI change or live setting change is required for S6.1. Policy switches
+remain OFF by default. Qualification now runs OS1 probes independently of
+the failing S6.2 policy resource budget; it cannot declare PASS unless every
+component in the following table has successful receipts for every named gate.
+Parameter audits record planned coverage with executed=false, never qualification.
+
+Runtime identity: SHA256
+=3fb43697a8bf01e10bc993c468365489ef98a30d5acbe05206f9e9faefdde3db=.
+Policy identity: SHA256
+=5e755b118b7eb5b01ee5ee4bec8a65e231acc1f318d54cbc9979202fb2e81d21=.
+All commands take Runtime as a parameter and leave that image read-only.
+Gates execute serially under the existing ownership guard; receipts record
+commands, exit codes, hashes, logs, dictionary encoding and component coverage.
+
+| OS1 component | Decision / owner | Qualification gates | Evidence and retained scope |
+|---------------+------------------+---------------------+-----------------------------|
+| Named pipe security/cancel | Retain native public endpoint | os1-pipe, test-private-pipe-soak | Private ACL denial returns ERROR_ACCESS_DENIED, restores the original DACL and reconnects. Pending overlapped client read cancels/drains ERROR_OPERATION_ABORTED and the next reply is exact. Claude previously reported pipe PASS. Soak measures 32 clients / 100000 exact replies plus lifecycle controls. This qualifies the retained ACL/client-cancel boundary, not a new low-IL policy or replacement server. |
+| mmap leases | Retain native index/view owner | os1-dictionary, test-local-cleanup | Content/encoding validator selects the qualified UTF-8 L, then the native publication probe checks actual current manifests and rejects invalid UTF-8. Cleanup exercises held live-client state, dead-client replay, idempotent durable ACK and obsolete/orphan cleanup. No Lisp mmap replacement. |
+| Flush/replace | Retain native durable writer | test-engine-learning-crash-v2, test-engine-provider-outbox-v2, test-local-cleanup | Existing checkpoint/cursor/ACK crash-restart and provider-outbox cases preserve received/acknowledged IDs, refusal/retry behavior and durable spool cleanup. No generic rename/close substitution or relaxed durability gate. |
+| TCP/DNS | Retain native network worker | os1-dns, test-sk1-skkserv, test-sk1-provider-relay | DNS uses overlapped GetAddrInfoExW, existing deadline/shutdown checks, GetAddrInfoExCancel and completion drain. Real DNS blackhole probe proves deadline and shutdown cancellation plus a subsequent exact reply; Claude previously reported DNS cancellation PASS. Existing gates retain fragmented-response, encoding and provider-relay assertions. |
+| Process jobs | Retain native suspended-child job owner | test-private-pipe-soak, test-engine-learning-crash-v2, test-engine-provider-outbox-v2 | Suspended assignment, restart/fencing and actual owned-process cleanup are exercised by existing lifecycle gates and their kill-on-close command guards. No generic spawn/kill replacement. |
+| Event loop | Retain native callback/cache/publication owner | test-host-policy-callbacks, test-private-pipe-soak, test-local-cleanup | Real private TSF local callbacks check covered transfer/wait imports, zero pipe IO/blocking waits, settled local learning and the unchanged 20 ms watchdog. Native soak measures request tails and cleanup/replay exercises asynchronous lifecycle work. No shared managed-heap worker replacement. |
+| Unicode | Retain native Windows conversion/framing boundary | os1-unicode, os1-dictionary, test-sk1-skkserv, test-sk1-provider-relay | Separate exact-image byte probe checks kana, supplementary U+1F600 and combining U+0301 encode/decode and exact UTF-8 stdout bytes. UTF-8 L publication and existing EUC/UTF8 network gates cover retained boundaries. The byte probe never loads host-policy.el or measures policy IPC. |
+
+S6.1 final aggregate execution is delegated to Claude; this worker only audits
+wiring/parameters. Prior worker HKCU failures are not native test failures:
+Claude subsequently reported default-build CTest 10/10 PASS, private pipe
+PASS and DNS cancellation PASS. The former unconditional OS1 INCOMPLETE throw
+is removed because these probes are available. A missing mapping or failed
+mapped gate still prevents aggregate Qualification PASS. ACL/client-overlapped
+qualification does not assert unmeasured low-IL or new server-cancel semantics.
+
+S6.2 remains a failing check, blocked on runtime GC/allocation work (Debian
+runtime/native compiler lane), not on OS1 runner wiring. See
+[[file:../contracts/S6-runtime-ipc-latency.org][exact-image execution/allocation findings]].
+The current source allocates 673820.128 bytes and 24134.771 allocator calls
+per request on average; 1000 requests trigger 11 collections. CLI .nelc is
+slower (one reply 5981.605 ms / 407 MB); .neln retains source-body dispatch
+and identical 1000-request allocation totals. No resident Windows compiled
+policy fast path was demonstrated. Retain source policy and default OFF.
+
+The last three-launch Resources run (300 replies) failed unchanged ceilings:
+IPC p99 82.619 / 82.690 / 80.021 ms, max 104.786 / 106.664 / 91.106 ms;
+startup 1884.830 / 1945.584 / 1983.143 ms; private bytes about 153.5 MB.
+Budgets remain startup <= 60000 ms, private <= 512 MiB, IPC p99 <= 10 ms
+and max <= 50 ms. =host-windows-s6.py= stays in Resources only; it is neither
+removed nor weakened. Existing adapter/callback/durability gates remain distinct.
+No CW1/RW4 alternative image is qualified by source or manifest presence.
+
+S1.5 has a dedicated native baseline command. It reuses private TSF local,
+UTF-8 L state stress/edit recovery, real Emacs inline, crash/outbox recovery,
+cleanup, native pipe-tail and callback gates directly, with every S4 policy
+switch and shadow OFF and -MatrixWorkers 1. S3/S4 aggregates are deliberately
+not used for this baseline because they force policy ON. Default production
+binaries are built by the coordinator without control-build or policy options.
+The gate thresholds, fixture variants and recovery assertions are unchanged.
+
+S6.3 remains separate: Claude reported the serial S5 cycle (15 gates) and S4
+EndToEnd pressure set (7 gates, UTF-8 L) PASS. Serial pressure alone does not
+prove simultaneous GC/network/storage pressure across the multi-client bundle
+cycle; the existing Production INCOMPLETE guard is retained. No live acceptance
+or aggregate S6 completion is inferred from S6.1 success.
+
+Exact serial build, S1.5, Qualification and Resources commands, expected
+known-red handling and receipt requirements are in
+[[file:../contracts/CLAUDE-S6-final.org][CLAUDE-S6-final.org]]. Every private runner validates the L dictionary by
+content and detected encoding, accepts the existing UTF-8 copy, and records
+the selected bytes. Runtime, dictionaries and build paths are caller parameters.
+
 ** Existing gate matrix and reproduction recipes (not executed in EH1)
 Future lanes may write artifacts only under their authorized build directory.
 Set private NATIVEIME_REGISTRY_KEY, DDSKK_PIPE_NAME, LOCALAPPDATA,

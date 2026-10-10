@@ -4,6 +4,8 @@ param(
   [Parameter(Mandatory)][string]$Runtime,
   [string]$BuildDir = 'build/w',
   [int]$ColdLoadSleepSec = 45,
+  [string]$LargeDictionary = '',
+  [ValidateRange(1,8)][int]$Clients = 1,
   [switch]$ValidateParametersOnly,
   [string[]]$RecoveryPoints = @('before-handover','after-release','during-prewarm','after-prewarm','after-commit')
 )
@@ -94,6 +96,8 @@ if ($Stage -eq 'EndToEnd') {
       '--dll',(Join-Path $root "$BuildDir/Release/ddskk-ime.dll"),'--core',(Join-Path $root "$BuildDir/Release/ddskk-ime-core.dll"),
       '--tsf-host',(Join-Path $root "$BuildDir/Release/tsf-host.exe"),'--cold-load-sleep-sec',"$ColdLoadSleepSec")
     if ($inline) {$arguments += '--inline'}
+    if ($LargeDictionary) {$arguments += @('--large-dictionary',$LargeDictionary)}
+    $arguments += @('--clients',"$Clients")
     Gate "same-client-$inline" 'python' $arguments
   }
   # Existing real core/scoped rollback gates are deliberately unchanged. All

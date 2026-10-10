@@ -1,0 +1,183 @@
+#+TITLE: S6 dictionary routing and private OS1 qualification probes
+#+DATE: 2026-10-10
+
+* Publication timeout: encoding rejection, not a deadline failure
+The coordinator's failing denied-edit log repeatedly reports
+=LOCAL publication unavailable: invalid UTF8=, then the existing harness
+throws =Local index publication timeout=. The publication path in
+windows/src/local_index.cpp calls ParseDictionary and refuses invalid UTF-8.
+The generic host dictionary loader can load the EUC source; this does not
+qualify that source for the separate native local-index builder.
+
+Independent real private-host probes, exact supplied NeLisp runtime and all
+five policy switches ON, reproduced the distinction without HKCU writes:
+| Input bytes | Entries | Native local publication | Result |
+|-------------+---------+--------------------------+--------|
+| EUC-JP original | 175774 | current_count=0; invalid_utf8=true | FAIL |
+| Existing UTF-8 copy | 175774 | current_count=1; invalid_utf8=false | PASS |
+The EUC source fails strict UTF-8 decoding at byte 1483. Both decoded files
+have 175836 lines, both section markers and the Large size dictionary header.
+All 175774 ordered reading keys are identical. There are 75 differing candidate
+lines from Unicode mapping differences (for example U+2016 versus U+2225);
+do not claim that a fresh Python EUC transcode equals the qualified UTF-8 copy.
+
+UTF-8 host stderr reports 175774 entries loaded in 81 ms. Host log records
+first child/policy startup at 20:07:36.312Z, first adapter publication at
+20:07:50.024Z (13.712 seconds later), and intent-to-publication 485 ms.
+The diagnostic waits the existing 45-second cold-load interval before observing
+publication; its reported approximately 45-second observation time is NOT
+publication latency. The post-cold-load publication deadline remains 30 seconds,
+matching run-harness.ps1. No production timeout or threshold is changed.
+
+* Content validation and gate routing
+large-dictionary.py detects actual strict UTF-8/EUC-JP bytes, requires the
+SKK L header, both okuri sections, valid entry framing and at least 100000
+entries. Filename and the coding cookie are not proof: the qualified UTF-8
+copy retains the original euc-jp cookie. Receipts record encoding, entry count,
+raw SHA256, and ordered-reading SHA256.
+
+For a UTF-8 input, use that file directly regardless of its leaf name.
+For an EUC input, select the existing =input + .utf8= copy, or the explicitly
+provided -LargeDictionaryUtf8 file. Require strict UTF-8 and the same ordered
+readings/count as the source. Do not rewrite or silently regenerate either
+user dictionary. Missing/mismatched copies fail before a test stack starts.
+
+S6 routes the validated existing UTF-8 copy to the S3/S4 EndToEnd chain
+(including test-local-edit-recovery and test-local-state-stress), which was
+previously qualified with UTF-8. The bundle cycle is also a native-local-index
+consumer and receives that same UTF-8 copy.
+
+The previous 15-gate S5 result did NOT establish EUC L-dictionary bundle
+publication: Deployment.start always replaced DDSKK_DICTIONARY_FILES with
+the small behavior fixture. The fix includes the validated L file in that
+host environment. The TSF registry and environment carry the same ordered
+fixture+L sources. BUNDLE_DICTIONARY_FILES logs the actual host input during
+each start/restart/swap. Existing calls without a large dictionary retain
+their behavior fixture. This corrected production bundle path needs a new
+coordinator run; the prior S5 pass is not retroactively claimed as L evidence.
+
+Known identities of the supplied dictionary pair:
+- EUC: =aae6e2e4cb178de68afe706f053723a6d061d97bed7978008892eedd11c72ca6=.
+- Qualified UTF-8: =2119aa28a6eba24ad3bb2f11ce9de2ad7907636f7fbd1a9e3b68f359bd68b206=.
+- Ordered readings: =bb0841400eac397233fd767a97c479778e463a2d1a198f0972bd0efb037134af=.
+These identify measured fixtures; the validator does not special-case their hashes.
+
+* Private pipe ACL and overlapped cancellation
+test-os1-private.py --mode pipe runs the actual private adapter with the exact
+runtime and no registry writes. It observes the default DACL, applies a
+temporary read/write deny ACE to that owned endpoint, requires a new connection
+to fail with ERROR_ACCESS_DENIED=5, restores the original DACL in finally and
+requires a new connection to return the exact ENGINE ddskk reply.
+
+The same probe issues an actual pending client overlapped ReadFile, observes
+ERROR_IO_PENDING=997, calls CancelIoEx on that exact OVERLAPPED, waits for its
+event and drains ERROR_OPERATION_ABORTED=995. It then requires the next
+request/reply to remain byte-exact on the same handle. Measured cancellation:
+0.015700 ms. Positive controls before/after prevent unrelated connection
+failures or a stolen next response from counting as security/cancel success.
+
+Observed default DACL grants full access to SYSTEM, administrators and the
+creating account, plus file-read to Everyone and Anonymous. This is an
+observation, not a least-privilege approval. The probe qualifies ACL enforcement
+and client overlapped cancellation on the retained boundary; it does not
+qualify low-IL/AppContainer compatibility or a replacement overlapped server.
+All changes to the tested ACL are confined to the owned private pipe.
+
+* DNS: real worker observation remains INCOMPLETE
+The test-only NATIVEIME_TEST_OS1_DNS_TRACE hook is under windows/host and is
+active only with diagnostics=1, a private NativeIME-test registry name and an
+EH private pipe name. It traces real getaddrinfo entry/exit and worker Stop
+request/join; it adds no sleep, fake resolver, timeout, bypass or new normal
+resolver behavior. Start-command spawning is disabled in the probe.
+
+The probe queues LOCAL SERVER for an uncached reading with a unique hostname
+under the reserved .invalid domain, waits for resolver entry, submits SHUTDOWN,
+records its acknowledgement and applies the unchanged five-second private-soak
+shutdown ceiling. A resolver entry without an exit at the pre-shutdown
+observation is recorded as pending_at_shutdown; this is an observable trace
+interval, not proof of a kernel operation at a microsecond boundary.
+
+Measured run: SERVER PENDING; pending_at_shutdown=true; shutdown acknowledgement
+0.084200 ms; host exit 251.693900 ms; real resolution exit status 11001
+(normal name-not-found), resolver trace interval 36.700600 ms. Worker Stop
+joined after the resolver exited. There was no cancelled resolver result.
+The probe exits nonzero with INCOMPLETE DNS cancellation even though this
+particular lookup ended quickly. Fast completion must not substitute for
+cancellation qualification.
+
+ServerCache::Stop sets stop_ and joins. ConnectDictionaryServer uses synchronous
+getaddrinfo with no owned cancellation token. A diagnostics-only trace cannot
+make that normal production call cancellable. Completing DNS cancellation
+requires separately scoped native resolver work (for example an asynchronous
+GetAddrInfoExW operation with an owned cancellation handle, bounded completion
+drain, result cleanup and stale-generation fencing). That production change is
+not hidden in this test hook. No deterministic fake delay is accepted as real
+DNS cancellation evidence. S6 OS1 remains unqualified for DNS and low-IL/server
+replacement; the new -Stage Os1 collects the feasible probes without running
+the known-red policy resource gate first.
+
+* Executed commands, counts and tails
+Set Runtime, EucL and Utf8L to the supplied read-only runtime/dictionary paths.
+Every test stack ran serially with cold load 45 seconds and owned job cleanup.
+
+Unchanged runner reproduction: Production with -LargeDictionary $Utf8L exited
+1 before any stack: =Production requires the real SKK-JISYO.L via -LargeDictionary=.
+
+#+begin_src powershell
+python windows/test-host/test-large-dictionary.py --euc $EucL --utf8 $Utf8L
+cmake --build build/w --config Release --target ddskk-engine-host
+python windows/test-host/host-test-process-guard.py run --root . -- python windows/test-host/test-os1-private.py --runtime $Runtime --host build/w/Release/ddskk-engine-host.exe --build-dir build/w --cold-load-sleep-sec 45 --mode pipe
+python windows/test-host/host-test-process-guard.py run --root . -- python windows/test-host/test-os1-private.py --runtime $Runtime --host build/w/Release/ddskk-engine-host.exe --build-dir build/w --cold-load-sleep-sec 45 --mode dictionary --dictionary $EucL
+python windows/test-host/host-test-process-guard.py run --root . -- python windows/test-host/test-os1-private.py --runtime $Runtime --host build/w/Release/ddskk-engine-host.exe --build-dir build/w --cold-load-sleep-sec 45 --mode dictionary --dictionary $Utf8L
+python windows/test-host/host-test-process-guard.py run --root . -- python windows/test-host/test-os1-private.py --runtime $Runtime --host build/w/Release/ddskk-engine-host.exe --build-dir build/w --cold-load-sleep-sec 45 --mode dns
+python windows/test-host/host-test-process-guard.py run --root . -- pwsh -NoProfile -File windows/test-host/test-local-edit-recovery.ps1 -Runtime $Runtime -LargeDictionary $Utf8L -BuildDir build/w -ColdLoadSleepSec 45 -Only denied
+#+end_src
+Content controls exit 0:
+#+begin_example
+PASS L dictionary controls checks=7 entries=175774 negative=4 no_runtime=1
+#+end_example
+Build exit 0, ddskk-engine-host target linked. Pipe exit 0 with error=5 ACL
+denial, error=995 drained cancellation, restored ACL and next_reply_exact=true.
+EUC publication exit 1, current_count=0/invalid_utf8=true. UTF-8 publication
+exit 0, current_count=1/invalid_utf8=false. DNS exit 1, INCOMPLETE, ordinary
+resolver status 11001 rather than cancellation. Exact records/tails:
+- =build/w/os1-pipe.log=; owned host =eh2-6542b55a95ea4f02b66ad36426ac693e=.
+- =build/w/os1-dictionary-euc.log=; =eh2-296605df31c84be4a82eea9df249fc35/result.json=.
+- =build/w/os1-dictionary-utf8.log=; =eh2-b298003246f44aa2a1a1b6e5c4fe7146/result.json=.
+- =build/w/os1-dns.log=; =eh2-6e8bfa1227a74853aa2e8e67ce013cbc/result.json=.
+The pipe probe ran before the DNS-only trace hook rebuild; dictionary/DNS
+receipts record rebuilt host SHA256. Runtime SHA256 in all exact-runtime runs
+is =3fb43697a8bf01e10bc993c468365489ef98a30d5acbe05206f9e9faefdde3db=.
+
+The targeted UTF-8 denied-edit rerun exited 1 at private HKCU creation before
+any engine/TSF body ran. =build/w/os1-edit-utf8.log= and
+=build/w/lf3-edit-18fb377284814811bd13002e978aae96/denied.log= retain that
+Access denied result. Full TSF/bundle pressure acceptance remains coordinator-run.
+Every guarded command's cleanup tail:
+#+begin_example
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+#+end_example
+Parameter audits: Production 4 gates/0 stacks, Os1 2 gates/0 stacks, S5
+EndToEnd 15 gates/0 stacks. Python AST checks passed for five probe/helper
+files; PowerShell parser reported zero errors. No commit or live change made.
+An additional Production parameter audit with the real EUC input validated
+content and checked the recorded -LargeDictionary arguments for both
+production-clients and val1-pressure against the selected UTF-8 path:
+#+begin_example
+PASS S6 dictionary route audit gates=2 stacks=0
+#+end_example
+Receipt: =build/w/s6-76c5f2a6703944c59dd2dfad670bf0f7/evidence.json=.
+
+* Coordinator serial follow-up
+#+begin_src powershell
+$Runtime=$env:NELISP_RUNTIME
+$Utf8L=$env:SKK_L_DICTIONARY_UTF8
+cmake --build build/w --config Release --target ddskk-engine-host
+pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $Runtime -Stage Os1 -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+pwsh -NoProfile -File windows/test-host/test-local-edit-recovery.ps1 -Runtime $Runtime -LargeDictionary $Utf8L -BuildDir build/w -ColdLoadSleepSec 45 -Only denied
+pwsh -NoProfile -File windows/test-host/test-private-host-bundle.ps1 -Runtime $Runtime -Stage EndToEnd -LargeDictionary $Utf8L -Clients 3 -BuildDir build/w -ColdLoadSleepSec 45
+pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $Runtime -Stage Production -LargeDictionary $Utf8L -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+#+end_src
+Os1 is expected to fail explicitly on DNS cancellation; Production still
+refuses aggregate S6.3 acceptance for simultaneous-pressure evidence gaps.
+These known-red acceptance conditions and the policy IPC budget are unchanged.

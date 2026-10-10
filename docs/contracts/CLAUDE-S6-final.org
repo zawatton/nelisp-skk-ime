@@ -1,0 +1,148 @@
+#+TITLE: Claude serial S1.5 / S6 final wiring verification
+#+DATE: 2026-10-10
+
+* Scope and remaining red
+
+Worker changes wire existing native gates, add an independent Unicode byte
+gate and enforce the design table's component-to-gate coverage. No IME stack,
+NeLisp, engine host, TSF host, Emacs, build or behavioral runner was started
+by the worker this turn. Only static checks and -ValidateParametersOnly ran.
+The exact-runtime Unicode wrapper is prepared for Claude's first execution;
+its Lisp body is identical to the earlier measured byte probe.
+
+S6.2 remains FAIL on the unchanged policy IPC budget. This is a runtime
+GC/allocation issue for the Debian runtime/native-compiler lane; see
+[[file:S6-runtime-ipc-latency.org][S6-runtime-ipc-latency.org]]. Do not raise ceilings, disable GC, skip the
+Resources check or infer S6 completion from Qualification. S6.3's existing
+simultaneous-pressure INCOMPLETE guard is unchanged.
+
+Qualification contains 11 native-boundary gates and no standalone policy IPC
+measurement. All seven OS1 table rows must have successful receipts for every
+listed gate. The runner writes os1_coverage with executed=true only for real
+runs, and fails if a mapped gate is missing or failed. A parameter audit
+writes executed=false and is not an OS1 acceptance result. Native components
+remain retained; pipe ACL/client overlapped cancel and DNS deadline/shutdown
+cancellation use the real probes Claude already reported PASS. No low-IL or
+replacement-server cancellation claim is added.
+
+S1.5 uses run-engine-host-s1.ps1, delegating to the shared NativeBaseline
+stage. All five S4 responsibility switches and shadow are forced OFF; an
+inherited pause selector is cleared and the invoking environment is restored
+afterwards. Nine gates reuse private TSF local conversion, UTF-8 L state stress
+and edit recovery, real Emacs inline, learning/outbox crash recovery, cleanup,
+native pipe-tail soak and the unchanged callback IO/watchdog checks. S3/S4
+aggregate runners cannot serve as this baseline because they force policy ON.
+The baseline uses default production binaries, not policy-control builds.
+
+* Inputs and serial commands for Claude
+
+Set NELISP_RUNTIME to the supplied read-only ime-runtime-build/nelisp.exe
+and SKK_L_DICTIONARY to the existing UTF-8 L copy. Machine paths are caller
+parameters. The copy's leaf name may be SKK-JISYO.L.utf8: the validator checks
+header, both sections, at least 100000 entries and actual encoding. If using
+the EUC original, supply -LargeDictionaryUtf8 with the already-qualified copy,
+or allow selection of the adjacent .utf8 copy. No transcoding or dictionary
+rewrite occurs. S1.5 local-index gates and S6 dictionary publication receive
+the validated UTF-8 path; their other fixtures remain unchanged.
+
+Run one command to completion before the next. Keep -MatrixWorkers 1 and
+wait for every command ownership guard to report no leftovers. Stop on any
+unexpected failure. Never use live registry/pipe/appdata names or deployment
+scripts. The worker's parameter audits used build/eh6-next; Claude's actual
+default build and serial gates below use build/w.
+
+#+begin_src powershell
+$runtime=$env:NELISP_RUNTIME
+$largeDictionary=$env:SKK_L_DICTIONARY
+if(-not $runtime -or -not (Test-Path -LiteralPath $runtime)){throw 'Set NELISP_RUNTIME to the exact read-only image'}
+if(-not $largeDictionary -or -not (Test-Path -LiteralPath $largeDictionary)){throw 'Set SKK_L_DICTIONARY to the qualified UTF-8 L'}
+python windows/test-host/large-dictionary.py --dictionary $largeDictionary
+pwsh -NoProfile -File windows/test-host/test-s6-wiring.ps1
+pwsh -NoProfile -File windows/test-host/run-engine-host-s1.ps1 -Runtime $runtime -LargeDictionary $largeDictionary -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1 -ValidateParametersOnly
+pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $runtime -Stage Qualification -LargeDictionary $largeDictionary -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1 -ValidateParametersOnly
+pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $runtime -Stage Resources -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1 -ValidateParametersOnly
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+ctest --test-dir build/w -C Release --output-on-failure -j 1
+pwsh -NoProfile -File windows/test-host/run-engine-host-s1.ps1 -Runtime $runtime -LargeDictionary $largeDictionary -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $runtime -Stage Qualification -LargeDictionary $largeDictionary -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime $runtime -Stage Resources -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+#+end_src
+
+Resources is last and is expected to exit nonzero at exact-policy-artifact
+after three launches / 300 replies. Preserve that failure and runtime.json;
+do not convert it into PASS or rerun other stacks in parallel. The unchanged
+remaining adapter-tail/policy-isolation gates follow the policy artifact gate
+and are therefore not executed when it fails. Its ceilings remain 60000 ms
+startup, 512 MiB private, IPC p99 10 ms and max 50 ms.
+
+For an original EUC input with an explicit qualified copy, the exact runner
+argument addition is -LargeDictionaryUtf8 "$env:SKK_L_DICTIONARY_UTF8" in
+both S1.5 and Qualification commands (audit and actual). Keep the dictionary
+metadata and selected SHA256 in their evidence.json receipts.
+
+Expected actual-stage tails (to verify, not worker claims):
+#+begin_example
+PASS S6 stage=NativeBaseline gates=9 artifacts=...
+PASS S1.5 native baseline policy=OFF (shared receipt: stage NativeBaseline)
+PASS S6 stage=Qualification gates=11 artifacts=...
+#+end_example
+
+Keep each gate's full command, verbatim tail, counts, nested artifact/log paths,
+exit status and ownership-guard leftovers. The shared runner writes
+build/w/s6-<id>/evidence.json, including stage/status/runtime SHA, selected
+dictionary, policy_enabled, gate commands/log hashes and os1_coverage. S1.5's
+receipt stage is NativeBaseline with policy_enabled=false. Qualification's
+parent switches are also OFF; test-os1-private.py internally enables its own
+private policy diagnostic fixture, without importing the standalone IPC
+budget. This does not alter defaults or the S1.5 policy-OFF baseline.
+
+* Worker static and parameter receipts
+
+The unchanged HEAD runner was saved under build/eh6-next/s6-final-static
+and inspected by the new static checker (no script execution). It exits 1:
+#+begin_example
+Policy IPC budget appears in Qualification
+#+end_example
+The corrected runner's static checker exits 0, including four controls that
+must reject an empty mapping, a missing receipt, a failed receipt and an
+eighth unmapped component:
+#+begin_example
+PASS S6 static wiring components=7 coverage_controls=4 audits_not_execution=1 stacks=0
+#+end_example
+
+Worker parameter commands were the three audit commands above with
+-BuildDir build/eh6-next. Each exits 0; verbatim tails and planned counts:
+#+begin_example
+PASS S6 Qualification parameter audit gates=11 stacks=0
+PASS S6 NativeBaseline parameter audit gates=9 stacks=0
+PASS S1.5 parameter audit stacks=0
+PASS S6 Resources parameter audit gates=4 stacks=0
+#+end_example
+Both dictionary-using audits selected the existing UTF-8 L: 175774 entries,
+SHA256 =2119aa28a6eba24ad3bb2f11ce9de2ad7907636f7fbd1a9e3b68f359bd68b206=.
+Coverage receipts contain seven planned components, each executed=false.
+Audit receipts are:
+- build/eh6-next/s6-0b21bb1c52e14a65bfca747604554bc3/evidence.json (Qualification)
+- build/eh6-next/s6-87308b696fe14906b524efd06c5f2987/evidence.json (S1.5 NativeBaseline)
+- build/eh6-next/s6-3e3cdd58a8cf43ee9689c97a61d00be2/evidence.json (Resources)
+
+Pure Python AST/import/unit checks never call the Unicode main or create a
+job/process. The byte verifier accepts its exact expected bytes and rejects
+three corrupt/nonzero-exit controls. Static comparison confirms the Unicode
+Lisp body is identical to the existing byte probe, the Resources stage body
+is unchanged from HEAD, host-windows-s6.py is byte-identical to HEAD, and the
+ledger contains no CR bytes. Verbatim tails:
+#+begin_example
+PASS Unicode byte verifier controls=3 runtime_launches=0
+PASS Resources branch/budget source unchanged; ledger LF-only
+PASS Unicode Lisp body identical to existing byte probe
+PASS PowerShell AST files=3 stacks=0
+PASS Unicode byte verifier controls=3 runtime_launches=0; Python AST files=1; ledger LF-only
+#+end_example
+git diff --check exits 0 with no whitespace errors (sandbox Git ignore-file
+access warnings only). No resource budget file was modified.
+
+These are wiring/validator results only. No worker behavioral PASS, resource
+rerun or new OS1 runtime qualification is claimed. Changes remain unstaged;
+no commit. There are no processes started by this worker turn to clean up.

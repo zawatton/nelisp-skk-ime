@@ -104,7 +104,10 @@ class Deployment:
                    DDSKK_SKKSERV_ENABLE='0', NELISP_IME_ENGINE='ddskk',
                    NATIVEIME_TEST_LOCAL_CONVERSION='1',
                    DDSKK_HARNESS_DIAGNOSTICS='1',
-                   DDSKK_DICTIONARY_FILES=str(transport.ROOT / 'windows/test-host/data/behavior-jisyo.utf8'))
+                   DDSKK_DICTIONARY_FILES=';'.join(
+                       [str(transport.ROOT / 'windows/test-host/data/behavior-jisyo.utf8')] +
+                       ([str(self.args.large_dictionary)] if getattr(self.args, 'large_dictionary', None) else [])))
+        print('BUNDLE_DICTIONARY_FILES '+env['DDSKK_DICTIONARY_FILES'], flush=True)
         for switch in ('SOURCES', 'CACHE', 'RESTART', 'PUBLICATION', 'LEARNING'):
             env['DDSKK_HOST_POLICY_' + switch] = '1' if fields['mode'] == 'policy' else '0'
         self.host = self.job.spawn([str(bundle / 'ddskk-engine-host.exe'), str(self.args.runtime),
