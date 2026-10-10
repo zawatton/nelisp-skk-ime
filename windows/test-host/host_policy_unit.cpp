@@ -28,15 +28,21 @@ struct ShadowPolicyTest {
     check(GetTickCount64() - start < 50 && policy.queue_.empty() && policy.dropped_ == 3);
     lock.unlock(); policy.enabled_ = false; policy.Observe(v);
     check(policy.queue_.empty());
-    const std::string prefix = "HP1 R 1 2 3 4 5 ";
-    check(ShadowPolicy::ValidReply(prefix + "1", prefix));
-    check(!ShadowPolicy::ValidReply("HP1 R 2 2 3 4 5 1", prefix));
-    check(!ShadowPolicy::ValidReply("HP1 R 1 3 3 4 5 1", prefix));
-    check(!ShadowPolicy::ValidReply("HP1 R 1 2 4 4 5 1", prefix));
-    check(!ShadowPolicy::ValidReply("HP1 R 1 2 3 5 5 1", prefix));
-    check(!ShadowPolicy::ValidReply("HP2 R 1 2 3 4 5 1", prefix));
+    const std::string prefix = "HP2R" + ShadowPolicy::Digits(1, 11);
+    check(ShadowPolicy::ValidReply(prefix + "  !", prefix));
+    check(!ShadowPolicy::ValidReply("HP2R" + ShadowPolicy::Digits(2, 11) + "  !", prefix));
+    check(!ShadowPolicy::ValidReply("HP1R" + prefix.substr(4) + "  !", prefix));
+    check(!ShadowPolicy::ValidReply(prefix + "  `", prefix));
+    check(!ShadowPolicy::ValidReply(prefix + "  \x1f", prefix));
+    check(!ShadowPolicy::ValidReply(prefix + "    ", prefix));
     check(!ShadowPolicy::ValidReply(prefix, prefix));
     check(!ShadowPolicy::ValidReply(prefix + "garbage", prefix));
+    check(ShadowPolicy::Frame(1, v).size() == 23);
+    check(ShadowPolicy::Digits(~uint64_t{0}, 11) == "/__________");
+    v.a = 262144; check(ShadowPolicy::Frame(1, v).empty());
+    v.a = 1; v.kind = static_cast<PolicyKind>(13); check(ShadowPolicy::Frame(1, v).empty());
+    v.kind = PolicyKind::Cache; v.b = 262143;
+    check(ShadowPolicy::Frame(1, v).substr(19, 3) == "___");
     // A differing, valid managed answer must actually replace the native
     // branch; equality-only plumbing would fail this authority control.
     policy.enabled_ = true; policy.switches_[0] = true; policy.healthy_ = true;

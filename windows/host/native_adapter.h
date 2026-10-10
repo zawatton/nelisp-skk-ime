@@ -122,7 +122,7 @@ class ShadowPolicy {
   struct Decision { uint64_t value, at; };
   std::map<std::string, Decision> decisions_;
   static std::string Key(const Observation& v) {
-    // HP1 algorithms are pure numeric functions: context is an audit label,
+    // Policy algorithms are pure numeric functions: context is an audit label,
     // publication generation is an envelope guard, not a decision input.
     // c is relevant only to replacement/intent/payload. Engine changes discard rules.
     const auto c = v.kind == PolicyKind::Replacement || v.kind == PolicyKind::Intent || v.kind == PolicyKind::Payload ? v.c : 0;
@@ -178,11 +178,30 @@ class ShadowPolicy {
   std::wstring runtime_, repository_; HANDLE job_ = nullptr;
   HANDLE process_ = nullptr, input_ = nullptr, output_ = nullptr;
   uint64_t epoch_ = 0, request_ = 0;
+  static std::string Digits(uint64_t value, size_t width) {
+    std::string result(width, ' ');
+    for (size_t i = width; i; --i) { result[i-1] += value & 63; value >>= 6; }
+    return result;
+  }
+  static std::string Frame(uint64_t id, const Observation& v) {
+    const auto kind = static_cast<unsigned>(v.kind);
+    // Values outside the lossless HP2 range stay native; never truncate them.
+    if (kind < 1 || kind > 12 || v.a > 262143 || v.b > 262143 || v.c > 262143 ||
+        v.context_size > v.context.size()) return {};
+    if (kind == 1 && v.a > 1) return {};
+    const auto scalar = kind == 4 ? v.b : (kind == 3 || kind == 8 ? v.a : 0);
+    // Saturation at two preserves every zero/one/nonzero predicate. The
+    // three genuinely quantitative branches carry their original scalar.
+    return "HP2Q" + Digits(id, 11) + char(32 + kind) +
+        char(32 + (std::min)(v.a, uint64_t{2})) +
+        char(32 + (std::min)(v.b, uint64_t{2})) +
+        char(32 + (std::min)(v.c, uint64_t{2})) + Digits(scalar, 3) + "\n";
+  }
   static bool ValidReply(const std::string& reply, const std::string& prefix) {
     if (!reply.starts_with(prefix)) return false;
     const auto length = reply.size() - prefix.size();
-    return length > 0 && length <= 20 &&
-        std::all_of(reply.begin() + prefix.size(), reply.end(), [](char ch) { return ch >= '0' && ch <= '9'; });
+    return prefix.size() == 15 && length == 3 &&
+        std::all_of(reply.begin() + prefix.size(), reply.end(), [](unsigned char ch) { return ch >= 32 && ch <= 95; });
   }
 
   void Retire() {
@@ -257,8 +276,8 @@ class ShadowPolicy {
     DWORD backoff = 1000;
     while (!stop_ && !g_stopping) {
       const auto start = GetTickCount64(); std::string reply;
-      if (!Launch() || !Line(reply, 60000) || reply != "HP1 READY") {
-        if (!reply.empty() && reply != "HP1 READY")
+      if (!Launch() || !Line(reply, 60000) || reply != "HP2 READY") {
+        if (!reply.empty() && reply != "HP2 READY")
           LogEvent("policy-fallback native reason=incompatible-policy-ready-protocol");
         LogDecisions(); LogEvent("policy-start-failed"); Retire();
         const auto until = GetTickCount64() + backoff;
@@ -287,23 +306,12 @@ class ShadowPolicy {
           v = queue_.front(); queue_.pop_front();
         }
         const auto id = ++request_;
-        const auto prefix = std::to_string(id) + " " + std::to_string(epoch_) + " " +
-            std::to_string(v.engine_epoch) + " " + std::to_string(v.publication_generation) + " " +
-            std::to_string(static_cast<unsigned>(v.kind));
-        std::string context;
-        constexpr char hex[] = "0123456789abcdef";
-        // Context is a nonsemantic audit label. Sending its fixed fingerprint
-        // avoids interpreting up to 2048 unused hex characters in the child.
-        if (v.context_size) {
-          uint64_t fingerprint = 14695981039346656037ull;
-          for (size_t i = 0; i < v.context_size; ++i) {
-            fingerprint ^= static_cast<unsigned char>(v.context[i]); fingerprint *= 1099511628211ull;
-          }
-          for (int shift = 60; shift >= 0; shift -= 4) context += hex[(fingerprint >> shift) & 15];
+        const auto prefix = "HP2R" + Digits(id, 11);
+        const auto frame = Frame(id, v);
+        if (frame.empty()) {
+          Timeout(v); ++dropped_; ++completed_; changed_.notify_all();
+          LogEvent("policy-fallback native reason=hp2-input-bounds"); continue;
         }
-        const auto frame = "HP1 Q " + prefix + " " + std::to_string(v.a) + " " +
-            std::to_string(v.b) + " " + std::to_string(v.c) + " " +
-            (context.empty() ? "-" : context) + "\n";
         // One outstanding frame, <4096 bytes, into an empty 4096-byte pipe.
         // A timed-out channel is retired before another write; no blocked
         // policy can accumulate writes and stall this worker's shutdown.
@@ -315,26 +323,25 @@ class ShadowPolicy {
           LogEvent("policy-timeout-discard request=" + std::to_string(id));
           // Keep one outstanding ID while the paused child resumes; discard
           // its late response before writing anything else. Hard limit 5 s.
-          if (Line(reply, 5000) && ValidReply(reply, "HP1 R " + prefix + " ")) {
+          if (Line(reply, 5000) && ValidReply(reply, prefix)) {
             LogEvent("policy-late-discard request=" + std::to_string(id));
             { std::lock_guard lock(mutex_); healthy_ = true; }
             continue;
           }
           break;
         }
-        if (!ValidReply(reply, "HP1 R " + prefix + " ")) {
+        if (!ValidReply(reply, prefix)) {
           LogEvent("policy-invalid-reply request=" + std::to_string(id)); break;
         }
-        uint64_t decision = 0;
-        try { decision = std::stoull(reply.substr(("HP1 R " + prefix + " ").size())); }
-        catch (...) { LogEvent("policy-invalid-decision"); break; }
+        const uint64_t decision = (reply[15] - 32) * 4096 +
+            (reply[16] - 32) * 64 + reply[17] - 32;
         if (!ValidDecision(v.kind, decision)) { LogEvent("policy-invalid-decision"); break; }
         Remember(v, decision);
-        const auto expected = "HP1 R " + prefix + " " + std::to_string(v.native_decision);
+        const auto expected = prefix + Digits(v.native_decision, 3);
         ++completed_; changed_.notify_all();
         LogEvent(std::string("policy-compare ") + (reply == expected ? "match" : "mismatch") +
             " request=" + std::to_string(id) + " kind=" + std::to_string(static_cast<unsigned>(v.kind)));
-        if (!reply.starts_with("HP1 R " + prefix + " ")) break;
+        if (!reply.starts_with(prefix)) break;
       }
       Retire();
       const auto until = GetTickCount64() + 1000;

@@ -1,0 +1,196 @@
+#+TITLE: EH7 HP2 short-gate receipts
+#+DATE: 2026-10-10
+
+* Result and limits
+The unchanged tree reproduced S6.2 FAIL: one launch, 100 replies, p50 9.9346,
+p99 104.3242, max 111.5777 ms. Receipt: =build/w/hp1-before.json=.
+Final HP2 passes the unchanged policy-only Resources gate, three independent
+launches / 300 verified replies, NORMAL GC, p99<=10 ms and max<=50 ms:
+
+| Launch | p50 ms | p99 ms | max ms |
+|--------+--------+--------+--------|
+|      1 | 0.6677 | 0.9687 | 0.9928 |
+|      2 | 0.6668 | 1.0761 | 1.2999 |
+|      3 | 0.7247 | 0.9745 | 1.0108 |
+
+Runtime SHA256:
+=3fb43697a8bf01e10bc993c468365489ef98a30d5acbe05206f9e9faefdde3db=.
+Final policy SHA256:
+=e65ba3ba05bef91f4c24b4ed8327a6dd226db596b5868f3d4749113843d54734=.
+Startup max is below 60 seconds and private bytes below 512 MiB; exact values,
+raw per-request latency and hashes are in =build/w/hp2-qualified-s6.json=.
+Every completed runtime receipt has =runtime_unchanged=true=.
+
+Uninterrupted 1000 requests allocate 63,232,000 bytes in 2,164,000 allocator
+calls: 63,232 bytes / 2,164 calls per request, versus warmed three-digit HP1's
+676,080 / 24,223 (10.69x / 11.19x reductions). Collections fall from eleven
+to one per 1000. That diagnostic has p99 0.9639 ms and max 78.7942 ms.
+The remaining collector pause is explicitly not a pass of a 1000-request
+50 ms ceiling. No long-run host-tail, Recovery, durability, Production or
+EndToEnd qualification is claimed.
+
+* Commands and verbatim output artifacts
+Run from the checkout root with Runtime supplied externally; no runtime path
+is embedded in source. IME stacks were run serially, with output retained
+in the named build logs. Logs contain the unabridged verbatim tails, including
+the full JSON lines and owned-process cleanup. No matrix workers were launched.
+
+#+begin_src powershell
+python windows/test-host/host-windows-s6.py --runtime $Runtime --output build/w/hp1-before.json --samples 1 --cold-load-sleep-sec 45
+cmake -S windows -B build/w -G "Visual Studio 17 2022" -A x64
+cmake --build build/w --config Release
+ctest --test-dir build/w -C Release
+cmake -S windows/test-host/s3 -B build/w/policy-unit -G "Visual Studio 17 2022" -A x64
+cmake --build build/w/policy-unit --config Release --target host-policy-unit
+build/w/policy-unit/Release/host-policy-unit.exe
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L . -l windows/test-host/host-policy-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l framework/test/nelisp-ime-stateline-test.el -l framework/test/nelisp-ime-stateline-conformance-test.el -f ert-run-tests-batch-and-exit
+$env:HOME=[Environment]::GetFolderPath('UserProfile'); emacs -Q --batch -L framework/src -L engines/lattice/src -l engines/lattice/test/nelisp-ime-lattice-test.el -f ert-run-tests-batch-and-exit
+pwsh -NoProfile -File windows/test-host/test-host-policy.ps1 -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+pwsh -NoProfile -File windows/test-host/test-private-host-bundle.ps1 -Stage Compatibility -Runtime $Runtime -BuildDir build/w -ColdLoadSleepSec 45
+python windows/test-host/host-policy-ipc.py --runtime $Runtime --records docs/contracts/host-policy-inputs-v2.json
+python windows/test-host/host-policy-ipc.py --runtime $Runtime --records docs/contracts/host-policy-sk1-extra-v1.json
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/w/hp2-final-gc.json --count 1000 --continuous
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/w/hp2-final-settled.json --count 1000
+python windows/test-host/host-windows-s6.py --runtime $Runtime --output build/w/hp2-qualified-s6.json --samples 3 --cold-load-sleep-sec 45
+#+end_src
+
+| Gate | Log / verbatim tail location | Result/count |
+|------+------------------------------+--------------|
+| Unchanged reproduction | hp1-before.json; original console assertion | FAIL, 1 launch/100 replies |
+| Configure | build/w/configure.log | PASS |
+| Release build | build/w/build.log | PASS |
+| CTest | build/w/ctest.log and Testing/Temporary/LastTest.log | FAIL, 0/10 |
+| Unit configure | build/w/policy-unit-config.log | PASS |
+| Unit build | build/w/policy-unit-build.log | PASS |
+| Native unit | build/w/policy-unit.log | PASS, 36 checks |
+| Policy ERT | build/w/policy-ert.log | PASS, 16 tests |
+| Stateline ERT | build/w/stateline-ert.log | PASS, 31 tests |
+| Lattice ERT | build/w/lattice-ert.log | PASS, 14 tests |
+| Normal isolation | build/w/policy-isolation.log | PASS, 801 cached requests |
+| S5 Compatibility | build/w/compatibility.log | PASS, 4 gates |
+| Final S4.1 equivalence | build/w/equivalence-final.log | PASS, 73 decisions / 6 malformed / 1 negative control |
+| SK1 extra equivalence | build/w/equivalence-sk1.log | PASS, 24 decisions / 6 malformed / 1 negative control |
+| GC continuous | build/w/hp2-final-gc.log | PASS measurement, 1000 exchanges; 1 collection |
+| GC settled | build/w/hp2-final-settled.log | PASS measurement, 1000 exact per-request counters; 1 collection |
+| S6.2 | build/w/hp2-qualified-s6.log | PASS, 3 launches/300 replies |
+
+Native unit verbatim tail:
+#+begin_example
+policy adapter unit: 36 checks, 0 failures
+#+end_example
+Final equivalence verbatim tails:
+#+begin_example
+PASS S4 equivalence negative control wrong-native-decision rejected=1
+PASS Windows HP2 IPC {'decisions': 73, 'max_uint64_id': 1, 'split_frame': 1, 'batched_frames': 71, 'startup_ms': 1425.7661000001463, 'lisp_pause_ms': 3003.9284999998017} malformed_rejected=6 owned_children=8 leftovers=0
+PASS S4 equivalence negative control wrong-native-decision rejected=1
+PASS Windows HP2 IPC {'decisions': 24, 'max_uint64_id': 1, 'split_frame': 1, 'batched_frames': 22, 'startup_ms': 1435.9769999996388, 'lisp_pause_ms': 3001.774999999725} malformed_rejected=6 owned_children=8 leftovers=0
+#+end_example
+Settled measurement verifies that every request, including the maximum, uses
+exactly 63,232 bytes / 2,164 allocator calls. Its response maximum is 1.5395 ms,
+but the collection appears in a 70.4379 ms native-counter cycle after a reply.
+That settled response maximum is not used as a substitute for uninterrupted IPC.
+CTest failed before executing its binaries because the sandbox denied creating
+private HKCU NativeIME-test keys. The exact denial and all ten failures are in
+LastTest.log; no registry scope or tests were weakened. Summary excerpt:
+#+begin_example
+0% tests passed, 10 tests failed out of 10
+#+end_example
+The initial policy ERT invocation omitted -L . and failed with:
+#+begin_example
+Cannot open load file: No such file or directory, engine/host-policy.el
+#+end_example
+The corrected invocation passed all sixteen tests. S5 controls reject six
+manifest defects, three private-endpoint guard violations and an invalid
+journal phase. Real startup rejects HP1 and a changed policy image, with zero
+managed policy children in both cases. Those are Compatibility controls, not
+a Recovery/durability matrix.
+
+* Intermediate failures and diagnostic commands
+Each retained diagnostic used the same supplied image and ordinary GC. Their
+commands differ only by the output name below and, for the loaded diagnostic,
+the stated source/protocol options. No failure was counted as an acceptance pass.
+
+#+begin_src powershell
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/w/hp2-gc-first.json --count 1000 --continuous
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/w/hp2-gc-second.json --count 1000 --continuous
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/w/hp2-gc-third.json --count 1000 --continuous
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/w/hp2-gc-fourth.json --count 1000 --continuous
+python windows/test-host/diagnose-policy-gc.py --runtime $Runtime --output build/w/hp2-gc-loaded.json --policy-source windows/test-host/windows-runtime-s6.el --policy-ipc HP2 --count 1000
+python windows/test-host/host-windows-s6.py --runtime $Runtime --output build/w/hp2-after.json --samples 3 --cold-load-sleep-sec 45
+python windows/test-host/host-windows-s6.py --runtime $Runtime --output build/w/hp2-final-s6.json --samples 3 --cold-load-sleep-sec 45
+python windows/test-host/host-windows-s6.py --runtime $Runtime --output build/w/hp2-warmed-s6.json --samples 3 --cold-load-sleep-sec 45
+#+end_src
+
+| Diagnostic | Exchanges | Bytes/request | Calls/request | Collections |
+|------------+-----------+---------------+---------------+-------------|
+| gc-first | 1000 | 495672 | 15570 | 7 |
+| gc-second | 1000 | 145000 | 4754 | 2 |
+| gc-third | 1000 | 72416 | 2408 | 1 |
+| gc-fourth | 1000 | 63232 | 2164 | 1 |
+| gc-loaded (settled) | 1000 | 63232 | 2164 | 1 |
+
+Each same-stem .log contains its verbatim JSON measurement and cleanup tail.
+gc-loaded localized the startup growth collection to the first request cycle,
+after its reply; waiting for counters would hide it from response latency.
+The serving process therefore initializes all twelve kinds before startup GC.
+Unsettled continuous measurement and unmodified budgets remain authoritative.
+hp2-after and hp2-final-s6 both ran 3x100 and failed maxima (82.0376 and
+74.5083 ms in their first launches). hp2-warmed-s6 ran 3x100 and passed budget
+assertions, then failed printing an emoji through cp932. The qualification
+rerun follows a portable ASCII JSON console fix; JSON files retain UTF-8.
+
+Earlier =build/w/equivalence.log= passed 67 decisions, five malformed cases and
+the wrong-decision negative control before the final additions. Frozen corpus
+bytes/checksums were not edited.
+
+* Cleanup and scope
+Verbatim runtime/guard cleanup tails include:
+#+begin_example
+CLEANUP S6 runtime leftovers=[]
+CLEANUP GC diagnostic leftovers=[]
+GUARD owned-command cleanup {"remaining": [], "guarded": [], "terminated": [], "leftovers": []}
+#+end_example
+The stateline/lattice Emacs batch tests inadvertently overlapped S5's startup
+waiting period, contrary to the no-parallel-test-runners instruction. They
+ran sequentially to each other; no two IME stacks overlapped. No background
+test runner remains. This execution mistake is retained in the receipt.
+
+All owned hosts, policies, engines and reader threads were waited/reaped. Other
+IME-named processes on the working PC were not manipulated. No live endpoint,
+settings, runtime, core, shim or ABI changed. The sole windows/scripts change
+is the explicitly authorized HP1-to-HP2 manifest literal. Changes are unstaged;
+there is no commit. Python syntax and whitespace/scope review are recorded below.
+
+* Change index (file:line)
+| File:line | Change |
+|-----------+--------|
+| engine/host-policy.el:1 | Private HP2 header |
+| engine/host-policy.el:103 | Quantitative decoder, fixed reply, cached numeric suffixes |
+| engine/host-policy.el:139 | Bounded frame loop, all-kind startup initialization and private pause |
+| windows/host/native_adapter.h:125 | Protocol-neutral memoization comment |
+| windows/host/native_adapter.h:181 | Full-width native ID encoding and bounded/canonical frame construction |
+| windows/host/native_adapter.h:200 | Exact-length reply validation |
+| windows/host/native_adapter.h:279 | HP2 READY and version rejection |
+| windows/host/native_adapter.h:309 | Retained native correlation, bound fallback, fixed reply decoding |
+| windows/host/policy_bundle.h:50 | HP2 compatibility validation and log |
+| windows/scripts/private-host-bundle.ps1:45 | Only the authorized manifest-version literal |
+| windows/test-host/host_policy_hp2.py:1 | Independent bounded fixture codec |
+| windows/test-host/host_policy_unit.cpp:31 | Reply, max-ID, frame bounds and scalar encoding controls |
+| windows/test-host/host-policy-test.el:61 | Three HP2 ERT tests |
+| windows/test-host/host-policy-ipc.py:18 | HP2 transport, EOF/split/batch/max-ID/malformed/equivalence controls |
+| windows/test-host/host-windows-s6.py:19 | HP2 requests/replies, raw latency receipt and portable console output |
+| windows/test-host/diagnose-policy-gc.py:19 | HP2 telemetry input/output plus explicit indirect-load protocol option |
+| windows/test-host/private-host-bundle.py:46 | Test-side HP2 manifest compatibility |
+| windows/test-host/private-host-bundle-controls.py:53 | HP1 negative manifest and real startup control |
+| docs/contracts/policy-ipc-v2.org:1 | Additive wire/ownership specification |
+| docs/contracts/EH7-hp2-receipts.org:1 | Additive commands, counts and receipts |
+| docs/design/engine-host-nelisp.org:906 | S6.2 outcome and residual long-run collector limit |
+
+Static commands: Python ast.parse on the six changed/new Python files and
+git diff --check (session-only safe-directory override). Verbatim syntax tail:
+#+begin_example
+PASS Python syntax: 6 files
+#+end_example
+Whitespace check exits zero with no diff errors. Source scope is fifteen files;
+the windows/scripts diff is one literal only. No staged changes.

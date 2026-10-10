@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import host_policy_hp2 as hp2
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[2]
@@ -72,7 +73,7 @@ def sample(runtime, timeout):
         deadline = time.monotonic() + timeout
         while True:
             line = replies.get(timeout=max(.01, deadline-time.monotonic()))
-            if line == b'HP1 READY\n':
+            if line == b'HP2 READY\n':
                 break
             if line is None:
                 raise RuntimeError('runtime exited before READY: '+repr(discovery))
@@ -83,17 +84,18 @@ def sample(runtime, timeout):
         # Byte-for-byte numeric decisions and sequential IPC roundtrip latency.
         for serial in range(1, 101):
             begin = time.perf_counter()
-            process.stdin.write(f'HP1 Q {serial} 7 11 13 1 1 0 0 -\n'.encode())
+            process.stdin.write(hp2.request(serial, 1, 1, 0, 0))
             process.stdin.flush()
             actual = replies.get(timeout=5)
-            assert actual == f'HP1 R {serial} 7 11 13 1 0\n'.encode(), actual
+            assert actual == hp2.reply(serial, 0), actual
             latency.append((time.perf_counter()-begin)*1000)
         memory.append(private_bytes(process))
         process.stdin.close()
         process.wait(timeout=10)
         assert process.returncode == 0, process.returncode
         return dict(startup_ms=startup, private_bytes=max(memory),
-                    policy_ipc_ms=distribution(latency), discovery=discovery)
+                    policy_ipc_ms=distribution(latency), policy_ipc_raw_ms=latency,
+                    discovery=discovery)
     finally:
         job.close()
         if process:
@@ -140,7 +142,8 @@ def main():
         for value in report['samples']:
             assert value['policy_ipc_ms']['p99'] <= 10 and value['policy_ipc_ms']['max'] <= 50, value
         report['status'] = 'PASS policy-only measurements'
-        print('PASS S6 artifact '+json.dumps(report, ensure_ascii=False), flush=True)
+        # Windows redirected consoles may use cp932; keep the receipt portable.
+        print('PASS S6 artifact '+json.dumps(report, ensure_ascii=True), flush=True)
     except Exception as error:
         report['status'] = 'FAIL policy-only measurements'
         report['failure'] = repr(error)

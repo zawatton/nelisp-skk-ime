@@ -42,7 +42,7 @@ if ($Action -eq 'Pack') {
   }
   [void](New-Item -ItemType Directory -Path (Join-Path $BundleDirectory 'nelisp'))
   Copy-Item -LiteralPath $SubstrateSource -Destination (Join-Path $BundleDirectory 'nelisp') -Recurse
-  $manifest = @('schema=1','contract=engine-host-v1','policy_ipc=HP1',"mode=$Mode",
+  $manifest = @('schema=1','contract=engine-host-v1','policy_ipc=HP2',"mode=$Mode",
     ('host_sha256=' + (Get-FileHash -LiteralPath (Join-Path $BundleDirectory 'ddskk-engine-host.exe')).Hash.ToLowerInvariant()),
     ('runtime_sha256=' + (Get-FileHash -LiteralPath $Runtime).Hash.ToLowerInvariant()),
     ('policy_sha256=' + (Get-FileHash -LiteralPath (Join-Path $BundleDirectory 'repository/engine/host-policy.el')).Hash.ToLowerInvariant()))
