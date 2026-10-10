@@ -80,7 +80,8 @@ evidence: docs/design/engine-host-nelisp.org sha256=01900ae60d63a72979235f3816ca
 
 ** S1.5 End to end: unchanged native host passes private TSF local and Emacs inline with durability recovery and measured request tails
 #+NOTE: Design S1; exact supplied Windows runtime, cold wait 45 s, lattice warmup, private roots, counts/hashes/PID cleanup. Default native build; all S4 policy/shadow switches OFF; UTF-8 L validated by content. Final serial execution delegated to Claude; parameter audits are not PASS evidence.
-cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s1.ps1 -Runtime "$env:NELISP_RUNTIME" -LargeDictionary "$env:SKK_L_DICTIONARY" -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+#+NOTE: Claude ran run-engine-host-s1.ps1 serially on 297afa7: NativeBaseline 9 gates PASS with policy OFF and the UTF-8 L.
+evidence: build/validation/eh6-s6/S1-5.log sha256=ed12e41f734abad71292eb6b8e40dcaa866da559fd6de3110a3c5923b922a624
 
 * S2 Frozen interchangeable contracts
 ** S2.1 Public wire, index and learning formats have hashed byte fixtures and caller deadline inventory
@@ -170,7 +171,8 @@ evidence: build/validation/eh5-s5/EndToEnd-2.log sha256=c5b7ab145e529495e943d008
 * S6 Windows qualification and adapter retirement decision
 ** S6.1 Exact Windows runtime qualifies each proposed OS1 replacement or documents its retained native boundary
 #+NOTE: Named-pipe security/cancel, mmap leases, flush/replace, TCP/DNS, process jobs, event loop and Unicode; source presence or GNU Emacs ERT alone is insufficient.
-cmd: pwsh -NoProfile -File windows/test-host/run-engine-host-s6.ps1 -Runtime "$env:NELISP_RUNTIME" -Stage Qualification -LargeDictionary "$env:SKK_L_DICTIONARY" -BuildDir build/w -ColdLoadSleepSec 45 -MatrixWorkers 1
+#+NOTE: Claude ran Qualification serially on 297afa7: 11 gates PASS covering all 7 OS1 components (pipe ACL/cancel, DNS cancel, dictionary, Unicode, retained-boundary gates); every component retained native.
+evidence: build/validation/eh6-s6/Qualification-5.log sha256=d44d62ff3a844e490189af7602e568bbb6f5869f731fb83f94a3945a08b489a7
 #+NOTE: All seven components retained native and mapped to required executed gates. Pipe ACL/client overlapped cancellation and GetAddrInfoExW DNS cancellation probes available (Claude prior PASS); UTF-8 L publication and separate exact-image Unicode bytes included. Qualification fails for any missing/failed component gate; S6.2 policy IPC budget runs in Resources only. Final runner execution delegated to Claude; see docs/contracts/CLAUDE-S6-final.org.
 
 ** S6.2 CW1 and RW4 artifact choices meet measured memory/startup and host-tail budgets without weakening durability or callback gates
