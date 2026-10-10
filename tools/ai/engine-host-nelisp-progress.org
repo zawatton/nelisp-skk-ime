@@ -68,15 +68,15 @@ cmd: test -s docs/design/engine-host-nelisp.org && test -s tools/ai/engine-host-
 
 ** S1.2 Every host responsibility has a source anchor, contract and consumer
 #+NOTE: docs/design/engine-host-nelisp.org:32--74; source inspection only.
-evidence: docs/design/engine-host-nelisp.org sha256=051df784853f331fb1b30b9c860f6c366ab867f0b2c96005995771ab17f8c571
+evidence: docs/design/engine-host-nelisp.org sha256=e62ffe9640d3ce2e735c855116d1ee1634a82ec2e062bae7b162e906a6815c0e
 
 ** S1.3 Architecture choice isolates local key paths from GC and maps runtime gaps to NC1
 #+NOTE: docs/design/engine-host-nelisp.org:75--177; proposed budgets and source availability are explicitly separated from measurements.
-evidence: docs/design/engine-host-nelisp.org sha256=051df784853f331fb1b30b9c860f6c366ab867f0b2c96005995771ab17f8c571
+evidence: docs/design/engine-host-nelisp.org sha256=e62ffe9640d3ce2e735c855116d1ee1634a82ec2e062bae7b162e906a6815c0e
 
 ** S1.4 Versioned migration, durability, rollback, acceptance gates and risks are specified
 #+NOTE: docs/design/engine-host-nelisp.org:178--364; written plan, not executed acceptance.
-evidence: docs/design/engine-host-nelisp.org sha256=051df784853f331fb1b30b9c860f6c366ab867f0b2c96005995771ab17f8c571
+evidence: docs/design/engine-host-nelisp.org sha256=e62ffe9640d3ce2e735c855116d1ee1634a82ec2e062bae7b162e906a6815c0e
 
 ** S1.5 End to end: unchanged native host passes private TSF local and Emacs inline with durability recovery and measured request tails
 #+NOTE: Design S1; exact supplied Windows runtime, cold wait 45 s, lattice warmup, private roots, counts/hashes/PID cleanup. Default native build; all S4 policy/shadow switches OFF; UTF-8 L validated by content. Final serial execution delegated to Claude; parameter audits are not PASS evidence.

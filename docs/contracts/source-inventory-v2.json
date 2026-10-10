@@ -4,9 +4,9 @@
   "source_sha256": {
     "windows/host/learning_queue.h": "65d91836911ed74e10f785ea2765adbff22c9bf0fb588a18868bcbe2cdfca166",
     "windows/host/main.cpp": "e6f1c30fb83b6fc8418825296b2497d611a778e98d5814a062551af66af0924e",
-    "windows/host/native_adapter.h": "f3f17a8950367b1950a5c31c254927e1f62c06599e47b76b077a034cb5344438",
+    "windows/host/native_adapter.h": "8815259f218171919acafa35a47a4ecde5d614703ce881388ee7847db502fed4",
     "windows/host/native_adapter_transport.h": "cd41813e9d9c4c4b7cbf509c8c873d2ed12eb86dad75b7fcbddb50810439b256",
-    "windows/host/policy_bundle.h": "34f246dded119390b896fd378213a61fe1d79a87675e3542302d22c1d666f712",
+    "windows/host/policy_bundle.h": "fd4465a8a81ff840cda8c4c6b4e2e58109067aa69e928a3d28f71d1c409ad89a",
     "windows/host/policy_fault.h": "e89371b994ee4732b4e069b69ab31e6273e13aa6dfc1ff601d957e02ccd4c2f4",
     "windows/host/provider_outbox.h": "cfb7b15a282e22050006dc3de0d094a42b179bccf77894f7ac86c144a3eac4c8",
     "windows/src/auto_pair.cpp": "9fbc69f15f754f09dea20eb090c768721e9963855ae3e3f6bdd1703f4a9a4860",
@@ -124,7 +124,7 @@
     "engine/ddskk-hotpath.el": "ed9ce757fbc3f8e4e08601fcf9d6634948f46c5f34bf8ec440a0a5da3a585565",
     "engine/ddskk-hotpath.neln.manifest.el": "91925b43b82916c171aef56eab8e93c7d6c49341c029b0409a4ccff765e987f9",
     "engine/gen-rule-tree.el": "1024d46ad9f6c25a3e4a6bff22e7c8d0bd1e4292c67ecf103fa192fdca3f6ac3",
-    "engine/host-policy.el": "5e755b118b7eb5b01ee5ee4bec8a65e231acc1f318d54cbc9979202fb2e81d21",
+    "engine/host-policy.el": "e65ba3ba05bef91f4c24b4ed8327a6dd226db596b5868f3d4749113843d54734",
     "engine/session-v2.el": "09220835cfece78d1083868eac7a30c2e71cc3b04be7cfe1b44fc40634a65326",
     "engine/skk-ime-session.el": "78a3997f2787b40b74e5d48707954e30fcd833484ff2e6541083a469f12361bd",
     "engine/skk-input-rules.el": "8737f09db0e2490b7c9d6068cc132cde4d51c0751a90d07cb930a14c597d5da7",
@@ -166,16 +166,17 @@
     "windows/test-host/compare-conversion-candidates.ps1": "0400ac92830d3145deeda4883211e8099d31aef0682aebb33f8bcf641a44fc33",
     "windows/test-host/core-test-action.ps1": "a20733eef2d6c1d572f8cd285f203326b0dc574b837341191d4a4d3a3ba4f96a",
     "windows/test-host/crlf-parser/host_crlf_parser_test.cpp": "7aa360c9c963311cf7c071bf0401f0cbe9cd42fe533170ccf8cb602173bbf9a4",
-    "windows/test-host/diagnose-policy-gc.py": "8f915f76ddadea1ff827015eed7c30dd17899edb87e683fe35d52627d82cf2a7",
+    "windows/test-host/diagnose-policy-gc.py": "6a5813bff88e958bdbea1a418c3c0bc64beba67636522e5bcca077357d3d347a",
     "windows/test-host/diagnose-policy-ipc.py": "8665e300ce2974895cb4b189e69bdb23c8d399d148aaffc6f9cfca446225db6b",
     "windows/test-host/host-disk-contracts.py": "7bd8b36d7b995ff87b21e35d2b9d98bd7a30db4a9fd3dbd60078c6d63110a83e",
-    "windows/test-host/host-policy-ipc.py": "55a8e2e535fdf81a14f5a4f8b4c561eec33579b2be1e39a4cf450b381ecdf970",
+    "windows/test-host/host-policy-ipc.py": "d98229e4696e1346ef41a15f212700d628e6f4509d893340caecaa31104de86e",
     "windows/test-host/host-policy-s4.py": "a093472bfdcc2e787a73051c723b9ae4389e5e502654fa33876cf719c2fdf8de",
-    "windows/test-host/host-policy-test.el": "20346532caa5b4aae417968ce6bc88963630ce8e3625137ba770008e80d328fb",
+    "windows/test-host/host-policy-test.el": "b080d5740074749f42dbfed96e43bef095b37519237ac9dd0d02914974c5abc4",
     "windows/test-host/host-policy.py": "c6cf06f36c8fd5fb5fc29182ef6e48641c35b86072c0719ff03a3c5a9144634f",
     "windows/test-host/host-test-process-guard.py": "d33e7904586edb6370613cb868c96eb0c33e78441ddbe66029ad987db3ae3c5d",
-    "windows/test-host/host-windows-s6.py": "0e80a39b96afcecebb32cf51882362e1b9cdc0bc7c25ad3db56c032139c00c17",
-    "windows/test-host/host_policy_unit.cpp": "89fc463865185229f4c9b6016fef2c9374d4f9000b00389048eb95f29f2a961c",
+    "windows/test-host/host-windows-s6.py": "774dad2674138906c8b522033189680f4854ed1916643c408795a55209e5fd8f",
+    "windows/test-host/host_policy_hp2.py": "96c4f7fa5d1138911911ae313d9b5ddf695c05dd46651ee952d85ccf6fa520d5",
+    "windows/test-host/host_policy_unit.cpp": "3dab1f30ef6d5196f6993925c20717e65f96f69881a0c33a6a5bf394e5a77950",
     "windows/test-host/host_utf8_protocol_test.cpp": "0efc6c940d0a66f4937aa05872fbfe76a0e808d18d76f040fe8dcf30ba42f416",
     "windows/test-host/inline-drop-subscriber.py": "d368bcdd285400ded49e38347935279a4c077894b3da1a149e9a25fb506a03b1",
     "windows/test-host/inline-emacs-subscriber.el": "d81953d3b3c43fda1dc4892b3f44ddc123ae054e6cfaa366c47245d83c3eaf74",
@@ -196,10 +197,10 @@
     "windows/test-host/measure-live-input-log.ps1": "40d53c96cf747f9bf4a2b8c5be8ba5ddbac0317a2bcfd3bbb92ee0a54d9fb33c",
     "windows/test-host/mode-indicator/regression.cpp": "5dc2dae2bad4e33410e82ff6bada2097a951fd71259a4a797aa0b0b8978ed928",
     "windows/test-host/prepare-policy-execution.py": "d8fc6e89fd28e324aa68d4dde590881b3ee8c9c4f90e15cd16ccc754e35f12e6",
-    "windows/test-host/private-host-bundle-controls.py": "fc2b729cc43ce726e890e8afdd9de96481efab53f9e7ee445975782ffc8a7252",
+    "windows/test-host/private-host-bundle-controls.py": "a8fe02662b688c7e7441ce1c9e082cd05d0a5951eae56d6aabf036b9407f696f",
     "windows/test-host/private-host-bundle-e2e.py": "f6fb137120e26949247fbc62b503de99e1319119fd78d66e2c60a9b609bbe5a9",
     "windows/test-host/private-host-bundle-recovery.py": "3954817dba19bed9910a1475b3585a4ab6900034af2ef5a1454c1619dd4bd84f",
-    "windows/test-host/private-host-bundle.py": "171a3ec175852eb3530515204eb20c41dbfe94baaff5a6bf151a8be837c1886b",
+    "windows/test-host/private-host-bundle.py": "84d8833e1a7b20552dc88b863ef218792664aa098cf2ff410456e268fcbf073b",
     "windows/test-host/probe-policy-execution-cli.py": "41438b3fa6579a00f69412b676e3a726d9ed8af9e81f021cf7ba00a2263bc062",
     "windows/test-host/profile-eg1-server.py": "0feed983e3170da5c400e0f8acc37df9ec47ba875b92b8710a2911b56c3e9c4b",
     "windows/test-host/profile-eg1.py": "9b6cb469031a10f1790db3053355fb2d0e6690b459ccad40a08774f175f39944",
@@ -2312,23 +2313,28 @@
       "declaration": "(when (equal (getenv \"DDSKK_SEARCH_KATAKANA\") \"1\")"
     },
     {
-      "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "engine/host-policy.el:109",
-      "declaration": "(pause-kind (getenv \"DDSKK_HOST_POLICY_TEST_PAUSE_KIND\"))"
-    },
-    {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "engine/host-policy.el:110",
-      "declaration": "(private-key (or (getenv \"NATIVEIME_REGISTRY_KEY\") \"\"))"
+      "source": "engine/host-policy.el:142",
+      "declaration": "(key (or (getenv \"NATIVEIME_REGISTRY_KEY\") \"\"))"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "engine/host-policy.el:115",
-      "declaration": "(and (equal (getenv \"DDSKK_HARNESS_DIAGNOSTICS\") \"1\")"
+      "source": "engine/host-policy.el:143",
+      "declaration": "(pause-kind (and (equal (getenv \"DDSKK_HARNESS_DIAGNOSTICS\") \"1\")"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
+      "source": "engine/host-policy.el:146",
+      "declaration": "(getenv \"DDSKK_HOST_POLICY_TEST_PAUSE_KIND\")"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
+      "source": "engine/host-policy.el:147",
+      "declaration": "(string-to-number (getenv \"DDSKK_HOST_POLICY_TEST_PAUSE_KIND\")))))"
     },
     {
       "name": "DDSKK_HOST_POLICY_UNIT_ONLY",
-      "source": "engine/host-policy.el:146",
+      "source": "engine/host-policy.el:169",
       "declaration": "(unless (getenv \"DDSKK_HOST_POLICY_UNIT_ONLY\") (host-policy-serve))"
     },
     {
@@ -2813,17 +2819,17 @@
     },
     {
       "name": "DDSKK_HOST_POLICY_UNIT_ONLY",
-      "source": "windows/test-host/diagnose-policy-gc.py:144",
+      "source": "windows/test-host/diagnose-policy-gc.py:145",
       "declaration": "definitions = text.replace('(unless (getenv \"DDSKK_HOST_POLICY_UNIT_ONLY\") (host-policy-serve))', '')"
     },
     {
       "name": "DDSKK_HOST_POLICY_UNIT_ONLY",
-      "source": "windows/test-host/diagnose-policy-gc.py:216",
+      "source": "windows/test-host/diagnose-policy-gc.py:221",
       "declaration": "for name in ('DDSKK_HOST_POLICY_UNIT_ONLY','DDSKK_HOST_POLICY_TEST_PAUSE_KIND'): env.pop(name,None)"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/diagnose-policy-gc.py:216",
+      "source": "windows/test-host/diagnose-policy-gc.py:221",
       "declaration": "for name in ('DDSKK_HOST_POLICY_UNIT_ONLY','DDSKK_HOST_POLICY_TEST_PAUSE_KIND'): env.pop(name,None)"
     },
     {
@@ -2843,22 +2849,22 @@
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/host-policy-ipc.py:23",
+      "source": "windows/test-host/host-policy-ipc.py:24",
       "declaration": "env = dict(os.environ, NATIVEIME_REGISTRY_KEY='Software\\\\NativeIME-test-EH3-ipc',"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/test-host/host-policy-ipc.py:24",
+      "source": "windows/test-host/host-policy-ipc.py:25",
       "declaration": "DDSKK_HARNESS_DIAGNOSTICS='1', DDSKK_HOST_POLICY_TEST_PAUSE_KIND='5')"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/host-policy-ipc.py:24",
+      "source": "windows/test-host/host-policy-ipc.py:25",
       "declaration": "DDSKK_HARNESS_DIAGNOSTICS='1', DDSKK_HOST_POLICY_TEST_PAUSE_KIND='5')"
     },
     {
       "name": "DDSKK_HOST_POLICY_UNIT_ONLY",
-      "source": "windows/test-host/host-policy-ipc.py:25",
+      "source": "windows/test-host/host-policy-ipc.py:26",
       "declaration": "env.pop('DDSKK_HOST_POLICY_UNIT_ONLY', None)"
     },
     {
@@ -2898,12 +2904,12 @@
     },
     {
       "name": "DDSKK_HOST_POLICY_UNIT_ONLY",
-      "source": "windows/test-host/host-windows-s6.py:56",
+      "source": "windows/test-host/host-windows-s6.py:57",
       "declaration": "env.pop('DDSKK_HOST_POLICY_UNIT_ONLY', None)"
     },
     {
       "name": "DDSKK_HOST_POLICY_TEST_PAUSE_KIND",
-      "source": "windows/test-host/host-windows-s6.py:57",
+      "source": "windows/test-host/host-windows-s6.py:58",
       "declaration": "env.pop('DDSKK_HOST_POLICY_TEST_PAUSE_KIND', None)"
     },
     {
@@ -7139,35 +7145,39 @@
       "declaration": "void Timeout(const Observation& value) {"
     },
     {
-      "source": "windows/host/native_adapter.h:191",
+      "source": "windows/host/native_adapter.h:210",
       "declaration": "TerminateProcess(process_, 1); WaitForSingleObject(process_, 5000);"
     },
     {
-      "source": "windows/host/native_adapter.h:240",
+      "source": "windows/host/native_adapter.h:259",
       "declaration": "bool Line(std::string& line, DWORD timeout) {"
     },
     {
-      "source": "windows/host/native_adapter.h:241",
+      "source": "windows/host/native_adapter.h:260",
       "declaration": "line.clear(); const auto deadline = GetTickCount64() + timeout;"
     },
     {
-      "source": "windows/host/native_adapter.h:242",
+      "source": "windows/host/native_adapter.h:261",
       "declaration": "while (!stop_ && !g_stopping && GetTickCount64() < deadline) {"
     },
     {
-      "source": "windows/host/native_adapter.h:243",
+      "source": "windows/host/native_adapter.h:262",
       "declaration": "if (WaitForSingleObject(process_, 0) != WAIT_TIMEOUT) return false;"
     },
     {
-      "source": "windows/host/native_adapter.h:284",
+      "source": "windows/host/native_adapter.h:303",
       "declaration": "if (WaitForSingleObject(process_, 0) != WAIT_TIMEOUT) break;"
     },
     {
-      "source": "windows/host/native_adapter.h:313",
+      "source": "windows/host/native_adapter.h:312",
+      "declaration": "Timeout(v); ++dropped_; ++completed_; changed_.notify_all();"
+    },
+    {
+      "source": "windows/host/native_adapter.h:321",
       "declaration": "Timeout(v);"
     },
     {
-      "source": "windows/host/native_adapter.h:315",
+      "source": "windows/host/native_adapter.h:323",
       "declaration": "LogEvent(\"policy-timeout-discard request=\" + std::to_string(id));"
     },
     {
@@ -8299,39 +8309,39 @@
       "declaration": "while not (directory / 'stop').exists() and time.monotonic() < deadline:"
     },
     {
-      "source": "windows/test-host/diagnose-policy-gc.py:66",
+      "source": "windows/test-host/diagnose-policy-gc.py:67",
       "declaration": "deadline = time.monotonic()+2"
     },
     {
-      "source": "windows/test-host/diagnose-policy-gc.py:74",
+      "source": "windows/test-host/diagnose-policy-gc.py:75",
       "declaration": "assert time.monotonic() < deadline, 'collector failed to complete'"
     },
     {
-      "source": "windows/test-host/diagnose-policy-gc.py:89",
+      "source": "windows/test-host/diagnose-policy-gc.py:90",
       "declaration": "deadline = time.monotonic()+2"
     },
     {
-      "source": "windows/test-host/diagnose-policy-gc.py:91",
+      "source": "windows/test-host/diagnose-policy-gc.py:92",
       "declaration": "while time.monotonic() < deadline:"
     },
     {
-      "source": "windows/test-host/diagnose-policy-gc.py:229",
+      "source": "windows/test-host/diagnose-policy-gc.py:234",
       "declaration": "line=replies.get(timeout=60)"
     },
     {
-      "source": "windows/test-host/diagnose-policy-gc.py:245",
+      "source": "windows/test-host/diagnose-policy-gc.py:251",
       "declaration": "actual=replies.get(timeout=args.reply_observation_sec)"
     },
     {
-      "source": "windows/test-host/diagnose-policy-gc.py:251",
+      "source": "windows/test-host/diagnose-policy-gc.py:259",
       "declaration": "if args.operation in ('write','reply'): assert replies.get(timeout=5) == b'ACK\\n'"
     },
     {
-      "source": "windows/test-host/diagnose-policy-gc.py:276",
+      "source": "windows/test-host/diagnose-policy-gc.py:284",
       "declaration": "process.stdin.close(); process.wait(timeout=10)"
     },
     {
-      "source": "windows/test-host/diagnose-policy-gc.py:285",
+      "source": "windows/test-host/diagnose-policy-gc.py:293",
       "declaration": "process.wait(timeout=10)"
     },
     {
@@ -8347,23 +8357,23 @@
       "declaration": "process.wait(timeout=10)"
     },
     {
-      "source": "windows/test-host/host-policy-ipc.py:32",
+      "source": "windows/test-host/host-policy-ipc.py:33",
       "declaration": "def line(timeout=60):"
     },
     {
-      "source": "windows/test-host/host-policy-ipc.py:33",
+      "source": "windows/test-host/host-policy-ipc.py:34",
       "declaration": "return output.get(timeout=timeout)"
     },
     {
-      "source": "windows/test-host/host-policy-ipc.py:54",
+      "source": "windows/test-host/host-policy-ipc.py:56",
       "declaration": "p.wait(timeout=5)"
     },
     {
-      "source": "windows/test-host/host-policy-ipc.py:76",
+      "source": "windows/test-host/host-policy-ipc.py:80",
       "declaration": "p.stdin.close(); p.wait(timeout=5); thread.join(5)"
     },
     {
-      "source": "windows/test-host/host-policy-ipc.py:85",
+      "source": "windows/test-host/host-policy-ipc.py:89",
       "declaration": "p.wait(timeout=10)"
     },
     {
@@ -8415,31 +8425,31 @@
       "declaration": "process.wait(timeout=10)"
     },
     {
-      "source": "windows/test-host/host-windows-s6.py:44",
+      "source": "windows/test-host/host-windows-s6.py:45",
       "declaration": "def sample(runtime, timeout):"
     },
     {
-      "source": "windows/test-host/host-windows-s6.py:72",
+      "source": "windows/test-host/host-windows-s6.py:73",
       "declaration": "deadline = time.monotonic() + timeout"
     },
     {
-      "source": "windows/test-host/host-windows-s6.py:74",
+      "source": "windows/test-host/host-windows-s6.py:75",
       "declaration": "line = replies.get(timeout=max(.01, deadline-time.monotonic()))"
     },
     {
-      "source": "windows/test-host/host-windows-s6.py:88",
+      "source": "windows/test-host/host-windows-s6.py:89",
       "declaration": "actual = replies.get(timeout=5)"
     },
     {
-      "source": "windows/test-host/host-windows-s6.py:93",
+      "source": "windows/test-host/host-windows-s6.py:94",
       "declaration": "process.wait(timeout=10)"
     },
     {
-      "source": "windows/test-host/host-windows-s6.py:102",
+      "source": "windows/test-host/host-windows-s6.py:104",
       "declaration": "process.wait(timeout=10)"
     },
     {
-      "source": "windows/test-host/host_policy_unit.cpp:61",
+      "source": "windows/test-host/host_policy_unit.cpp:67",
       "declaration": "policy.Timeout(other);"
     },
     {
