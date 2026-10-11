@@ -220,7 +220,7 @@ class Pressure:
                 self.errors.append(repr(error))
                 self.active.clear()
 
-    def phase(self, name):
+    def phase(self, name, release=None):
         self.active.clear()
         with self.lock:
             assert not self.errors, self.errors
@@ -230,6 +230,8 @@ class Pressure:
             self.current = name
             self.report['phases'].append(name)
             self.report['phase_windows'][name] = [now, None]
+            if release is not None:
+                release()  # Lifecycle ready; verification still runs below and must pass.
             self.exercise()
             # Every acknowledged identity is replayed twice across each boundary.
             for operation, original in self.acks.items():

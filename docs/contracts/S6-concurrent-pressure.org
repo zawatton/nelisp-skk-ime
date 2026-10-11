@@ -334,3 +334,68 @@ and no owned-process leftovers. Four unit executables passed directly with
 private paths (local conversion: 194 checks). Their CTest wrappers and the
 post-swap harness were blocked before stack launch by denied private HKCU writes;
 post-swap parameter validation passed. Production/pressure/recovery were not run.
+
+* Idle confirmation / native q follow-up (2026-10-11)
+An empty provider confirmation reply clears provider_pending but previously left
+confirmation_pending set without an owning edit session. Non-retryable edit
+failure also left that flag set. Confirmation replay with an empty queue depended
+on an extra posted continuation; until it ran, every new key joined the replay
+queue and FollowSettings remained gated. These code paths are reproduced by
+extracted production transitions; the exact historical Emacs flags were not logged.
+
+Failed confirmations now release their orphan barrier without restoring/committing
+raw kana. Idle settlement clears empty replay and obsolete conversion-retry state,
+and edit release rechecks deferred settings. Genuine conversions/queued keys and successful commits awaiting the existing
+two delivery message boundaries keep their barriers. DllDebug alone can refresh during an active episode, without
+engine selection or reconnect. A complete native kana reading consumes q before
+an unrelated lookup barrier, invalidates late results, and applies the entire
+katakana result in one native edit. No reconnect/selection is done in callbacks.
+
+test-idle-input-unit.py executes the real frontend with Si-kennsyaru and extracted
+result/confirmation/idle transitions, including stale and empty results, fatal
+edit failure, one-edit シーケンシャル, and direct next-key/settings routing. The
+post-swap harness includes that reading and a private DllDebug write. Baseline
+failed with "empty result leaves confirmation_pending stuck" before product edits.
+
+Worker validation: the focused idle-input regression passed (stale/empty reply,
+fatal refusal, delivery-barrier preservation, direct and replayed q each one edit,
+following-key retention and next idle settings reload). Provider-settings tests
+passed 20 cases; four unit executables passed directly (local conversion 194
+checks). Release build passed. CTest wrappers and the updated post-swap harness
+were blocked by private HKCU creation before stack launch; its job guard reported
+no leftovers. No concurrent/Production/Recovery gate or live change was run.
+
+** Post-swap receipt and diagnostic timing correction
+The f6042cbb run killed the old host after provider/document SETTLE, while its
+independent learning worker was still pending. Both durable ACKs appear only
+past the ENGINE:lattice boundary (gate.log 661/663), excluded by the local S4
+log slice. WAITACK30000:1 now fences the first learning receipt before killing
+that host; WAITACK30000:2 fences both distinct receipts before switching engine.
+Missing/duplicate/partial receipts cannot pass these fences. SETTLE and the S4
+checker, including its 20 ms threshold, are unchanged.
+
+The a59f690d sequence 78 trace shows key-return at 118747566974 us and the
+following diagnostic/observer at 118747586781 us: the ~19.8 ms gap encloses the
+harness KEYBRANCH printf/fflush, after the native edit (~1.6 ms). This implicates
+diagnostic emission or scheduling there, not the settings or q transition;
+the trace alone cannot distinguish stdout storage delay from preemption.
+Harness stdout is buffered and those two callback diagnostic flushes are removed;
+the existing feed/SETTLE boundaries flush outside callback timing. No timing
+samples are discarded or budgets relaxed. Stack verification is coordinator-only.
+
+** Cold-restart completion versus pressure verification
+The 23341e0f run exited TSF with an empty bundle result, not a Python wait timeout.
+All three TSF clients exhausted the existing 180-second rendezvous: the main log
+closed at 21:05:25 local; bundle.done was published at 21:05:28. Cold restart
+recovery had completed before the coordinator's phase exercise and duplicate-ACK
+replays delayed that publication. The phase network exercise alone ended at
+12:04:20.287Z; duplicate replays then preceded the completion receipt.
+
+Cold restart now releases the clients after verified restart and phase-window
+publication, before exercising pressure and checking every duplicate ACK. Those
+checks still run synchronously and must pass before acceptance, while final
+client traffic proceeds. Done receipts are atomically published after closing the
+complete OK payload. The 180-second rendezvous, ten-second exit assertion and all
+acceptance thresholds remain unchanged. Bundle-result diagnostics include elapsed
+wait and timeout status. Stack-free tests cover release ordering, failed duplicate
+ACK rejection, three-client atomic receipts and unchanged timeout values.

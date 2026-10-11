@@ -30,6 +30,52 @@ def receipt():
 
 
 class Controls(unittest.TestCase):
+    def test_release_precedes_slow_verification(self):
+        events = []
+        original = b'ACK op.1 1'
+        deployment = SimpleNamespace(request=lambda command:
+            events.append('replay') or original)
+        fixture = pressure.Pressure(deployment, SimpleNamespace())
+        fixture.acks = {'op.1': original}
+        fixture.exercise = lambda: events.append('exercise')
+        def release():
+            self.assertEqual(fixture.current, 'cold-restart')
+            self.assertIn('cold-restart', fixture.report['phase_windows'])
+            events.append('release')
+        fixture.phase('cold-restart', release=release)
+        self.assertEqual(events, ['release','exercise','replay','replay'])
+        self.assertTrue(fixture.active.is_set())
+        deployment.request = lambda command: b'WRONG ACK'
+        with self.assertRaises(AssertionError):
+            fixture.phase('cold-restart', release=release)
+        self.assertFalse(fixture.active.is_set())
+
+    def test_done_receipt_atomic_publication(self):
+        source = Path(__file__).with_name('private-host-bundle-e2e.py').read_text('utf-8')
+        tree = ast.parse(source)
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                        and n.name == 'publish_bundle_done')
+        namespace = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), source, 'exec'), namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            for n in (1,2): (state / f'peer-{n}').mkdir()
+            original_replace = Path.replace
+            observations = []
+            def replace(temporary, done):
+                self.assertFalse(done.exists(), 'receipt exposed before closed OK')
+                self.assertEqual(temporary.read_text('utf-8'), 'OK')
+                observations.append(done)
+                return original_replace(temporary, done)
+            with patch.object(Path, 'replace', replace):
+                namespace['publish_bundle_done'](state, 3)
+            self.assertEqual(len(observations),3)
+            for done in observations: self.assertEqual(done.read_text('utf-8'), 'OK')
+        self.assertIn('pressure.phase(\'cold-restart\', release=', source)
+        self.assertIn('assert tsf.wait(timeout=10) == 0', source)
+        tsf = Path(__file__).with_name('tsf_host.cpp').read_text('utf-8')
+        self.assertIn('const auto deadline = started + 180000;', tsf)
+
     def test_provider_session_connection(self):
         pipes, calls = [], []
         class Pipe:

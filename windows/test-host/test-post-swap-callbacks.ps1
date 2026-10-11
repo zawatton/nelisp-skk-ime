@@ -23,7 +23,7 @@ try {
   # Kill only the harness-attributed child and host. Both old processes are
   # gone before the settings worker starts their replacement on this pipe.
   # K observes the same-id refresh; lowercase a observes the actual switch.
-  $tokens='a i SPACE WAIT3000 ENTER SETTLE30000:WARM K a n a SPACE WAIT3000 ENTER SETTLE30000:BEFORE KILLCHILD KILLHOST SETTINGSREFRESH WAIT700 SETTLE30000:UI PROVIDERREFRESH WAIT700 K a n a SPACE ENTER SETTLE30000:SWAP ENGINE:lattice WAIT700 a i WAIT45000 SPACE WAIT3000 ENTER SETTLE30000:LATTICE ENGINE:ddskk WAIT700 K a n a SPACE ENTER SETTLE30000:FINAL'
+  $tokens='a i SPACE WAIT3000 ENTER SETTLE30000:WARM S i - k e n n s y a r u q SETTLE30000:KATAKANA DEBUGREFRESH WAIT700 K a n a SPACE WAIT3000 ENTER SETTLE30000:BEFORE WAITACK30000:1 KILLCHILD KILLHOST SETTINGSREFRESH WAIT700 SETTLE30000:UI PROVIDERREFRESH WAIT700 K a n a SPACE ENTER SETTLE30000:SWAP WAITACK30000:2 ENGINE:lattice WAIT700 a i WAIT45000 SPACE WAIT3000 ENTER SETTLE30000:LATTICE ENGINE:ddskk WAIT700 K a n a SPACE ENTER SETTLE30000:FINAL'
   $log=Join-Path $run 'gate.log'
   & python -B (Join-Path $PSScriptRoot 'host-test-process-guard.py') run --root $root --cleanup -- `
     pwsh -NoProfile -File (Join-Path $PSScriptRoot 'run-harness.ps1') -Script $tokens `
@@ -55,12 +55,22 @@ try {
   if($warm -notmatch 'SETTINGS_REFRESH scale=90' -or $warm -notmatch 'PROVIDER_REFRESH repository_changed=1'){throw 'Settings refresh evidence missing'}
   $irrelevant=[regex]::Match($warm,'(?s)SETTINGS_REFRESH scale=90.*?AFTER UI ')
   if(-not $irrelevant.Success -or $irrelevant.Value -match 'PROVIDER_SETTINGS'){throw 'Irrelevant settings reconnected'}
+  if($warm -notmatch 'AFTER KATAKANA BUF=\[あいシーケンシャル\].*COMP=-' -or $warm -notmatch 'branch=q-katakana-local'){throw 'Native q did not commit the complete reading'}
+  if($warm -notmatch 'SETTINGS_REFRESH debug=1'){throw 'DllDebug-style refresh missing'}
+  $debugLogs=@(Get-ChildItem -LiteralPath (Join-Path $run 'harness') -Filter 'dll-debug.log' -Recurse)
+  if(-not $debugLogs.Count){throw 'DllDebug change was not picked up'}
+  $debugText=($debugLogs | ForEach-Object {[IO.File]::ReadAllText($_.FullName)}) -join "`n"
+  $firstDirect=[regex]::Match($debugText,'OnKeyDown vk=4B branch=(\S+)')
+  if(-not $firstDirect.Success -or $firstDirect.Groups[1].Value -in @('provider-queue','confirmation-queue')){throw 'Next idle key stayed deferred after debug refresh'}
   # Exact document detects missing/replayed first keys on both settings boundaries.
-  if($warm -notmatch 'AFTER SWAP BUF=\[あい仮名仮名\].*COMP=-'){throw 'Immediate post-swap conversion was lost'}
-  if([regex]::Matches($warm,'KEYINPUT vk=4B scalar=0000004B source=test shift=1').Count -ne 3 -or
-      $warm -match 'KEYINPUT vk=4B scalar=0000006B'){throw 'Scripted uppercase K was not delivered intact'}
+  if($warm -notmatch 'AFTER SWAP BUF=\[あいシーケンシャル仮名仮名\].*COMP=-'){throw 'Immediate post-swap conversion was lost'}
+  # The katakana reading types a legitimate lowercase k ("kenn"), so match each
+  # scripted uppercase K token to an intact Shift+K delivery instead.
+  $scriptedK=[regex]::Matches($warm,'SCRIPTKEY token=K ').Count
+  if($scriptedK -ne 3 -or
+      [regex]::Matches($warm,'KEYINPUT vk=4B scalar=0000004B source=test shift=1').Count -ne $scriptedK){throw 'Scripted uppercase K was not delivered intact'}
   # The lattice engine's first candidate for あい is 愛 (observed, deterministic).
-  if($warm -notmatch 'AFTER FINAL BUF=\[あい仮名仮名愛仮名\].*COMP=-'){throw 'Post-swap exact document failed'}
+  if($warm -notmatch 'AFTER FINAL BUF=\[あいシーケンシャル仮名仮名愛仮名\].*COMP=-'){throw 'Post-swap exact document failed'}
   if($text -notmatch 'GUARD .*"leftovers": \[\]'){throw 'Owned process cleanup proof missing'}
   Write-Output "PASS post-swap callbacks probes=$($rows.Count) pipe_io=0 blocking_waits=0 engine_switches=2 exact_document=1 log=$log"
 } finally {foreach($name in $names){[Environment]::SetEnvironmentVariable($name,$saved[$name])}}
