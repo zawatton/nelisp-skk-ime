@@ -22,6 +22,8 @@ ULONGLONG GetTickCount64() {
       std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 unsigned GetEnvironmentVariableW(const wchar_t*, void*, unsigned) { return 0; }
+void KillTimer(void*, unsigned) {}
+void SetTimer(void*, unsigned, unsigned, void*) {}
 void Sleep(unsigned ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 thread_local bool in_callback = false;
 std::atomic<unsigned> callback_io{0};
@@ -52,6 +54,7 @@ struct Engine {
   void Io() { if (in_callback) ++callback_io; }
   void Disconnect() { ++disconnects; handle = 0; }
   void MarkNeedsResync() {}
+  void CancelPendingIo() {}
   void Connect() { Io(); if (!handle) handle = next_handle++; }
   bool SelectEngine(const std::string& engine, unsigned) {
     Io(); if (handle == 1) ++stale_writes;
@@ -64,12 +67,30 @@ struct Engine {
     Io(); conversions.push_back(keys); return "仮名";
   }
 };
+struct WorkerFlag {
+  std::atomic<bool> value{false};
+  std::function<void()> before_exit;
+  bool exchange(bool next) { return value.exchange(next); }
+  void store(bool next) {
+    if (!next && before_exit) { auto action = std::move(before_exit); before_exit = {}; action(); }
+    value.store(next);
+  }
+};
 class TextService {
 public:
   Engine engine_;
   std::mutex provider_engine_mutex_;
-  std::atomic<std::shared_ptr<const std::string>> provider_settings_;
-  std::shared_ptr<const std::string> applied_provider_settings_;
+  struct ProviderSettings {
+    std::string engine;
+    std::wstring host, executable, repository, pipe;
+    bool operator==(const ProviderSettings&) const = default;
+  };
+  std::wstring host = L"old";
+  ProviderSettings ReadProviderSettings(const std::string& engine) { return {engine, host, L"runtime", L"repo", L"private"}; }
+  std::atomic<std::shared_ptr<const ProviderSettings>> provider_settings_;
+  std::atomic<std::shared_ptr<const ProviderSettings>> applied_provider_settings_;
+  std::shared_ptr<const ProviderSettings> connecting_provider_settings_;
+  WorkerFlag provider_settings_worker_;
   std::atomic<unsigned> references{0};
   struct { std::atomic<bool> dirty{false}; } settings_watcher_;
   struct {
@@ -92,6 +113,11 @@ public:
   bool confirmation_pending_ = false, confirmation_replay_ = false;
   std::vector<int> deferred_provider_keys_;
   std::atomic<bool> provider_pending_{false};
+  std::atomic<unsigned> provider_sequence_{0};
+  ULONGLONG provider_deadline_ = 0;
+  void* provider_window_ = this;
+  unsigned replays = 0;
+  void ReplayDeferredProviderKeys() { ++replays; deferred_provider_keys_.clear(); }
   std::string desired_engine = "ddskk";
   unsigned loads = 0;
   void AddRef() { ++references; }
@@ -101,9 +127,11 @@ public:
   void MaybeShowModeIndicator(void*, void*) {}
   void FollowSettings();
   void QueueProviderSettings(const std::string& engine);
+  void StartProviderSettingsWorker();
   bool ApplyProviderSettings(DWORD timeout_ms = 5000);
   bool WaitForProviderSettings(ULONGLONG deadline);
   bool TryLocalConversionFallback();
+  void RetainProviderConversion();
   void Idle() {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (references.load()) {
@@ -135,8 +163,13 @@ int main() {
   {
     std::unique_lock<std::mutex> provider(service.provider_engine_mutex_);
     in_callback = true;
-    // Host swap with the SAME engine still requires a fresh connection.
+    // Irrelevant writes preserve identity; endpoint changes invalidate it.
     service.QueueProviderSettings("ddskk");
+    Check(service.references == 0);
+    service.host = L"new";
+    service.QueueProviderSettings("ddskk");
+    for (int i = 0; i < 100; ++i) service.QueueProviderSettings("ddskk");
+    Check(service.references == 1);
     in_callback = false;
     Check(callback_io == 0 && service.engine_.disconnects == before);
   }
@@ -165,15 +198,15 @@ int main() {
   {
     std::unique_lock<std::mutex> provider(service.provider_engine_mutex_);
     service.engine_.after_select = [&service] {
-      service.provider_settings_.store(std::make_shared<const std::string>("ddskk"));
+      service.provider_settings_.store(std::make_shared<const TextService::ProviderSettings>(service.ReadProviderSettings("ddskk")));
     };
-    service.provider_settings_.store(std::make_shared<const std::string>("lattice"));
+    service.provider_settings_.store(std::make_shared<const TextService::ProviderSettings>(service.ReadProviderSettings("lattice")));
     Check(service.ApplyProviderSettings());
     // The provider may consume its key NOW, before another job can run.
     Check(service.engine_.selections.back() == "ddskk");
   }
   Check(service.engine_.selections.back() == "ddskk");
-  Check(*service.applied_provider_settings_ == "ddskk");
+  Check(service.applied_provider_settings_.load()->engine == "ddskk");
   const auto count = service.engine_.selections.size();
   service.settings_watcher_.dirty = true;
   service.deferred_provider_keys_.push_back(1);
@@ -190,13 +223,13 @@ int main() {
   Check(service.engine_.selections.size() == count);
   {
     std::unique_lock<std::mutex> provider(service.provider_engine_mutex_);
-    service.provider_settings_.store(std::make_shared<const std::string>("ddskk"));
+    service.provider_settings_.store(std::make_shared<const TextService::ProviderSettings>(service.ReadProviderSettings("ddskk")));
     service.engine_.failures = 1;
     const auto deadline = GetTickCount64() + 1500;
     Check(service.WaitForProviderSettings(deadline));
     Check(service.engine_.ConvertKeys("Kana", static_cast<unsigned>(deadline - GetTickCount64())) == "仮名");
     Check(service.engine_.conversions == std::vector<std::string>{"Kana"});
-    service.provider_settings_.store(std::make_shared<const std::string>("ddskk"));
+    service.provider_settings_.store(std::make_shared<const TextService::ProviderSettings>(service.ReadProviderSettings("ddskk")));
     service.engine_.failures = 100;
     const auto exhausted = GetTickCount64() + 40;
     Check(!service.WaitForProviderSettings(exhausted));
@@ -213,5 +246,51 @@ int main() {
   Check(!service.TryLocalConversionFallback() && service.document.empty());
   in_callback = false;
   Check(callback_io == 0);
-  std::puts("PASS provider settings cases=12 callback_io=0 stale_writes=0 pending_conversion=1 conversions=1 deadline_exhaustion=1 certified_fallback=1 mismatch_rejected=1 references=0 stacks=0");
+  // An expired/failed conversion retains Enter, then commits a certified
+  // candidate once, rather than replaying Enter against the raw reading.
+  service.engine_.failures = 0;
+  service.local_rule_snapshot_->rules = "certified";
+  service.local_store_.snapshot.available = false;
+  service.deferred_provider_keys_ = {13};
+  service.provider_pending_ = true;
+  service.RetainProviderConversion();
+  Check(!service.provider_pending_ && service.provider_conversion_retry_);
+  Check(service.deferred_provider_keys_ == std::vector<int>{13} && service.replays == 0);
+  service.Idle();
+  service.local_store_.snapshot.available = true;
+  Check(service.TryLocalConversionFallback());
+  service.ReplayDeferredProviderKeys();
+  Check(service.document == L"仮名" && service.replays == 1 && service.deferred_provider_keys_.empty());
+  // Result delivery may invalidate selection just before an apply worker
+  // clears its scheduled flag. The coalesced retry must not be stranded.
+  const auto handoff_count = service.engine_.selections.size();
+  {
+    std::lock_guard lock(service.provider_engine_mutex_);
+    service.provider_settings_worker_.before_exit = [&service] {
+      service.applied_provider_settings_.store(nullptr);
+      service.StartProviderSettingsWorker();
+    };
+    service.QueueProviderSettings("lattice");
+  }
+  service.Idle();
+  Check(service.applied_provider_settings_.load() == service.provider_settings_.load());
+  Check(service.engine_.selections.size() == handoff_count + 2);
+  // Six independent services observe the same relevant change. Every one
+  // keeps one apply worker and ignores irrelevant repeated publications.
+  for (int client = 0; client < 6; ++client) {
+    TextService peer;
+    {
+      std::lock_guard lock(peer.provider_engine_mutex_);
+      peer.QueueProviderSettings("ddskk");
+      peer.host = L"replacement";
+      peer.QueueProviderSettings("ddskk");
+      for (int write = 0; write < 100; ++write) peer.QueueProviderSettings("ddskk");
+      Check(peer.references == 1);
+    }
+    peer.Idle();
+    Check(peer.engine_.disconnects == 1 && peer.engine_.selections.size() == 1);
+    peer.QueueProviderSettings("ddskk");
+    Check(peer.references == 0 && peer.engine_.disconnects == 1);
+  }
+  std::puts("PASS provider settings cases=20 clients=6 irrelevant_reconnects=0 max_apply_workers=1 callback_io=0 stale_writes=0 pending_conversion=1 conversions=1 deadline_exhaustion=1 certified_fallback=1 mismatch_rejected=1 references=0 stacks=0");
 }

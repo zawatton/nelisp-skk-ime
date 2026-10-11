@@ -18,6 +18,7 @@
 #include <array>
 #include <atomic>
 #include <sstream>
+#include <vector>
 
 namespace ddskk {
 namespace {
@@ -27,6 +28,66 @@ std::wstring PipeName() {
   const DWORD size = GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", value, 256);
   return size > 0 && size < 256 ? value : kPipeName;
 }
+}
+
+std::wstring EngineClient::Endpoint() { return PipeName(); }
+
+bool EngineClient::TryStartHost(const std::wstring& host, const std::wstring& executable,
+                                const std::wstring& repository, const std::wstring& pipe) {
+  if (host.empty() || executable.empty()) return false;
+  std::wstring suffix = pipe;
+  for (auto& ch : suffix) if (ch == L'\\') ch = L'_';
+  const std::wstring singleton = L"Local\\ddskk-engine-host-" + suffix;
+  auto owned = [&] {
+    HANDLE existing = OpenMutexW(SYNCHRONIZE, FALSE, singleton.c_str());
+    if (existing) { CloseHandle(existing); return true; }
+    return GetLastError() != ERROR_FILE_NOT_FOUND; // Fail closed on access denial.
+  };
+  if (owned()) return false;
+  const std::wstring lease_name = singleton + L"-starting";
+  SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+  HANDLE lease = CreateMutexW(&security, FALSE, lease_name.c_str());
+  if (!lease) return false;
+  const DWORD created = GetLastError();
+  if (created == ERROR_ALREADY_EXISTS || owned()) { CloseHandle(lease); return false; }
+  if (WaitNamedPipeW(pipe.c_str(), 1) ||
+      (GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND)) {
+    CloseHandle(lease); return false;
+  }
+  static std::atomic<ULONGLONG> last_spawn{0};
+  const auto now = GetTickCount64();
+  auto previous = last_spawn.load();
+  if ((previous && now - previous < 5000) || !last_spawn.compare_exchange_strong(previous, now)) {
+    CloseHandle(lease); return false;
+  }
+  std::wstring command = L"\"" + host + L"\" \"" + executable + L"\"";
+  if (!repository.empty()) command += L" \"" + repository + L"\"";
+  // The child inherits ONLY the launch lease. It stays alive across DLL unload
+  // until the starting host exits; no detached code executes in an unloaded core.
+  SIZE_T bytes = 0;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+  std::vector<BYTE> attributes(bytes);
+  auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
+  if (!InitializeProcThreadAttributeList(list, 1, 0, &bytes)) {
+    CloseHandle(lease); return false;
+  }
+  if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                &lease, sizeof(lease), nullptr, nullptr)) {
+    DeleteProcThreadAttributeList(list); CloseHandle(lease); return false;
+  }
+  STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof(startup);
+  startup.StartupInfo.dwFlags = STARTF_USESHOWWINDOW;
+  startup.StartupInfo.wShowWindow = SW_HIDE;
+  startup.lpAttributeList = list;
+  PROCESS_INFORMATION process{};
+  const bool started = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+      EXTENDED_STARTUPINFO_PRESENT, nullptr,
+      repository.empty() ? nullptr : repository.c_str(), &startup.StartupInfo, &process) != FALSE;
+  DeleteProcThreadAttributeList(list);
+  CloseHandle(lease);
+  if (!started) return false;
+  CloseHandle(process.hThread); CloseHandle(process.hProcess);
+  return true;
 }
 
 EngineClient::EngineClient() {
@@ -54,7 +115,9 @@ bool EngineClient::Connect(DWORD timeout_ms) {
   std::lock_guard<std::recursive_mutex> transaction_lock(transaction_mutex_);
   if (pipe_.load(std::memory_order_acquire) != INVALID_HANDLE_VALUE) return true;
   const std::wstring pipe_name = PipeName();
-  if (!WaitNamedPipeW(pipe_name.c_str(), timeout_ms)) return false;
+  if (!WaitNamedPipeW(pipe_name.c_str(), timeout_ms)) {
+    connection_error_.store(GetLastError()); return false;
+  }
   // FILE_FLAG_OVERLAPPED is required so Transact()/RawTransact() can bound
   // WriteFile/ReadFile with timeout_ms via WaitForSingleObject; without it
   // both calls block indefinitely regardless of any timeout passed here.
@@ -62,7 +125,10 @@ bool EngineClient::Connect(DWORD timeout_ms) {
                               0, nullptr, OPEN_EXISTING,
                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
                               nullptr);
-  if (opened == INVALID_HANDLE_VALUE) return false;
+  if (opened == INVALID_HANDLE_VALUE) {
+    connection_error_.store(GetLastError()); return false;
+  }
+  connection_error_.store(ERROR_SUCCESS);
   pipe_.store(opened, std::memory_order_release);
   DWORD mode = PIPE_READMODE_MESSAGE;
   if (!SetNamedPipeHandleState(opened, &mode, nullptr, nullptr)) {

@@ -2979,11 +2979,21 @@ int wmain(int argc, wchar_t** argv) {
   // outside of a Dispatch() call, and Dispatch() calls always hold
   // g_engine_mutex, which StopChild() below also waits for.
   while (!g_stopping.load(std::memory_order_relaxed)) {
-    if (!ConnectNamedPipe(pipe, nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) {
-      CloseHandle(pipe);
-      pipe = INVALID_HANDLE_VALUE;
-      g_stop_reason.store("pipe-accept-failed");
-      break;
+    if (!ConnectNamedPipe(pipe, nullptr)) {
+      const DWORD error = GetLastError();
+      if (error != ERROR_PIPE_CONNECTED) {
+        LogEvent("pipe-accept-error code=" + std::to_string(error));
+        if (error == ERROR_NO_DATA || error == ERROR_PIPE_NOT_CONNECTED ||
+            error == ERROR_BROKEN_PIPE) {
+          // A client can open and vanish before this spare is accepted.
+          DisconnectNamedPipe(pipe);
+          continue;
+        }
+        CloseHandle(pipe);
+        pipe = INVALID_HANDLE_VALUE;
+        g_stop_reason.store("pipe-accept-failed");
+        break;
+      }
     }
     if (g_stopping.load(std::memory_order_relaxed)) {
       // Almost certainly RequestStop()'s own throwaway wakeup connection

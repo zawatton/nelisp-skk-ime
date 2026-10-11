@@ -1533,6 +1533,23 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
         std::printf("CLIENT mode=%s open=%lu composing=%lu sequence=%lu\n",
                     Utf8FromWide(mode).c_str(), open, composing, sequence);
       }
+    } else if (token == L"PROVIDERREFRESH") {
+      // A value change in the endpoint configuration, on a private key only.
+      wchar_t path[1024]{};
+      GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", path, _countof(path));
+      if (!std::wstring(path).starts_with(L"Software\\NativeIME-test-")) std::exit(1);
+      HKEY key = nullptr;
+      if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_READ | KEY_SET_VALUE, &key) != ERROR_SUCCESS) std::exit(1);
+      wchar_t value[32768]{}; DWORD bytes = sizeof(value);
+      if (RegQueryValueExW(key, L"Repository", nullptr, nullptr,
+                          reinterpret_cast<BYTE*>(value), &bytes) != ERROR_SUCCESS) std::exit(1);
+      const std::wstring repository = std::wstring(value) + L"\\.";
+      const LSTATUS written = RegSetValueExW(key, L"Repository", 0, REG_SZ,
+          reinterpret_cast<const BYTE*>(repository.c_str()),
+          static_cast<DWORD>((repository.size() + 1) * sizeof(wchar_t)));
+      RegCloseKey(key);
+      if (written != ERROR_SUCCESS) std::exit(1);
+      std::printf("PROVIDER_REFRESH repository_changed=1\n");
     } else if (token == L"SETTINGSREFRESH") {
       // Change a real native setting after a private host replacement. The
       // next key must consume the watcher notification without reconnecting.

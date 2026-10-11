@@ -151,10 +151,18 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   HRESULT AddLangBarButton();
   void RemoveLangBarButton();
   void LoadSettings();
+  struct ProviderSettings {
+    std::string engine;
+    std::wstring host, executable, repository, pipe;
+    bool operator==(const ProviderSettings&) const = default;
+  };
+  ProviderSettings ReadProviderSettings(const std::string& engine);
   void QueueProviderSettings(const std::string& engine);
+  void StartProviderSettingsWorker();
   bool ApplyProviderSettings(DWORD timeout_ms = 5000); // provider mutex, worker only
   bool WaitForProviderSettings(ULONGLONG deadline); // same mutex, worker only
   bool TryLocalConversionFallback();
+  void RetainProviderConversion();
   void LoadApplicationSettings();
   void QueuePublishedState(const ddskk::EngineState* state);
   void FlushPublishedState();
@@ -184,7 +192,6 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   mutable uint64_t quiescence_trace_ = UINT64_MAX;
   NativeImeCallbacks shim_{};
   RegistryWatcher settings_watcher_{false};
-  std::atomic<ULONGLONG> last_host_spawn_{0};
   void EnsureEngineHost();
   void CaptureCaretRect(TfEditCookie edit_cookie, ITfContext* context,
                         ITfRange* range);
@@ -281,8 +288,10 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   ddskk::AutoPairCaret auto_pair_caret_ = ddskk::AutoPairCaret::Selection;
   HWND provider_window_ = nullptr;
   std::mutex provider_engine_mutex_;
-  std::atomic<std::shared_ptr<const std::string>> provider_settings_;
-  std::shared_ptr<const std::string> applied_provider_settings_; // worker mutex
+  std::atomic<std::shared_ptr<const ProviderSettings>> provider_settings_;
+  std::atomic<std::shared_ptr<const ProviderSettings>> applied_provider_settings_;
+  std::shared_ptr<const ProviderSettings> connecting_provider_settings_; // worker mutex
+  std::atomic<bool> provider_settings_worker_{false};
   std::atomic<uint64_t> provider_sequence_{0};
   std::atomic<uint64_t> preparation_sequence_{0};
   std::atomic<bool> provider_pending_{false};

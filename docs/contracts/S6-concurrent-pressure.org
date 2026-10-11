@@ -285,3 +285,52 @@ if unavailable it retains the reading and queued keys for Space retry or
 explicit cancellation. Queued Enter cannot silently commit raw kana. Callback work and
 checkers remain unchanged. The real focused run is blocked before startup at
 private HKCU creation; its job receipt reports ="leftovers": []=.
+
+* Live reconnect/accept regression (2026-10-11)
+The 71104ae selector fix published a fresh identity on every registry reload,
+started one detached retry per publication, and disconnected on every retry.
+This explains the reported singleton-loser storms following UI/core registry
+writes. ConnectNamedPipe treated ERROR_NO_DATA (an already vanished client) as
+fatal; error codes were not logged, so the exact codes in the historical live
+failures remain unproven. No live settings or processes are touched by this fix.
+
+Provider snapshots compare engine, EngineHost, EngineExecutable/NeLisp,
+Repository, and the effective pipe by value. One serialized apply worker per
+service retries with 100/200/400/800/1600/2000 ms backoff, without retaining the
+provider mutex while sleeping, with a 60-second retry deadline. A configuration is
+invalidated once, and later publications are applied before consuming keys.
+A pipe-scoped inherited startup lease, the existing lifetime singleton, and a
+process-wide five-second cooldown suppress duplicate launches. Busy/timeouts
+never authorize launching another host. The inherited handle avoids detached
+launch code executing after the core DLL is unloaded.
+
+Certified native candidates are attempted before dispatch when selection is
+pending or the cached connection is absent. A provider request attempts selection
+with a short worker-only probe instead of spending its entire conversion budget
+retrying a missing host. Failure retains the conversion and queued keys when no
+certified candidate is available; it never acknowledges an unconverted reading.
+Retained requests resume automatically after selection succeeds; the deadline
+path also preserves queued keys and invalidates late replies. The normal
+conversion budget and all existing checkers remain unchanged.
+Transient ERROR_NO_DATA/ERROR_PIPE_NOT_CONNECTED/ERROR_BROKEN_PIPE accepts log
+error codes and reuse the spare instance. Other accept errors remain fatal.
+
+Focused checks: test-provider-settings-unit.py extracts production methods and
+checks six clients, value stability, worker coalescing, stale-handle invalidation,
+ordered selection and certified fallback. test-host-startup-regression.py links
+the real EngineClient and races six processes against one real host with a tiny
+stdio protocol fixture; it checks one launch, busy-pipe suppression and 300
+instant disconnects. Every host test uses an isolated pipe, paths and a job guard.
+test-post-swap-callbacks.ps1 distinguishes irrelevant UI refresh from a relevant
+Repository change and preserves exact immediate post-swap 仮名 commits. These
+checks are not a production/pressure acceptance receipt.
+
+Worker receipts (2026-10-11): Release build succeeded. Extracted-method tests
+passed 20 cases (six clients, zero irrelevant reconnects/callback I/O, one apply
+worker); injected irrelevant-publication, worker-storm and callback-I/O faults
+were rejected. The guarded real-host fixture passed: six processes, one spawn,
+300 disconnects, 112 transient error-232 accepts, zero fatal accepts/duplicates
+and no owned-process leftovers. Four unit executables passed directly with
+private paths (local conversion: 194 checks). Their CTest wrappers and the
+post-swap harness were blocked before stack launch by denied private HKCU writes;
+post-swap parameter validation passed. Production/pressure/recovery were not run.

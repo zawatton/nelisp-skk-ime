@@ -34,6 +34,12 @@ class EngineClient {
   EngineClient& operator=(const EngineClient&) = delete;
 
   bool Connect(DWORD timeout_ms = 25);
+  bool IsConnected() const { return pipe_.load() != INVALID_HANDLE_VALUE; }
+  DWORD ConnectionError() const { return connection_error_.load(); }
+  static std::wstring Endpoint();
+  // Worker only: pipe-scoped startup lease and existing host singleton.
+  static bool TryStartHost(const std::wstring& host, const std::wstring& executable,
+                           const std::wstring& repository, const std::wstring& pipe);
   void Disconnect();
   // Interrupt an overlapped read/write without closing the pipe. Safe to
   // call from the UI thread while a provider worker owns Transact().
@@ -100,6 +106,7 @@ class EngineClient {
   std::optional<std::string> RawTransact(const std::string& request,
                                          DWORD timeout_ms);
   std::atomic<HANDLE> pipe_{INVALID_HANDLE_VALUE};
+  std::atomic<DWORD> connection_error_{ERROR_FILE_NOT_FOUND};
   std::string session_id_;
   mutable std::recursive_mutex transaction_mutex_;
   // Set whenever a transaction is abandoned mid-flight, or when this
