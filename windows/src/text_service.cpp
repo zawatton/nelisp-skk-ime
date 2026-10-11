@@ -414,6 +414,21 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
     }
     return 0;
   }
+  if (message == WM_TIMER && wparam == 9 && service != nullptr) {
+    if (!service->provider_conversion_retry_ || !service->active_context_ ||
+        !service->realtime_frontend_.preedit()) { KillTimer(window, 9); return 0; }
+    if (service->TryLocalConversionFallback()) {
+      KillTimer(window, 9); service->ReplayDeferredProviderKeys();
+    } else if (!service->provider_pending_.load() && service->engine_.IsConnected() &&
+               service->provider_settings_.load() == service->applied_provider_settings_.load()) {
+      if (service->BeginProviderConversion(service->realtime_frontend_.raw_keys())) {
+        service->provider_conversion_retry_ = false;
+        KillTimer(window, 9);
+        service->ShowProviderBusy(service->active_context_);
+      }
+    }
+    return 0;
+  }
   if (message == WM_TIMER && wparam == 5 && service != nullptr) {
     service->FlushDebugLog();
     return 0;
@@ -439,8 +454,10 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
   }
   if (message == WM_TIMER && wparam == 1 && service != nullptr) {
     if (service->local_enabled_ && service->provider_pending_.load() &&
-        service->provider_deadline_ && GetTickCount64() >= service->provider_deadline_)
-      service->ResolveLocalFallback();
+        service->provider_deadline_ && GetTickCount64() >= service->provider_deadline_) {
+      if (service->provider_conversion_active_) service->RetainProviderConversion();
+      else service->ResolveLocalFallback();
+    }
     return 0;
   }
   if (message == kProviderResultMessage) {
@@ -499,6 +516,9 @@ void TextService::PrepareProviderReading() {
 
 bool TextService::BeginProviderConversion(const std::u32string& keys, bool registration, size_t skip,
                                           std::wstring preview_reading) {
+  if (!registration && !provider_pending_.load() &&
+      (provider_settings_.load() != applied_provider_settings_.load() || !engine_.IsConnected()) &&
+      TryLocalConversionFallback()) return true;
   preparation_sequence_.fetch_add(1);
   CancelLocalRetry();
   local_observer_retry_.reset();
@@ -535,7 +555,7 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
             std::printf("PROVIDER_PREVIEW_WORKER delay_ms=%lu\n", ms);
             Sleep(ms); // Private negative control, never on the TSF key callback.
           }
-          if (ApplyProviderSettings()) preview = engine_.PreviewCandidates(preview_reading, 8);
+          if (ApplyProviderSettings(25)) preview = engine_.PreviewCandidates(preview_reading, 8);
         }
         TracePhase(L"provider-preview-end", key_sequence, L"engine-worker");
         if (preview && !preview->empty()) {
@@ -561,15 +581,15 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
                static_cast<unsigned long long>(sequence), keys.size());
       std::optional<ddskk::EngineState> state;
       bool settings_ready = false;
-      bool selection_waited = false;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
-        selection_waited = provider_settings_.load() != applied_provider_settings_;
         const ULONGLONG deadline = GetTickCount64() +
             (registration ? kModeReplayTimeoutMs : kConversionTimeoutMs);
         // An unavailable selector is a transient worker condition, not an
         // empty conversion reply. Retain this request while it reconnects.
-        settings_ready = WaitForProviderSettings(deadline);
+        // Selection retries belong to the background worker. A missing host
+        // must promptly return ownership to native fallback/retention.
+        settings_ready = ApplyProviderSettings(25);
         if (settings_ready) {
           const auto now = GetTickCount64();
           if (now < deadline) {
@@ -593,7 +613,7 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
                     engine_.last_response().c_str());
         std::fflush(stdout);
       }
-      const bool settings_pending = !settings_ready || (selection_waited && !state);
+      const bool settings_pending = !settings_ready || (!state && !registration);
       auto* result = new (std::nothrow) ProviderResult{this, sequence,
                                                        std::move(state), true, key_sequence, false, settings_pending};
       if (result == nullptr ||
@@ -919,6 +939,7 @@ void TextService::ResolveLocalFallback() {
 }
 
 void TextService::CancelPendingProvider() {
+  if (provider_window_) KillTimer(provider_window_, 9);
   provider_conversion_retry_ = false;
   confirmation_resume_posted_ = false;
   confirmation_state_.reset();
@@ -1036,13 +1057,7 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
     engine_roundtrip_failed_ = true;
     CloseCandidateUi();
     if (result->settings_pending) {
-      // An unsent conversion must not replay queued Enter against a reading.
-      // Prefer the same certified native candidate path used by Space.
-      if (TryLocalConversionFallback()) ReplayDeferredProviderKeys();
-      else {
-        provider_conversion_retry_ = true;
-        std::printf("PROVIDER_SETTINGS pending=1 conversion_retained=1\n");
-      }
+      RetainProviderConversion();
       return;
     }
     if (local_enabled_) ResolveLocalFallback();
@@ -1407,7 +1422,7 @@ void TextService::ResumeConfirmedKeys() {
 }
 
 void TextService::ShowProviderBusy(ITfContext* context) {
-  if (context == nullptr) return;
+  if (context == nullptr || local_conversion_.active()) return;
   ddskk::EngineState busy;
   busy.mode = L"provider-busy";
   busy.candidate_index = 0;
@@ -2452,48 +2467,89 @@ void TextService::FollowSettings() {
   MaybeShowModeIndicator(nullptr, nullptr);
 }
 
+TextService::ProviderSettings TextService::ReadProviderSettings(const std::string& engine) {
+  ProviderSettings settings;
+  settings.engine = engine;
+  settings.pipe = ddskk::EngineClient::Endpoint();
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,
+                    KEY_READ, &key) == ERROR_SUCCESS) {
+    auto read = [key](const wchar_t* name) {
+      wchar_t value[32768]{}; DWORD bytes = sizeof(value);
+      if (RegQueryValueExW(key, name, nullptr, nullptr,
+          reinterpret_cast<BYTE*>(value), &bytes) != ERROR_SUCCESS) return std::wstring{};
+      value[_countof(value) - 1] = 0;
+      return std::wstring(value);
+    };
+    settings.host = read(L"EngineHost");
+    settings.executable = read(L"EngineExecutable");
+    if (settings.executable.empty()) settings.executable = read(L"NeLisp");
+    settings.repository = read(L"Repository");
+    RegCloseKey(key);
+  }
+  return settings;
+}
+
 void TextService::QueueProviderSettings(const std::string& engine) {
-  // A fresh identity is required even when the engine id is unchanged: a
-  // bundle/endpoint change invalidates the old connection too.
-  provider_settings_.store(std::make_shared<const std::string>(engine));
+  const auto settings = ReadProviderSettings(engine);
+  const auto previous = provider_settings_.load();
+  // UI/debug/CoreDll registry writes must not invalidate a provider session.
+  if (previous && *previous == settings) return;
+  provider_settings_.store(std::make_shared<const ProviderSettings>(settings));
+  StartProviderSettingsWorker();
+}
+
+void TextService::StartProviderSettingsWorker() {
+  if (provider_settings_worker_.exchange(true)) return;
   AddRef();
   try {
     std::thread([this] {
-      // Cover the measured 45-second cold load without delaying native input.
       const ULONGLONG deadline = GetTickCount64() + 60000;
+      DWORD backoff = 100;
+      bool completed = false;
+      std::shared_ptr<const ProviderSettings> attempted;
       do {
         bool applied;
         {
           std::lock_guard<std::mutex> lock(provider_engine_mutex_);
-          applied = ApplyProviderSettings(kInteractiveTimeoutMs);
+          attempted = provider_settings_.load();
+          applied = ApplyProviderSettings(25);
+          completed = applied;
         }
-        if (applied) break;
-        Sleep(100); // Retry only on the provider worker; never delay a key.
+        if (applied || !provider_settings_.load()) break;
+        Sleep(backoff); // Never hold the provider mutex during backoff.
+        backoff = std::min<DWORD>(backoff * 2, 2000);
       } while (GetTickCount64() < deadline);
+      provider_settings_worker_.store(false);
+      // Close the publication/worker-exit race without retrying an expired
+      // unchanged target. Queue owns the other side of this race.
+      const auto latest = provider_settings_.load();
+      if (latest && latest != applied_provider_settings_.load() &&
+          (completed || latest != attempted))
+        StartProviderSettingsWorker();
       Release();
     }).detach();
-  } catch (...) { Release(); }
-  // If scheduling fails, the next provider request applies the same snapshot.
+  } catch (...) { provider_settings_worker_.store(false); Release(); }
 }
 
 bool TextService::ApplyProviderSettings(DWORD timeout_ms) {
   for (;;) {
     const auto desired = provider_settings_.load();
-    if (!desired || desired == applied_provider_settings_) return true;
-    // Never probe/write the stale pipe from a replaced host. Discard the old
-    // context before reconnecting; an engine selection is not a replayable key.
-    engine_.Disconnect();
-    engine_.MarkNeedsResync();
+    if (!desired || desired == applied_provider_settings_.load()) return true;
+    if (desired != connecting_provider_settings_) {
+      // Invalidate once per configuration, never reuse a stale handle.
+      engine_.Disconnect();
+      engine_.MarkNeedsResync();
+      connecting_provider_settings_ = desired;
+    }
     EnsureEngineHost();
-    if (!engine_.SelectEngine(*desired, timeout_ms)) return false;
+    if (!engine_.SelectEngine(desired->engine, timeout_ms)) return false;
     engine_.MarkNeedsResync();
-    applied_provider_settings_ = desired;
+    applied_provider_settings_.store(desired);
     if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
-      std::printf("PROVIDER_SETTINGS engine=%s applied=1\n", desired->c_str());
+      std::printf("PROVIDER_SETTINGS engine=%s applied=1\n", desired->engine.c_str());
       std::fflush(stdout);
     }
-    // Another refresh may have arrived during IPC. Apply it before this worker
-    // consumes any keys, regardless of detached-thread scheduling order.
     if (desired == provider_settings_.load()) return true;
   }
 }
@@ -2534,42 +2590,37 @@ bool TextService::TryLocalConversionFallback() {
   return true;
 }
 
+void TextService::RetainProviderConversion() {
+  // Deadline/failure ends this request, not ownership of the reading and keys.
+  // Invalidate a late reply before rendering native state or retrying selection.
+  provider_sequence_.fetch_add(1);
+  provider_pending_.store(false);
+  provider_deadline_ = 0;
+  if (provider_window_) KillTimer(provider_window_, 1);
+  engine_.CancelPendingIo();
+  engine_.MarkNeedsResync();
+  if (TryLocalConversionFallback()) ReplayDeferredProviderKeys();
+  else {
+    provider_conversion_retry_ = true;
+    applied_provider_settings_.store(nullptr);
+    StartProviderSettingsWorker();
+    SetTimer(provider_window_, 9, 200, nullptr);
+    std::printf("PROVIDER_SETTINGS pending=1 conversion_retained=1\n");
+  }
+}
+
 void TextService::EnsureEngineHost() {
   if (engine_.Connect(1)) return;
-  const ULONGLONG now = GetTickCount64();
-  ULONGLONG previous = last_host_spawn_.load();
-  if (previous && now - previous < 5000) return;
-  if (!last_host_spawn_.compare_exchange_strong(previous, now)) return;
+  // Timeout/busy means an existing pipe, not permission to launch another host.
+  const DWORD error = engine_.ConnectionError();
+  if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) return;
   wchar_t disable_spawn[2]{};
   if (GetEnvironmentVariableW(L"NELISP_IME_DISABLE_HOST_SPAWN", disable_spawn,
-                              _countof(disable_spawn)) > 0 &&
-      disable_spawn[0] == L'1')
-    return;
-  HKEY key = nullptr;
-  if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,
-                    KEY_READ, &key) != ERROR_SUCCESS) return;
-  auto read = [key](const wchar_t* name) {
-    wchar_t value[32768]{}; DWORD bytes = sizeof(value);
-    if (RegQueryValueExW(key, name, nullptr, nullptr,
-        reinterpret_cast<BYTE*>(value), &bytes) != ERROR_SUCCESS) return std::wstring{};
-    return std::wstring(value);
-  };
-  const std::wstring host = read(L"EngineHost");
-  std::wstring executable = read(L"EngineExecutable");
-  if (executable.empty()) executable = read(L"NeLisp");
-  const std::wstring repository = read(L"Repository");
-  RegCloseKey(key);
-  if (host.empty() || executable.empty()) return;
-  std::wstring command = L"\"" + host + L"\" \"" + executable + L"\"";
-  if (!repository.empty()) command += L" \"" + repository + L"\"";
-  STARTUPINFOW startup{}; startup.cb = sizeof(startup);
-  startup.dwFlags = STARTF_USESHOWWINDOW; startup.wShowWindow = SW_HIDE;
-  PROCESS_INFORMATION process{};
-  if (CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
-      0, nullptr, repository.empty() ? nullptr : repository.c_str(),
-      &startup, &process)) {
-    CloseHandle(process.hThread); CloseHandle(process.hProcess);
-  }
+                              _countof(disable_spawn)) > 0 && disable_spawn[0] == L'1') return;
+  const auto desired = provider_settings_.load();
+  const auto settings = desired ? *desired : ReadProviderSettings(engine_id_);
+  ddskk::EngineClient::TryStartHost(settings.host, settings.executable,
+                                   settings.repository, settings.pipe);
 }
 
 // Appends one line to %LOCALAPPDATA%\DDSKK\dll-debug.log: "<pid> <tick> "

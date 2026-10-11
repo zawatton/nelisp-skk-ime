@@ -17,7 +17,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--build-dir', type=Path, default=ROOT / 'build/w/provider-settings-unit')
     parser.add_argument('--source', type=Path, default=ROOT / 'windows/src/text_service.cpp')
-    parser.add_argument('--negative-control', choices=('callback-io', 'stale-handle', 'stale-settings', 'pending-conversion'))
+    parser.add_argument('--negative-control', choices=('callback-io', 'stale-handle', 'stale-settings', 'pending-conversion', 'irrelevant-write', 'worker-storm'))
     args = parser.parse_args()
     out = args.build_dir.resolve()
     assert out.is_relative_to(ROOT / 'build'), 'private build directory required'
@@ -29,7 +29,7 @@ def main():
         assert 'engine_.' not in body and 'provider_engine_mutex_' not in body, 'callback does engine work/waits'
     assert 'QueueProviderSettings(engine_id_)' in load
     assert 'engine_.Connect' not in method(source.replace('HRESULT TextService::OnTestKeyDown', 'bool TextService::OnTestKeyDown'), 'OnTestKeyDown')
-    bodies = [follow, method(source, 'QueueProviderSettings'), method(source, 'ApplyProviderSettings'), method(source, 'WaitForProviderSettings'), method(source, 'TryLocalConversionFallback')]
+    bodies = [follow, method(source, 'QueueProviderSettings'), method(source, 'ApplyProviderSettings'), method(source, 'WaitForProviderSettings'), method(source, 'TryLocalConversionFallback'), method(source, 'StartProviderSettingsWorker'), method(source, 'RetainProviderConversion')]
     assert 'engine_.' not in bodies[4], 'native fallback does callback engine work'
     if args.negative_control == 'callback-io':
         bodies[0] = bodies[0].replace('  LoadSettings();', '  engine_.Connect();\n  LoadSettings();')
@@ -39,8 +39,15 @@ def main():
         bodies[2] = bodies[2].replace('if (desired == provider_settings_.load()) return true;', 'return true;')
     elif args.negative_control == 'pending-conversion':
         bodies[3] = 'bool TextService::WaitForProviderSettings(ULONGLONG) { return ApplyProviderSettings(); }'
+    elif args.negative_control == 'irrelevant-write':
+        bodies[1] = bodies[1].replace('if (previous && *previous == settings) return;', '')
+    elif args.negative_control == 'worker-storm':
+        bodies[5] = bodies[5].replace('if (provider_settings_worker_.exchange(true)) return;', '')
     conversion = method(source, 'BeginProviderConversion')
-    assert 'WaitForProviderSettings(deadline)' in conversion and 'engine_.ConvertKeys(keys, remaining)' in conversion
+    assert 'settings_ready = ApplyProviderSettings(25)' in conversion and 'engine_.ConvertKeys(keys, remaining)' in conversion
+    assert '(!state && !registration)' in conversion
+    assert 'RetainProviderConversion()' in source
+    assert conversion.index('TryLocalConversionFallback()') < conversion.index('std::thread(')
     (out / 'provider_settings.inc').write_text('\n'.join(bodies), encoding='utf-8')
     (out / 'CMakeLists.txt').write_text(
         'cmake_minimum_required(VERSION 3.24)\nproject(provider_settings_unit LANGUAGES CXX)\n'
@@ -57,7 +64,7 @@ def main():
         print(f'PASS settings negative control rejected={args.negative_control} stacks=0')
         return
     result.check_returncode()
-    print('PASS production settings callback audit methods=5 callback_engine_calls=0 provider_mutex_waits=0 conversion_budget=1500')
+    print('PASS production settings callback audit methods=7 callback_engine_calls=0 provider_mutex_waits=0 conversion_budget=1500')
 
 
 if __name__ == '__main__':
