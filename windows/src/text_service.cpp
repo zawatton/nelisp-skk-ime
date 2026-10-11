@@ -373,6 +373,7 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
         service->confirmation_resume_posted_ = false;
     } else {
       service->confirmation_resume_posted_ = false;
+      service->confirmation_delivery_pending_ = false;
       service->ResumeConfirmedKeys();
     }
     return 0;
@@ -416,7 +417,9 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
   }
   if (message == WM_TIMER && wparam == 9 && service != nullptr) {
     if (!service->provider_conversion_retry_ || !service->active_context_ ||
-        !service->realtime_frontend_.preedit()) { KillTimer(window, 9); return 0; }
+        !service->realtime_frontend_.preedit()) {
+      service->SettleIdleProviderState(); KillTimer(window, 9); return 0;
+    }
     if (service->TryLocalConversionFallback()) {
       KillTimer(window, 9); service->ReplayDeferredProviderKeys();
     } else if (!service->provider_pending_.load() && service->engine_.IsConnected() &&
@@ -945,6 +948,7 @@ void TextService::CancelPendingProvider() {
   confirmation_state_.reset();
   if (provider_window_) KillTimer(provider_window_, 7);
   confirmation_pending_ = confirmation_replay_ = false;
+  confirmation_delivery_pending_ = false;
   if (confirmation_anchor_) confirmation_anchor_->Release();
   confirmation_anchor_ = nullptr;
   preparation_sequence_.fetch_add(1);
@@ -1056,6 +1060,13 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   if (!result->state) {
     engine_roundtrip_failed_ = true;
     CloseCandidateUi();
+    if (confirmation_pending_) {
+      // No edit session owns this failed commit; do not leave all input
+      // behind a confirmation that can never call ConfirmationFinished.
+      ReleaseFailedConfirmation();
+      ReplayDeferredProviderKeys();
+      return;
+    }
     if (result->settings_pending) {
       RetainProviderConversion();
       return;
@@ -1300,6 +1311,10 @@ void TextService::ReplayDeferredProviderKeys() {
       }
       deferred_provider_keys_.pop_front();
     } else if (key.has_codepoint) {
+      // q is now at the front: the remaining queue contains following keys,
+      // not part of its reading. Commit once and preserve those following keys.
+      if (engine_id_ == "ddskk" && key.codepoint == U'q' &&
+          CommitNativeKatakana(active_context_, true)) continue;
       if (engine_id_ == "ddskk" && realtime_frontend_.preedit() &&
           (key.codepoint == U'q' || key.codepoint == U'Q' ||
            key.codepoint == U'l' || key.codepoint == U'L' ||
@@ -1338,6 +1353,8 @@ void TextService::ReplayDeferredProviderKeys() {
 }
 
 void TextService::ScheduleConfirmationReplay() {
+  SettleIdleProviderState();
+  if (!confirmation_pending_ && !confirmation_replay_) FollowSettings();
   if (confirmation_replay_ && !confirmation_pending_ && !pending_state_edits_ &&
       !provider_pending_.load() && provider_window_ && !confirmation_resume_posted_) {
     confirmation_resume_posted_ = true;
@@ -1356,12 +1373,14 @@ void TextService::ConfirmationFinished(ITfContext* context, uint64_t generation,
     if (provider_window_ && (result == TF_E_LOCKED || result == TF_E_SYNCHRONOUS ||
         result == TS_E_READONLY || result == E_ACCESSDENIED))
       SetTimer(provider_window_, 7, 50, nullptr);
+    else ReleaseFailedConfirmation(); // No retry owns a fatal edit refusal.
     return;
   }
   confirmation_state_.reset();
   if (provider_window_) KillTimer(provider_window_, 7);
   confirmation_pending_ = false;
   confirmation_replay_ = true;
+  confirmation_delivery_pending_ = true;
   if (confirmation_anchor_) confirmation_anchor_->Release();
   confirmation_anchor_ = end;
   if (end) end->AddRef();
@@ -1567,6 +1586,7 @@ HRESULT TextService::Activate(ITfThreadMgr* thread_manager,
 
 HRESULT TextService::Deactivate() {
   confirmation_pending_ = confirmation_replay_ = false;
+  confirmation_delivery_pending_ = false;
   if (confirmation_anchor_) confirmation_anchor_->Release();
   confirmation_anchor_ = nullptr;
   fallback_rules_.reset();
@@ -2457,7 +2477,71 @@ void TextService::LoadSettings() {
   last_mode_label_ = ModeIndicatorLabel(kana_mode_, last_engine_mode_);
 }
 
+void TextService::RefreshDebugSettings() {
+  DWORD value = 0, bytes = sizeof(value);
+  if (RegGetValueW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), L"DebugLog",
+                  RRF_RT_REG_DWORD, nullptr, &value, &bytes) != ERROR_SUCCESS) {
+    bytes = sizeof(value);
+    if (RegGetValueW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), L"DllDebug",
+                    RRF_RT_REG_DWORD, nullptr, &value, &bytes) != ERROR_SUCCESS) return;
+  }
+  const bool enabled = value == 1;
+  if (enabled == debug_log_) return;
+  debug_log_ = enabled;
+  if (provider_window_) {
+    if (enabled) SetTimer(provider_window_, 5, 100, nullptr);
+    else KillTimer(provider_window_, 5);
+  }
+}
+
+void TextService::SettleIdleProviderState() {
+  if (provider_pending_.load() || pending_state_edits_) return;
+  if (!confirmation_pending_ && !confirmation_delivery_pending_ &&
+      confirmation_replay_ && deferred_provider_keys_.empty()) {
+    confirmation_replay_ = false;
+    confirmation_resume_posted_ = false;
+    if (confirmation_anchor_) confirmation_anchor_->Release();
+    confirmation_anchor_ = nullptr;
+  }
+  if (!composition_ && !engine_pending_ && !provider_composition_active_ &&
+      !registration_mode_ && !realtime_frontend_.preedit()) {
+    provider_conversion_retry_ = false;
+    provider_conversion_active_ = false;
+    if (provider_window_) KillTimer(provider_window_, 9);
+  }
+}
+
+void TextService::ReleaseFailedConfirmation() {
+  confirmation_pending_ = false;
+  confirmation_delivery_pending_ = false;
+  confirmation_state_.reset(); // Never blindly repeat a possibly mutated edit.
+  if (provider_window_) KillTimer(provider_window_, 7);
+  confirmation_replay_ = !deferred_provider_keys_.empty();
+  ScheduleConfirmationReplay();
+}
+
+bool TextService::CommitNativeKatakana(ITfContext* context, bool replay) {
+  if (registration_mode_ || provider_composition_active_ || confirmation_pending_ ||
+      confirmation_replay_ || (!replay && !deferred_provider_keys_.empty()) ||
+      !realtime_frontend_.CanCommitKatakanaReading()) return false;
+  const auto saved = realtime_frontend_;
+  // The complete native reading owns q. A pending lookup has no authority
+  // to repaint it later, and no queued key is discarded by this cancellation.
+  auto following = std::move(deferred_provider_keys_);
+  CancelPendingProvider();
+  deferred_provider_keys_ = std::move(following);
+  engine_.MarkNeedsResync();
+  const auto state = realtime_frontend_.CommitKatakana();
+  if (!state) return false;
+  if (FAILED(ApplyLocalState(context, *state))) realtime_frontend_ = saved;
+  return true;
+}
+
 void TextService::FollowSettings() {
+  SettleIdleProviderState();
+  // Diagnostic-only writes do not alter the current engine/document episode.
+  // Apply them even while a legitimate reading gates the engine refresh.
+  if (settings_watcher_.dirty.load()) RefreshDebugSettings();
   if (composition_ || engine_pending_ || registration_mode_ ||
       provider_pending_.load() || provider_composition_active_ || provider_conversion_retry_ ||
       realtime_frontend_.preedit() || !deferred_provider_keys_.empty() ||
@@ -2794,7 +2878,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
                   provider_composition_active_ ? 1 : 0,
                   provider_pending_.load(std::memory_order_acquire) ? 1 : 0,
                   realtime_frontend_.preedit() ? 1 : 0);
-      std::fflush(stdout);
+      // Harness diagnostics flush after callback timing, not on the key thread.
     }
     if (state) {
       DebugLog(L"OnKeyDown vk=%02X branch=%ls state=1 mode=%ls tlen=%zu "
@@ -2879,6 +2963,10 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
     deferred_provider_keys_.push_back({wparam, key.value_or(0), key.has_value(), key_shift, ctrl_j, control_down, key_caps});
     ScheduleConfirmationReplay();
     *eaten = TRUE; branch = L"confirmation-queue"; debug_exit(*eaten); return S_OK;
+  }
+  if (skk_mode_key == U'q' && CommitNativeKatakana(context)) {
+    *eaten = TRUE; branch = L"q-katakana-local";
+    debug_exit(*eaten); return S_OK;
   }
   if (local_store_.started()) {
     local_handoff_requested_ = 0;
@@ -3791,6 +3879,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
 // OnCompositionTerminated(), and from Deactivate().
 void TextService::ResetAbandonedComposition() {
   confirmation_pending_ = confirmation_replay_ = false;
+  confirmation_delivery_pending_ = false;
   if (confirmation_anchor_) confirmation_anchor_->Release();
   confirmation_anchor_ = nullptr;
   ++edit_generation_;
@@ -4558,7 +4647,7 @@ HRESULT TextService::ApplyEngineState(TfEditCookie edit_cookie,
     std::printf("ENGINE_APPLY mode=%ls text_units=%zu segments=%zu active=%d\n",
                 state.mode.c_str(), state.text.size(), state.segments.size(),
                 state.active_segment);
-    std::fflush(stdout);
+    // The harness flushes at its feed boundary, outside callback timing.
   }
   const bool registration_target =
       registration_commit_pending_ && registration_range_ != nullptr;

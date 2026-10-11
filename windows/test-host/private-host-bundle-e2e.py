@@ -23,6 +23,15 @@ large_dictionary = importlib.util.module_from_spec(dictionary_spec)
 dictionary_spec.loader.exec_module(large_dictionary)
 
 
+def publish_bundle_done(state, clients=1):
+    # Publish only a closed, complete receipt; existence must never expose empty OK.
+    for directory in [state] + [state / f'peer-{n}' for n in range(1, clients)]:
+        done = directory / 'bundle.done'
+        temporary = directory / 'bundle.done.tmp'
+        temporary.write_text('OK', encoding='utf-8')
+        temporary.replace(done)
+
+
 def remove_key(path):
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_ALL_ACCESS) as key:
         while True:
@@ -155,14 +164,19 @@ def main():
                         time.sleep(.02)
                     marker.unlink()
                 pressure.pause()
+            released = False
             if action == 'DEFER':
                 assert deployment.request('PRIVATE HANDOVER 1') == b'DEFER COMPOSITION'
             elif action == 'RESTART':
                 deployment.restart(current, engine=True)
                 deployment.restart(current)
                 if pressure:
-                    pressure.phase('cold-restart')
                     pressure.report['cold_restart_recovered'] = True
+                    # Recovery is verified. Let final traffic run while the slow
+                    # pressure exercise/duplicate receipt checks finish.
+                    pressure.phase('cold-restart', release=lambda:
+                                   publish_bundle_done(args.state, args.clients))
+                    released = True
             else:
                 target = new if action == 'NEW' else old
                 assert action in ('NEW', 'OLD')
@@ -197,10 +211,8 @@ def main():
                             r'KEYLAT token=[A-Za-z] .*?total_us=(\d+)', peer_text)]
                         assert peer_times and max(peer_times) < 20000, peer_times
             transitions.append(action)
-            if pressure and action != 'DEFER':
-                for number in range(1, args.clients):
-                    (args.state / f'peer-{number}' / 'bundle.done').write_text('OK')
-            (args.state / 'bundle.done').write_text('OK')
+            if not released:
+                publish_bundle_done(args.state, args.clients if pressure and action != 'DEFER' else 1)
         assert tsf.wait(timeout=10) == 0
         if pressure:
             for peer, log in peers:

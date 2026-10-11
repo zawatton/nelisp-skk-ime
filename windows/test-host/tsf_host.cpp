@@ -52,6 +52,7 @@
 //   SETTLE30000   pump until provider idle and document quiet for 100 ms;
 //                 fail after 30000 ms. SETTLE30000:label retains an AFTER
 //                 observation label (e.g. WAIT500) for existing log consumers.
+//   WAITACK30000:2 wait for two distinct learning ACKs (outside callbacks)
 //   KEYSTATE:SHIFT/KEYSTATE:CLEAR  seed ambient modifiers in this private thread
 //
 // After every token the program prints one UTF-8 line to stdout:
@@ -68,6 +69,7 @@
 #include <windows.h>
 #include <fstream>
 #include "callback_io_probe.h"
+#include "local_ack_fixture.h"
 #include <tlhelp32.h>
 
 #include <objidl.h>
@@ -1254,6 +1256,34 @@ void Settle(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
   if (!success) std::exit(1);
 }
 
+// SETTLE observes document/provider idle, not the independent learning worker.
+void WaitLocalAcks(DWORD max_ms, size_t required) {
+  wchar_t path[32768]{};
+  GetEnvironmentVariableW(L"NATIVEIME_HARNESS_TSF_OUTPUT", path, _countof(path));
+  HANDLE log = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE |
+      FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  const auto started = GetTickCount64();
+  size_t count = 0;
+  bool success = false;
+  while (log != INVALID_HANDLE_VALUE) {
+    std::fflush(stdout);
+    SetFilePointer(log, 0, nullptr, FILE_BEGIN);
+    std::string text;
+    char bytes[16384]; DWORD read = 0;
+    while (ReadFile(log, bytes, sizeof(bytes), &read, nullptr) && read)
+      text.append(bytes, read);
+    count = CountLocalAcks(text);
+    if (count >= required) { success = true; break; }
+    if (GetTickCount64() - started >= max_ms) break;
+    PumpMessages(10);
+  }
+  if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
+  std::printf("LOCAL_ACK_WAIT %s required=%zu observed=%zu elapsed_ms=%llu max_ms=%lu\n",
+      success ? "OK" : "TIMEOUT", required, count, GetTickCount64() - started, max_ms);
+  std::fflush(stdout);
+  if (!success) std::exit(1);
+}
+
 void WaitForRemap(DWORD max_ms) {
   wchar_t path[32768]{};
   GetEnvironmentVariableW(L"NATIVEIME_HARNESS_TSF_OUTPUT", path, _countof(path));
@@ -1425,11 +1455,14 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
       const std::wstring done = std::wstring(directory) + L"\\bundle.done";
       DeleteFileW(done.c_str());
       { std::ofstream output(request); output << Utf8FromWide(action); }
-      const auto deadline = GetTickCount64() + 180000;
+      const auto started = GetTickCount64();
+      const auto deadline = started + 180000;
       while (GetFileAttributesW(done.c_str()) == INVALID_FILE_ATTRIBUTES && GetTickCount64() < deadline)
         PumpMessages(10);
       std::ifstream result(done); std::string response; std::getline(result, response);
-      std::printf("BUNDLE_RESULT action=%s result=%s pid=%lu\n", Utf8FromWide(action).c_str(), response.c_str(), GetCurrentProcessId());
+      std::printf("BUNDLE_RESULT action=%s result=%s pid=%lu wait_ms=%llu timeout=%d\n",
+          Utf8FromWide(action).c_str(), response.c_str(), GetCurrentProcessId(),
+          GetTickCount64() - started, GetTickCount64() >= deadline && response != "OK");
       std::fflush(stdout);
       if (response != "OK") std::exit(1);
       PumpMessages(700);
@@ -1550,7 +1583,7 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
       RegCloseKey(key);
       if (written != ERROR_SUCCESS) std::exit(1);
       std::printf("PROVIDER_REFRESH repository_changed=1\n");
-    } else if (token == L"SETTINGSREFRESH") {
+    } else if (token == L"SETTINGSREFRESH" || token == L"DEBUGREFRESH") {
       // Change a real native setting after a private host replacement. The
       // next key must consume the watcher notification without reconnecting.
       wchar_t path[1024]{};
@@ -1558,12 +1591,13 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
       if (!std::wstring(path).starts_with(L"Software\\NativeIME-test-")) std::exit(1);
       HKEY key = nullptr;
       if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) std::exit(1);
-      const DWORD scale = 90;
-      const LSTATUS written = RegSetValueExW(key, L"ModeIndicatorScale", 0, REG_DWORD,
+      const bool debug = token == L"DEBUGREFRESH";
+      const DWORD scale = debug ? 1 : 90;
+      const LSTATUS written = RegSetValueExW(key, debug ? L"DllDebug" : L"ModeIndicatorScale", 0, REG_DWORD,
           reinterpret_cast<const BYTE*>(&scale), sizeof(scale));
       RegCloseKey(key);
       if (written != ERROR_SUCCESS) std::exit(1);
-      std::printf("SETTINGS_REFRESH scale=90\n");
+      std::printf(debug ? "SETTINGS_REFRESH debug=1\n" : "SETTINGS_REFRESH scale=90\n");
     } else if (token.starts_with(L"ENGINE:")) {
       wchar_t path[1024]{};
       GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", path, _countof(path));
@@ -1655,6 +1689,17 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
         PrintAfterLine(end + 1, stores[active]);
         continue;
       }
+    } else if (token.starts_with(L"WAITACK")) {
+      wchar_t* end = nullptr;
+      const auto milliseconds = wcstoul(token.c_str() + 7, &end, 10);
+      wchar_t* count_end = nullptr;
+      const auto count = *end == L':' ? wcstoul(end + 1, &count_end, 10) : 0;
+      if (milliseconds == 0 || milliseconds > 30000 || count == 0 || count > 100 ||
+          !count_end || *count_end != L'\0') {
+        PrintHrStr("InvalidWaitAck:" + Utf8FromWide(token), E_INVALIDARG);
+        std::exit(1);
+      }
+      WaitLocalAcks(static_cast<DWORD>(milliseconds), count);
     } else if (token.size() > 4 && token.starts_with(L"WAIT")) {
       // Provider conversion completes through the TSF thread's message
       // queue. Sleeping here starves that queue and cannot test async IME
@@ -1699,6 +1744,10 @@ void RunScript(ITfKeyEventSink* key_sink, ITfKeystrokeMgr* keystroke_mgr,
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+  // /MD targets share stdout. Buffer callback diagnostics until the existing
+  // feed boundary flush, after timing. This does not change measured budgets.
+  static char diagnostic_buffer[1024 * 1024];
+  if (std::setvbuf(stdout, diagnostic_buffer, _IOFBF, sizeof(diagnostic_buffer))) return 2;
   wchar_t private_key[1024]{}, private_pipe[256]{}, private_dll[32768]{};
   GetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY", private_key, _countof(private_key));
   GetEnvironmentVariableW(L"DDSKK_PIPE_NAME", private_pipe, _countof(private_pipe));

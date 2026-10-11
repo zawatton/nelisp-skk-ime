@@ -189,6 +189,10 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   std::deque<PublishedState> publications_;
   PublishedState last_publication_;
   void FollowSettings();
+  void RefreshDebugSettings();
+  void SettleIdleProviderState();
+  void ReleaseFailedConfirmation();
+  bool CommitNativeKatakana(ITfContext* context, bool replay = false);
   mutable uint64_t quiescence_trace_ = UINT64_MAX;
   NativeImeCallbacks shim_{};
   RegistryWatcher settings_watcher_{false};
@@ -315,6 +319,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   std::deque<DeferredProviderKey> deferred_provider_keys_;
   bool confirmation_pending_ = false;
   bool confirmation_replay_ = false;
+  bool confirmation_delivery_pending_ = false;
   bool replaying_confirmation_ = false;
   bool dispatching_registration_key_ = false;
   bool confirmation_resume_posted_ = false;

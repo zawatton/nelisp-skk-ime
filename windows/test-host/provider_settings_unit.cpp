@@ -126,6 +126,8 @@ public:
   void LoadSettings() { ++loads; QueueProviderSettings(desired_engine); }
   void MaybeShowModeIndicator(void*, void*) {}
   void FollowSettings();
+  void SettleIdleProviderState() {}
+  void RefreshDebugSettings() {}
   void QueueProviderSettings(const std::string& engine);
   void StartProviderSettingsWorker();
   bool ApplyProviderSettings(DWORD timeout_ms = 5000);
