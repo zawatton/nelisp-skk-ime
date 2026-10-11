@@ -3,7 +3,7 @@
   "text_hash": "sha256-crlf-to-lf",
   "source_sha256": {
     "windows/host/learning_queue.h": "65d91836911ed74e10f785ea2765adbff22c9bf0fb588a18868bcbe2cdfca166",
-    "windows/host/main.cpp": "e6f1c30fb83b6fc8418825296b2497d611a778e98d5814a062551af66af0924e",
+    "windows/host/main.cpp": "6531784eca4403d68a874d72104196d79235e1002779309929ea812883444864",
     "windows/host/native_adapter.h": "8815259f218171919acafa35a47a4ecde5d614703ce881388ee7847db502fed4",
     "windows/host/native_adapter_transport.h": "cd41813e9d9c4c4b7cbf509c8c873d2ed12eb86dad75b7fcbddb50810439b256",
     "windows/host/policy_bundle.h": "fd4465a8a81ff840cda8c4c6b4e2e58109067aa69e928a3d28f71d1c409ad89a",
@@ -18,8 +18,8 @@
     "windows/src/display_attribute.cpp": "fd1c1ab6715afb483d26c605304d33033d8953d7b1093e9379dfcc5ff290d8fa",
     "windows/src/display_attribute.h": "8537605848727f2951105be7900c7d37ea1bf873ce08d360da78a93d8edadc00",
     "windows/src/dllmain.cpp": "3f89b8edc5a2efa05af9b409d4b088c182f16d583a5fa958308d602f76c370bd",
-    "windows/src/engine_client.cpp": "e5402cbe82b2763f7721733efc654adf72a1b9d17ccf2e12b1ff55d814bd9a65",
-    "windows/src/engine_client.h": "c6afef4443428ad61d43c9f4b57ab03a6d39996e6fa1e1f8b1d89f8814c6ca6f",
+    "windows/src/engine_client.cpp": "6be0b7ea2476a254cd748ffd78e602de81ed73fcf6835c5cfe9d06fb31377efb",
+    "windows/src/engine_client.h": "18ae25024176e8062eaaf64affbaf689b5083b824b23a7c6e4268ddf3a6d8b3e",
     "windows/src/engine_protocol.cpp": "6946c8fe3872b5e06b6cb47808361af257d16a4326f6a55d342c40ccef898334",
     "windows/src/engine_protocol.h": "ccc4a8d18b8edee95d07d30362bca596a1bf921139b66b4714cabef18d5e2d5c",
     "windows/src/guids.h": "10fdb4eb9de846ebbba3991ebc3f83111aeeffe58ba35d5fb256c41ef9f490a0",
@@ -42,8 +42,8 @@
     "windows/src/shim_service.cpp": "fe2b0de225bad3787add1cdd8517076294983822bc58e3e9bb6bd928e901af6d",
     "windows/src/shim_service.h": "53eaa11ebe92bd036fe98bbf386a01e4e3fe6f7fa6b2b9c712b2281ebd852b94",
     "windows/src/state_mirror.h": "d96b4d397f49040a2a540fe915e9c5e312ef1e850b5a40ac77d574a646d6782b",
-    "windows/src/text_service.cpp": "df3d3969676ff60134f8cfba8fdb454f4f41d17bc4e986a9f1b5b5ab30828039",
-    "windows/src/text_service.h": "1aa79762a2e79598b7bbabc88f486895180c72c19b96339e1b9b78064df3365c",
+    "windows/src/text_service.cpp": "0f00a714ce6c6100cf0714c29866a7e68d1168825ea1549104711a0685b501a4",
+    "windows/src/text_service.h": "2ae4a465cf85410e6fc093bdbafac8144697a2914102ef3aea2efcb1bc5beae8",
     "windows/keymap/capture.h": "9c56449e45bf4c146c42e10f50ffa9f99c81518817ae7b8065c41a5d8ce5efe8",
     "windows/keymap/config.cpp": "4af1e00bc3c03686d820b1dc3b696f1b067d9b4db756618661729aaa3962222b",
     "windows/keymap/config.h": "58b3ee6a8bc753079ecf13b0a775fa626d8c4d42cbd5a8e7c6d8ac73aef42b1f",
@@ -178,6 +178,7 @@
     "windows/test-host/host-windows-s6.py": "774dad2674138906c8b522033189680f4854ed1916643c408795a55209e5fd8f",
     "windows/test-host/host_policy_hp2.py": "96c4f7fa5d1138911911ae313d9b5ddf695c05dd46651ee952d85ccf6fa520d5",
     "windows/test-host/host_policy_unit.cpp": "3dab1f30ef6d5196f6993925c20717e65f96f69881a0c33a6a5bf394e5a77950",
+    "windows/test-host/host_startup_regression.cpp": "c7b7388e7c14357b4a3e3c05a09b60c077fae5fbe09053cef5cf1ea7e7c55dac",
     "windows/test-host/host_utf8_protocol_test.cpp": "0efc6c940d0a66f4937aa05872fbfe76a0e808d18d76f040fe8dcf30ba42f416",
     "windows/test-host/inline-drop-subscriber.py": "d368bcdd285400ded49e38347935279a4c077894b3da1a149e9a25fb506a03b1",
     "windows/test-host/inline-emacs-subscriber.el": "d81953d3b3c43fda1dc4892b3f44ddc123ae054e6cfaa366c47245d83c3eaf74",
@@ -206,7 +207,7 @@
     "windows/test-host/probe-policy-execution-cli.py": "41438b3fa6579a00f69412b676e3a726d9ed8af9e81f021cf7ba00a2263bc062",
     "windows/test-host/profile-eg1-server.py": "0feed983e3170da5c400e0f8acc37df9ec47ba875b92b8710a2911b56c3e9c4b",
     "windows/test-host/profile-eg1.py": "9b6cb469031a10f1790db3053355fb2d0e6690b459ccad40a08774f175f39944",
-    "windows/test-host/provider_settings_unit.cpp": "597c378ce982ae7b72e66df4f2a0e712343e3fa7368891b12d4536fdd35e2a77",
+    "windows/test-host/provider_settings_unit.cpp": "d495dd5d6a68303a6d425d7d880c409b18db8b780ee5db20b0e5380b1b369ea9",
     "windows/test-host/report-inline-preedit.py": "d6fe08f17dc253ee29a554e3aa2eb52cdc8d8b12956eb6dc1c541b3de6d51906",
     "windows/test-host/run-engine-host-s1.ps1": "f9c0ccd1b3086cef330ed707c839f82545ebd9bc0e7be5021614541b27106d6b",
     "windows/test-host/run-engine-host-s2.ps1": "fc5c19f9abe29641a2be698133b9123fdee0071d2c6cef8c636ce2155b820815",
@@ -244,6 +245,7 @@
     "windows/test-host/test-host-policy-lattice-control.ps1": "f22b92e2df659e9ff3d0d73ec32e4c91e3ceb5c0bf0a3bcdb81b233c8c5a066c",
     "windows/test-host/test-host-policy.ps1": "62e1f4cfb3688429af1afc1130f283caa8b46aa4f72da1375ad90c7d30961c6e",
     "windows/test-host/test-host-process-ownership.py": "b800bcd58369fc48f85fe9f5b5e015151f3482b5472289666f79c67fba680bfa",
+    "windows/test-host/test-host-startup-regression.py": "ad52f9e55cd534fe39e0611de1f133ca46ab8ccfcc9d3db91ec96c8c6f8bff5e",
     "windows/test-host/test-hot-swap.ps1": "50970fb72e3a3b3158e2af2139758b750fb12d38c638034692317d69a5784b71",
     "windows/test-host/test-inline-preedit.py": "2cf33d604eb1b4872dd66a63813efb78fc84b29ff5ba696080fe6e9d88f6aff0",
     "windows/test-host/test-large-dictionary.py": "e292f447a89f098b9e9068b8e0ab2b19168bc79676ae390e813074dc8fe8dcbd",
@@ -264,11 +266,11 @@
     "windows/test-host/test-okuri-handoff.ps1": "d056b7d889eca40cd828455e47ffaaf70e4f0804f380c0d60d5e1e303a42cf52",
     "windows/test-host/test-os1-private.py": "861708701eef4e8665eea92587837343d299613941c27c156312a09429d244ab",
     "windows/test-host/test-os1-unicode.py": "5d38f8ae3de943b999606a401087621fe567c6488384bfed8ed1235ed5586610",
-    "windows/test-host/test-post-swap-callbacks.ps1": "383b945bcfe656940020bd715dabaceeb0b475ce8a7779aa9663363dd3ac4c2a",
+    "windows/test-host/test-post-swap-callbacks.ps1": "1e5c11ff4b5eff31c17c6bca0636c738b37b7bc03eeb67bb37cd1dfc1a37d42d",
     "windows/test-host/test-private-host-bundle-parameters.ps1": "1c07d3cf124b1fd85c9e32bc4546efcfd7f52599fbfa139f130a890e0b7f0c69",
     "windows/test-host/test-private-host-bundle.ps1": "5d692922cc0f1ece7b57a15e3669bd4f5c4af5684bbd2846aa3f77ba0e596993",
     "windows/test-host/test-private-pipe-soak.ps1": "3f59b7423cad31e4345d339242d985b67ad8bfd2946e4a96bd3557ec74b2aabd",
-    "windows/test-host/test-provider-settings-unit.py": "3927c44a4456937bde43670d605f4663f3e47be9d8ccd7bca8c691798378db07",
+    "windows/test-host/test-provider-settings-unit.py": "a5e05bb53a2c4488419528e4f4212cdb5f063b04a5e31e0707d5846745dea620",
     "windows/test-host/test-punct-commit-parser.ps1": "44d0ede29e76a96fe6af79b2927c70ed7f7623121b01644a038fb1eba0314941",
     "windows/test-host/test-punct-commit.ps1": "57a99bddcb93ecce77660ef322e8170a3962b99d0eb9d5903e9d7b09aa363efb",
     "windows/test-host/test-punct-next-key.ps1": "2669cd4fe3bcbf2e633ec67ccc4ebd7dea6a8d924be29eff802a6ca3936fbe37",
@@ -283,7 +285,7 @@
     "windows/test-host/test-scripted-keyboard.ps1": "70df798690e7ff6ebcc3ecd52b74bd76534989b2227dd3fa8449894fe9935146",
     "windows/test-host/test-sk1-provider-relay.ps1": "2d1f0d5c31fae1a3be40c5699e7dee36b1b77eb3a5fd7ba5f41c0aafa814f4e5",
     "windows/test-host/test-sk1-skkserv.ps1": "ec829cac5eae00f3ad801396192a3696a2f9d01d7e97606b054324c837757189",
-    "windows/test-host/tsf_host.cpp": "625a9e56a9a06c02f85f6d6ed166b5bb4c6c2d8947317cabcfbe4060741520e2",
+    "windows/test-host/tsf_host.cpp": "1e2fed657870acaa0910f80ec3227f1965fa87e9df8b44be1803e1bbeee31b52",
     "windows/test-host/verify-host-contracts.py": "50fabd909d82e98d5afc5e9b05db0294ff2adee779d63e854d2079780783d237",
     "windows/test-host/windows-runtime-s6.el": "12de1b3c7499702a117a5b8b534fcff5b61ad51ca2dec1697029aad6d4275a28",
     "windows/test-host/windows-runtime-unicode-s6.el": "5d6d60c044682d5895073a9ca647cf2b13b4751a107e1c394e79cf01c7d115ca"
@@ -826,7 +828,7 @@
     },
     {
       "name": "DDSKK_PIPE_NAME",
-      "source": "windows/src/engine_client.cpp:27",
+      "source": "windows/src/engine_client.cpp:28",
       "declaration": "const DWORD size = GetEnvironmentVariableW(L\"DDSKK_PIPE_NAME\", value, 256);"
     },
     {
@@ -986,287 +988,287 @@
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:532",
+      "source": "windows/src/text_service.cpp:552",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0) &&"
     },
     {
       "name": "NATIVEIME_TEST_PROVIDER_PREVIEW_DELAY_MS",
-      "source": "windows/src/text_service.cpp:533",
+      "source": "windows/src/text_service.cpp:553",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_PROVIDER_PREVIEW_DELAY_MS\", delay, 16)) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:589",
+      "source": "windows/src/text_service.cpp:609",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\","
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:630",
+      "source": "windows/src/text_service.cpp:650",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0) &&"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/src/text_service.cpp:631",
+      "source": "windows/src/text_service.cpp:651",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", test_registry, 128) &&"
     },
     {
       "name": "NATIVEIME_TEST_CANDIDATE_CONTROL_FAIL_MS",
-      "source": "windows/src/text_service.cpp:633",
+      "source": "windows/src/text_service.cpp:653",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_CANDIDATE_CONTROL_FAIL_MS\", test_delay, 16)) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:696",
+      "source": "windows/src/text_service.cpp:716",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:724",
+      "source": "windows/src/text_service.cpp:744",
       "declaration": "if (state && GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:733",
+      "source": "windows/src/text_service.cpp:753",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\","
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:741",
+      "source": "windows/src/text_service.cpp:761",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:833",
+      "source": "windows/src/text_service.cpp:853",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0) &&"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/src/text_service.cpp:834",
+      "source": "windows/src/text_service.cpp:854",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", test_registry, 128) &&"
     },
     {
       "name": "NATIVEIME_TEST_OKURI_SYNC_FAIL_MS",
-      "source": "windows/src/text_service.cpp:837",
+      "source": "windows/src/text_service.cpp:857",
       "declaration": "L\"NATIVEIME_TEST_OKURI_SYNC_FAIL_MS\", test_delay, 16) != 0;"
     },
     {
       "name": "NATIVEIME_TEST_OKURI_SYNC_DELAY_MS",
-      "source": "windows/src/text_service.cpp:839",
+      "source": "windows/src/text_service.cpp:859",
       "declaration": "L\"NATIVEIME_TEST_OKURI_SYNC_DELAY_MS\", test_delay, 16)) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:963",
+      "source": "windows/src/text_service.cpp:984",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0))"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:1192",
+      "source": "windows/src/text_service.cpp:1207",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) {"
     },
     {
       "kind": "registry",
-      "source": "windows/src/text_service.cpp:2184",
+      "source": "windows/src/text_service.cpp:2199",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ,"
     },
     {
       "kind": "registry",
-      "source": "windows/src/text_service.cpp:2186",
+      "source": "windows/src/text_service.cpp:2201",
       "declaration": "const LONG status = RegQueryValueExW("
     },
     {
       "kind": "registry",
-      "source": "windows/src/text_service.cpp:2218",
+      "source": "windows/src/text_service.cpp:2233",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_QUERY_VALUE,"
     },
     {
       "kind": "registry",
-      "source": "windows/src/text_service.cpp:2223",
+      "source": "windows/src/text_service.cpp:2238",
       "declaration": "if (RegQueryValueExW(key, L\"OpenMode\", nullptr, &type,"
     },
     {
       "kind": "registry",
-      "source": "windows/src/text_service.cpp:2231",
+      "source": "windows/src/text_service.cpp:2246",
       "declaration": "if (RegQueryValueExW(key, L\"ModeIndicator\", nullptr, &type,"
     },
     {
       "kind": "registry",
-      "source": "windows/src/text_service.cpp:2237",
+      "source": "windows/src/text_service.cpp:2252",
       "declaration": "if (RegQueryValueExW(key, L\"LocalConversion\", nullptr, &type,"
     },
     {
       "kind": "registry",
-      "source": "windows/src/text_service.cpp:2242",
+      "source": "windows/src/text_service.cpp:2257",
       "declaration": "enabled = RegQueryValueExW(key, L\"PublishState\", nullptr, &type,"
     },
     {
       "kind": "registry",
-      "source": "windows/src/text_service.cpp:2246",
+      "source": "windows/src/text_service.cpp:2261",
       "declaration": "inline_enabled_ = RegQueryValueExW(key, L\"InlinePreedit\", nullptr, &type,"
     },
     {
       "kind": "registry",
-      "source": "windows/src/text_service.cpp:2347",
-      "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,"
-    },
-    {
-      "kind": "registry",
-      "source": "windows/src/text_service.cpp:2349",
-      "declaration": "RegQueryValueExW(key, L\"Engine\", nullptr, nullptr,"
-    },
-    {
-      "kind": "registry",
-      "source": "windows/src/text_service.cpp:2351",
-      "declaration": "if (RegQueryValueExW(key, L\"DebugLog\", nullptr, nullptr,"
-    },
-    {
-      "kind": "registry",
-      "source": "windows/src/text_service.cpp:2354",
-      "declaration": "RegQueryValueExW(key, L\"DllDebug\", nullptr, nullptr,"
-    },
-    {
-      "kind": "registry",
-      "source": "windows/src/text_service.cpp:2357",
-      "declaration": "if (RegQueryValueExW(key, L\"LocalConversion\", nullptr, &local_type,"
-    },
-    {
-      "kind": "registry",
-      "source": "windows/src/text_service.cpp:2360",
-      "declaration": "RegQueryValueExW(key, L\"InitialKanaMode\", nullptr, nullptr,"
-    },
-    {
-      "kind": "registry",
       "source": "windows/src/text_service.cpp:2362",
-      "declaration": "RegQueryValueExW(key, L\"ModeIndicatorMs\", nullptr, nullptr,"
+      "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,"
     },
     {
       "kind": "registry",
       "source": "windows/src/text_service.cpp:2364",
-      "declaration": "RegQueryValueExW(key, L\"ModeIndicator\", nullptr, nullptr,"
+      "declaration": "RegQueryValueExW(key, L\"Engine\", nullptr, nullptr,"
     },
     {
       "kind": "registry",
-      "source": "windows/src/text_service.cpp:2367",
-      "declaration": "RegQueryValueExW(key, L\"ModeIndicatorScale\", nullptr, nullptr,"
+      "source": "windows/src/text_service.cpp:2366",
+      "declaration": "if (RegQueryValueExW(key, L\"DebugLog\", nullptr, nullptr,"
+    },
+    {
+      "kind": "registry",
+      "source": "windows/src/text_service.cpp:2369",
+      "declaration": "RegQueryValueExW(key, L\"DllDebug\", nullptr, nullptr,"
+    },
+    {
+      "kind": "registry",
+      "source": "windows/src/text_service.cpp:2372",
+      "declaration": "if (RegQueryValueExW(key, L\"LocalConversion\", nullptr, &local_type,"
+    },
+    {
+      "kind": "registry",
+      "source": "windows/src/text_service.cpp:2375",
+      "declaration": "RegQueryValueExW(key, L\"InitialKanaMode\", nullptr, nullptr,"
     },
     {
       "kind": "registry",
       "source": "windows/src/text_service.cpp:2377",
+      "declaration": "RegQueryValueExW(key, L\"ModeIndicatorMs\", nullptr, nullptr,"
+    },
+    {
+      "kind": "registry",
+      "source": "windows/src/text_service.cpp:2379",
+      "declaration": "RegQueryValueExW(key, L\"ModeIndicator\", nullptr, nullptr,"
+    },
+    {
+      "kind": "registry",
+      "source": "windows/src/text_service.cpp:2382",
+      "declaration": "RegQueryValueExW(key, L\"ModeIndicatorScale\", nullptr, nullptr,"
+    },
+    {
+      "kind": "registry",
+      "source": "windows/src/text_service.cpp:2392",
       "declaration": "if (RegQueryValueExW(key, name, nullptr, nullptr,"
     },
     {
       "name": "NELISP_IME_ENGINE",
-      "source": "windows/src/text_service.cpp:2397",
+      "source": "windows/src/text_service.cpp:2412",
       "declaration": "L\"NELISP_IME_ENGINE\", environment_engine,"
     },
     {
-      "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:2491",
-      "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) {"
-    },
-    {
-      "name": "NELISP_IME_DISABLE_HOST_SPAWN",
-      "source": "windows/src/text_service.cpp:2544",
-      "declaration": "if (GetEnvironmentVariableW(L\"NELISP_IME_DISABLE_HOST_SPAWN\", disable_spawn,"
-    },
-    {
       "kind": "registry",
-      "source": "windows/src/text_service.cpp:2549",
+      "source": "windows/src/text_service.cpp:2475",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0,"
     },
     {
       "kind": "registry",
-      "source": "windows/src/text_service.cpp:2553",
+      "source": "windows/src/text_service.cpp:2479",
       "declaration": "if (RegQueryValueExW(key, name, nullptr, nullptr,"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:2678",
+      "source": "windows/src/text_service.cpp:2549",
+      "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) {"
+    },
+    {
+      "name": "NELISP_IME_DISABLE_HOST_SPAWN",
+      "source": "windows/src/text_service.cpp:2618",
+      "declaration": "if (GetEnvironmentVariableW(L\"NELISP_IME_DISABLE_HOST_SPAWN\", disable_spawn,"
+    },
+    {
+      "name": "DDSKK_HARNESS_DIAGNOSTICS",
+      "source": "windows/src/text_service.cpp:2729",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:2738",
+      "source": "windows/src/text_service.cpp:2789",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\","
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:2837",
+      "source": "windows/src/text_service.cpp:2888",
       "declaration": "if (!GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) return;"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:3312",
+      "source": "windows/src/text_service.cpp:3363",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:3968",
+      "source": "windows/src/text_service.cpp:4019",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\","
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:3998",
+      "source": "windows/src/text_service.cpp:4049",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\","
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:4106",
+      "source": "windows/src/text_service.cpp:4157",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0))"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:4146",
+      "source": "windows/src/text_service.cpp:4197",
       "declaration": "if (!GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) return;"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:4153",
+      "source": "windows/src/text_service.cpp:4204",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0))"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:4161",
+      "source": "windows/src/text_service.cpp:4212",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0))"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:4175",
+      "source": "windows/src/text_service.cpp:4226",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0))"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:4195",
+      "source": "windows/src/text_service.cpp:4246",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0))"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:4401",
+      "source": "windows/src/text_service.cpp:4452",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", nullptr, 0)) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:4463",
+      "source": "windows/src/text_service.cpp:4514",
       "declaration": "if (candidate_count_ && GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", diagnostics, 2)) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:4506",
+      "source": "windows/src/text_service.cpp:4557",
       "declaration": "if (GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", diagnostics, 2) > 0) {"
     },
     {
       "name": "DDSKK_HARNESS_DIAGNOSTICS",
-      "source": "windows/src/text_service.cpp:4861",
+      "source": "windows/src/text_service.cpp:4912",
       "declaration": "if (flags != quiescence_trace_ && GetEnvironmentVariableW(L\"DDSKK_HARNESS_DIAGNOSTICS\", diagnostics, 2)) {"
     },
     {
       "name": "NATIVEIME_CORE_ABI",
-      "source": "windows/src/text_service.cpp:4873",
+      "source": "windows/src/text_service.cpp:4924",
       "declaration": "if (!state || state->size != sizeof(*state) || state->version != NATIVEIME_CORE_ABI)"
     },
     {
       "name": "NATIVEIME_CORE_ABI",
-      "source": "windows/src/text_service.cpp:4888",
+      "source": "windows/src/text_service.cpp:4939",
       "declaration": "if (!state || state->size != sizeof(*state) || state->version != NATIVEIME_CORE_ABI ||"
     },
     {
@@ -4786,6 +4788,46 @@
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
+      "source": "windows/test-host/test-host-startup-regression.py:30",
+      "declaration": "env.update(NATIVEIME_REGISTRY_KEY='Software\\\\NativeIME-test-' + uuid.uuid4().hex,"
+    },
+    {
+      "name": "DDSKK_USER_JISYO",
+      "source": "windows/test-host/test-host-startup-regression.py:31",
+      "declaration": "LOCALAPPDATA=str(out), DDSKK_USER_JISYO=str(out / 'user-jisyo'),"
+    },
+    {
+      "name": "DDSKK_HOST_LOG",
+      "source": "windows/test-host/test-host-startup-regression.py:32",
+      "declaration": "DDSKK_HOST_LOG=str(out / 'host.log'), DDSKK_SKKSERV_ENABLE='0',"
+    },
+    {
+      "name": "DDSKK_SKKSERV_ENABLE",
+      "source": "windows/test-host/test-host-startup-regression.py:32",
+      "declaration": "DDSKK_HOST_LOG=str(out / 'host.log'), DDSKK_SKKSERV_ENABLE='0',"
+    },
+    {
+      "name": "DDSKK_DICTIONARY_FILES",
+      "source": "windows/test-host/test-host-startup-regression.py:33",
+      "declaration": "DDSKK_DICTIONARY_FILES='', NELISP_IME_ENGINE='ddskk')"
+    },
+    {
+      "name": "NELISP_IME_ENGINE",
+      "source": "windows/test-host/test-host-startup-regression.py:33",
+      "declaration": "DDSKK_DICTIONARY_FILES='', NELISP_IME_ENGINE='ddskk')"
+    },
+    {
+      "name": "DDSKK_HOST_POLICY_",
+      "source": "windows/test-host/test-host-startup-regression.py:35",
+      "declaration": "env['DDSKK_HOST_POLICY_' + option] = '0'"
+    },
+    {
+      "name": "DDSKK_PIPE_NAME",
+      "source": "windows/test-host/test-host-startup-regression.py:38",
+      "declaration": "env['DDSKK_PIPE_NAME'] = r'\\\\.\\pipe\\eh8-startup-' + uuid.uuid4().hex"
+    },
+    {
+      "name": "NATIVEIME_REGISTRY_KEY",
       "source": "windows/test-host/test-hot-swap.ps1:18",
       "declaration": "foreach ($name in @('NATIVEIME_REGISTRY_KEY','DDSKK_PIPE_NAME','NELISP_IME_ENGINE',"
     },
@@ -6036,47 +6078,62 @@
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1540",
+      "source": "windows/test-host/tsf_host.cpp:1539",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", path, _countof(path));"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1543",
+      "source": "windows/test-host/tsf_host.cpp:1542",
+      "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_READ | KEY_SET_VALUE, &key) != ERROR_SUCCESS) std::exit(1);"
+    },
+    {
+      "kind": "registry",
+      "source": "windows/test-host/tsf_host.cpp:1544",
+      "declaration": "if (RegQueryValueExW(key, L\"Repository\", nullptr, nullptr,"
+    },
+    {
+      "name": "NATIVEIME_REGISTRY_KEY",
+      "source": "windows/test-host/tsf_host.cpp:1557",
+      "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", path, _countof(path));"
+    },
+    {
+      "kind": "registry",
+      "source": "windows/test-host/tsf_host.cpp:1560",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) std::exit(1);"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1552",
+      "source": "windows/test-host/tsf_host.cpp:1569",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", path, _countof(path));"
     },
     {
       "kind": "registry",
-      "source": "windows/test-host/tsf_host.cpp:1555",
+      "source": "windows/test-host/tsf_host.cpp:1572",
       "declaration": "if (RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {"
     },
     {
       "name": "NATIVEIME_TEST_HOST_PID",
-      "source": "windows/test-host/tsf_host.cpp:1564",
+      "source": "windows/test-host/tsf_host.cpp:1581",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_HOST_PID\", value, _countof(value));"
     },
     {
       "name": "NATIVEIME_TEST_ENGINE_NAME",
-      "source": "windows/test-host/tsf_host.cpp:1569",
+      "source": "windows/test-host/tsf_host.cpp:1586",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_TEST_ENGINE_NAME\", engine_name, _countof(engine_name));"
     },
     {
       "name": "NATIVEIME_REGISTRY_KEY",
-      "source": "windows/test-host/tsf_host.cpp:1686",
+      "source": "windows/test-host/tsf_host.cpp:1703",
       "declaration": "GetEnvironmentVariableW(L\"NATIVEIME_REGISTRY_KEY\", private_key, _countof(private_key));"
     },
     {
       "name": "DDSKK_PIPE_NAME",
-      "source": "windows/test-host/tsf_host.cpp:1687",
+      "source": "windows/test-host/tsf_host.cpp:1704",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_PIPE_NAME\", private_pipe, _countof(private_pipe));"
     },
     {
       "name": "DDSKK_HARNESS_DLL_PATH",
-      "source": "windows/test-host/tsf_host.cpp:1688",
+      "source": "windows/test-host/tsf_host.cpp:1705",
       "declaration": "GetEnvironmentVariableW(L\"DDSKK_HARNESS_DLL_PATH\", private_dll, _countof(private_dll));"
     }
   ],
@@ -6115,15 +6172,15 @@
     },
     {
       "token": "ERR SESSION LOST",
-      "source": "windows/src/engine_client.cpp:154"
+      "source": "windows/src/engine_client.cpp:220"
     },
     {
       "token": "ERR REQUEST",
-      "source": "windows/src/engine_client.cpp:172"
+      "source": "windows/src/engine_client.cpp:238"
     },
     {
       "token": "ERR SESSION NOT PREPARED",
-      "source": "windows/src/engine_client.cpp:340"
+      "source": "windows/src/engine_client.cpp:406"
     },
     {
       "token": "ERR ...",
@@ -6352,6 +6409,10 @@
     {
       "token": "ERR SESSION LOST",
       "source": "engine/test-session-v2.el:106"
+    },
+    {
+      "token": "ERR REQUEST\\n",
+      "source": "windows/test-host/host_startup_regression.cpp:87"
     },
     {
       "token": "ERR LOCAL STORAGE",
@@ -7347,254 +7408,258 @@
     },
     {
       "source": "windows/src/engine_client.cpp:53",
+      "declaration": "if (WaitNamedPipeW(pipe.c_str(), 1) ||"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:114",
       "declaration": "bool EngineClient::Connect(DWORD timeout_ms) {"
     },
     {
-      "source": "windows/src/engine_client.cpp:57",
-      "declaration": "if (!WaitNamedPipeW(pipe_name.c_str(), timeout_ms)) return false;"
+      "source": "windows/src/engine_client.cpp:118",
+      "declaration": "if (!WaitNamedPipeW(pipe_name.c_str(), timeout_ms)) {"
     },
     {
-      "source": "windows/src/engine_client.cpp:59",
+      "source": "windows/src/engine_client.cpp:122",
       "declaration": "// WriteFile/ReadFile with timeout_ms via WaitForSingleObject; without it"
     },
     {
-      "source": "windows/src/engine_client.cpp:60",
+      "source": "windows/src/engine_client.cpp:123",
       "declaration": "// both calls block indefinitely regardless of any timeout passed here."
     },
     {
-      "source": "windows/src/engine_client.cpp:87",
+      "source": "windows/src/engine_client.cpp:153",
       "declaration": "if (pipe != INVALID_HANDLE_VALUE) CancelIoEx(pipe, nullptr);"
     },
     {
-      "source": "windows/src/engine_client.cpp:115",
+      "source": "windows/src/engine_client.cpp:181",
       "declaration": "DWORD timeout_ms) {"
     },
     {
-      "source": "windows/src/engine_client.cpp:118",
+      "source": "windows/src/engine_client.cpp:184",
       "declaration": "if (!Connect(timeout_ms)) {"
     },
     {
-      "source": "windows/src/engine_client.cpp:134",
+      "source": "windows/src/engine_client.cpp:200",
       "declaration": "if (!sessions_checked_ && !OpenPersistentSession(timeout_ms)) return std::nullopt;"
     },
     {
-      "source": "windows/src/engine_client.cpp:135",
+      "source": "windows/src/engine_client.cpp:201",
       "declaration": "const auto reset = RawTransact(SessionRequest(\"RESET\"), timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:144",
+      "source": "windows/src/engine_client.cpp:210",
       "declaration": "const auto restored = RawTransact(SessionRequest(sessions_v2_ ? \"V2 \" + previous : previous), timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:153",
+      "source": "windows/src/engine_client.cpp:219",
       "declaration": "auto response = RawTransact(SessionRequest(sessions_v2_ && editing ? \"V2 \" + request : request), timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:155",
+      "source": "windows/src/engine_client.cpp:221",
       "declaration": "if (!OpenPersistentSession(timeout_ms)) return std::nullopt;"
     },
     {
-      "source": "windows/src/engine_client.cpp:166",
+      "source": "windows/src/engine_client.cpp:232",
       "declaration": "const auto restored = RawTransact(SessionRequest(\"V2 \" + previous), timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:170",
+      "source": "windows/src/engine_client.cpp:236",
       "declaration": "response = RawTransact(SessionRequest(\"V2 \" + request), timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:185",
+      "source": "windows/src/engine_client.cpp:251",
       "declaration": "const auto reset = RawTransact(SessionRequest(\"RESET\"), timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:191",
+      "source": "windows/src/engine_client.cpp:257",
       "declaration": "const auto restored = RawTransact(SessionRequest(previous), timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:195",
+      "source": "windows/src/engine_client.cpp:261",
       "declaration": "response = RawTransact(SessionRequest(fallback), timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:226",
-      "declaration": "DWORD timeout_ms) {"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:235",
-      "declaration": "// a late completion) to actually land -- CancelIoEx is asynchronous, and"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:244",
-      "declaration": "CancelIoEx(pipe, &overlapped);"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:272",
-      "declaration": "if (WaitForSingleObject(overlapped.hEvent, timeout_ms) != WAIT_OBJECT_0 ||"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:288",
-      "declaration": "if (WaitForSingleObject(overlapped.hEvent, timeout_ms) != WAIT_OBJECT_0 ||"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:298",
+      "source": "windows/src/engine_client.cpp:292",
       "declaration": "DWORD timeout_ms) {"
     },
     {
       "source": "windows/src/engine_client.cpp:301",
-      "declaration": "const auto response = Transact(request, timeout_ms);"
+      "declaration": "// a late completion) to actually land -- CancelIoEx is asynchronous, and"
     },
     {
-      "source": "windows/src/engine_client.cpp:305",
-      "declaration": "bool EngineClient::OpenPersistentSession(DWORD timeout_ms) {"
+      "source": "windows/src/engine_client.cpp:310",
+      "declaration": "CancelIoEx(pipe, &overlapped);"
     },
     {
-      "source": "windows/src/engine_client.cpp:306",
-      "declaration": "if (!Connect(timeout_ms)) {"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:311",
-      "declaration": "const auto response = RawTransact(SessionRequest(\"OPEN 2\"), timeout_ms);"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:318",
-      "declaration": "bool EngineClient::PrepareKeys(const std::u32string& keys, DWORD timeout_ms) {"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:321",
-      "declaration": "if (!sessions_checked_ && !OpenPersistentSession(timeout_ms)) return false;"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:325",
-      "declaration": "const auto response = Transact(request, timeout_ms);"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:332",
-      "declaration": "const std::u32string& keys, DWORD timeout_ms) {"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:336",
-      "declaration": "if (!sessions_checked_ && !OpenPersistentSession(timeout_ms)) return std::nullopt;"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:339",
-      "declaration": "? \"SPACE 2\" : request, timeout_ms);"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:340",
-      "declaration": "if (response && *response == \"ERR SESSION NOT PREPARED\") response = Transact(request, timeout_ms);"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:346",
-      "declaration": "const std::u32string& keys, DWORD timeout_ms) {"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:349",
-      "declaration": "const auto response = Transact(request, timeout_ms);"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:353",
-      "declaration": "std::optional<EngineState> EngineClient::Reset(DWORD timeout_ms) {"
+      "source": "windows/src/engine_client.cpp:338",
+      "declaration": "if (WaitForSingleObject(overlapped.hEvent, timeout_ms) != WAIT_OBJECT_0 ||"
     },
     {
       "source": "windows/src/engine_client.cpp:354",
-      "declaration": "const auto response = Transact(\"RESET\\n\", timeout_ms);"
+      "declaration": "if (WaitForSingleObject(overlapped.hEvent, timeout_ms) != WAIT_OBJECT_0 ||"
     },
     {
       "source": "windows/src/engine_client.cpp:364",
       "declaration": "DWORD timeout_ms) {"
     },
     {
-      "source": "windows/src/engine_client.cpp:365",
-      "declaration": "const auto response = Transact(EncodeControlRequest(control), timeout_ms);"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:370",
-      "declaration": "const std::wstring& reading, DWORD timeout_ms) {"
+      "source": "windows/src/engine_client.cpp:367",
+      "declaration": "const auto response = Transact(request, timeout_ms);"
     },
     {
       "source": "windows/src/engine_client.cpp:371",
-      "declaration": "if (reading.empty() || !Connect(timeout_ms)) return std::nullopt;"
+      "declaration": "bool EngineClient::OpenPersistentSession(DWORD timeout_ms) {"
     },
     {
-      "source": "windows/src/engine_client.cpp:388",
-      "declaration": "const auto response = RawTransact(request, timeout_ms);"
+      "source": "windows/src/engine_client.cpp:372",
+      "declaration": "if (!Connect(timeout_ms)) {"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:377",
+      "declaration": "const auto response = RawTransact(SessionRequest(\"OPEN 2\"), timeout_ms);"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:384",
+      "declaration": "bool EngineClient::PrepareKeys(const std::u32string& keys, DWORD timeout_ms) {"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:387",
+      "declaration": "if (!sessions_checked_ && !OpenPersistentSession(timeout_ms)) return false;"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:391",
+      "declaration": "const auto response = Transact(request, timeout_ms);"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:398",
+      "declaration": "const std::u32string& keys, DWORD timeout_ms) {"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:402",
+      "declaration": "if (!sessions_checked_ && !OpenPersistentSession(timeout_ms)) return std::nullopt;"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:405",
+      "declaration": "? \"SPACE 2\" : request, timeout_ms);"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:406",
+      "declaration": "if (response && *response == \"ERR SESSION NOT PREPARED\") response = Transact(request, timeout_ms);"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:412",
+      "declaration": "const std::u32string& keys, DWORD timeout_ms) {"
     },
     {
       "source": "windows/src/engine_client.cpp:415",
+      "declaration": "const auto response = Transact(request, timeout_ms);"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:419",
+      "declaration": "std::optional<EngineState> EngineClient::Reset(DWORD timeout_ms) {"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:420",
+      "declaration": "const auto response = Transact(\"RESET\\n\", timeout_ms);"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:430",
       "declaration": "DWORD timeout_ms) {"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:416",
-      "declaration": "const auto response = Transact(\"ENGINE LIST\\n\", timeout_ms);"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:424",
-      "declaration": "std::optional<std::vector<RomajiRule>> EngineClient::RomajiRules(DWORD timeout_ms) {"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:425",
-      "declaration": "if (!Connect(timeout_ms)) return std::nullopt;"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:426",
-      "declaration": "const auto response = RawTransact(\"ROMAJI RULES 1\\n\", timeout_ms);"
     },
     {
       "source": "windows/src/engine_client.cpp:431",
-      "declaration": "const std::string& candidate, DWORD timeout_ms, const std::string& okuri) {"
+      "declaration": "const auto response = Transact(EncodeControlRequest(control), timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:432",
-      "declaration": "if (!Connect(timeout_ms)) return std::nullopt;"
+      "source": "windows/src/engine_client.cpp:436",
+      "declaration": "const std::wstring& reading, DWORD timeout_ms) {"
     },
     {
-      "source": "windows/src/engine_client.cpp:433",
-      "declaration": "const auto response = RawTransact(\"LOCAL LEARN \" + id + \" \" + key + \" \" + candidate + (okuri.empty() ? \"\" : \" \" + okuri) + \"\\n\", timeout_ms);"
+      "source": "windows/src/engine_client.cpp:437",
+      "declaration": "if (reading.empty() || !Connect(timeout_ms)) return std::nullopt;"
     },
     {
-      "source": "windows/src/engine_client.cpp:439",
-      "declaration": "std::optional<EngineState> EngineClient::RegisterLocal(const std::u32string& keys, DWORD timeout_ms) {"
+      "source": "windows/src/engine_client.cpp:454",
+      "declaration": "const auto response = RawTransact(request, timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:442",
-      "declaration": "const auto response = Transact(request, timeout_ms);"
-    },
-    {
-      "source": "windows/src/engine_client.cpp:447",
+      "source": "windows/src/engine_client.cpp:481",
       "declaration": "DWORD timeout_ms) {"
     },
     {
-      "source": "windows/src/engine_client.cpp:451",
+      "source": "windows/src/engine_client.cpp:482",
+      "declaration": "const auto response = Transact(\"ENGINE LIST\\n\", timeout_ms);"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:490",
+      "declaration": "std::optional<std::vector<RomajiRule>> EngineClient::RomajiRules(DWORD timeout_ms) {"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:491",
+      "declaration": "if (!Connect(timeout_ms)) return std::nullopt;"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:492",
+      "declaration": "const auto response = RawTransact(\"ROMAJI RULES 1\\n\", timeout_ms);"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:497",
+      "declaration": "const std::string& candidate, DWORD timeout_ms, const std::string& okuri) {"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:498",
+      "declaration": "if (!Connect(timeout_ms)) return std::nullopt;"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:499",
+      "declaration": "const auto response = RawTransact(\"LOCAL LEARN \" + id + \" \" + key + \" \" + candidate + (okuri.empty() ? \"\" : \" \" + okuri) + \"\\n\", timeout_ms);"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:505",
+      "declaration": "std::optional<EngineState> EngineClient::RegisterLocal(const std::u32string& keys, DWORD timeout_ms) {"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:508",
       "declaration": "const auto response = Transact(request, timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:455",
+      "source": "windows/src/engine_client.cpp:513",
+      "declaration": "DWORD timeout_ms) {"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:517",
+      "declaration": "const auto response = Transact(request, timeout_ms);"
+    },
+    {
+      "source": "windows/src/engine_client.cpp:521",
       "declaration": "std::optional<std::string> EngineClient::CurrentEngine(DWORD timeout_ms) {"
     },
     {
-      "source": "windows/src/engine_client.cpp:456",
+      "source": "windows/src/engine_client.cpp:522",
       "declaration": "const auto response = Transact(\"ENGINE CURRENT\\n\", timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:461",
+      "source": "windows/src/engine_client.cpp:527",
       "declaration": "bool EngineClient::SelectEngine(const std::string& engine_id, DWORD timeout_ms) {"
     },
     {
-      "source": "windows/src/engine_client.cpp:465",
+      "source": "windows/src/engine_client.cpp:531",
       "declaration": "const auto response = Transact(\"ENGINE SET \" + engine_id + \"\\n\", timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.cpp:470",
+      "source": "windows/src/engine_client.cpp:536",
       "declaration": "bool EngineClient::Ping(DWORD timeout_ms) {"
     },
     {
-      "source": "windows/src/engine_client.cpp:471",
+      "source": "windows/src/engine_client.cpp:537",
       "declaration": "return Transact(\"GC\\n\", timeout_ms).has_value();"
     },
     {
-      "source": "windows/src/engine_client.cpp:474",
+      "source": "windows/src/engine_client.cpp:540",
       "declaration": "bool EngineClient::ReloadEngine(DWORD timeout_ms) {"
     },
     {
-      "source": "windows/src/engine_client.cpp:475",
+      "source": "windows/src/engine_client.cpp:541",
       "declaration": "const auto response = Transact(\"ENGINE RELOAD\\n\", timeout_ms);"
     },
     {
@@ -7602,95 +7667,95 @@
       "declaration": "bool Connect(DWORD timeout_ms = 25);"
     },
     {
-      "source": "windows/src/engine_client.h:52",
+      "source": "windows/src/engine_client.h:58",
       "declaration": "std::optional<EngineState> Reset(DWORD timeout_ms = 25);"
     },
     {
-      "source": "windows/src/engine_client.h:53",
+      "source": "windows/src/engine_client.h:59",
       "declaration": "std::optional<EngineState> SendKey(char32_t codepoint, DWORD timeout_ms = 25);"
     },
     {
-      "source": "windows/src/engine_client.h:54",
+      "source": "windows/src/engine_client.h:60",
       "declaration": "bool PrepareKeys(const std::u32string& keys, DWORD timeout_ms = 1500);"
     },
     {
-      "source": "windows/src/engine_client.h:56",
+      "source": "windows/src/engine_client.h:62",
       "declaration": "DWORD timeout_ms = 1500);"
-    },
-    {
-      "source": "windows/src/engine_client.h:58",
-      "declaration": "DWORD timeout_ms = 1500);"
-    },
-    {
-      "source": "windows/src/engine_client.h:60",
-      "declaration": "DWORD timeout_ms = 25);"
     },
     {
       "source": "windows/src/engine_client.h:64",
-      "declaration": "const std::wstring& reading, DWORD timeout_ms = 8);"
-    },
-    {
-      "source": "windows/src/engine_client.h:65",
-      "declaration": "std::optional<std::vector<std::string>> ListEngines(DWORD timeout_ms = 1000);"
-    },
-    {
-      "source": "windows/src/engine_client.h:66",
-      "declaration": "std::optional<std::string> CurrentEngine(DWORD timeout_ms = 1000);"
-    },
-    {
-      "source": "windows/src/engine_client.h:67",
-      "declaration": "bool SelectEngine(const std::string& engine_id, DWORD timeout_ms = 1000);"
-    },
-    {
-      "source": "windows/src/engine_client.h:68",
-      "declaration": "bool ReloadEngine(DWORD timeout_ms = 1000);"
-    },
-    {
-      "source": "windows/src/engine_client.h:70",
-      "declaration": "// answered within timeout_ms. Used by TextService::Activate's warm-up"
-    },
-    {
-      "source": "windows/src/engine_client.h:73",
-      "declaration": "bool Ping(DWORD timeout_ms);"
-    },
-    {
-      "source": "windows/src/engine_client.h:74",
-      "declaration": "std::optional<std::vector<RomajiRule>> RomajiRules(DWORD timeout_ms = 8);"
-    },
-    {
-      "source": "windows/src/engine_client.h:77",
-      "declaration": "const std::string& candidate, DWORD timeout_ms = 1500, const std::string& okuri = {});"
-    },
-    {
-      "source": "windows/src/engine_client.h:78",
-      "declaration": "std::optional<EngineState> RegisterLocal(const std::u32string& keys, DWORD timeout_ms = 5000);"
-    },
-    {
-      "source": "windows/src/engine_client.h:80",
       "declaration": "DWORD timeout_ms = 1500);"
     },
     {
+      "source": "windows/src/engine_client.h:66",
+      "declaration": "DWORD timeout_ms = 25);"
+    },
+    {
+      "source": "windows/src/engine_client.h:70",
+      "declaration": "const std::wstring& reading, DWORD timeout_ms = 8);"
+    },
+    {
+      "source": "windows/src/engine_client.h:71",
+      "declaration": "std::optional<std::vector<std::string>> ListEngines(DWORD timeout_ms = 1000);"
+    },
+    {
+      "source": "windows/src/engine_client.h:72",
+      "declaration": "std::optional<std::string> CurrentEngine(DWORD timeout_ms = 1000);"
+    },
+    {
+      "source": "windows/src/engine_client.h:73",
+      "declaration": "bool SelectEngine(const std::string& engine_id, DWORD timeout_ms = 1000);"
+    },
+    {
+      "source": "windows/src/engine_client.h:74",
+      "declaration": "bool ReloadEngine(DWORD timeout_ms = 1000);"
+    },
+    {
+      "source": "windows/src/engine_client.h:76",
+      "declaration": "// answered within timeout_ms. Used by TextService::Activate's warm-up"
+    },
+    {
+      "source": "windows/src/engine_client.h:79",
+      "declaration": "bool Ping(DWORD timeout_ms);"
+    },
+    {
+      "source": "windows/src/engine_client.h:80",
+      "declaration": "std::optional<std::vector<RomajiRule>> RomajiRules(DWORD timeout_ms = 8);"
+    },
+    {
+      "source": "windows/src/engine_client.h:83",
+      "declaration": "const std::string& candidate, DWORD timeout_ms = 1500, const std::string& okuri = {});"
+    },
+    {
       "source": "windows/src/engine_client.h:84",
+      "declaration": "std::optional<EngineState> RegisterLocal(const std::u32string& keys, DWORD timeout_ms = 5000);"
+    },
+    {
+      "source": "windows/src/engine_client.h:86",
+      "declaration": "DWORD timeout_ms = 1500);"
+    },
+    {
+      "source": "windows/src/engine_client.h:90",
       "declaration": "bool OpenPersistentSession(DWORD timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.h:92",
+      "source": "windows/src/engine_client.h:98",
       "declaration": "DWORD timeout_ms);"
     },
     {
-      "source": "windows/src/engine_client.h:94",
+      "source": "windows/src/engine_client.h:100",
       "declaration": "// overlapped I/O + WaitForSingleObject so timeout_ms actually bounds both"
     },
     {
-      "source": "windows/src/engine_client.h:95",
+      "source": "windows/src/engine_client.h:101",
       "declaration": "// directions (plain blocking WriteFile/ReadFile ignore timeout_ms"
     },
     {
-      "source": "windows/src/engine_client.h:96",
+      "source": "windows/src/engine_client.h:102",
       "declaration": "// entirely -- the caller-visible bug this fixes). On timeout or I/O"
     },
     {
-      "source": "windows/src/engine_client.h:101",
+      "source": "windows/src/engine_client.h:107",
       "declaration": "DWORD timeout_ms);"
     },
     {
@@ -7782,271 +7847,275 @@
       "declaration": "if (service->local_server_next_ && ((reply && reply->ready) || GetTickCount64() >= service->local_server_deadline_)) {"
     },
     {
-      "source": "windows/src/text_service.cpp:423",
+      "source": "windows/src/text_service.cpp:438",
       "declaration": "GetTickCount64() >= service->local_observer_deadline_ ||"
     },
     {
-      "source": "windows/src/text_service.cpp:442",
-      "declaration": "service->provider_deadline_ && GetTickCount64() >= service->provider_deadline_)"
+      "source": "windows/src/text_service.cpp:457",
+      "declaration": "service->provider_deadline_ && GetTickCount64() >= service->provider_deadline_) {"
     },
     {
-      "source": "windows/src/text_service.cpp:493",
+      "source": "windows/src/text_service.cpp:510",
       "declaration": "engine_.PrepareKeys(keys, kConversionTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:517",
+      "source": "windows/src/text_service.cpp:537",
       "declaration": "provider_deadline_ = GetTickCount64() + 5000;"
     },
     {
-      "source": "windows/src/text_service.cpp:568",
+      "source": "windows/src/text_service.cpp:586",
       "declaration": "const ULONGLONG deadline = GetTickCount64() +"
     },
     {
-      "source": "windows/src/text_service.cpp:569",
+      "source": "windows/src/text_service.cpp:587",
       "declaration": "(registration ? kModeReplayTimeoutMs : kConversionTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:572",
-      "declaration": "settings_ready = WaitForProviderSettings(deadline);"
-    },
-    {
-      "source": "windows/src/text_service.cpp:575",
+      "source": "windows/src/text_service.cpp:595",
       "declaration": "if (now < deadline) {"
     },
     {
-      "source": "windows/src/text_service.cpp:576",
+      "source": "windows/src/text_service.cpp:596",
       "declaration": "const auto remaining = static_cast<DWORD>(deadline - now);"
     },
     {
-      "source": "windows/src/text_service.cpp:582",
+      "source": "windows/src/text_service.cpp:602",
       "declaration": "state = engine_.SendControl(ddskk::EngineControl::kConvert, kConversionTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:643",
+      "source": "windows/src/text_service.cpp:663",
       "declaration": "provider_deadline_ = GetTickCount64() + 5000;"
     },
     {
-      "source": "windows/src/text_service.cpp:667",
+      "source": "windows/src/text_service.cpp:687",
       "declaration": "state = engine_.SendControl(control, kConversionTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:693",
+      "source": "windows/src/text_service.cpp:713",
       "declaration": "const ULONGLONG recovery_deadline = GetTickCount64() + 3000;"
     },
     {
-      "source": "windows/src/text_service.cpp:695",
+      "source": "windows/src/text_service.cpp:715",
       "declaration": "(!bounded_recovery || GetTickCount64() < recovery_deadline)) {"
     },
     {
-      "source": "windows/src/text_service.cpp:705",
+      "source": "windows/src/text_service.cpp:725",
       "declaration": "auto restored = engine_.ConvertKeys(reading, kConversionTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:718",
+      "source": "windows/src/text_service.cpp:738",
       "declaration": "kConversionTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:723",
+      "source": "windows/src/text_service.cpp:743",
       "declaration": ": engine_.SendControl(control, kConversionTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:782",
+      "source": "windows/src/text_service.cpp:802",
       "declaration": "provider_deadline_ = GetTickCount64() + 5000;"
     },
     {
-      "source": "windows/src/text_service.cpp:798",
+      "source": "windows/src/text_service.cpp:818",
       "declaration": "if (ApplyProviderSettings()) state = engine_.SendKey(key, may_convert ? kConversionTimeoutMs"
     },
     {
-      "source": "windows/src/text_service.cpp:799",
+      "source": "windows/src/text_service.cpp:819",
       "declaration": ": kInteractiveTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:850",
+      "source": "windows/src/text_service.cpp:870",
       "declaration": "provider_deadline_ = GetTickCount64() + 5000;"
     },
     {
-      "source": "windows/src/text_service.cpp:869",
+      "source": "windows/src/text_service.cpp:889",
       "declaration": "test_drop_reply ? \"timeout\" : \"late-reply\","
     },
     {
-      "source": "windows/src/text_service.cpp:874",
+      "source": "windows/src/text_service.cpp:894",
       "declaration": "state = sync ? engine_.SyncKeys(keys, kModeReplayTimeoutMs)"
     },
     {
-      "source": "windows/src/text_service.cpp:875",
+      "source": "windows/src/text_service.cpp:895",
       "declaration": ": engine_.SendKeys(keys, kConversionTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:930",
+      "source": "windows/src/text_service.cpp:951",
       "declaration": "provider_deadline_ = 0;"
     },
     {
-      "source": "windows/src/text_service.cpp:991",
+      "source": "windows/src/text_service.cpp:1012",
       "declaration": "provider_deadline_ = 0;"
     },
     {
-      "source": "windows/src/text_service.cpp:1501",
+      "source": "windows/src/text_service.cpp:1516",
       "declaration": "if (warm_up_client.Connect(2000)) {"
     },
     {
-      "source": "windows/src/text_service.cpp:1784",
+      "source": "windows/src/text_service.cpp:1799",
       "declaration": "const auto state = engine_.Reset(kInteractiveTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:1982",
+      "source": "windows/src/text_service.cpp:1997",
       "declaration": "// so even its short timeout can wait behind an in-flight registration worker."
     },
     {
-      "source": "windows/src/text_service.cpp:2153",
+      "source": "windows/src/text_service.cpp:2168",
       "declaration": "if (resident && SendMessageTimeoutW(resident, request, 0, 0,"
     },
     {
-      "source": "windows/src/text_service.cpp:2463",
+      "source": "windows/src/text_service.cpp:2507",
       "declaration": "const ULONGLONG deadline = GetTickCount64() + 60000;"
     },
     {
-      "source": "windows/src/text_service.cpp:2468",
-      "declaration": "applied = ApplyProviderSettings(kInteractiveTimeoutMs);"
-    },
-    {
-      "source": "windows/src/text_service.cpp:2472",
+      "source": "windows/src/text_service.cpp:2522",
       "declaration": "} while (GetTickCount64() < deadline);"
     },
     {
-      "source": "windows/src/text_service.cpp:2479",
+      "source": "windows/src/text_service.cpp:2535",
       "declaration": "bool TextService::ApplyProviderSettings(DWORD timeout_ms) {"
     },
     {
-      "source": "windows/src/text_service.cpp:2488",
-      "declaration": "if (!engine_.SelectEngine(*desired, timeout_ms)) return false;"
+      "source": "windows/src/text_service.cpp:2546",
+      "declaration": "if (!engine_.SelectEngine(desired->engine, timeout_ms)) return false;"
     },
     {
-      "source": "windows/src/text_service.cpp:2501",
+      "source": "windows/src/text_service.cpp:2557",
       "declaration": "bool TextService::WaitForProviderSettings(ULONGLONG deadline) {"
     },
     {
-      "source": "windows/src/text_service.cpp:2504",
+      "source": "windows/src/text_service.cpp:2560",
       "declaration": "if (started >= deadline) break;"
     },
     {
-      "source": "windows/src/text_service.cpp:2505",
+      "source": "windows/src/text_service.cpp:2561",
       "declaration": "const auto remaining = static_cast<DWORD>(deadline - started);"
     },
     {
-      "source": "windows/src/text_service.cpp:2506",
+      "source": "windows/src/text_service.cpp:2562",
       "declaration": "if (ApplyProviderSettings(std::min<DWORD>(remaining, kInteractiveTimeoutMs)))"
     },
     {
-      "source": "windows/src/text_service.cpp:2507",
+      "source": "windows/src/text_service.cpp:2563",
       "declaration": "return GetTickCount64() < deadline;"
     },
     {
-      "source": "windows/src/text_service.cpp:2509",
+      "source": "windows/src/text_service.cpp:2565",
       "declaration": "if (now >= deadline) break;"
     },
     {
-      "source": "windows/src/text_service.cpp:2510",
+      "source": "windows/src/text_service.cpp:2566",
       "declaration": "Sleep(static_cast<DWORD>(std::min<ULONGLONG>(10, deadline - now)));"
     },
     {
-      "source": "windows/src/text_service.cpp:2538",
+      "source": "windows/src/text_service.cpp:2594",
+      "declaration": "// Deadline/failure ends this request, not ownership of the reading and keys."
+    },
+    {
+      "source": "windows/src/text_service.cpp:2598",
+      "declaration": "provider_deadline_ = 0;"
+    },
+    {
+      "source": "windows/src/text_service.cpp:2613",
       "declaration": "if (engine_.Connect(1)) return;"
     },
     {
-      "source": "windows/src/text_service.cpp:2900",
+      "source": "windows/src/text_service.cpp:2614",
+      "declaration": "// Timeout/busy means an existing pipe, not permission to launch another host."
+    },
+    {
+      "source": "windows/src/text_service.cpp:2951",
       "declaration": "local_server_next_ = true; local_server_deadline_ = GetTickCount64() + 250;"
     },
     {
-      "source": "windows/src/text_service.cpp:3244",
+      "source": "windows/src/text_service.cpp:3295",
       "declaration": "// timeout/resync here is also exactly the class of failure that can"
     },
     {
-      "source": "windows/src/text_service.cpp:3270",
+      "source": "windows/src/text_service.cpp:3321",
       "declaration": "kInteractiveTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:3342",
+      "source": "windows/src/text_service.cpp:3393",
       "declaration": "kConversionTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:3350",
+      "source": "windows/src/text_service.cpp:3401",
       "declaration": "kConversionTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:3363",
+      "source": "windows/src/text_service.cpp:3414",
       "declaration": "wparam == VK_RIGHT ? kConversionTimeoutMs : kInteractiveTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:3374",
+      "source": "windows/src/text_service.cpp:3425",
       "declaration": ": ddskk::EngineControl::kSegmentExtend, kInteractiveTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:3378",
+      "source": "windows/src/text_service.cpp:3429",
       "declaration": ": ddskk::EngineControl::kSegmentNext, kInteractiveTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:3412",
+      "source": "windows/src/text_service.cpp:3463",
       "declaration": "kInteractiveTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:3424",
+      "source": "windows/src/text_service.cpp:3475",
       "declaration": "kInteractiveTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:3436",
+      "source": "windows/src/text_service.cpp:3487",
       "declaration": "kInteractiveTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:3494",
+      "source": "windows/src/text_service.cpp:3545",
       "declaration": "// Retrying QUIT would merely add another timeout while leaving the"
     },
     {
-      "source": "windows/src/text_service.cpp:3619",
+      "source": "windows/src/text_service.cpp:3670",
       "declaration": "state = engine_.SendKey(*codepoint, kInteractiveTimeoutMs);"
     },
     {
-      "source": "windows/src/text_service.cpp:3730",
+      "source": "windows/src/text_service.cpp:3781",
       "declaration": "// timeout/resync: the Ctrl+J branch's and the common `if (!state)`"
     },
     {
-      "source": "windows/src/text_service.cpp:4125",
+      "source": "windows/src/text_service.cpp:4176",
       "declaration": "local_observer_deadline_ = GetTickCount64() + 5000;"
     },
     {
-      "source": "windows/src/text_service.cpp:4131",
+      "source": "windows/src/text_service.cpp:4182",
       "declaration": "local_conversion_retry_.reset(); local_retry_deadline_ = 0;"
     },
     {
-      "source": "windows/src/text_service.cpp:4137",
+      "source": "windows/src/text_service.cpp:4188",
       "declaration": "local_retry_deadline_ = GetTickCount64() + 5000;"
     },
     {
-      "source": "windows/src/text_service.cpp:4152",
+      "source": "windows/src/text_service.cpp:4203",
       "declaration": "GetTickCount64() >= local_retry_deadline_) {"
     },
     {
-      "source": "windows/src/text_service.h:155",
+      "source": "windows/src/text_service.h:162",
       "declaration": "bool ApplyProviderSettings(DWORD timeout_ms = 5000); // provider mutex, worker only"
     },
     {
-      "source": "windows/src/text_service.h:156",
+      "source": "windows/src/text_service.h:163",
       "declaration": "bool WaitForProviderSettings(ULONGLONG deadline); // same mutex, worker only"
     },
     {
-      "source": "windows/src/text_service.h:228",
+      "source": "windows/src/text_service.h:235",
       "declaration": "ULONGLONG provider_deadline_ = 0;"
     },
     {
-      "source": "windows/src/text_service.h:250",
+      "source": "windows/src/text_service.h:257",
       "declaration": "ULONGLONG local_observer_deadline_ = 0;"
     },
     {
-      "source": "windows/src/text_service.h:252",
+      "source": "windows/src/text_service.h:259",
       "declaration": "ULONGLONG local_retry_deadline_ = 0;"
     },
     {
-      "source": "windows/src/text_service.h:254",
+      "source": "windows/src/text_service.h:261",
       "declaration": "ULONGLONG local_server_deadline_ = 0;"
     },
     {
@@ -8658,6 +8727,30 @@
       "declaration": "policy.Timeout(other);"
     },
     {
+      "source": "windows/test-host/host_startup_regression.cpp:13",
+      "declaration": "const auto deadline = GetTickCount64() + 5000;"
+    },
+    {
+      "source": "windows/test-host/host_startup_regression.cpp:15",
+      "declaration": "if (WaitNamedPipeW(pipe.c_str(), 50)) {"
+    },
+    {
+      "source": "windows/test-host/host_startup_regression.cpp:21",
+      "declaration": "} while (GetTickCount64() < deadline);"
+    },
+    {
+      "source": "windows/test-host/host_startup_regression.cpp:27",
+      "declaration": "Check(event && WaitForSingleObject(event, 5000) == WAIT_OBJECT_0, \"launch barrier\");"
+    },
+    {
+      "source": "windows/test-host/host_startup_regression.cpp:40",
+      "declaration": "Check(!engine.Connect(1), \"busy connect must fail\");"
+    },
+    {
+      "source": "windows/test-host/host_startup_regression.cpp:65",
+      "declaration": "Check(WaitForSingleObject(client, 10000) == WAIT_OBJECT_0, \"client exits\");"
+    },
+    {
       "source": "windows/test-host/host_utf8_protocol_test.cpp:39",
       "declaration": "DWORD timeout = 300; setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char*>(&timeout), sizeof(timeout));"
     },
@@ -8886,40 +8979,44 @@
       "declaration": "constexpr unsigned kInteractiveTimeoutMs = 350;"
     },
     {
-      "source": "windows/test-host/provider_settings_unit.cpp:99",
+      "source": "windows/test-host/provider_settings_unit.cpp:117",
+      "declaration": "ULONGLONG provider_deadline_ = 0;"
+    },
+    {
+      "source": "windows/test-host/provider_settings_unit.cpp:125",
       "declaration": "void EnsureEngineHost() { engine_.Connect(); }"
     },
     {
-      "source": "windows/test-host/provider_settings_unit.cpp:104",
+      "source": "windows/test-host/provider_settings_unit.cpp:131",
       "declaration": "bool ApplyProviderSettings(DWORD timeout_ms = 5000);"
     },
     {
-      "source": "windows/test-host/provider_settings_unit.cpp:105",
+      "source": "windows/test-host/provider_settings_unit.cpp:132",
       "declaration": "bool WaitForProviderSettings(ULONGLONG deadline);"
     },
     {
-      "source": "windows/test-host/provider_settings_unit.cpp:108",
+      "source": "windows/test-host/provider_settings_unit.cpp:136",
       "declaration": "const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);"
     },
     {
-      "source": "windows/test-host/provider_settings_unit.cpp:110",
+      "source": "windows/test-host/provider_settings_unit.cpp:138",
       "declaration": "Check(std::chrono::steady_clock::now() < deadline);"
     },
     {
-      "source": "windows/test-host/provider_settings_unit.cpp:195",
+      "source": "windows/test-host/provider_settings_unit.cpp:228",
       "declaration": "const auto deadline = GetTickCount64() + 1500;"
     },
     {
-      "source": "windows/test-host/provider_settings_unit.cpp:196",
+      "source": "windows/test-host/provider_settings_unit.cpp:229",
       "declaration": "Check(service.WaitForProviderSettings(deadline));"
     },
     {
-      "source": "windows/test-host/provider_settings_unit.cpp:197",
+      "source": "windows/test-host/provider_settings_unit.cpp:230",
       "declaration": "Check(service.engine_.ConvertKeys(\"Kana\", static_cast<unsigned>(deadline - GetTickCount64())) == \"\u4eee\u540d\");"
     },
     {
-      "source": "windows/test-host/provider_settings_unit.cpp:216",
-      "declaration": "std::puts(\"PASS provider settings cases=12 callback_io=0 stale_writes=0 pending_conversion=1 conversions=1 deadline_exhaustion=1 certified_fallback=1 mismatch_rejected=1 references=0 stacks=0\");"
+      "source": "windows/test-host/provider_settings_unit.cpp:295",
+      "declaration": "std::puts(\"PASS provider settings cases=20 clients=6 irrelevant_reconnects=0 max_apply_workers=1 callback_io=0 stale_writes=0 pending_conversion=1 conversions=1 deadline_exhaustion=1 certified_fallback=1 mismatch_rejected=1 references=0 stacks=0\");"
     },
     {
       "source": "windows/test-host/run-harness.ps1:31",
@@ -9270,6 +9367,18 @@
       "declaration": "outside.wait(timeout=10)"
     },
     {
+      "source": "windows/test-host/test-host-startup-regression.py:24",
+      "declaration": "subprocess.run(['cmake', '-S', str(out), '-B', str(out / 'build'), '-G', 'Visual Studio 17 2022', '-A', 'x64'], check=True, timeout=60)"
+    },
+    {
+      "source": "windows/test-host/test-host-startup-regression.py:25",
+      "declaration": "subprocess.run(['cmake', '--build', str(out / 'build'), '--config', 'Release'], check=True, timeout=60)"
+    },
+    {
+      "source": "windows/test-host/test-host-startup-regression.py:41",
+      "declaration": "subprocess.run(command, env=env, check=True, timeout=40)"
+    },
+    {
       "source": "windows/test-host/test-hot-swap.ps1:22",
       "declaration": "function Request([string]$request, [int]$timeout=1000) {"
     },
@@ -9530,19 +9639,15 @@
       "declaration": "bodies[0] = bodies[0].replace('  LoadSettings();', '  engine_.Connect();\\n  LoadSettings();')"
     },
     {
-      "source": "windows/test-host/test-provider-settings-unit.py:43",
-      "declaration": "assert 'WaitForProviderSettings(deadline)' in conversion and 'engine_.ConvertKeys(keys, remaining)' in conversion"
-    },
-    {
-      "source": "windows/test-host/test-provider-settings-unit.py:51",
+      "source": "windows/test-host/test-provider-settings-unit.py:58",
       "declaration": "subprocess.run(['cmake', '-S', str(out), '-B', str(out / 'build'), '-G', 'Visual Studio 17 2022', '-A', 'x64'], check=True, timeout=60)"
     },
     {
-      "source": "windows/test-host/test-provider-settings-unit.py:52",
+      "source": "windows/test-host/test-provider-settings-unit.py:59",
       "declaration": "subprocess.run(['cmake', '--build', str(out / 'build'), '--config', 'Release'], check=True, timeout=60)"
     },
     {
-      "source": "windows/test-host/test-provider-settings-unit.py:54",
+      "source": "windows/test-host/test-provider-settings-unit.py:61",
       "declaration": "result = subprocess.run([str(executable)], timeout=10)"
     },
     {
@@ -9630,7 +9735,7 @@
       "declaration": "if (wait != WAIT_OBJECT_0) { TerminateProcess(process.hProcess, 1); WaitForSingleObject(process.hProcess, 5000); }"
     },
     {
-      "source": "windows/test-host/tsf_host.cpp:1588",
+      "source": "windows/test-host/tsf_host.cpp:1605",
       "declaration": "const bool exited = killed && WaitForSingleObject(process, 5000) == WAIT_OBJECT_0;"
     },
     {
