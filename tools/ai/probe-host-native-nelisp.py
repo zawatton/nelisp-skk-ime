@@ -122,7 +122,8 @@ def main():
             report[mode + "_value"] = match[2]
         if report["native_value"] != report["interpreted_value"]:
             raise RuntimeError("Cross-mode parity failure")
-    report["ratio"] = report["native_seconds"] / report["interpreted_seconds"]
+    report["ratio"] = (report["native_seconds"] / report["interpreted_seconds"]
+                       if report["interpreted_seconds"] else None)
     report["wall_seconds"] = round(time.monotonic() - started, 6)
     report["passed"] = True  # Capability + exact value; no invented speed threshold.
     print("HN-NATIVE-PROBE-PASS " + json.dumps(report, sort_keys=True))

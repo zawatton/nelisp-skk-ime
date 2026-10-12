@@ -56,6 +56,9 @@ def main():
         result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True,
                                 timeout=max(0.01, deadline - time.monotonic()))
         if result.returncode:
+            for line in result.stdout.decode("utf-8", "replace").splitlines():
+                if line.startswith("HN-MERGE-COMPILE function="):
+                    print(line)
             raise RuntimeError(f"exit={result.returncode}: " +
                                (result.stdout + result.stderr).decode("utf-8", "replace")[-2500:])
         return result.stdout
@@ -93,6 +96,7 @@ def main():
         (expand-file-name "templates/nelisp-native-template-win64.nelst"
                           (getenv "HN_NELISP_SRC"))))
 (setq nelisp-native-cache-backend 'template)
+(setq hn-merge-compile-failed nil)
 '''
             setup += "(dolist (name '(" + " ".join(FUNCTIONS) + "))\n"
             setup += '''  (let ((f (cdr (assq name
@@ -100,17 +104,18 @@ def main():
                   (getenv "HN_MERGE_ELC"))))))
     (unless f (error "Missing bytecode: %S" name))
     (if (string= (getenv "HN_MERGE_MODE") "compile")
-        (nelisp-native-cache-compile f)
-      (fset name (or (nelisp-native-cache-load f)
-                    (error "Missing native callable: %S" name))))))
+        (condition-case err
+            (let ((result (nelisp-native-cache-compile f)))
+              (princ (format "HN-MERGE-COMPILE function=%S result=%S cache=%S\\n"
+                             name result (nelisp-native-cache-file f))))
+          (error (setq hn-merge-compile-failed t)
+                 (princ (format "HN-MERGE-COMPILE function=%S signal=%S\\n"
+                                name err))))
+      (let ((file (nelisp-native-cache-file f)))
+        (fset name (or (nelisp-native-cache-load f)
+                      (error "Missing native callable: %S cache=%S" name file)))))))
+(when hn-merge-compile-failed (error "Native compilation failed; see per-function results"))
 '''
-            compiler = work / "compile.el"
-            compiler.write_text(";;; -*- lexical-binding: t; -*-\n" + setup +
-                                '(princ "HN-MERGE-COMPILE-PASS\\n")\n',
-                                encoding="utf-8", newline="\n")
-            if b"HN-MERGE-COMPILE-PASS\n" not in run(
-                    command + ["-l", str(compiler)], dict(env, HN_MERGE_MODE="compile")):
-                raise RuntimeError("missing native compile marker")
 
         calls = []
         for record in records:
@@ -125,9 +130,24 @@ def main():
                 call = "(" + FUNCTIONS[index] + " " + " ".join(inputs) + ")"
             calls.append(f'(princ "{token.decode()}\\n")\n(princ {call})\n')
         driver = work / "run.el"
+        # GNU bytecode docstring references (#$) resolve against load-file-name.
+        # The template recipe hashes that metadata: both processes must read
+        # the .elc under the same driver filename, as the probe already does.
         driver.write_text(";;; -*- lexical-binding: t; -*-\n" + setup +
-                          "".join(calls) + f'(princ "{token.decode()}\\n")\n',
+                          '(if (string= (getenv "HN_MERGE_MODE") "compile")\n'
+                          '    (princ "HN-MERGE-COMPILE-PASS\\n")\n'
+                          '  (progn\n' + "".join(calls) +
+                          f'(princ "{token.decode()}\\n")))\n',
                           encoding="utf-8", newline="\n")
+        if args.native:
+            compile_output = run(
+                command + ["-l", str(driver)], dict(env, HN_MERGE_MODE="compile"))
+            print(compile_output.decode("utf-8", "replace"), end="")
+            print("HN-MERGE-CACHE files=" + json.dumps(
+                sorted(p.relative_to(work / "cache").as_posix()
+                       for p in (work / "cache").rglob("*") if p.is_file())))
+            if b"HN-MERGE-COMPILE-PASS\n" not in compile_output:
+                raise RuntimeError("missing native compile marker")
         output = run(command + ["-l", str(driver)], dict(env, HN_MERGE_MODE="run"))
         framed = output.split(token + b"\n")
         if len(framed) != len(records) + 2:
