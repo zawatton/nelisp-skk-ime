@@ -29,13 +29,15 @@ def mismatches(actual, expected):
     return [i for i, (got, want) in enumerate(zip(actual, expected)) if got != want]
 
 
-def main():
+def main(argv=None, benchmark=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native", action="store_true",
                         help="Compile and fresh-load all four template native callables")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     started = time.monotonic()
-    deadline = started + 115
+    # Native cache compilation/authentication dominates the cold-process gate.
+    # The per-call benchmark separates that preparation from merge throughput.
+    deadline = started + (300 if benchmark is not None else 180 if args.native else 115)
     records = [r for line in (ROOT / "tests/fixtures/host-native-nelisp/oracle.jsonl")
                .read_text(encoding="utf-8").splitlines()
                if (r := json.loads(line))["case"].startswith(
@@ -53,8 +55,14 @@ def main():
         raise RuntimeError("framing token collision")
 
     def run(command, env):
-        result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True,
-                                timeout=max(0.01, deadline - time.monotonic()))
+        try:
+            result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True,
+                                    timeout=max(0.01, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired as error:
+            if benchmark is None:
+                raise
+            benchmark["timeout"] = True
+            return error.stdout or b""
         if result.returncode:
             for line in result.stdout.decode("utf-8", "replace").splitlines():
                 if line.startswith("HN-MERGE-COMPILE function="):
@@ -111,14 +119,16 @@ def main():
           (error (setq hn-merge-compile-failed t)
                  (princ (format "HN-MERGE-COMPILE function=%S signal=%S\\n"
                                 name err))))
-      (let ((file (nelisp-native-cache-file f)))
+      (let ((file (nelisp-native-cache-file f))
+            (_compiled (when (string= (getenv "HN_MERGE_MODE") "bench")
+                         (nelisp-native-cache-compile f))))
         (fset name (or (nelisp-native-cache-load f)
                       (error "Missing native callable: %S cache=%S" name file)))))))
 (when hn-merge-compile-failed (error "Native compilation failed; see per-function results"))
 '''
 
         calls = []
-        for record in records:
+        for index, record in enumerate(records):
             name = record["case"]
             inputs = [literal(bytes.fromhex(x)) for x in record["inputs_hex"]]
             if name.startswith("builtin-"):
@@ -126,9 +136,15 @@ def main():
                 argument = "nil" if name.startswith("builtin-missing-") else "'( " + " ".join(inputs) + ")"
                 call = f"({FUNCTIONS[0]} {argument})"
             else:
-                index = 1 if name.startswith("server-") else 2 if name.startswith("engine-") else 3
-                call = "(" + FUNCTIONS[index] + " " + " ".join(inputs) + ")"
-            calls.append(f'(princ "{token.decode()}\\n")\n(princ {call})\n')
+                owner = 1 if name.startswith("server-") else 2 if name.startswith("engine-") else 3
+                call = "(" + FUNCTIONS[owner] + " " + " ".join(inputs) + ")"
+            if benchmark is None:
+                calls.append(f'(princ "{token.decode()}\\n")\n(princ {call})\n')
+            else:
+                calls.append(f'(let* ((begin (float-time)) (value {call}) '
+                             f'(seconds (- (float-time) begin))) '
+                             f'(princ (format "{token.decode()} {index} %.9f %d\\n" '
+                             f'seconds (if (equal value {literal(expected[index])}) 1 0))))\n')
         driver = work / "run.el"
         # GNU bytecode docstring references (#$) resolve against load-file-name.
         # The template recipe hashes that metadata: both processes must read
@@ -139,7 +155,7 @@ def main():
                           '  (progn\n' + "".join(calls) +
                           f'(princ "{token.decode()}\\n")))\n',
                           encoding="utf-8", newline="\n")
-        if args.native:
+        if args.native and benchmark is None:
             compile_output = run(
                 command + ["-l", str(driver)], dict(env, HN_MERGE_MODE="compile"))
             print(compile_output.decode("utf-8", "replace"), end="")
@@ -148,7 +164,19 @@ def main():
                        for p in (work / "cache").rglob("*") if p.is_file())))
             if b"HN-MERGE-COMPILE-PASS\n" not in compile_output:
                 raise RuntimeError("missing native compile marker")
-        output = run(command + ["-l", str(driver)], dict(env, HN_MERGE_MODE="run"))
+        replay_started = time.monotonic()
+        output = run(command + ["-l", str(driver)], dict(
+            env, HN_MERGE_MODE="bench" if benchmark is not None else "run"))
+        if benchmark is not None:
+            import re
+            benchmark["rows"] = {
+                int(i): (float(seconds) * 1000, matched == b"1")
+                for i, seconds, matched in re.findall(
+                    re.escape(token) + rb" (\d+) ([0-9.]+) ([01])\r?\n", output)}
+            benchmark["wall"] = time.monotonic() - started
+            return 1 if benchmark.get("timeout") else 0
+        print(f"HN-MERGE-TIMING preparation_s={replay_started-started:.3f} "
+              f"fresh_replay_s={time.monotonic()-replay_started:.3f}")
         framed = output.split(token + b"\n")
         if len(framed) != len(records) + 2:
             raise RuntimeError(f"missing result frames: expected {len(records)}")

@@ -12,18 +12,24 @@ Keep the first annotation, include unterminated fields, and reset bracket
 state for each dictionary. Lisp-looking fields remain opaque strings."
   (let ((seen nil) (words nil))
     (dolist (raw tails)
-      (let ((in-bracket nil))
-        (dolist (candidate (split-string raw "/" t))
-          (cond
-           (in-bracket
-            (when (string= candidate "]") (setq in-bracket nil)))
-           ((string-prefix-p "[" candidate) (setq in-bracket t))
-           (t
-            (let* ((note (string-search ";" candidate))
-                   (key (if note (substring candidate 0 note) candidate)))
-              (unless (member key seen)
-                (push key seen)
-                (push candidate words))))))))
+      ;; Search delimiters once per field, including a final unterminated one.
+      ;; split-string walks every character in the standalone Lisp provider.
+      (let ((in-bracket nil) (start 0) (end (length raw)) slash)
+        (while (< start end)
+          (setq slash (or (string-search "/" raw start) end))
+          (when (> slash start)
+            (let ((candidate (substring raw start slash)))
+              (cond
+               (in-bracket
+                (when (string= candidate "]") (setq in-bracket nil)))
+               ((string-prefix-p "[" candidate) (setq in-bracket t))
+               (t
+                (let* ((note (string-search ";" candidate))
+                       (key (if note (substring candidate 0 note) candidate)))
+                  (unless (member key seen)
+                    (push key seen)
+                    (push candidate words)))))))
+          (setq start (1+ slash)))))
     (if words (concat "/" (mapconcat #'identity (nreverse words) "/") "/") "")))
 
 ;;;###autoload
