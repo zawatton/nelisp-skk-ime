@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "engine/host-native-index.el"
 LINE_CAP = 64 * 1024
 BATCH_CAP = 256 * 1024
+# Bound the replay process, including allocator growth, to 512 MiB working set.
+PEAK_WORKING_SET_CAP = 512 * 1024 * 1024
 
 
 class RejectLine(ValueError):
@@ -342,7 +344,8 @@ def main(argv=None):
         corrupted[len(corrupted) // 2] ^= 1
         negative = not compare(actual, bytes(corrupted))
         oracle = compare(actual, golden)
-        passed = oracle and negative
+        memory_ok = peak is not None and peak <= PEAK_WORKING_SET_CAP
+        passed = oracle and negative and memory_ok
         passed = passed and records[1] == edge_expected and generated_count == 50000
         if records[1] != edge_expected:
             print(f"FAIL edge-count actual={len(records[1])} expected={len(edge_expected)}")
@@ -357,7 +360,8 @@ def main(argv=None):
               f"negative-control={'PASS (flipped-byte FAIL)' if negative else 'FAIL'} "
               f"edges={'PASS' if records[1] == edge_expected else 'FAIL'} "
               f"seconds={time.monotonic()-started:.3f} replay_s={wall:.3f} "
-              f"peak_working_set_bytes={peak if peak is not None else 'unavailable'}")
+              f"peak_working_set_bytes={peak if peak is not None else 'unavailable'} "
+              f"memory={'PASS' if memory_ok else 'FAIL'} cap_bytes={PEAK_WORKING_SET_CAP}")
         print(f"HN-PARSER-BENCH mode={mode} public_lines=50000 records={generated_count} "
               f"parse_seconds={seconds[2]:.6f} lines/s={rate:.3f}" if rate is not None else
               f"HN-PARSER-BENCH mode={mode} lines/s=unavailable (timer resolution)")

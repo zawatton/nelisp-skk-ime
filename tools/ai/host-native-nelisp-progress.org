@@ -62,9 +62,10 @@ cmd: python tools/ai/check-hn-merge.py --native
 
 ** S3.2 Bounded builder parses public dictionaries with exact last-key overwrite and atomic native index publication
 #+REQUIRES: HN_NATIVE_RUNTIME,HN_NELISP_SRC
-#+NOTE: HN4 parsing-only gate: <=64 KiB complete lines, <=256 KiB copied text batches, one NeLisp replay process, Python last-key-wins oracle serialization; 50k PUBLIC generated lines per mode. Overlong input rejects the generation explicitly. Optional OS peak working set is not Lisp peak heap. Atomic native publication, partial-output/generation fencing and retained old leases are covered later in S3.3; this command does not qualify those parts of the title.
+#+NOTE: HN4 parsing-only gate: <=64 KiB complete lines, <=256 KiB copied text batches, one NeLisp replay process, Python last-key-wins oracle serialization; 50k PUBLIC generated lines per mode. Overlong input rejects the generation explicitly. Required OS peak working set is not Lisp peak heap; FAIL if unavailable or above the named 512 MiB replay cap. Atomic native publication, partial-output/generation fencing and retained old leases are covered later in S3.3; this command does not qualify those parts of the title.
 #+NOTE: 2026-10-12 HN4, supplied Windows CI NeLisp/source 299fcb906: final interpreted PASS, exact parsed.bin 241 bytes/9 keys (10 emitted records), flipped-byte control rejected, edge/BOM/unibyte controls PASS; 50000 PUBLIC generated lines, parsing 55.927004 s / 894.022 lines/s, total 140.684 s, replay peak working set 2637598720 bytes (not peak Lisp heap). GNU Emacs generated-line property check PASS 500 cases. Literal-byte batch reads avoid coding conversion; NeLisp byte search/slice primitives are used only for unibyte data, preserving character-indexed operations for multibyte strings. Construct BOM with char-to-string 65279 because this NeLisp reader does not interpret the GNU \ufeff escape.
 #+NOTE: 2026-10-12 coordinator run outside the worker sandbox, same runtime: --native PASS, parsed.bin exact 241 bytes, flipped-byte and edge controls PASS; 50000 PUBLIC lines parse 18.64 s / 2682 lines/s (interpreted 894 lines/s); total 166.7 s, replay 136.1 s; peak working set 2.72 GB for 50k lines, which is NOT bounded memory: S3.2 bounded-memory claim remains open (NeLisp allocator growth).
+#+NOTE: 2026-10-12 HN5, supplied CI/source 299fcb906: named replay cap 536870912 bytes (512 MiB), missing telemetry also fails. Interpreted gate now FAIL as intended: measured peak working set 2646351872 bytes, exact parsed.bin 241 bytes/9 keys, flipped-byte, edge and overlong rejection controls PASS; 50000 PUBLIC lines, 39.482594 s / 1266.381 lines/s, total 98.658 s. Parsing code is unchanged. The prior native 2.72 GB receipt exceeds the same cap; coordinator must rerun --native with the enforced bound.
 #+TIMEOUT: 300
 cmd: python tools/ai/check-hn-parser.py --native
 
@@ -74,8 +75,12 @@ pending
 
 * S4 Startup and authoritative policy coverage
 ** S4.1 Native startup policy matches C++ selection and child environment across reload snapshots
+#+REQUIRES: HN_NATIVE_RUNTIME,HN_NELISP_SRC
 #+NOTE: Presence vs empty, registry types/expansion, missing framework, native entry, explicit overrides and imported-variable removal; private configuration only.
-pending
+#+NOTE: HN5: pure typed snapshot selection and allowlisted child set/remove plan; replay all 20 startup snapshots and 103 ordered operation records in one NeLisp process. The existing oracle covers successive reloads, import removal, wrong types, expansion failure, missing framework and empty/long values; no follow-up extension is currently required. Registry types are retained but not filtered: current QueryValueEx owners pass a null type pointer and accept fitting raw bytes. Missing-framework fallback preserves the child ID, including native-entry behavior for the DDSKK runner.
+#+NOTE: 2026-10-12, Windows CI/source 299fcb906, runtime sha256 1ae4ffea0eb9a9b86928d0df8a800fd3c1b1addefa5f2a76649054a763d4638b: interpreted PASS 123/123 records, corrupted-result control rejected, 3.182 s. Native compilation refused both functions at the cache ancestor ACL check (Windows file open refused); no compiler/runtime/cache proof bypass. Coordinator must run --native outside this sandbox; S4.1 remains red.
+#+TIMEOUT: 285
+cmd: python tools/ai/check-hn-startup.py --native
 
 ** S4.2 Five ON policies remain authoritative through cold misses, expiry, unseen inputs and child retirement
 #+NOTE: Measure native/managed evaluations separately; preserve TTL/capacity/backoff, epoch guards, ACK barriers and budgets. Prove removal-safe memo-miss behavior before retirement.
