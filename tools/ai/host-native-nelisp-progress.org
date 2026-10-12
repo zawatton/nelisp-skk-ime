@@ -55,7 +55,7 @@ pending
 ** S3.1 Native merge preserves exact source ordering, annotations, bracket skips and reply escaping
 #+REQUIRES: HN_NATIVE_RUNTIME,HN_NELISP_SRC
 #+NOTE: Compile/load each proposed host-native-skk function with pinned runtime; byte goldens plus wrong-result negative control. Cache generation fencing required.
-#+NOTE: Interpreted check: python tools/ai/check-hn-merge.py. 2026-10-12: PASS 80/80 byte replies, wrong-result control rejected, 18.075 s. Native GNU byte compilation succeeded; cache ancestor open refused at C:/Users/kuroz in the restricted session, before string compilation/proofs. No trust bypass; S3.1 remains red.
+#+NOTE: Interpreted check: python tools/ai/check-hn-merge.py. 2026-10-12: PASS 80/80 byte replies, wrong-result control rejected, 18.075 s. Native GNU byte compilation succeeded; in-process template compile then nelisp-native-cache-load returns nil ("Missing native callable") on runtime ce30a110, with the cache under LOCALAPPDATA or repo-local; retest with the 90eb52275 string-lowering fix. No trust bypass; S3.1 remains red.
 cmd: python tools/ai/check-hn-merge.py --native
 
 ** S3.2 Bounded builder parses public dictionaries with exact last-key overwrite and atomic native index publication
