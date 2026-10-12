@@ -1,0 +1,15 @@
+﻿;; Public synthetic fixture, authored for HN2
+;; okuri-ari entries.
+kana s /first/
+かなs /悲;first/哀/[し/悲/哀/]/
+;; okuri-nasi entries.
+alpha /old/
+alpha /new;last-key-wins/
+emoji /😀/𠮷;non-BMP/
+;single /kept/
+no-space
+no-slash broken
+spaced   prefix /candidate/
+ /empty-key/
+cr /ab/
+trailing /no-final-newline/

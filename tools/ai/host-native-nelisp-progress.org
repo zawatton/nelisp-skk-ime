@@ -45,7 +45,7 @@ cmd: python tools/ai/probe-host-native-nelisp.py --strings
 
 ** S2.2 C++ goldens pin three merge rules, parser bytes, startup snapshots and all five decision groups
 #+NOTE: Freeze HN3 byte offsets/capabilities, length/queue/deadline inventory and oversized-input fallback; deliberately corrupted fixture must fail. No fixture capture performed in HN1.
-pending
+cmd: python tools/ai/check-hn-oracle.py
 
 ** S2.3 End to end: private C++ oracle replays the frozen corpus through real host and engine with exact public replies and index bytes
 #+NOTE: Include old HP2 peer negotiation, TSF conversion and Emacs inline; no synthetic-only PASS.

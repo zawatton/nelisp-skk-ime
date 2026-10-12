@@ -39,6 +39,7 @@ target_compile_definitions(ddskk-ime-core-bad-abi PRIVATE NATIVEIME_CORE_BAD_ABI
 target_compile_definitions(ddskk-ime-core-bad-init PRIVATE NATIVEIME_CORE_FAIL_INIT)
 
 enable_testing()
+add_subdirectory(test-host/hn-oracle)
 function(nativeime_test target)
   add_test(NAME ${target} COMMAND powershell -NoProfile -ExecutionPolicy Bypass
     -File "${CMAKE_CURRENT_SOURCE_DIR}/test/run-isolated-test.ps1"

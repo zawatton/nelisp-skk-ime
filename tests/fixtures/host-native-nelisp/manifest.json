@@ -1,0 +1,10 @@
+{
+  "index": "ParseSkkJisyo produces no index; parsed.bin is sorted key/tail byte records, uint32 LE lengths",
+  "production_source_sha256": "6531784eca4403d68a874d72104196d79235e1002779309929ea812883444864",
+  "schema": 1,
+  "sha256": {
+    "SKK-JISYO.synthetic": "3a76b667c44312a39eaed41051a4182996e2385c37d8eafc91be0e05a58f628e",
+    "oracle.jsonl": "2d9a2ac9884f81a62b78007baccfe2e2f63c044c02af12e3300bc5fedd0684d7",
+    "parsed.bin": "2d7b3ad6602a7824121a14e31f8ce26b13ee9c62a0f8b1aca9ed50a1c58b2f4c"
+  }
+}
