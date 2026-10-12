@@ -7,6 +7,150 @@
 (defvar evil-insert-state-entry-hook)
 (defvar evil-normal-state-entry-hook)
 
+(defmacro nelisp-ime-emacs-test--with-commit (&rest body)
+  (declare (indent 0) (debug t))
+  `(with-temp-buffer
+     (let ((nelisp-ime-emacs-mode t)
+           (nelisp-ime-emacs-coalesce-commit t)
+           (nelisp-ime-emacs--draining-commit nil)
+           (executing-kbd-macro nil) (defining-kbd-macro nil)
+           (this-command 'self-insert-command)
+           (this-original-command nil)
+           (last-command-event ?シ)
+           (unread-command-events (string-to-list "ーケンシャル"))
+           (post-self-insert-hook '(nelisp-ime-emacs--coalesce-commit)))
+       ,@body)))
+
+(ert-deftest nelisp-ime-emacs-coalesce-commit-burst ()
+  (nelisp-ime-emacs-test--with-commit
+    (self-insert-command 1)
+    (should (equal (buffer-string) "シーケンシャル"))
+    (should-not unread-command-events)))
+
+(ert-deftest nelisp-ime-emacs-coalesce-commit-zero-timeout-fallback ()
+  (nelisp-ime-emacs-test--with-commit
+    (let (timeouts)
+      (cl-letf (((symbol-function 'input-pending-p)
+                 (lambda () (and unread-command-events t)))
+                ((symbol-function 'read-event)
+                 (lambda (prompt inherit timeout)
+                   (should-not prompt)
+                   (should-not inherit)
+                   (should unread-command-events)
+                   (push timeout timeouts)
+                   (unless (zerop timeout) (pop unread-command-events)))))
+        (self-insert-command 1))
+      (should (equal (buffer-string) "シーケンシャル"))
+      (should-not unread-command-events)
+      (should (equal (reverse timeouts)
+                     '(0 0.05 0 0.05 0 0.05 0 0.05 0 0.05 0 0.05))))))
+
+(ert-deftest nelisp-ime-emacs-coalesce-commit-ascii-stop ()
+  (nelisp-ime-emacs-test--with-commit
+    (setq unread-command-events '(?ー ?a ?ケ ?ン))
+    (self-insert-command 1)
+    (should (equal (buffer-string) "シー"))
+    (should (equal unread-command-events '(?a ?ケ ?ン)))))
+
+(ert-deftest nelisp-ime-emacs-coalesce-commit-disabled ()
+  (nelisp-ime-emacs-test--with-commit
+    (let ((nelisp-ime-emacs-coalesce-commit nil))
+      (self-insert-command 1))
+    (should (equal (buffer-string) "シ"))
+    (should (equal unread-command-events (string-to-list "ーケンシャル")))))
+
+(ert-deftest nelisp-ime-emacs-coalesce-commit-no-recursion ()
+  (nelisp-ime-emacs-test--with-commit
+    (let ((depth 0) (maximum 0)
+          (original (symbol-function 'nelisp-ime-emacs--coalesce-commit)))
+      (cl-letf (((symbol-function 'nelisp-ime-emacs--coalesce-commit)
+                 (lambda ()
+                   (setq depth (1+ depth)
+                         maximum (max maximum depth))
+                   (unwind-protect (funcall original)
+                     (setq depth (1- depth)))))
+                ((symbol-function 'self-insert-command)
+                 (lambda (count)
+                   (insert-char last-command-event count)
+                   (run-hooks 'post-self-insert-hook))))
+        (self-insert-command 1))
+      (should (= maximum 2))
+      (should (equal (buffer-string) "シーケンシャル"))
+      (should-not unread-command-events))))
+
+(ert-deftest nelisp-ime-emacs-coalesce-commit-guards ()
+  (dolist (guard '(macro definition command ascii mode draining read-only))
+    (nelisp-ime-emacs-test--with-commit
+      (insert "シ")
+      (let ((executing-kbd-macro (eq guard 'macro))
+            (defining-kbd-macro (eq guard 'definition))
+            (this-command (if (eq guard 'command) 'forward-char this-command))
+            (last-command-event (if (eq guard 'ascii) ?a last-command-event))
+            (nelisp-ime-emacs-mode (not (eq guard 'mode)))
+            (nelisp-ime-emacs--draining-commit (eq guard 'draining))
+            (buffer-read-only (eq guard 'read-only)))
+        (nelisp-ime-emacs--coalesce-commit))
+      (should (equal (buffer-string) "シ"))
+      (should (equal unread-command-events (string-to-list "ーケンシャル"))))))
+
+(ert-deftest nelisp-ime-emacs-coalesce-commit-other-event-stop ()
+  (dolist (event (list 'left (event-convert-list '(control ?ケ))))
+    (nelisp-ime-emacs-test--with-commit
+      (setq unread-command-events (list ?ー event ?ケ))
+      (self-insert-command 1)
+      (should (equal (buffer-string) "シー"))
+      (should (equal unread-command-events (list event ?ケ))))))
+
+(ert-deftest nelisp-ime-emacs-coalesce-commit-error ()
+  (nelisp-ime-emacs-test--with-commit
+    (insert "シ")
+    (cl-letf (((symbol-function 'self-insert-command)
+               (lambda (_)
+                 (insert-char last-command-event)
+                 (error "Insertion hook failed"))))
+      (nelisp-ime-emacs--coalesce-commit))
+    (should (equal (buffer-string) "シ"))
+    (should (equal unread-command-events (string-to-list "ーケンシャル")))))
+
+(ert-deftest nelisp-ime-emacs-coalesce-commit-cap ()
+  (nelisp-ime-emacs-test--with-commit
+    (setq unread-command-events (make-list 258 ?ケ))
+    (self-insert-command 1)
+    (should (= (buffer-size) 257))
+    (should (equal unread-command-events '(?ケ ?ケ)))))
+
+(ert-deftest nelisp-ime-emacs-coalesce-commit-remapped-command ()
+  (nelisp-ime-emacs-test--with-commit
+    (let ((this-command 'nelisp-ime-emacs-test--insert)
+          (this-original-command 'self-insert-command)
+          (calls 0))
+      (cl-letf (((symbol-function this-command)
+                 (lambda (count)
+                   (setq calls (1+ calls))
+                   (self-insert-command count))))
+        (funcall this-command 1))
+      (should (= calls 7))
+      (should (equal (buffer-string) "シーケンシャル"))
+      (should-not unread-command-events))))
+
+(ert-deftest nelisp-ime-emacs-coalesce-commit-org-command ()
+  (require 'org)
+  (nelisp-ime-emacs-test--with-commit
+    (org-mode)
+    (let ((this-command 'org-self-insert-command))
+      (org-self-insert-command 1))
+    (should (equal (buffer-string) "シーケンシャル"))
+    (should-not unread-command-events)))
+
+(ert-deftest nelisp-ime-emacs-coalesce-commit-undo ()
+  (nelisp-ime-emacs-test--with-commit
+    (buffer-enable-undo)
+    (self-insert-command 1)
+    (undo-boundary)
+    (let ((post-self-insert-hook nil))
+      (undo 1))
+    (should (equal (buffer-string) ""))))
+
 (defmacro nelisp-ime-emacs-test--with-selection (&rest body)
   (declare (indent 0) (debug t))
   `(let ((nelisp-ime-emacs-mode nil)
@@ -418,6 +562,7 @@
           (progn
             (nelisp-ime-emacs-mode 1)
             (should (timerp nelisp-ime-emacs--timer))
+            (should (memq #'nelisp-ime-emacs--coalesce-commit post-self-insert-hook))
             (dolist (hook '(buffer-list-update-hook
                            window-selection-change-functions window-buffer-change-functions))
               (should-not (memq #'nelisp-ime-emacs--state-entry (symbol-value hook))))
@@ -425,6 +570,7 @@
             (should-not calls))
         (nelisp-ime-emacs-mode -1))
       (should-not nelisp-ime-emacs--timer)
+      (should-not (memq #'nelisp-ime-emacs--coalesce-commit post-self-insert-hook))
       (should-not (memq #'nelisp-ime-emacs--state-entry evil-normal-state-entry-hook)))))
 
 (ert-deftest nelisp-ime-emacs-org-source-predicate ()
