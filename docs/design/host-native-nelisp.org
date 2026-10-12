@@ -1,0 +1,243 @@
+#+TITLE: Native NeLisp host logic migration
+#+DATE: 2026-10-12
+#+STATUS: HN1 design; implementation and end-to-end qualification pending
+
+* Decision and ownership boundary
+Option 1 moves host SKK algorithms previously retained for speed into
+natively compiled Elisp. Keep windows/host native transport, OS handles,
+cache mutation, source acquisition, encoding conversion, immutable publication,
+mmap, durable writers and process supervision. No TSF DLL, named-pipe server
+or realtime_frontend replacement. NeLisp native code runs inside nelisp.exe;
+it does not produce a host DLL or standalone executable. Named-pipe FFI is
+currently absent; use native-owned anonymous child stdin/stdout pipes.
+
+The five existing policy switches are already live ON. This objective retires
+their duplicate decisions only after qualification; ON is not evidence that
+every current request uses Lisp (memoization misses still compute native).
+Prior contracts: docs/design/engine-host-nelisp.org,
+docs/contracts/policy-ipc-v2.org and engine-host-v1 frozen replies remain binding.
+All target files/functions below are proposed, except host-policy-decision.
+
+* Migration 1: candidate merge and reply conversion
+Current owners: windows/host/main.cpp:MergeBuiltinCandidates,
+MergeServerReply, EngineDictionaryReply and QuoteEngineString.
+Target owners in engine/host-native-skk.el: host-native-merge-builtins,
+host-native-merge-server-reply, host-native-engine-dictionary-reply and
+host-native-quote-engine-string. Run in the separate host-policy child,
+not the engine session heap; extend engine/host-policy.el:host-policy-serve
+to dispatch versioned bounded byte payloads. Native adapter retains lookup
+and caching of already computed immutable replies, keyed by source generation.
+
+Preserve file order, first annotation and bracket-block skipping for built-ins.
+Built-in dedup keys are bytes before ';'. Preserve the server's asymmetric rule:
+an existing unannotated word does not suppress a later annotated word merely
+by base text; an existing annotated word can suppress the same base text.
+Do not replace both algorithms with one generic deduplicator. Engine replies
+skip empty fields, ignore unterminated trailing fields, emit LIST nil on
+non-'1' status, and preserve exact escaping. Expressions remain opaque data.
+
+Latency: cached PREVIEW/LOCAL SERVER obey the shared 10/50 ms budgets below;
+fresh merges run on background/provider workers within the existing transaction
+deadline and SERVER wait limit. No new synchronous cached-path Lisp call.
+Native compilation/cache follows the common Windows recipe below.
+Fallback before retirement: bounded interpreted child, then existing C++ on
+timeout/unavailable payload; after retirement use the common rollback bundle.
+Parity: freeze exact C++ replies for duplicate annotations in both orders,
+multiple files, empty/malformed tails, brackets, expressions, escaping and UTF-8.
+Rollback: select the prior bundle and its source-generation caches; never reuse
+new-generation replies against old source identities.
+
+* Migration 2: built-in SKK-JISYO parser
+Current owners: windows/host/main.cpp:StripDictionaryLineBreaks, ParseSkkJisyo,
+LoadDictionaryFile and LoadBuiltinDictionariesThread.
+Target owners in engine/host-native-index.el: host-native-parse-jisyo-line and
+host-native-index-build. Choose an offline/background builder child, separate
+from the session engine and resident policy child. Startup need not await it;
+the native loader publishes only a complete validated generation.
+
+Native source IO/encoding/BOM handling feeds bounded complete lines as copied
+bytes through builder stdio. Parser returns midasi/tail records; native code
+owns accumulation, duplicate-key overwrite (last line wins), index serialization,
+flush, verification and atomic publication. The mapping and whole dictionary
+stay outside the Lisp heap. No mapped pointer enters Elisp; release each batch
+before reading the next. Proposed cap: 64 KiB per line, 256 KiB per batch.
+Overlong lines must use the pre-retirement native parser or reject that new
+generation and retain the old one; never silently skip valid C++ input.
+
+Preserve first-space/next-slash search, removal of CR/LF, comments and malformed
+line skipping, verbatim annotation/okuri tails, duplicate keys and UTF-8 BOM.
+This is parsing only; native source union, lookup and mmap remain native.
+IPC is a separate builder stream with source digest, generation, batch sequence,
+byte lengths and final record count/digest; no HP2 control stream starvation.
+Latency: background build has no callback budget; keep old mapped readers usable,
+measure time/peak heap on supplied public dictionary fixtures. Publication of a
+validated intent keeps the shared 500 ms/1 s budget, excluding build time.
+Native compilation/cache uses the common recipe; never compile on request.
+Fallback: interpreted builder only if bounded memory/parity gates pass, else
+pre-retirement C++ loader or retain old valid generation pending bundle rollback.
+Parity: frozen C++ key/tail bytes, ordered per-file lookup replies and published
+index contents, including missing final LF, BOM, CRLF, repeated keys and bad lines.
+Rollback: prior builder/bundle, old validated index and mapping leases; never
+publish partial output or delete a leased generation.
+
+* Migration 3: startup selection and environment policy
+Current owners: windows/host/main.cpp:ConfiguredEngineId, IsDdskkEngineId,
+EngineRunnerScript, UseNativeEntry, ApplyEngineEnvFromRegistry and StartChild
+(environment construction). Native registry reads, existence checks, environment
+expansion, Unicode conversion, command quoting and CreateProcess remain native.
+Target owners in engine/host-native-startup.el: host-native-select-engine and
+host-native-child-env-plan, dispatched by the resident policy child before engine
+spawn/reload. Bootstrap that child with a fixed bundled entry independent of the
+engine choice to avoid a selection cycle.
+
+Adapter sends a typed configuration snapshot: explicit inherited presence/value,
+registry presence/type/value, expanded path result, framework availability,
+requested ID, native-entry flag and prior imported-variable provenance.
+Reply is runner enum plus allowlisted set/remove operations and child engine ID;
+never return a shell command. Reuse HP2 Config for its existing numeric subdecision;
+snapshot/string operations use the new negotiated byte-payload channel.
+Keep env-first selection, ddskk default, case-insensitive ddskk/passthrough,
+missing-framework runner fallback (including current child ID behavior), native
+entry only for DDSKK, and sorted per-child environment without changing host ID.
+Explicit inherited overrides survive; previous registry imports refresh/remove
+on reload. Preserve absent versus present-empty behavior separately for engine
+selection and each bridge. Bridges cover UserJisyoPath, UserJisyoBatch and all
+four Behavior flags as currently mapped in ApplyEngineEnvFromRegistry.
+
+Latency: warm intent ACK 10/50 ms; completion asynchronous. Cold ready <=60 s
+including policy warmup, old ready engine survives failed replacement.
+Native compilation/cache follows the shared recipe before READY.
+Fallback: interpreted startup policy within deadline, then pre-retirement native
+selection; after retirement retain old child and roll back unavailable startup.
+Parity: frozen input snapshots vs C++ runner, child ID and exact environment
+operations, including empty/long values, wrong registry types, expansion failure,
+missing framework and successive reloads. Fixture path strings are metadata only.
+Rollback: prior bundle and config snapshot; restore previous imported provenance
+without mutating explicit overrides or changing live registry settings.
+
+* Migration 4: retire five duplicate native policy paths
+Current algorithm owners: windows/host/main.cpp:ServerCache::Query,
+LookupDictionary, ReplacementLoop, LearningSchedule,
+LocalPublicationLoop; windows/host/native_adapter.h:ShadowPolicy::Decide
+receives eagerly computed native_decision. Five groups SOURCES, CACHE, RESTART,
+PUBLICATION, LEARNING map to Order/Sources, CacheTtl/Capacity,
+Restart/Replacement, Intent/Payload and Learning respectively.
+Target: engine/host-policy.el:host-policy-decision remains sole algorithm owner,
+natively compiled and served by host-policy-hp2-reply/host-policy-serve in the
+resident policy child. HP2's 23-byte Q / 19-byte R frames remain unchanged.
+Native adapter keeps epoch/correlation/range checks, nonblocking memoization,
+safety barriers, timers, cache mutations, jobs and publication/durability ownership.
+
+Latency: no caller waits for a missing decision; precompute exact current inputs
+and keep generation-valid answers. Before removal prove coverage of every cache
+miss, expiry, restart and unseen quantitative input. Removing fallback without
+such coverage would change behavior and is forbidden. On child failure keep safe
+cached service/old mappings, delay new intents within deadlines, or fail service
+with existing recovery semantics; no invented successful learning ACK.
+Compilation follows the common recipe. Fallback: interpreted authoritative policy is an
+optional separately qualified mode. Native-unavailable behavior must meet the
+same budgets or block retirement. No copied C++ algorithm remains as a hidden
+steady-state fallback after S5. Rollback uses the previous complete bundle that
+retains native algorithms, not a per-request switch into deleted code.
+Parity: freeze existing twelve-kind input corpus and all five ON public replies,
+including TTL 60 s/2 s, capacity 256, backoff 1--30 s and publication/ACK ordering.
+Instrument zero native-algorithm evaluations while exercising cold/memo-miss,
+expiry, generation changes, failure and late replies; source absence alone is
+insufficient. Compare with frozen C++ oracle in a separate test-only build.
+
+* IPC and latency budgets
+Reuse HP2 unchanged for numeric decisions. Proposed HN3 READY capability adds
+a length-prefixed byte stream for merge/config operations over private stdio;
+do not squeeze strings into HP2 scalar fields or silently send HN3 to HP2.
+Specify/freeze exact offsets in S2: operation, uint64 correlation, policy/engine
+epochs, source/config generation, payload byte lengths and response status.
+No read/eval of IPC. Bound payload 256 KiB, queue 64 requests/128 KiB (reject
+oversized queued work to background streaming); one outstanding request/channel.
+Validate UTF-8 boundaries, lengths, operation/result bounds and generation.
+Retire/drain channel on timeout, discard late replies before reuse, invalidate
+generation caches on replacement. Builder uses its own stream. Current numeric
+policy limits are not implicitly raised by the payload cap.
+
+From engine-host-nelisp.org: local SPACE p50 <=30 ms, callback watchdog <=20 ms;
+every TSF callback performs zero host/engine/policy waits, even during 3 s GC.
+Warm cached host/LOCAL SERVER/intent ACK p99 <=10 ms, max <=50 ms;
+warm transaction overhead p99 <=10 ms above C++ reference. Existing caller
+deadlines remain binding: worker <=30 s or smaller caller timeout, SERVER cache
+wait <=200 ms and <=64 relay exchanges. Publication p99 <=500 ms/max <=1 s
+after validated intent; report build/intent acquisition separately.
+Native policy IPC gate p99 <=10 ms/max <=50 ms; startup <=60 s and policy
+private bytes <=512 MiB. Measure cold/warm, p50/p99/max, sample count and GC.
+Native compilation does not remove allocation or guarantee these tails.
+
+* Windows native compilation and cache
+Read-only API source: HN_NELISP_SRC/test/support/run-windows-native-hot-loop.py,
+its driver and run-windows-native-f1.py; inspected revision ce30a1106
+(integ/native-20261011). Design 214 describes Win64 rooted raw-v2 compilation.
+Resolve executable only from HN_NATIVE_RUNTIME; require its .cold and
+.native-startup.el companions. Resolve source/load paths from HN_NELISP_SRC,
+never embed a machine path. Pin runtime, companions, compiler/input dialect,
+Elisp source and bytecode hashes in each private bundle manifest.
+
+Produce pinned GNU bytecode with byte-compile-file (the compiler-input-dialect
+must report pinned). NeLisp reads functions with
+nelisp-bytecode-native-consumer-read-elc-functions. With
+nelisp-native-cache-backend='in-house', call nelisp-native-cache-compile once;
+in a fresh process call nelisp-native-cache-load and install the returned
+function into the target dispatch. Require a non-nil native callable; a source
+load alone is not native proof. Launch with --cold-load-from and source -L paths
+as in the inspected runner. Compile off request paths; warm every branch and
+perform startup GC before READY, without disabling GC or raising its limits.
+
+NELISP_NATIVE_CACHE selects a private generation cache. Compiler binds bytecode,
+target/Win64 ABI, runtime/import/GC proofs and compiler identity; preserve its
+owner/DACL/reparse checks and no-clobber publication. Native mappings are R/RX
+inside the reader, not DLLs. Never copy unchecked cached blobs or reuse another
+runtime's pointer. Failed trust/ABI/cache checks must refuse native loading.
+Before retirement retain native fallback; qualified interpreted Elisp is usable
+only within the same deadlines. After retirement use old valid outputs or
+bundle rollback if interpreted mode cannot satisfy acceptance.
+
+* HN1 probe receipt
+Command from this repository root (requires HN_NATIVE_RUNTIME, HN_NELISP_SRC
+and pinned GNU Emacs on PATH):
+#+begin_src sh
+python tools/ai/probe-host-native-nelisp.py
+#+end_src
+The script compiles a synthetic numeric candidate-ID dedup loop, caches once,
+loads native code in a fresh reader, then times native and interpreted bodies
+with GC enabled and independently asserts the exact unique count in both.
+All temporary files/cache are inside tools/ai and removed; no real dictionaries,
+host processes, registry or live IME are accessed. Total subprocess budget 270 s.
+2026-10-12: PASS, 2,000 paired-ID inputs, unique count=1,000 in both modes.
+Compile 124.874829 s; native 0.246206 s; interpreted 0.783781 s;
+native/interpreted ratio 0.314126; total wall 156.779597 s (single sample).
+Runtime SHA256: c406537390f54b46508a3f343ca604e731882a938f0625946725d3510c46b98e
+Cold SHA256: f2ef86f42333b9cb22e472858abce468d40f78020b3d3a7e3f9d91bd6d83ed85
+Startup SHA256: d3910a02ac268e2280df46f004a2d5260f89e9fd737d473e771d4461398e36f7
+The initial larger string-list kernel exceeded 110 s. Simplified list kernels
+and string-equality decision compilation refused the verified-plan/runtime
+contract. Reproduce the latter with the same command plus --strings: exit 1,
+"rooted-cfg: verified plan or runtime contract is unavailable" (about 6 s).
+No trust check was bypassed. Numeric feasibility does not establish string SKK
+support, annotation/bracket parity, resident IPC or production speed. S2.1 stays
+a failing command until the exact image qualifies a string-capable kernel.
+Document checker: PASS, nine required sections and 15 ledger criteria;
+removing the native-compilation heading in memory fails with exit 1.
+
+* Qualification, rollback and open questions
+S1 verifies this complete specification and compiler smoke. S2 freezes C++
+byte/snapshot goldens and rejects corrupted fixtures. S3 proves resident merge
+and bounded offline parsing through private host/engine paths. S4 proves startup
+and all five authoritative policies under pause/crash/pressure. S5 removes
+duplicate algorithms only after those gates, then tests private bundle rollback
+with mapped leases, acknowledged IDs and real TSF/Emacs conversion intact.
+Every stage's last ledger criterion is real end-to-end acceptance, still pending.
+Retain exact runtime hashes, fixture hashes, tails and owned-PID cleanup receipts.
+No production selection, deployment or rollback is authorized by HN1.
+
+Open questions: string-kernel compiler proof refusal must be resolved upstream;
+HN3 offsets/capability negotiation and oversize compatibility
+need S2 fixtures; the builder's bounded-memory throughput needs measurement;
+every policy memo-miss needs a proven removal-safe behavior. Separate native
+microbenchmark speed from allocation/GC and resident-channel tails. Existing
+known-red gates remain visible; do not weaken thresholds to declare completion.

@@ -1,0 +1,91 @@
+#+TITLE: Host SKK logic in natively compiled NeLisp
+#+DATE: 2026-10-12
+
+HN1 design lane. Read ../../.claude/reference/progress-ledger.md; all weights
+default to one. Commands run from this repository root via sh -c and depend
+only on supplied environment/runtime inputs, never machine-specific paths.
+The checker certifies specification structure, not implementation behavior.
+No host, registry, live IME or user dictionary command is run in HN1.
+No commit or deployment. Future E2E gates must use private fixtures/endpoints,
+isolated configuration and owned-PID cleanup; never reuse live runner defaults.
+
+Normal commands finish below two minutes. Compiler E2E smokes are explicitly
+marked below and bounded to 270 seconds total, with meter timeout 285 seconds.
+Future expensive end-to-end evidence must retain command, exit code, runtime
+and fixture hashes, exact reply counts, latency tails and cleanup results;
+replace pending only with a real command or hashed retained receipt.
+No gate is marked evidence merely because its source exists.
+Meter recipe (NOTES_ROOT supplied; no-run avoids writing meter cache):
+#+begin_src sh
+bash "$NOTES_ROOT/bin/progress-meter.sh" --ledger tools/ai/host-native-nelisp-progress.org --root "$PWD" --no-run
+#+end_src
+This does not execute cmd checks: uncached commands are UNKNOWN. Independent
+HN1 checker/probe receipts belong in docs/design/host-native-nelisp.org.
+
+* S1 Design and compiler feasibility
+** S1.1 Specification covers four owners, placement, IPC, budgets, fallback, parity and rollback
+cmd: python tools/ai/check-host-native-nelisp.py
+
+** S1.2 Numeric dedup kernel compiles, fresh-loads and matches interpreted output
+#+REQUIRES: HN_NATIVE_RUNTIME,HN_NELISP_SRC
+#+NOTE: Compiler E2E smoke only, not SKK or host acceptance; pinned GNU Emacs required on PATH. Total script bound 270 s.
+#+TIMEOUT: 285
+cmd: python tools/ai/probe-host-native-nelisp.py
+
+** S1.3 End to end: private unchanged host and supplied native runtime reproduce frozen SKK replies and TSF/Emacs baseline
+#+NOTE: All five existing policies ON; capture C++ baseline before changes, zero callback waits and owned-PID leftovers. Design plus microbench cannot pass this criterion.
+pending
+
+* S2 Frozen semantic and transport contracts
+** S2.1 String dedup decision compiles and native output matches its interpreted oracle
+#+REQUIRES: HN_NATIVE_RUNTIME,HN_NELISP_SRC
+#+NOTE: Known-red compiler E2E smoke: rooted-cfg verified plan/runtime contract unavailable on the supplied image. Keep executable failure visible; do not bypass runtime proofs. Total bound 270 s.
+#+TIMEOUT: 285
+cmd: python tools/ai/probe-host-native-nelisp.py --strings
+
+** S2.2 C++ goldens pin three merge rules, parser bytes, startup snapshots and all five decision groups
+#+NOTE: Freeze HN3 byte offsets/capabilities, length/queue/deadline inventory and oversized-input fallback; deliberately corrupted fixture must fail. No fixture capture performed in HN1.
+pending
+
+** S2.3 End to end: private C++ oracle replays the frozen corpus through real host and engine with exact public replies and index bytes
+#+NOTE: Include old HP2 peer negotiation, TSF conversion and Emacs inline; no synthetic-only PASS.
+pending
+
+* S3 Native SKK merge and offline parser
+** S3.1 Native merge preserves exact source ordering, annotations, bracket skips and reply escaping
+#+NOTE: Compile/load each proposed host-native-skk function with pinned runtime; byte goldens plus wrong-result negative control. Cache generation fencing required.
+pending
+
+** S3.2 Bounded builder parses public dictionaries with exact last-key overwrite and atomic native index publication
+#+NOTE: No entire dictionary or mapping in Lisp heap; measure peak heap/build throughput, BOM/CRLF/no-final-LF, oversized line, partial output and generation rejection. Retain old leases.
+pending
+
+** S3.3 End to end: private host uses native merge and builder outputs in TSF/Emacs conversion under GC, provider and publication pressure
+#+NOTE: Frozen replies/indexes, callback waits=0; unchanged 20 ms watchdog, local SPACE p50 <=30 ms and cached host p99 <=10 ms/max <=50 ms; builder failure preserves old readers.
+pending
+
+* S4 Startup and authoritative policy coverage
+** S4.1 Native startup policy matches C++ selection and child environment across reload snapshots
+#+NOTE: Presence vs empty, registry types/expansion, missing framework, native entry, explicit overrides and imported-variable removal; private configuration only.
+pending
+
+** S4.2 Five ON policies remain authoritative through cold misses, expiry, unseen inputs and child retirement
+#+NOTE: Measure native/managed evaluations separately; preserve TTL/capacity/backoff, epoch guards, ACK barriers and budgets. Prove removal-safe memo-miss behavior before retirement.
+pending
+
+** S4.3 End to end: private startup/reload and all five ON policies preserve TSF/Emacs replies, acknowledged IDs and latency through pause/crash
+#+NOTE: Include 3 s GC, wrong/late frames, kill/restart, interpreted-unavailable modes and simultaneous multi-client pressure; no callback wait or lost acknowledged learning.
+pending
+
+* S5 Retirement and rollback
+** S5.1 Duplicate native algorithms are absent from production and never evaluated during qualified workloads
+#+NOTE: Retain OS/cache/source-union/mmap owners and native safety checks; oracle exists only in a separate test build. Zero algorithm-evaluation counters include cold/memo misses.
+pending
+
+** S5.2 Private versioned bundles refuse incompatible native caches and restore the prior native-capable bundle
+#+NOTE: Pin executable/companions/compiler/source hashes; preserve source/config generations, imported provenance, mapped leases and durable IDs. Native unavailable must not silently select deleted code.
+pending
+
+** S5.3 End to end: retired-path private bundle completes TSF/Emacs conversion and learning under pressure then rolls back with exact durable recovery
+#+NOTE: Run unchanged public contracts, IPC/resource/callback deadlines and private bundle cycle; record zero native-algorithm calls, zero ACK loss, exact reply goldens and zero owned-PID leaks.
+pending
