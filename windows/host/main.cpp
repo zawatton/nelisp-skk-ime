@@ -311,15 +311,18 @@ std::wstring EngineRunnerScript(const std::wstring& repository,
 // these env vars directly for isolation (private jisyo, specific behavior
 // flags under test, etc.), and leaving an already-set value alone keeps
 // every one of them working unchanged.
-void ApplyEngineEnvFromRegistry() {
+void ApplyEngineEnvFromRegistry(std::vector<const wchar_t*>* provenance = nullptr) {
   // Only explicit inherited overrides stay pinned. Values imported on a
   // previous spawn must be refreshed (or removed) for ENGINE RELOAD.
   static std::vector<const wchar_t*> imported;
+  if (provenance) imported = *provenance;
   for (const wchar_t* name : imported) SetEnvironmentVariableW(name, nullptr);
   imported.clear();
+  if (provenance) provenance->clear();
   const auto set_imported = [&](const wchar_t* name, const wchar_t* value) {
     SetEnvironmentVariableW(name, value);
     imported.push_back(name);
+    if (provenance) provenance->push_back(name);
   };
   HKEY key = nullptr;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ,
@@ -381,8 +384,145 @@ void ApplyEngineEnvFromRegistry() {
   RegCloseKey(key);
 }
 
+// HN3 startup carries OS-read values only. The policy returns enums and
+// allowlisted environment operations, never paths to execute or commands.
+const wchar_t* kStartupRegistry[] = {L"Engine", L"UserJisyoPath", L"UserJisyoBatch",
+    L"BehaviorOkuriStrictly", L"BehaviorDeleteOkuriOnCancel", L"BehaviorAddKatakanaCand", L"BehaviorLearnDisabled"};
+const wchar_t* kStartupEnvironment[] = {L"NELISP_IME_ENGINE", L"DDSKK_USER_JISYO",
+    L"DDSKK_USER_JISYO_SAVE_BATCH_SIZE", L"DDSKK_OKURI_STRICTLY", L"DDSKK_DELETE_OKURI_ON_CANCEL",
+    L"DDSKK_SEARCH_KATAKANA", L"DDSKK_LEARN_DISABLED"};
+std::vector<const wchar_t*> g_startup_imported;
+std::mutex g_startup_mutex;
+std::string WideToUtf8(const std::wstring& value);
+bool HnWide(const std::string& text, std::wstring& value) {
+  if (!hn3::Utf8(text) || text.find('\0') != text.npos) return false;
+  if (text.empty()) { value.clear(); return true; }
+  const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+  if (n <= 0) return false;
+  value.resize(n);
+  return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), value.data(), n) == n;
+}
+std::wstring StartupEnvironment(const wchar_t* name, bool* present = nullptr) {
+  SetLastError(ERROR_SUCCESS);
+  const auto size = GetEnvironmentVariableW(name, nullptr, 0);
+  if (present) *present = size || GetLastError() != ERROR_ENVVAR_NOT_FOUND;
+  std::vector<wchar_t> value(size ? size : 1);
+  if (size) GetEnvironmentVariableW(name, value.data(), size);
+  return value.data();
+}
+struct StartupPlan { std::wstring id, runner; bool native = false; };
+StartupPlan HnStartup(const std::wstring& repository, const std::wstring* requested, ULONGLONG deadline) {
+  std::lock_guard serial(g_startup_mutex);
+  const bool framework = FileExists(repository + L"\\framework\\nelisp-ime-stdio.el");
+  const bool native = UseNativeEntry();
+  HKEY key = nullptr;
+  const bool registry = RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ, &key) == ERROR_SUCCESS;
+  struct Value { bool present = false; DWORD type = 0, size = 0, dword = 0; std::wstring text; };
+  std::array<Value, 7> values;
+  for (size_t i = 0; registry && i < values.size(); ++i) {
+    auto& v = values[i];
+    const DWORD capacity = i == 0 ? 126 : i == 1 ? 65536 : 4;
+    std::vector<BYTE> raw(capacity + 2, 0); v.size = capacity;
+    const auto status = RegQueryValueExW(key, kStartupRegistry[i], nullptr, &v.type, raw.data(), &v.size);
+    v.present = status == ERROR_SUCCESS;
+    if (v.present) {
+      if (i < 2) v.text = reinterpret_cast<const wchar_t*>(raw.data());
+      else std::memcpy(&v.dword, raw.data(), 4);
+    }
+  }
+  if (key) RegCloseKey(key);
+  bool expansion = false; std::wstring expanded;
+  if (values[1].present && !values[1].text.empty()) {
+    const auto size = ExpandEnvironmentStringsW(values[1].text.c_str(), nullptr, 0);
+    std::vector<wchar_t> result(size ? size : 1);
+    if (size && ExpandEnvironmentStringsW(values[1].text.c_str(), result.data(), size)) { expansion = true; expanded = result.data(); }
+  }
+  std::vector<std::string> fields = {requested ? "1" : "0", requested ? WideToUtf8(*requested) : "",
+      framework ? "1" : "0", native ? "1" : "0", registry ? "1" : "0", expansion ? "1" : "0",
+      WideToUtf8(expanded), std::to_string(g_startup_imported.size())};
+  for (auto name : g_startup_imported) fields.push_back(WideToUtf8(name));
+  std::vector<std::string> inherited;
+  size_t inherited_count = 0;
+  for (auto name : kStartupEnvironment) {
+    bool present = false; const auto value = StartupEnvironment(name, &present);
+    if (present) { ++inherited_count; inherited.push_back(WideToUtf8(name)); inherited.push_back(WideToUtf8(value)); inherited.push_back(std::to_string(value.size())); }
+  }
+  fields.push_back(std::to_string(inherited_count)); fields.insert(fields.end(), inherited.begin(), inherited.end());
+  fields.push_back("7");
+  for (size_t i = 0; i < values.size(); ++i) {
+    const auto& v = values[i];
+    const std::vector<std::string> parts = {WideToUtf8(kStartupRegistry[i]), v.present ? "1" : "0",
+        std::to_string(v.type), std::to_string(v.size), WideToUtf8(v.text), std::to_string(v.dword)};
+    fields.insert(fields.end(), parts.begin(), parts.end());
+  }
+  StartupPlan fallback;
+  auto native_plan = [&] {
+    fallback.id = requested ? *requested : ConfiguredEngineId();
+    fallback.runner = EngineRunnerScript(repository, fallback.id);
+    fallback.native = native && fallback.runner == kDdskkRunner;
+    const auto prior = g_startup_imported;
+    ApplyEngineEnvFromRegistry(&g_startup_imported);
+    hn3::Frame reply; reply.reply = true; reply.operation = hn3::Operation::Startup;
+    reply.fields = {fallback.runner == kDdskkRunner ? "ddskk" : "framework", fallback.native ? "native" : "load",
+        WideToUtf8(fallback.id), std::to_string(g_startup_imported.size()), std::to_string(prior.size()+g_startup_imported.size()+1)};
+    for (auto name : g_startup_imported) reply.fields.push_back(WideToUtf8(name));
+    for (auto name : prior) { reply.fields.push_back("remove"); reply.fields.push_back(WideToUtf8(name)); reply.fields.push_back(""); }
+    for (auto name : g_startup_imported) { reply.fields.push_back("set"); reply.fields.push_back(WideToUtf8(name)); reply.fields.push_back(WideToUtf8(StartupEnvironment(name))); }
+    reply.fields.push_back("set"); reply.fields.push_back("NELISP_IME_ENGINE"); reply.fields.push_back(WideToUtf8(fallback.id));
+    return hn3::Encode(reply);
+  };
+  const auto wire = native_adapter::shadow.Bytes(hn3::Operation::Startup, fields, deadline, native_plan);
+  hn3::Frame reply;
+  auto reject = [&] { native_adapter::PolicyCounters::Native(native_adapter::PolicyKind::Startup); native_plan(); return fallback; };
+  if (!hn3::Decode(wire, reply) || !reply.reply || reply.operation != hn3::Operation::Startup || reply.status || reply.fields.size() < 5) return reject();
+  const auto& f = reply.fields;
+  StartupPlan plan;
+  if ((f[0] != "ddskk" && f[0] != "framework") || (f[1] != "native" && f[1] != "load") ||
+      !HnWide(f[2], plan.id) || (requested && plan.id != *requested)) return reject();
+  plan.runner = f[0] == "ddskk" ? kDdskkRunner : kFrameworkRunner; plan.native = f[1] == "native";
+  if ((plan.runner == kFrameworkRunner && (!framework || plan.native)) || (plan.native && !native)) return reject();
+  auto count = [](const std::string& s, size_t max, size_t& n) {
+    n = 0; if (s.empty() || s.size() > 3) return false;
+    for (auto ch : s) { if (ch < '0' || ch > '9') return false; n = n*10 + ch-'0'; }
+    return n <= max;
+  };
+  size_t imports = 0, ops = 0;
+  if (!count(f[3], 6, imports) || !count(f[4], 13, ops) || f.size() != 5 + imports + ops*3) return reject();
+  auto bridge = [&](const std::string& name) -> const wchar_t* {
+    for (size_t i = 1; i < 7; ++i) if (name == WideToUtf8(kStartupEnvironment[i])) return kStartupEnvironment[i];
+    return nullptr;
+  };
+  std::vector<const wchar_t*> imported;
+  for (size_t i = 0; i < imports; ++i) {
+    auto name = bridge(f[5+i]);
+    if (!name || std::find(imported.begin(), imported.end(), name) != imported.end()) return reject();
+    imported.push_back(name);
+  }
+  struct Op { const wchar_t* name; bool remove; std::wstring value; };
+  std::vector<Op> operations;
+  bool child_id = false;
+  for (size_t i = 5+imports; i < f.size(); i += 3) {
+    if (f[i] != "set" && f[i] != "remove") return reject();
+    if (f[i+1] == "NELISP_IME_ENGINE") {
+      if (child_id || f[i] != "set" || f[i+2] != f[2]) return reject();
+      child_id = true; continue; // child block owns this value; never change host ID
+    }
+    auto name = bridge(f[i+1]); std::wstring value;
+    if (!name || !HnWide(f[i+2], value) || (f[i] == "remove" && !value.empty())) return reject();
+    operations.push_back({name, f[i] == "remove", std::move(value)});
+  }
+  if (!child_id) return reject();
+  for (const auto& op : operations) SetEnvironmentVariableW(op.name, op.remove ? nullptr : op.value.c_str());
+  g_startup_imported = std::move(imported);
+  LogEvent("hn3-startup-selection runner=" + f[0] + " entry=" + f[1] + " engine=" + f[2]);
+  return plan;
+}
+
 bool StartChild(const std::wstring& engine, const std::wstring& repository,
                 Child* child, const std::wstring& id, bool warming = false) {
+  const bool hn_startup = native_adapter::shadow.ByteMode(hn3::Operation::Startup) != 0;
+  StartupPlan plan;
+  if (hn_startup) plan = HnStartup(repository, &id, GetTickCount64() + 1000);
   SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
   HANDLE stdout_read = nullptr, stdout_write = nullptr;
   HANDLE stdin_read = nullptr, stdin_write = nullptr;
@@ -403,16 +543,16 @@ bool StartChild(const std::wstring& engine, const std::wstring& repository,
   PROCESS_INFORMATION process{};
   std::wstring command = L"\"" + engine + L"\"";
   if (!repository.empty()) {
-    const std::wstring runner = EngineRunnerScript(repository, id);
+    const std::wstring runner = hn_startup ? plan.runner : EngineRunnerScript(repository, id);
     // The AOT-backed native entry exists for the DDSKK runner only, so an
     // engine served by the framework runner always takes the --load path.
-    command += (UseNativeEntry() && runner == kDdskkRunner)
+    command += ((hn_startup ? plan.native : UseNativeEntry()) && runner == kDdskkRunner)
                    ? L" --ddskk-ime-server " + runner
                    : L" --load " + runner;
   }
   const wchar_t* working_directory =
       repository.empty() ? nullptr : repository.c_str();
-  ApplyEngineEnvFromRegistry();
+  if (!hn_startup) ApplyEngineEnvFromRegistry();
   // Each child receives its own engine selection. Do not mutate the host's
   // environment: registry notifications must not see a previous spawn's id.
   std::vector<std::wstring> entries;
@@ -825,6 +965,18 @@ std::string MergeBuiltinCandidates(const std::string& midasi) {
   return merged;
 }
 
+// Cached preview paths never wait for policy IO. Provider transactions pass
+// their remaining deadline; source acquisition stays in the native host.
+std::string HnMergeBuiltins(const std::string& midasi, ULONGLONG deadline = 0) {
+  if (!native_adapter::shadow.ByteMode(hn3::Operation::Builtins)) return MergeBuiltinCandidates(midasi);
+  std::vector<std::string> tails;
+  for (const auto& map : g_builtin_dictionary.maps) {
+    const auto it = map.find(midasi); if (it != map.end()) tails.push_back(it->second);
+  }
+  return native_adapter::shadow.Bytes(hn3::Operation::Builtins, tails, deadline,
+      [&] { return MergeBuiltinCandidates(midasi); });
+}
+
 bool DecodeHexBytes(std::string_view encoded, std::string* decoded) {
   if (encoded.empty() || encoded.size() > 8192 || encoded.size() % 2 != 0)
     return false;
@@ -853,7 +1005,7 @@ std::string PreviewBuiltinDictionary(std::string_view request) {
       !g_builtin_dictionary.ready.load(std::memory_order_acquire)) {
     return "PREVIEW -";
   }
-  const std::string candidates = MergeBuiltinCandidates(midasi);
+  const std::string candidates = HnMergeBuiltins(midasi);
   return candidates.empty() ? "PREVIEW -" : "PREVIEW " + candidates;
 }
 // ---------------------------------------------------------------------------
@@ -1295,10 +1447,12 @@ struct RelayMetadataRelease {
   RelayMetadataRelease() { if (lock) lock->unlock(); }
   ~RelayMetadataRelease() { if (lock) lock->lock(); }
 };
-std::string LookupDictionary(const std::string& midasi) {
+std::string LookupDictionary(const std::string& midasi, ULONGLONG deadline = 0) {
+  if (!deadline) deadline = GetTickCount64() +
+      (native_adapter::shadow.ByteMode(hn3::Operation::Builtins) ? hn3::kMergeDeadlineMs : 200);
   const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
   const double lookup_started = debug ? ProfileMilliseconds() : 0;
-  const std::string files = g_builtin_dictionary.ready.load(std::memory_order_acquire) ? MergeBuiltinCandidates(midasi) : "";
+  const std::string files = g_builtin_dictionary.ready.load(std::memory_order_acquire) ? HnMergeBuiltins(midasi, deadline) : "";
   if (debug) {
     std::fprintf(stderr, "dictionary-source name=builtin-index ms=%.6f\n",
                  ProfileMilliseconds()-lookup_started);
@@ -1320,7 +1474,8 @@ std::string LookupDictionary(const std::string& midasi) {
       });
   if (order == 2) return *server;
   if (order == 0) return files.empty() ? "4" : "1" + files;
-  return MergeServerReply(files, std::string_view(*server).substr(1));
+  return native_adapter::shadow.Bytes(hn3::Operation::Server, {files, server->substr(1)}, deadline,
+      [&] { return MergeServerReply(files, std::string_view(*server).substr(1)); });
 }
 
 void ShutdownDictionaryServer() {
@@ -1681,8 +1836,12 @@ bool Dispatch(Child& child, const std::string& request, std::string* response) {
       if (++server_exchanges > kMaxServerExchangesPerRequest) return false;
       const double relay_started = ProfileMilliseconds();
       const ULONGLONG legacy_relay_started = GetTickCount64();
-      const std::string found = LookupDictionary(line.substr(7));
-      const std::string reply = child.utf8_wire ? EngineDictionaryReply(found) : found;
+      const auto merge_budget = native_adapter::shadow.ByteMode(hn3::Operation::Builtins) ? hn3::kMergeDeadlineMs : 200;
+      const auto merge_deadline = (std::min)(started + ULONGLONG{30000}, GetTickCount64() + merge_budget);
+      const std::string found = LookupDictionary(line.substr(7), merge_deadline);
+      const std::string reply = child.utf8_wire
+          ? native_adapter::shadow.Bytes(hn3::Operation::Dictionary, {found}, merge_deadline,
+              [&] { return EngineDictionaryReply(found); }) : found;
       if (debug) {
         std::fprintf(stderr, "dictionary-relay ms=%llu\n", GetTickCount64()-legacy_relay_started);
         std::fprintf(stderr, "dictionary-relay-qpc ms=%.6f\n", ProfileMilliseconds()-relay_started);
@@ -2683,6 +2842,9 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
         if (switching || different) QueueReplacement(id);
         response = switching || different ? "OK SWITCHING " + id : "OK ENGINE " + id;
       }
+    } else if (engine_request == "HN3 TEST SHADOW") {
+      response = g_pipe_name.starts_with(L"\\\\.\\pipe\\ddskk-test-") && native_adapter::shadow.TestShadow()
+          ? "OK HN3 SHADOW" : "ERR HN3 TEST";
     } else if (engine_request == "DIAG CHILD-PID") {
       std::lock_guard<std::mutex> lock(g_engine_mutex);
       response = "PID " + std::to_string(g_child.process ? GetProcessId(g_child.process) : 0);
@@ -2902,11 +3064,13 @@ int wmain(int argc, wchar_t** argv) {
   struct PolicyLifetime {
     ~PolicyLifetime() { native_adapter::shadow.Stop(); }
   } policy_lifetime;
-  const std::wstring configured = ConfiguredEngineId();
+  const bool hn_startup = native_adapter::shadow.ByteMode(hn3::Operation::Startup) != 0;
+  const std::wstring configured = hn_startup
+      ? HnStartup(repository, nullptr, GetTickCount64() + 60000).id : ConfiguredEngineId();
   const std::wstring initial_registry_engine = ConfiguredEngineId(false);
   g_current_engine = NarrowEngineId(configured);
   g_published_engine = g_current_engine;
-  ApplyEngineEnvFromRegistry();
+  if (!hn_startup) ApplyEngineEnvFromRegistry();
   if (!ddskk::LearningQueue::RecoverPending(LearningTarget()))
     LogEvent("learning-pending-recovery-failed");
   if (!ddskk::LearningQueue::RecoverOutbox(LearningTarget())) {

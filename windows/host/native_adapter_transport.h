@@ -57,6 +57,21 @@ bool WriteAll(HANDLE handle, const std::string& text) {
   return true;
 }
 
+// Bound a large private write even when the policy child stops reading.
+// Cancellation targets only this writer thread, never engine/public pipe IO.
+bool TimedWriteAll(HANDLE pipe, const std::string& bytes, ULONGLONG deadline) {
+  if (GetTickCount64() >= deadline) return false;
+  std::atomic<bool> done{false}, ok{false};
+  std::thread writer([&] { ok = WriteAll(pipe, bytes); done = true; });
+  while (!done && !g_stopping && GetTickCount64() < deadline) Sleep(1);
+  const bool expired = !done;
+  if (expired) {
+    // Retry closes the race where cancellation preceded the next WriteFile.
+    while (!done) { CancelSynchronousIo(writer.native_handle()); Sleep(1); }
+  }
+  writer.join(); return !expired && ok;
+}
+
 // A high resolution timer keeps pipe polling independent of the system's
 // roughly 16 ms clock tick. No machine-wide timer resolution is changed.
 void WaitForEngineData() {

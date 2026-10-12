@@ -1,10 +1,12 @@
 // Native ownership boundary: copied decisions only. Policy has no OS handles,
 // storage writers or engine transaction capability. Callers never wait on IPC.
 #pragma once
+#include "hn3_channel.h"
+#include <memory>
 
 namespace native_adapter {
 inline std::atomic<uint64_t> next_engine_epoch{0}, engine_epoch{0}, publication_generation{0};
-enum class PolicyKind { Config = 1, Sources = 2, Restart = 3, Cache = 4, Publication = 5, Learning = 6, Replacement = 7, Capacity = 8, Intent = 9, Order = 10, Payload = 11, CacheTtl = 12 };
+enum class PolicyKind { Config = 1, Sources = 2, Restart = 3, Cache = 4, Publication = 5, Learning = 6, Replacement = 7, Capacity = 8, Intent = 9, Order = 10, Payload = 11, CacheTtl = 12, Merge = 13, Startup = 14 };
 // Opt-in harness telemetry. Count executed caller algorithms on fallback
 // misses or OFF/SHADOW calls; seeds and compilation do not increment them.
 struct PolicyCounters {
@@ -22,10 +24,12 @@ struct PolicyCounters {
       case PolicyKind::Restart: case PolicyKind::Replacement: return 2;
       case PolicyKind::Publication: case PolicyKind::Intent: case PolicyKind::Payload: return 3;
       case PolicyKind::Learning: return 4;
+      case PolicyKind::Merge: return 5;
+      case PolicyKind::Startup: return 6;
       default: return -1;
     }
   }
-  inline static std::array<std::atomic<uint64_t>, 5> native{}, nelisp{};
+  inline static std::array<std::atomic<uint64_t>, 7> native{}, nelisp{};
   static void Native(PolicyKind kind) {
     if (!Enabled()) return;
     const int group = Group(kind);
@@ -36,13 +40,20 @@ struct PolicyCounters {
     const int group = Group(kind);
     if (group >= 0) nelisp[group].fetch_add(1, std::memory_order_relaxed);
   }
-  static void Log() {
+  static void Log(bool force = false) {
     if (!Enabled()) return;
-    const char* names[] = {"SOURCES", "CACHE", "RESTART", "PUBLICATION", "LEARNING"};
-    for (size_t i = 0; i < 5; ++i)
+    // Worker-only sampling; Stop forces the final snapshot after joining it.
+    static ULONGLONG last = 0;
+    const auto now = GetTickCount64();
+    if (!force && now - last < 1000) return;
+    last = now;
+    const char* names[] = {"SOURCES", "CACHE", "RESTART", "PUBLICATION", "LEARNING", "MERGE", "STARTUP"};
+    for (size_t i = 0; i < 7; ++i) {
+      if (i >= 5 && !native[i].load() && !nelisp[i].load()) continue;
       LogEvent(std::string("policy-evaluations group=") + names[i] +
           " native=" + std::to_string(native[i].load(std::memory_order_relaxed)) +
           " nelisp-selected=" + std::to_string(nelisp[i].load(std::memory_order_relaxed)));
+    }
   }
 };
 inline void NativeEvaluation(PolicyKind kind) { PolicyCounters::Native(kind); }
@@ -76,12 +87,92 @@ class ShadowPolicy {
       switches_[i] = length ? length == 1 && value[0] == L'1' : flag == 1;
       enabled_ = enabled_ || switches_[i];
     }
+    const wchar_t* byte_names[] = {L"MERGE", L"STARTUP"};
+    const wchar_t* byte_registry[] = {L"HostNativeMerge", L"HostNativeStartup"};
+    for (size_t i = 0; i < 2; ++i) {
+      wchar_t value[16]{};
+      const auto name = std::wstring(L"DDSKK_HOST_NATIVE_") + byte_names[i];
+      const DWORD length = GetEnvironmentVariableW(name.c_str(), value, 16);
+      DWORD flag = 0, bytes = sizeof(flag);
+      if (!length) RegGetValueW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(),
+          byte_registry[i], RRF_RT_REG_DWORD, nullptr, &flag, &bytes);
+      byte_modes_[i] = length ? (length == 1 && (value[0] == L'1' || value[0] == L'2') ? value[0]-L'0' : 0) : (flag <= 2 ? flag : 0);
+      enabled_ = enabled_ || byte_modes_[i];
+    }
     if (!policy_bundle::Compatible(runtime, repository)) {
-      enabled_ = false; switches_.fill(false);
+      enabled_ = false; switches_.fill(false); byte_modes_.fill(0);
     }
     if (!enabled_) return;
     runtime_ = runtime; repository_ = repository; job_ = job;
     worker_ = std::thread([this] { Run(); });
+  }
+  unsigned ByteMode(hn3::Operation op) const {
+    const auto configured = byte_modes_[op == hn3::Operation::Startup ? 1 : 0];
+    return configured && test_shadow_.load() ? 2 : configured;
+  }
+  bool TestShadow() {
+    wchar_t value[2]{};
+    const auto key = NativeImeRegistryKey();
+    if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", value, 2) != 1 || value[0] != L'1' ||
+        !key.starts_with(L"Software\\NativeIME-test-") || !byte_modes_[0] || !byte_modes_[1]) return false;
+    test_shadow_ = true; LogEvent("hn3-test-shadow-enabled"); return true;
+  }
+  // Only provider/background workers and startup may pass a positive deadline.
+  // Preview/cached callers pass zero: memo lookup plus a bounded try-lock queue.
+  template<class NativeResult>
+  std::string Bytes(hn3::Operation op, const std::vector<std::string>& fields,
+                    ULONGLONG deadline, NativeResult native_result) {
+    const auto kind = op == hn3::Operation::Startup ? PolicyKind::Startup : PolicyKind::Merge;
+    const auto mode = ByteMode(op);
+    if (!mode) return native_result();
+    auto fallback = [&] { PolicyCounters::Native(kind); return native_result(); };
+    hn3::Frame frame; frame.operation = op; frame.fields = fields;
+    frame.engine_epoch = engine_epoch.load(); frame.generation = publication_generation.load();
+    const auto key = hn3::Encode(frame);
+    if (key.empty()) return fallback();
+    std::shared_ptr<ByteRequest> work;
+    std::string result; bool answered = false;
+    {
+      std::unique_lock lock(mutex_, std::defer_lock);
+      if (deadline) lock.lock(); else (void)lock.try_lock();
+      if (lock.owns_lock()) {
+        const auto found = byte_memo_.find(key);
+        if (healthy_ && hn3_capable_ && found != byte_memo_.end()) { result = found->second; answered = true; }
+        else if (healthy_ && hn3_capable_ && byte_queue_.size() < hn3::kRequests && key.size() <= hn3::kQueueBytes - byte_queued_) {
+          work = std::make_shared<ByteRequest>(); work->frame = std::move(frame); work->key = key;
+          work->deadline = deadline ? deadline : GetTickCount64() + hn3::kMergeDeadlineMs;
+          byte_queue_.push_back(work); byte_queued_ += key.size(); changed_.notify_one();
+        }
+        // Startup may wait for the fixed policy bootstrap, still bounded by its
+        // caller deadline. No request is sent until READY advertises HN3.
+        else if (op == hn3::Operation::Startup && deadline && !stop_) {
+          changed_.wait_until(lock, std::chrono::steady_clock::now() +
+              std::chrono::milliseconds(deadline > GetTickCount64() ? deadline - GetTickCount64() : 0),
+              [&] { return stop_ || healthy_; });
+          if (healthy_ && hn3_capable_ && byte_queue_.size() < hn3::kRequests && key.size() <= hn3::kQueueBytes - byte_queued_) {
+            work = std::make_shared<ByteRequest>(); work->frame = std::move(frame); work->key = key; work->deadline = deadline;
+            byte_queue_.push_back(work); byte_queued_ += key.size(); changed_.notify_one();
+          }
+        }
+        if (work && deadline) {
+          changed_.wait_until(lock, std::chrono::steady_clock::now() +
+              std::chrono::milliseconds(deadline > GetTickCount64() ? deadline - GetTickCount64() : 0),
+              [&] { return work->done || stop_; });
+          if (work->done && work->valid) { result = work->result; answered = true; }
+          else work->cancelled = true;
+        }
+      }
+    }
+    if (!answered) return fallback();
+    if (mode == 1) PolicyCounters::Managed(kind);
+    LogEvent("hn3-answer operation=" + std::to_string(static_cast<unsigned>(op)));
+    if (mode == 2) {
+      const auto expected = fallback();
+      LogEvent(std::string("hn3-shadow ") + (expected == result ? "match" : "mismatch") +
+          " operation=" + std::to_string(static_cast<unsigned>(op)));
+      return expected;
+    }
+    return result;
   }
   // Never wait for policy or IO. Contention and saturation drop diagnostics,
   // not native work. Fixed-size value objects cannot retain host pointers.
@@ -158,7 +249,7 @@ class ShadowPolicy {
   void Stop() {
     stop_ = true; changed_.notify_all();
     if (worker_.joinable()) worker_.join();
-    PolicyCounters::Log();
+    PolicyCounters::Log(true);
   }
   // Compiled only into the test-host control executable: deliberately waits
   // on the managed child from a pipe callback, exercising the actual IPC.
@@ -172,6 +263,89 @@ class ShadowPolicy {
     });
   }
  private:
+  std::array<unsigned, 2> byte_modes_{};
+  std::atomic<bool> test_shadow_{false};
+  bool hn3_capable_ = false; // guarded by mutex_
+  struct ByteRequest {
+    hn3::Frame frame; std::string key, result;
+    ULONGLONG deadline = 0; bool done = false, valid = false, cancelled = false;
+  };
+  std::deque<std::shared_ptr<ByteRequest>> byte_queue_;
+  size_t byte_queued_ = 0, byte_memo_bytes_ = 0;
+  std::map<std::string, std::string> byte_memo_;
+  bool ReadBytes(std::string& data, size_t size, ULONGLONG deadline) {
+    data.clear();
+    while (data.size() < size && !stop_ && !g_stopping && GetTickCount64() < deadline) {
+      if (WaitForSingleObject(process_, 0) != WAIT_TIMEOUT) return false;
+      DWORD available = 0, read = 0;
+      if (!PeekNamedPipe(output_, nullptr, 0, nullptr, &available, nullptr)) return false;
+      if (!available) { Sleep(1); continue; }
+      char chunk[4096]; const auto count = static_cast<DWORD>((std::min)(size-data.size(), (std::min)(size_t{4096}, size_t{available})));
+      if (!ReadFile(output_, chunk, count, &read, nullptr) || !read) return false;
+      data.append(chunk, read);
+    }
+    return data.size() == size;
+  }
+  bool ByteExchange(const std::shared_ptr<ByteRequest>& work) {
+    // A caller may expire while queued behind HP2. No bytes were sent, so
+    // dropping that work must not retire an otherwise synchronized stream.
+    {
+      std::lock_guard lock(mutex_);
+      if (work->cancelled || GetTickCount64() >= work->deadline) {
+        work->done = true; work->valid = false;
+        changed_.notify_all();
+        LogEvent("hn3-unsent-discard operation=" + std::to_string(static_cast<unsigned>(work->frame.operation)));
+        return true;
+      }
+    }
+    auto& f = work->frame; f.correlation = ++request_; f.policy_epoch = epoch_;
+    hn3::Outstanding outstanding; outstanding.Begin(f);
+    const auto wire = hn3::Encode(f);
+    std::string header, tail; hn3::Frame reply;
+    const char* step = "write";
+    bool valid = !wire.empty() && TimedWriteAll(input_, wire, work->deadline);
+    if (valid) { step = "read-header"; valid = ReadBytes(header, hn3::kHeader, work->deadline); }
+    if (valid) {
+      const auto size = hn3::Get(header,4,4);
+      step = "body-length";
+      valid = size >= hn3::kHeader-8 && size <= hn3::kHeader-8+hn3::kPayload;
+      if (valid) { step = "read-body"; valid = ReadBytes(tail, static_cast<size_t>(size)-(hn3::kHeader-8), work->deadline); }
+      if (valid) { step = "decode"; valid = hn3::Decode(header+tail,reply); }
+      if (valid) { step = "envelope-fence"; valid = outstanding.Accept(reply); }
+    }
+    outstanding.Retire();
+    {
+      std::lock_guard lock(mutex_);
+      if (valid) {
+        step = "caller-fence";
+        valid = !work->cancelled && f.engine_epoch == engine_epoch.load() && f.generation == publication_generation.load();
+      }
+      work->done = true; work->valid = valid && !reply.status;
+      if (work->valid) {
+        // Merge replies have one copied field. Startup retains the complete
+        // validated frame for the typed native result adapter.
+        if (f.operation == hn3::Operation::Startup) {
+          auto canonical = reply; canonical.correlation = canonical.policy_epoch = canonical.engine_epoch = canonical.generation = 0;
+          work->result = hn3::Encode(canonical);
+        } else work->result = reply.fields.front();
+        const auto bytes = work->key.size() + work->result.size();
+        if (bytes <= hn3::kQueueBytes) {
+          while (!byte_memo_.empty() && (byte_memo_.size() >= hn3::kRequests || byte_memo_bytes_ + bytes > hn3::kQueueBytes)) {
+            const auto it = byte_memo_.begin(); byte_memo_bytes_ -= it->first.size()+it->second.size(); byte_memo_.erase(it);
+          }
+          const auto old = byte_memo_.find(work->key);
+          if (old != byte_memo_.end()) byte_memo_bytes_ -= old->first.size()+old->second.size();
+          byte_memo_[work->key] = work->result; byte_memo_bytes_ += bytes;
+        }
+      }
+    }
+    changed_.notify_all();
+    if (!valid) LogEvent("hn3-timeout-or-invalid-discard request=" + std::to_string(f.correlation) +
+        " operation=" + std::to_string(static_cast<unsigned>(f.operation)) + " step=" + step);
+    // Never reuse a timed-out stream. Termination/handle close drains unread
+    // late bytes; the next child has a different policy epoch.
+    return valid;
+  }
   bool enabled_ = false;
   std::array<bool, 5> switches_{};
   std::array<std::atomic<uint64_t>, 13> used_{}, fallback_{};
@@ -238,7 +412,10 @@ class ShadowPolicy {
     std::lock_guard lock(mutex_); decisions_.erase(Key(value));
   }
   void Invalidate() {
-    std::lock_guard lock(mutex_); healthy_ = false; decisions_.clear();
+    std::lock_guard lock(mutex_); healthy_ = false; hn3_capable_ = false; decisions_.clear();
+    byte_memo_.clear(); byte_memo_bytes_ = 0;
+    for (const auto& work : byte_queue_) { work->done = true; work->valid = false; }
+    byte_queue_.clear(); byte_queued_ = 0; changed_.notify_all();
   }
   std::atomic<bool> stop_{false};
   std::atomic<uint64_t> dropped_{0};
@@ -346,8 +523,8 @@ class ShadowPolicy {
     DWORD backoff = 1000;
     while (!stop_ && !g_stopping) {
       const auto start = GetTickCount64(); std::string reply;
-      if (!Launch() || !Line(reply, 60000) || reply != "HP2 READY") {
-        if (!reply.empty() && reply != "HP2 READY")
+      if (!Launch() || !Line(reply, 60000) || (reply != "HP2 READY" && reply != "HP2 READY HN3=1")) {
+        if (!reply.empty() && reply != "HP2 READY" && reply != "HP2 READY HN3=1")
           LogEvent("policy-fallback native reason=incompatible-policy-ready-protocol");
         LogDecisions(); LogEvent("policy-start-failed"); Retire();
         const auto until = GetTickCount64() + backoff;
@@ -357,7 +534,7 @@ class ShadowPolicy {
         backoff = (std::min)(DWORD{30000}, backoff * 2); continue;
       }
       backoff = 1000; seeded_engine = ~uint64_t{0};
-      { std::lock_guard lock(mutex_); healthy_ = true; }
+      { std::lock_guard lock(mutex_); healthy_ = true; hn3_capable_ = reply == "HP2 READY HN3=1"; changed_.notify_all(); }
       LogEvent("policy-ready startup_ms=" + std::to_string(GetTickCount64() - start));
       LogEvent("policy-decision-accounting v=1");
       while (!stop_ && !g_stopping) {
@@ -376,12 +553,22 @@ class ShadowPolicy {
               else it = decisions_.erase(it);
             }
           }
+          { std::lock_guard lock(mutex_); byte_memo_.clear(); byte_memo_bytes_ = 0; }
           seeded_engine = current_engine; Seed(current_engine);
+        }
+        std::shared_ptr<ByteRequest> byte_work;
+        {
+          std::lock_guard lock(mutex_);
+          if (!byte_queue_.empty()) { byte_work = byte_queue_.front(); byte_queue_.pop_front(); byte_queued_ -= byte_work->key.size(); }
+        }
+        if (byte_work) {
+          if (!ByteExchange(byte_work)) break;
+          continue;
         }
         Observation v{};
         {
           std::unique_lock lock(mutex_);
-          changed_.wait_for(lock, std::chrono::milliseconds(100), [&] { return stop_ || !queue_.empty(); });
+          changed_.wait_for(lock, std::chrono::milliseconds(100), [&] { return stop_ || !queue_.empty() || !byte_queue_.empty(); });
           if (queue_.empty()) {
             if (WaitForSingleObject(process_, 0) != WAIT_TIMEOUT) break;
             continue;

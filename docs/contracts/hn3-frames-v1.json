@@ -1,0 +1,127 @@
+{
+  "contract": "hn3-frames-v1",
+  "frozen": true,
+  "version": 1,
+  "byte_order": "little-endian",
+  "header_bytes": 52,
+  "negotiation": {
+    "ready": "HP2 READY HN3=1\n",
+    "legacy_ready": "HP2 READY\n",
+    "rule": "Only send HN3 after exact HN3=1 capability. HP2 Q/R numeric bytes are unchanged."
+  },
+  "header": [
+    [
+      "magic",
+      0,
+      4,
+      "ASCII HN3Q or HN3R"
+    ],
+    [
+      "body_length",
+      4,
+      4,
+      "uint32 bytes after offset 8"
+    ],
+    [
+      "operation",
+      8,
+      2,
+      "uint16 1..5"
+    ],
+    [
+      "status",
+      10,
+      2,
+      "uint16 request=0; reply=0 OK, 1 operation error, 2 result too large"
+    ],
+    [
+      "correlation",
+      12,
+      8,
+      "uint64 opaque echoed bytes"
+    ],
+    [
+      "policy_epoch",
+      20,
+      8,
+      "uint64 opaque echoed bytes"
+    ],
+    [
+      "engine_epoch",
+      28,
+      8,
+      "uint64 opaque echoed bytes"
+    ],
+    [
+      "generation",
+      36,
+      8,
+      "uint64 source/config generation opaque echoed bytes"
+    ],
+    [
+      "field_count",
+      44,
+      4,
+      "uint32 0..4096"
+    ],
+    [
+      "payload_length",
+      48,
+      4,
+      "uint32 sum of UTF-8 field byte lengths excluding length words"
+    ]
+  ],
+  "fields": {
+    "offset": 52,
+    "layout": "Repeated uint32 byte length followed immediately by that many UTF-8 bytes; empty and embedded NUL/control fields allowed for merge. No padding, newline terminator, read or eval.",
+    "validation": "Strict UTF-8 independently at each field boundary. Reject overlong encodings, truncated sequences, surrogates and values above U+10FFFF. Length table and fields consume exactly the declared frame."
+  },
+  "operations": {
+    "1": {
+      "name": "builtin-merge",
+      "request": "Ordered dictionary tails, zero fields means missing key",
+      "reply": "One merged tail"
+    },
+    "2": {
+      "name": "server-merge",
+      "request": "Exactly two fields: files tail, server tail excluding status byte",
+      "reply": "One complete SK1 reply"
+    },
+    "3": {
+      "name": "engine-dictionary-reply",
+      "request": "Exactly one complete SK1 reply",
+      "reply": "One engine LIST wire reply"
+    },
+    "4": {
+      "name": "quote-engine-string",
+      "request": "Exactly one opaque string",
+      "reply": "One quoted string"
+    },
+    "5": {
+      "name": "startup",
+      "request": "8 prefix fields: requested presence (0/1), requested ID, framework available (0/1), native entry (0/1), registry open (0/1), expansion OK (0/1), expanded path, prior-imported count (0..6); then prior names; inherited count (0..7), triples (name,value,UTF16-units); registry count (0..7), sextuples (name,present 0/1,type uint32,raw-size uint32,text,dword uint32). All numeric snapshot fields are decimal ASCII. Order retained. Absent and present-empty are distinct.",
+      "reply": "runner ddskk/framework, entry native/load, child ID, imported count (0..6), operation count (0..13); imported names; triples action set/remove,name,value (empty for remove). Only six bridge environment names plus child-only NELISP_IME_ENGINE are allowed; no shell commands."
+    }
+  },
+  "limits": {
+    "payload_bytes": 262144,
+    "payload_definition": "Field data plus uint32 length words; frame total <=262196.",
+    "queue_requests": 64,
+    "queue_bytes": 131072,
+    "queue_accounting": "Complete encoded request envelopes; requests exceeding queue bound use retained C++ fallback, never truncate. Memo key+reply bytes separately capped at 128 KiB/64 entries.",
+    "outstanding_requests": 1,
+    "merge_deadline_ms": 1000,
+    "worker_deadline_ms": 30000,
+    "startup_cold_deadline_ms": 60000,
+    "startup_warm_deadline_ms": 1000
+  },
+  "runtime_bytes": "Normalize multibyte stdin chunks to original UTF-8 octets before binary indexing. Construct unibyte length words before aset. Validate each field as strict UTF-8 after reassembly.",
+  "fences": "Match operation, correlation, policy epoch, engine epoch and generation. Unsent expired/cancelled work is dropped without retiring a synchronized stream. After sending, timeout/cancellation permanently disarms correlation and retires child stream; close/terminate drains unread late bytes. Invalidate memo and pending work on retirement; engine/source/config generations fence answers. No synchronous preview/cache wait.",
+  "flags": {
+    "DDSKK_HOST_NATIVE_MERGE": "0/default OFF; 1 ON; 2 SHADOW",
+    "DDSKK_HOST_NATIVE_STARTUP": "0/default OFF; 1 ON; 2 SHADOW",
+    "registry": "HostNativeMerge / HostNativeStartup REG_DWORD, env first. Invalid values OFF.",
+    "shadow": "Execute both, return C++ bytes, log hn3-shadow match/mismatch. Counters opt-in DDSKK_HOST_POLICY_COUNTERS=1 groups MERGE/STARTUP.",
+    "test_control": "HN3 TEST SHADOW only accepted with diagnostics=1 and Software\\NativeIME-test- prefix and both flags initially enabled; switches existing private stack to SHADOW."
+  }
+}
