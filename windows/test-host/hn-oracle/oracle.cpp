@@ -83,6 +83,11 @@ void Close(HANDLE) { throw std::runtime_error("unexpected OS cleanup"); }
 constexpr wchar_t kDdskkRunner[]=L"engine/ddskk-engine-stdio.el";
 constexpr wchar_t kFrameworkRunner[]=L"framework/nelisp-ime-stdio.el";
 struct { std::vector<std::unordered_map<std::string,std::string>> maps; } g_builtin_dictionary;
+// Snapshot-only telemetry hook; decision lambdas stay unchanged.
+namespace native_adapter {
+enum class PolicyKind { Sources, CacheTtl, Capacity, Order, Restart, Replacement, Learning, Intent, Payload };
+void NativeEvaluation(PolicyKind) {}
+}
 #include "production.inc"
 
 std::string Hex(std::string_view value) {

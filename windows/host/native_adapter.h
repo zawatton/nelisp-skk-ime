@@ -5,8 +5,8 @@
 namespace native_adapter {
 inline std::atomic<uint64_t> next_engine_epoch{0}, engine_epoch{0}, publication_generation{0};
 enum class PolicyKind { Config = 1, Sources = 2, Restart = 3, Cache = 4, Publication = 5, Learning = 6, Replacement = 7, Capacity = 8, Intent = 9, Order = 10, Payload = 11, CacheTtl = 12 };
-// Opt-in harness telemetry. Count executed caller algorithms, including memo
-// hits; seed expectations and compilation do not increment these counters.
+// Opt-in harness telemetry. Count executed caller algorithms on fallback
+// misses or OFF/SHADOW calls; seeds and compilation do not increment them.
 struct PolicyCounters {
   static bool Enabled() {
     static const bool enabled = [] {
@@ -107,10 +107,14 @@ class ShadowPolicy {
   }
   // Exact input memoization, not speculative replay. A miss schedules copied
   // work and returns native immediately. try_lock also makes contention a miss.
-  uint64_t Decide(const Observation& value) {
-    if (!Authoritative(value.kind)) { Observe(value); return value.native_decision; }
+  template<class NativeDecision>
+  uint64_t Decide(Observation value, NativeDecision native_decision, bool known_native = false) {
+    if (!Authoritative(value.kind)) {
+      value.native_decision = native_decision();
+      Observe(value); return value.native_decision;
+    }
     const auto key = Key(value);
-    uint64_t result = value.native_decision;
+    uint64_t result = 0;
     bool used = false;
     {
       std::unique_lock lock(mutex_, std::try_to_lock);
@@ -122,13 +126,22 @@ class ShadowPolicy {
       }
     }
     if (used) PolicyCounters::Managed(value.kind);
+    else result = native_decision();
+    // Refresh still queues the same exact inputs. On an authoritative hit the
+    // expected value is the memo answer, not a freshly evaluated native oracle.
+    // OFF/SHADOW and misses retain the original native comparison value.
+    if (!known_native) value.native_decision = result;
     Observe(value);
     const auto kind = static_cast<unsigned>(value.kind);
     if (kind < used_.size()) {
       ++(used ? used_[kind] : fallback_[kind]);
-      if (used && result != value.native_decision) ++divergent_[kind];
+      if (known_native && used && result != value.native_decision) ++divergent_[kind];
     }
     return result;
+  }
+  // Eager observations are retained for the separate adapter equality tests.
+  uint64_t Decide(const Observation& value) {
+    return Decide(value, [&] { return value.native_decision; }, true);
   }
   void Stop() {
     stop_ = true; changed_.notify_all();
@@ -400,15 +413,16 @@ class ShadowPolicy {
 // Detached native clients can finish during CRT teardown. Keep the value
 // queue/mutex alive for process lifetime; wmain explicitly joins supervision.
 inline ShadowPolicy& shadow = *new ShadowPolicy;
-inline uint64_t Decide(PolicyKind kind, uint64_t a, uint64_t b, uint64_t c, uint64_t decision,
+template<class NativeDecision>
+inline uint64_t Decide(PolicyKind kind, uint64_t a, uint64_t b, uint64_t c, NativeDecision native_decision,
                        const std::string& context = {}, uint64_t observed_epoch = 0) {
-  if (!shadow.Enabled()) return decision;
-  if (context.size() > 1024) { shadow.Reject(); return decision; }
+  if (!shadow.Enabled()) return native_decision();
+  if (context.size() > 1024) { shadow.Reject(); return native_decision(); }
   Observation value{kind, observed_epoch ? observed_epoch : engine_epoch.load(),
-      publication_generation.load(), a, b, c, decision};
+      publication_generation.load(), a, b, c, 0};
   value.context_size = context.size();
   std::copy(context.begin(), context.end(), value.context.begin());
-  return shadow.Decide(value);
+  return shadow.Decide(value, native_decision);
 }
 inline void Observe(PolicyKind kind, uint64_t a, uint64_t b, uint64_t c, uint64_t decision,
                     const std::string& context = {}, uint64_t observed_epoch = 0) {

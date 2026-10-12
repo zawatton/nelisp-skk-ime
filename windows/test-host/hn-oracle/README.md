@@ -30,9 +30,13 @@ Five decision groups cover current Sources/Order, CacheTtl/Capacity plus the
 Cache expiry observation, Restart/Replacement, Intent/Payload and Learning.
 Config is also captured. The legacy numeric Publication kind has no production
 call site; current publication fallback answers are Intent/Payload. Expressions
-come directly from each current native fallback argument. Input setup supplies
-the corresponding native local variables; it does not invoke managed policies.
-TTL, replacement eligibility and publication `due` initializers are also
+come directly from each current native fallback argument. Lazy fallback lambdas
+are extracted intact and invoked by the test wrapper. Their NativeEvaluation
+calls use a no-op telemetry hook; observations retain their scalar arguments.
+Input setup supplies the corresponding native local variables; it does not
+invoke managed policies. Extraction also checks each policy call count, including
+both Restart branches, and rejects a scalar in place of a lazy fallback.
+TTL, replacement eligibility and publication `due_at` initializers are also
 extracted from production. Intent uses the actual native PublicationWindow with
 fixed snapshot timestamps, including its 200 ms boundary.
 
