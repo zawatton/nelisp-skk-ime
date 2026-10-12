@@ -105,8 +105,8 @@
     "emacs/nelisp-ime-emacs-inline-frame-test.el": "ea6a91358834e17eeb365d97996687e918fca1dedc892b20d92a3b57c1ec11f7",
     "emacs/nelisp-ime-emacs-inline-offline-test.el": "f3504041ccbc1c57375323b9a981f74d87f5c78afa5ab667fc462179d7ccfeaa",
     "emacs/nelisp-ime-emacs-inline-test.el": "dc57f3ee84122e02be4bf88cceb886b859c8708a65c9968bf2655932eb4b6394",
-    "emacs/nelisp-ime-emacs-test.el": "5de26d3b9e5d1f30f939852a4ccdc4542e9014755cb2695bd114027f11c488d4",
-    "emacs/nelisp-ime-emacs.el": "6899925e09878ed85505dd69cdbe525268733e8d522dbfca93ea0d8b69072799",
+    "emacs/nelisp-ime-emacs-test.el": "ec9abee4f304ad345d653cbb2d4efe12ce950ddb74da6b5a0db714936e597d12",
+    "emacs/nelisp-ime-emacs.el": "245998f5871744fb3544af0805c7bdcc428798ecf3c86c3112d9de16fe26013b",
     "framework/src/nelisp-ime-input.el": "42c06944ed07902eddf58d37c17c1dec6694c2664f0d607ece63cc5ad861e9e0",
     "framework/src/nelisp-ime-protocol.el": "caa711ae285ce51575f1b722bc4bcf43742d58ca1d5d7715babe4b944c229e2a",
     "framework/src/nelisp-ime-stateline.el": "a4e3133e19fa979d527326ef6334b642c6b513b151b9c13751d6c19e37dffd47",
@@ -2261,17 +2261,17 @@
     },
     {
       "name": "NELISP_IME_INLINE_DIR",
-      "source": "emacs/nelisp-ime-emacs.el:86",
+      "source": "emacs/nelisp-ime-emacs.el:89",
       "declaration": "`nelisp-ime-emacs-inline-directory' or NELISP_IME_INLINE_DIR to opt in.\""
     },
     {
       "name": "NELISP_IME_INLINE_DIR",
-      "source": "emacs/nelisp-ime-emacs.el:96",
+      "source": "emacs/nelisp-ime-emacs.el:99",
       "declaration": "NELISP_IME_INLINE_DIR takes precedence.  The Windows default is"
     },
     {
       "name": "NELISP_IME_INLINE_DIR",
-      "source": "emacs/nelisp-ime-emacs.el:351",
+      "source": "emacs/nelisp-ime-emacs.el:355",
       "declaration": "(or (let ((directory (getenv \"NELISP_IME_INLINE_DIR\")))"
     },
     {
@@ -8409,24 +8409,52 @@
       "declaration": "(accept-process-output nil 0.05)"
     },
     {
-      "source": "emacs/nelisp-ime-emacs-test.el:46",
+      "source": "emacs/nelisp-ime-emacs-test.el:30",
+      "declaration": "(ert-deftest nelisp-ime-emacs-coalesce-commit-zero-timeout-fallback ()"
+    },
+    {
+      "source": "emacs/nelisp-ime-emacs-test.el:32",
+      "declaration": "(let (timeouts)"
+    },
+    {
+      "source": "emacs/nelisp-ime-emacs-test.el:36",
+      "declaration": "(lambda (prompt inherit timeout)"
+    },
+    {
+      "source": "emacs/nelisp-ime-emacs-test.el:40",
+      "declaration": "(push timeout timeouts)"
+    },
+    {
+      "source": "emacs/nelisp-ime-emacs-test.el:41",
+      "declaration": "(unless (zerop timeout) (pop unread-command-events)))))"
+    },
+    {
+      "source": "emacs/nelisp-ime-emacs-test.el:45",
+      "declaration": "(should (equal (reverse timeouts)"
+    },
+    {
+      "source": "emacs/nelisp-ime-emacs-test.el:190",
       "declaration": "(let ((deadline (+ (float-time) 1)))"
     },
     {
-      "source": "emacs/nelisp-ime-emacs-test.el:47",
+      "source": "emacs/nelisp-ime-emacs-test.el:191",
       "declaration": "(while (and nelisp-ime-emacs--reconcile-timer (< (float-time) deadline))"
     },
     {
-      "source": "emacs/nelisp-ime-emacs-test.el:48",
+      "source": "emacs/nelisp-ime-emacs-test.el:192",
       "declaration": "(accept-process-output nil 0.01))"
     },
     {
-      "source": "emacs/nelisp-ime-emacs.el:439",
+      "source": "emacs/nelisp-ime-emacs.el:443",
       "declaration": "(pcase-let* ((`(,closer ,marker ,deadline ,opener) nelisp-ime-emacs--inline-pair)"
     },
     {
-      "source": "emacs/nelisp-ime-emacs.el:442",
+      "source": "emacs/nelisp-ime-emacs.el:446",
       "declaration": "(if (or (> (float-time) deadline) (not (buffer-live-p buffer))"
+    },
+    {
+      "source": "emacs/nelisp-ime-emacs.el:726",
+      "declaration": ";; Windows Emacs 31.1 can return nil at zero timeout for queued IME chars."
     },
     {
       "source": "framework/src/nelisp-ime-stateline.el:12",
