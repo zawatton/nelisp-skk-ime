@@ -80,6 +80,9 @@ reasserts a mode during typing: C-j remains free to switch latin to kana."
 (defcustom nelisp-ime-emacs-mode-line t
   "Display a mode label in the global mode line."
   :type 'boolean)
+(defcustom nelisp-ime-emacs-coalesce-commit t
+  "Insert pending non-ASCII IME commit characters in one command."
+  :type 'boolean)
 (defcustom nelisp-ime-emacs-inline-preedit t
   "Render the IME's preedit inline while `nelisp-ime-emacs-mode' is on.
 On Windows this is enabled by default.  Elsewhere, explicitly set
@@ -120,6 +123,7 @@ For example, add `nelisp-ime-emacs-outside-org-src-p'.")
   "Frames with one confirmed closed snapshot; require a second to restore.")
 (defvar nelisp-ime-emacs--warned nil)
 (defvar nelisp-ime-emacs-mode nil)
+(defvar nelisp-ime-emacs--draining-commit nil)
 (defvar nelisp-ime-emacs--inline-server nil)
 (defvar nelisp-ime-emacs--inline-client nil)
 (defvar nelisp-ime-emacs--inline-connections nil)
@@ -703,6 +707,40 @@ An opener already inserted at point may also be up to two seconds old."
        (nelisp-ime-emacs--inline-warn error-data)
        (nelisp-ime-emacs--inline-stop)))))
 
+(defun nelisp-ime-emacs--coalesce-commit ()
+  "Drain a pending IME commit through the current insertion command."
+  (when (and nelisp-ime-emacs-mode nelisp-ime-emacs-coalesce-commit
+             (characterp last-command-event) (> last-command-event 127)
+             (or (memq this-command '(self-insert-command org-self-insert-command))
+                 (memq this-original-command
+                       '(self-insert-command org-self-insert-command)))
+             (not executing-kbd-macro) (not defining-kbd-macro)
+             (not nelisp-ime-emacs--draining-commit) (not buffer-read-only))
+    (let ((nelisp-ime-emacs--draining-commit t)
+          (command this-command)
+          (handle (prepare-change-group)))
+      (unwind-protect
+          (catch 'done
+            (dotimes (_ 256)
+              (unless (input-pending-p) (throw 'done nil))
+              ;; Windows Emacs 31.1 can return nil at zero timeout for queued IME chars.
+              (let ((event (or (read-event nil nil 0)
+                               (read-event nil nil 0.05))))
+                (unless event (throw 'done nil))
+                (if (and (characterp event) (> event 127)
+                         (null (event-modifiers event)))
+                    (condition-case nil
+                        ;; Roll back a partial insertion before returning its event.
+                        (atomic-change-group
+                          (let ((last-command-event event))
+                            (funcall command 1)))
+                      (error
+                       (push event unread-command-events)
+                       (throw 'done nil)))
+                  (push event unread-command-events)
+                  (throw 'done nil)))))
+        (undo-amalgamate-change-group handle)))))
+
 ;;;###autoload
 (define-minor-mode nelisp-ime-emacs-mode
   "Follow Evil and show the Windows NeLisp IME's mode and inline preedit."
@@ -721,9 +759,11 @@ An opener already inserted at point may also be up to two seconds old."
                 (run-at-time nil nelisp-ime-emacs-poll-interval #'nelisp-ime-emacs--poll)))
         (nelisp-ime-emacs--check-settings)
         (nelisp-ime-emacs--inline-start)
-        (add-hook 'post-command-hook #'nelisp-ime-emacs--check-open-mode))
+        (add-hook 'post-command-hook #'nelisp-ime-emacs--check-open-mode)
+        (add-hook 'post-self-insert-hook #'nelisp-ime-emacs--coalesce-commit))
     (nelisp-ime-emacs--inline-stop)
     (remove-hook 'post-command-hook #'nelisp-ime-emacs--check-open-mode)
+    (remove-hook 'post-self-insert-hook #'nelisp-ime-emacs--coalesce-commit)
     (setq nelisp-ime-emacs--open-mode-context nil nelisp-ime-emacs--pending-open-mode nil)
     (advice-remove 'evil-set-cursor-color #'nelisp-ime-emacs--evil-set-cursor-color)
     (remove-hook 'window-selection-change-functions #'nelisp-ime-emacs--selection-change)
