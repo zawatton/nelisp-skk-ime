@@ -1155,6 +1155,7 @@ class ServerCache {
     const auto key = reading + '\x1f' + okuri;
     std::unique_lock lock(mutex_);
     if (identity != identity_) { identity_ = identity; ++generation_; cache_.clear(); jobs_.clear(); }
+    native_adapter::NativeEvaluation(native_adapter::PolicyKind::Sources);
     const auto source = native_adapter::Decide(native_adapter::PolicyKind::Sources, config.enabled != 0,
         !config.dictionary_files.empty(), generation_,
         !config.enabled ? 0 : (config.dictionary_files.empty() ? 2 : 1), identity);
@@ -1165,15 +1166,18 @@ class ServerCache {
       const bool hit = found->second.reply->starts_with("1");
       // The managed policy selects the duration; elapsed-time measurement and
       // cache mutation stay native. S3 expiry observation remains independent.
+      native_adapter::NativeEvaluation(native_adapter::PolicyKind::CacheTtl);
       const auto native_ttl = hit ? 60000 : 2000;
       const auto ttl = native_adapter::Decide(native_adapter::PolicyKind::CacheTtl,
           hit, 0, 0, native_ttl, identity);
       const bool expired = age >= ttl;
+      native_adapter::NativeEvaluation(native_adapter::PolicyKind::Cache);
       native_adapter::Observe(native_adapter::PolicyKind::Cache, hit, age, generation_, age >= native_ttl);
       if (expired) { cache_.erase(found); found = cache_.end(); }
     }
     if (found == cache_.end()) {
       auto victim = std::find_if(cache_.begin(), cache_.end(), [](const auto& x) { return x.second.reply.has_value(); });
+      native_adapter::NativeEvaluation(native_adapter::PolicyKind::Capacity);
       if (!native_adapter::Decide(native_adapter::PolicyKind::Capacity,
           cache_.size() >= 256 ? 256 : 0, victim != cache_.end(), generation_,
           cache_.size() < 256 || victim != cache_.end(), identity)) return "4";
@@ -1303,6 +1307,7 @@ std::string LookupDictionary(const std::string& midasi) {
     server = g_server_cache.Query(midasi, {}, 200);
   }
   if (!server || server->empty() || (*server)[0] != '1') return files.empty() ? "4" : "1" + files;
+  native_adapter::NativeEvaluation(native_adapter::PolicyKind::Order);
   const auto order = native_adapter::Decide(native_adapter::PolicyKind::Order,
       !files.empty(), 1, 0, files.empty() ? 2 : 1);
   if (order == 2) return *server;
@@ -1512,6 +1517,7 @@ std::string Utf8KeyRequest(const std::string& request) {
 // capability/recovery probes retain the previous one-second cadence.
 std::atomic<uint64_t> g_local_ack_activity{0};
 bool LearningSchedule(bool ready, bool draining) {
+  native_adapter::NativeEvaluation(native_adapter::PolicyKind::Learning);
   return native_adapter::Decide(native_adapter::PolicyKind::Learning, ready, 1, draining, ready) != 0;
 }
 std::unique_ptr<ddskk::LearningQueue> g_learning_queue;
@@ -2015,6 +2021,7 @@ void ReplacementLoop() {
       LogEvent("replacement-abandoned engine=" + id);
       StopChild(next);
       retry_at = GetTickCount64() + backoff;
+      native_adapter::NativeEvaluation(native_adapter::PolicyKind::Restart);
       backoff = static_cast<DWORD>(native_adapter::Decide(native_adapter::PolicyKind::Restart,
           backoff, 0, generation, (std::min)(backoff * 2, DWORD{30000})));
       continue;
@@ -2034,6 +2041,7 @@ void ReplacementLoop() {
           LogEvent("replacement-learning-raced engine=" + id);
           break;
         }
+        native_adapter::NativeEvaluation(native_adapter::PolicyKind::Replacement);
         const bool swap_due = g_composing_sessions.empty() || GetTickCount64() >= deadline;
         const bool policy_swap = native_adapter::Decide(native_adapter::PolicyKind::Replacement,
             1, !g_composing_sessions.empty(), GetTickCount64() >= deadline, swap_due,
@@ -2078,6 +2086,7 @@ void ReplacementLoop() {
         }
       }
     }
+    native_adapter::NativeEvaluation(native_adapter::PolicyKind::Restart);
     backoff = static_cast<DWORD>(native_adapter::Decide(native_adapter::PolicyKind::Restart,
         backoff, 1, generation, 1000));
     retry_at = 0;
@@ -2451,6 +2460,7 @@ void LocalPublicationLoop() {
         base_identity = status.substr(0, status.rfind(' ')) + rules + source_identity;
         const bool have_rules = !rules.empty(), have_status = status.starts_with("LOCAL ");
         // Preserve the original short circuit: Due mutates the native window.
+        native_adapter::NativeEvaluation(native_adapter::PolicyKind::Intent);
         const bool due = have_rules && have_status && window.Due(identity, base_identity, GetTickCount64());
         const auto intent_at = GetTickCount64();
         const bool immediate = previous.empty() || base_identity != published_base;
@@ -2458,6 +2468,7 @@ void LocalPublicationLoop() {
             have_rules && have_status, identity != previous,
             immediate ? 1 : (window.Ready(intent_at) ? 2 : 0), due,
             status + ":" + source_identity, policy_engine_epoch) != 0;
+        native_adapter::NativeEvaluation(native_adapter::PolicyKind::Payload);
         const auto payload = native_adapter::Decide(native_adapter::PolicyKind::Payload,
             have_rules && have_status, immediate, identity != previous,
             !have_rules || !have_status ? 0 : (immediate ? 2 : (identity != previous ? 1 : 0)),

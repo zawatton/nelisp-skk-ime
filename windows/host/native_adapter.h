@@ -5,6 +5,48 @@
 namespace native_adapter {
 inline std::atomic<uint64_t> next_engine_epoch{0}, engine_epoch{0}, publication_generation{0};
 enum class PolicyKind { Config = 1, Sources = 2, Restart = 3, Cache = 4, Publication = 5, Learning = 6, Replacement = 7, Capacity = 8, Intent = 9, Order = 10, Payload = 11, CacheTtl = 12 };
+// Opt-in harness telemetry. Count executed caller algorithms, including memo
+// hits; seed expectations and compilation do not increment these counters.
+struct PolicyCounters {
+  static bool Enabled() {
+    static const bool enabled = [] {
+      wchar_t value[2]{};
+      return GetEnvironmentVariableW(L"DDSKK_HOST_POLICY_COUNTERS", value, 2) == 1 && value[0] == L'1';
+    }();
+    return enabled;
+  }
+  static int Group(PolicyKind kind) {
+    switch (kind) {
+      case PolicyKind::Sources: case PolicyKind::Order: return 0;
+      case PolicyKind::Cache: case PolicyKind::CacheTtl: case PolicyKind::Capacity: return 1;
+      case PolicyKind::Restart: case PolicyKind::Replacement: return 2;
+      case PolicyKind::Publication: case PolicyKind::Intent: case PolicyKind::Payload: return 3;
+      case PolicyKind::Learning: return 4;
+      default: return -1;
+    }
+  }
+  inline static std::array<std::atomic<uint64_t>, 5> native{}, nelisp{};
+  static void Native(PolicyKind kind) {
+    if (!Enabled()) return;
+    const int group = Group(kind);
+    if (group >= 0) native[group].fetch_add(1, std::memory_order_relaxed);
+  }
+  static void Managed(PolicyKind kind) {
+    if (!Enabled()) return;
+    const int group = Group(kind);
+    if (group >= 0) nelisp[group].fetch_add(1, std::memory_order_relaxed);
+  }
+  static void Log() {
+    if (!Enabled()) return;
+    const char* names[] = {"SOURCES", "CACHE", "RESTART", "PUBLICATION", "LEARNING"};
+    for (size_t i = 0; i < 5; ++i)
+      LogEvent(std::string("policy-evaluations group=") + names[i] +
+          " native=" + std::to_string(native[i].load(std::memory_order_relaxed)) +
+          " nelisp-selected=" + std::to_string(nelisp[i].load(std::memory_order_relaxed)));
+  }
+};
+inline void NativeEvaluation(PolicyKind kind) { PolicyCounters::Native(kind); }
+
 struct Observation {
   PolicyKind kind;
   uint64_t engine_epoch, publication_generation, a, b, c, native_decision;
@@ -79,6 +121,7 @@ class ShadowPolicy {
         }
       }
     }
+    if (used) PolicyCounters::Managed(value.kind);
     Observe(value);
     const auto kind = static_cast<unsigned>(value.kind);
     if (kind < used_.size()) {
@@ -90,6 +133,7 @@ class ShadowPolicy {
   void Stop() {
     stop_ = true; changed_.notify_all();
     if (worker_.joinable()) worker_.join();
+    PolicyCounters::Log();
   }
   // Compiled only into the test-host control executable: deliberately waits
   // on the managed child from a pipe callback, exercising the actual IPC.
@@ -108,6 +152,7 @@ class ShadowPolicy {
   std::array<std::atomic<uint64_t>, 13> used_{}, fallback_{};
   std::array<std::atomic<uint64_t>, 13> divergent_{};
   void LogDecisions() {
+    PolicyCounters::Log();
     // Only the policy worker writes diagnostics; caller paths increment counters.
     for (size_t i = 1; i < used_.size(); ++i) {
       const auto used = used_[i].exchange(0), fallback = fallback_[i].exchange(0);
