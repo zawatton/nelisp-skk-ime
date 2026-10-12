@@ -1952,8 +1952,13 @@ void ReplacementLoop() {
   DWORD backoff = 1000;
   ULONGLONG retry_at = 0;
   ULONGLONG next_client_sweep = 0;
+  ULONGLONG next_restart_prefetch = 0;
   while (!g_stopping.load()) {
     Sleep(100);
+    if (GetTickCount64() >= next_restart_prefetch) {
+      native_adapter::shadow.PrefetchRestart(native_adapter::engine_epoch.load(), backoff);
+      next_restart_prefetch = GetTickCount64() + 10000;
+    }
     if (GetTickCount64() >= next_client_sweep) {
       RemoveDeadClients();
       next_client_sweep = GetTickCount64() + 1000;
@@ -1973,6 +1978,7 @@ void ReplacementLoop() {
       LogEvent("respawn engine=" + id);
     }
     if (GetTickCount64() < retry_at) continue;
+    native_adapter::shadow.PrefetchRestart(native_adapter::engine_epoch.load(), backoff);
     std::pair<uint64_t, std::shared_future<bool>> learning_fence;
     {
       EngineTransaction lock;
@@ -1991,6 +1997,9 @@ void ReplacementLoop() {
     bool ready = StartChild(g_executable, g_repository, &next, wide_id, true) &&
         WriteAll(next.input, "ENGINE CURRENT\n") && ReadLine(next.output, &reply);
     LogEvent("replacement-current engine=" + id + " ready=" + (ready ? "true" : "false"));
+    // Warm the post-publication reset under the candidate's own engine epoch.
+    // The active epoch's answers remain available until publication.
+    if (ready) native_adapter::shadow.PrefetchRestart(next.epoch, backoff);
     std::string next_rules;
     if (ready && id == "ddskk")
       ready = WriteAll(next.input, "ROMAJI RULES 1\n") &&

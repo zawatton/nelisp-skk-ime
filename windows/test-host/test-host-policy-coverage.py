@@ -75,6 +75,13 @@ def check(tsf, host, samples, fetches, elapsed):
             raise AssertionError('no native fallback evidence: ' + name)
     if any(not samples['FINAL'][g][1] for g in GROUPS):
         raise AssertionError('uncovered authoritative policy group')
+    # RESTART aggregates two distinct caller policies. Neither seeded replies
+    # nor policy-child supervision proves engine backoff/publication authority.
+    for kind in (3, 7):
+        if not re.search(r'policy-authoritative kind=' + str(kind) + r' count=[1-9]\d*', host):
+            raise AssertionError('uncovered restart caller kind=' + str(kind))
+    if 'replacement-published engine=' not in host:
+        raise AssertionError('missing real engine replacement')
     if fetches[1] <= fetches[0]:
         raise AssertionError('2 second negative cache did not expire/refetch')
     return dict(phases=phases, callback_probes=len(rows), pipe_io=0, blocking_waits=0,
@@ -86,7 +93,9 @@ def self_test():
                     for i, label in enumerate(LABELS))
     tsf += '\n' + '\n'.join(['CALLBACK_IO hooks=5 mask=271 pipe_io=0 blocking_waits=0'] * 20)
     tsf += '\nKEYLAT token=K total_us=1 claimed=1\nLOCAL_ACK_WAIT OK required=6 observed=6\n'
-    host = 'policy-timeout-discard policy-late-discard policy-retire policy-ready policy-ready'
+    host = ('policy-timeout-discard policy-late-discard policy-retire policy-ready policy-ready'
+            ' policy-authoritative kind=3 count=1 policy-authoritative kind=7 count=1'
+            ' replacement-published engine=ddskk')
     samples = {label: {g: [n, m] for g in GROUPS} for label, n, m in (
         ('ZERO', 0, 0), ('COLD', 1, 0), ('WARM', 2, 1), ('HITS', 2, 2),
         ('EXPIRY', 3, 3), ('DOWN', 4, 4), ('RECOVER', 5, 5), ('FINAL', 5, 6))}
@@ -101,6 +110,9 @@ def self_test():
         raise AssertionError('non-private key accepted')
     bad = copy.deepcopy(samples); bad['HITS']['CACHE'][0] += 1
     mutations = [(tsf, host, bad, [1, 2], 1)]
+    for marker in ('policy-authoritative kind=3 count=1',
+                   'policy-authoritative kind=7 count=1', 'replacement-published engine='):
+        mutations.append((tsf, host.replace(marker, ''), samples, [1, 2], 1))
     bad = copy.deepcopy(samples); bad['FINAL']['RESTART'][1] = 0
     mutations.extend([(tsf.replace('仮名', 'X'), host, samples, [1, 2], 1),
         (tsf.replace('blocking_waits=0', 'blocking_waits=1'), host, samples, [1, 2], 1),

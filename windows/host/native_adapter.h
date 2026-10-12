@@ -105,6 +105,18 @@ class ShadowPolicy {
       default: return false;
     }
   }
+  // Prepare the exact next attempt's backoff and publication predicates without
+  // evaluating a caller algorithm. OFF/SHADOW enqueue no additional work.
+  void PrefetchRestart(uint64_t engine, uint64_t backoff) {
+    if (!Authoritative(PolicyKind::Restart)) return;
+    Observe({PolicyKind::Restart, engine, 0, backoff, 0, 0,
+        (std::min)(uint64_t{30000}, backoff * 2)});
+    Observe({PolicyKind::Restart, engine, 0, backoff, 1, 0, 1000});
+    for (uint64_t composing = 0; composing <= 1; ++composing)
+      for (uint64_t expired = 0; expired <= 1; ++expired)
+        Observe({PolicyKind::Replacement, engine, 0, 1, composing, expired,
+            !composing || expired});
+  }
   // Exact input memoization, not speculative replay. A miss schedules copied
   // work and returns native immediately. try_lock also makes contention a miss.
   template<class NativeDecision>
@@ -340,6 +352,8 @@ class ShadowPolicy {
         LogDecisions(); LogEvent("policy-start-failed"); Retire();
         const auto until = GetTickCount64() + backoff;
         while (!stop_ && !g_stopping && GetTickCount64() < until) Sleep(10);
+        // A failed policy child cannot authorize its own recovery. This native
+        // supervisor backoff is excluded from caller-policy retirement/coverage.
         backoff = (std::min)(DWORD{30000}, backoff * 2); continue;
       }
       backoff = 1000; seeded_engine = ~uint64_t{0};
@@ -350,7 +364,18 @@ class ShadowPolicy {
         LogDecisions();
         const auto current_engine = engine_epoch.load();
         if (seeded_engine != current_engine) {
-          { std::lock_guard lock(mutex_); decisions_.clear(); }
+          {
+            std::lock_guard lock(mutex_);
+            // A warming engine can already have genuine restart answers. Keep
+            // only those tagged with the epoch being published; all other
+            // policy rules retain their original engine-change invalidation.
+            const auto restart = "3:" + std::to_string(current_engine) + ":";
+            const auto replacement = "7:" + std::to_string(current_engine) + ":";
+            for (auto it = decisions_.begin(); it != decisions_.end();) {
+              if (it->first.starts_with(restart) || it->first.starts_with(replacement)) ++it;
+              else it = decisions_.erase(it);
+            }
+          }
           seeded_engine = current_engine; Seed(current_engine);
         }
         Observation v{};
