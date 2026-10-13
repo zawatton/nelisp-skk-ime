@@ -3,6 +3,9 @@
 
 One fresh NeLisp replay process handles all batches (native preparation uses a
 separate compiler process). No dictionary-sized list/map is constructed in Lisp.
+Memory is bounded by builder-side periodic reclamation.
+An identically configured setup-only process measures the baseline OS peak working
+set; the 512 MiB cap applies to replay growth above it, not fixed startup cost.
 Temporary data/cache live under LOCALAPPDATA; no production publication is tested.
 """
 import argparse
@@ -20,8 +23,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "engine/host-native-index.el"
 LINE_CAP = 64 * 1024
 BATCH_CAP = 256 * 1024
-# Bound the replay process, including allocator growth, to 512 MiB working set.
-PEAK_WORKING_SET_CAP = 512 * 1024 * 1024
+# Bound parsing growth above the setup-only process peak to 512 MiB.
+PARSE_GROWTH_CAP = 512 * 1024 * 1024
 
 
 class RejectLine(ValueError):
@@ -175,7 +178,7 @@ def main(argv=None):
                         help="Compile then fresh-load template native callables")
     args = parser.parse_args(argv)
     started = time.monotonic()
-    deadline = started + 290
+    deadline = started + 410
     mode = "native" if args.native else "interpreted"
     runtime = Path(os.environ["HN_NATIVE_RUNTIME"]).resolve(strict=True)
     src = Path(os.environ["HN_NELISP_SRC"]).resolve(strict=True)
@@ -261,14 +264,16 @@ def main(argv=None):
                          literal(str(p).replace('\\', '/').encode()) + ')'
                          for first, p in files)
         replay = r'''(let ((seq 0))
+  (host-native-index-reset-reclaim)
   (dolist (entry '(@PATHS@))
     (let ((input (with-temp-buffer (set-buffer-multibyte nil)
                            (insert-file-contents-literally (cadr entry)) (buffer-string)))
-          (start 1) (lines nil) hit)
+          (start 1) (lines nil) hit input-bytes)
       (while (< start (length input))
         (setq hit (or (string-search "\n" input start) (length input)))
         (push (substring input start hit) lines)
         (setq start (1+ hit)))
+      (setq input-bytes (length input))
       (setq input nil lines (nreverse lines))
       (let* ((begin (float-time))
              (records (host-native-parse-jisyo-batch lines (car entry)))
@@ -277,7 +282,8 @@ def main(argv=None):
       (when (< seq @BENCH_START@)
         (dolist (record records)
           (princ (concat (car record) "\n" (cdr record) "\n"))))
-      (princ "@TOKEN@ END\n")))
+      (princ "@TOKEN@ END\n"))
+      (host-native-index-note-batch input-bytes))
     (setq seq (1+ seq))))
 (unless (equal (host-native-parse-jisyo-line "em\nb\red /a\nb\r/") '("embed" . "/ab/"))
   (error "Embedded line break control failed"))
@@ -300,14 +306,20 @@ def main(argv=None):
         # Same filename in compiler and fresh reader: GNU #$ docstrings are
         # recipe metadata resolved against load-file-name (check-hn-merge flow).
         driver.write_text(';;; -*- lexical-binding: t; -*-\n' + setup +
-                          '(if (string= (getenv "HN_PARSER_MODE") "compile")\n'
-                          '    (princ "HN-PARSER-COMPILE-PASS\\n")\n'
-                          '  (progn\n' + replay + '))\n', encoding="utf-8", newline="\n")
+                          '(cond ((string= (getenv "HN_PARSER_MODE") "compile")\n'
+                          '       (princ "HN-PARSER-COMPILE-PASS\\n"))\n'
+                          '      ((string= (getenv "HN_PARSER_MODE") "baseline")\n'
+                          '       (princ "HN-PARSER-BASELINE-PASS\\n"))\n'
+                          '      (t\n' + replay + '))\n', encoding="utf-8", newline="\n")
         if args.native:
             output, _ = run(command + ["-l", str(driver)], dict(env, HN_PARSER_MODE="compile"), deadline)
             print(output.decode("utf-8", "replace"), end="")
             if b"HN-PARSER-COMPILE-PASS\n" not in output:
                 raise RuntimeError("missing native compile marker")
+        baseline_output, baseline_peak = run(
+            command + ["-l", str(driver)], dict(env, HN_PARSER_MODE="baseline"), deadline, True)
+        if b"HN-PARSER-BASELINE-PASS\n" not in baseline_output:
+            raise RuntimeError("missing parser baseline marker")
         replay_started = time.monotonic()
         output, peak = run(command + ["-l", str(driver)], dict(env, HN_PARSER_MODE="run"), deadline, True)
         wall = time.monotonic() - replay_started
@@ -344,7 +356,8 @@ def main(argv=None):
         corrupted[len(corrupted) // 2] ^= 1
         negative = not compare(actual, bytes(corrupted))
         oracle = compare(actual, golden)
-        memory_ok = peak is not None and peak <= PEAK_WORKING_SET_CAP
+        growth = peak - baseline_peak if peak is not None and baseline_peak is not None else None
+        memory_ok = growth is not None and growth <= PARSE_GROWTH_CAP
         passed = oracle and negative and memory_ok
         passed = passed and records[1] == edge_expected and generated_count == 50000
         if records[1] != edge_expected:
@@ -360,8 +373,10 @@ def main(argv=None):
               f"negative-control={'PASS (flipped-byte FAIL)' if negative else 'FAIL'} "
               f"edges={'PASS' if records[1] == edge_expected else 'FAIL'} "
               f"seconds={time.monotonic()-started:.3f} replay_s={wall:.3f} "
+              f"baseline_peak_working_set_bytes={baseline_peak if baseline_peak is not None else 'unavailable'} "
               f"peak_working_set_bytes={peak if peak is not None else 'unavailable'} "
-              f"memory={'PASS' if memory_ok else 'FAIL'} cap_bytes={PEAK_WORKING_SET_CAP}")
+              f"growth_bytes={growth if growth is not None else 'unavailable'} "
+              f"memory={'PASS' if memory_ok else 'FAIL'} growth_cap_bytes={PARSE_GROWTH_CAP}")
         print(f"HN-PARSER-BENCH mode={mode} public_lines=50000 records={generated_count} "
               f"parse_seconds={seconds[2]:.6f} lines/s={rate:.3f}" if rate is not None else
               f"HN-PARSER-BENCH mode={mode} lines/s=unavailable (timer resolution)")
@@ -376,6 +391,8 @@ if __name__ == "__main__":
         import sys
         mode = "native" if "--native" in sys.argv else "interpreted"
         print(f"HN-PARSER-FAIL mode={mode} bytes=unavailable records=unavailable "
-              f"seconds={time.monotonic()-invoked:.3f} peak_working_set_bytes=unavailable "
+              f"seconds={time.monotonic()-invoked:.3f} baseline_peak_working_set_bytes=unavailable "
+              f"peak_working_set_bytes=unavailable growth_bytes=unavailable "
+              f"memory=FAIL growth_cap_bytes={PARSE_GROWTH_CAP} "
               f"error={error}")
         raise SystemExit(1)

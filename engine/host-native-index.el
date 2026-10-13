@@ -5,6 +5,25 @@
 ;; unibyte strings, whose substring offsets are bytes too. Multibyte strings
 ;; and GNU Emacs use the public character-indexed operations unchanged.
 
+(defvar host-native-index-reclaim-bytes (* 256 1024)
+  "Input bytes processed between explicit builder collections.")
+
+(defvar host-native-index--reclaim-bytes 0
+  "Input bytes processed since the last builder collection.")
+
+(defun host-native-index-note-batch (bytes)
+  "Account for BYTES of batch input; return non-nil iff garbage was collected."
+  (setq host-native-index--reclaim-bytes
+        (+ host-native-index--reclaim-bytes bytes))
+  (when (>= host-native-index--reclaim-bytes host-native-index-reclaim-bytes)
+    (garbage-collect)
+    (setq host-native-index--reclaim-bytes 0)
+    t))
+
+(defun host-native-index-reset-reclaim ()
+  "Reset the builder reclamation counter at the start of a generation."
+  (setq host-native-index--reclaim-bytes 0))
+
 ;;;###autoload
 (defun host-native-parse-jisyo-line (line &optional first-line)
   "Return (MIDASI . TAIL) from complete LINE, or nil for a skipped line.
