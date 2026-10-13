@@ -378,6 +378,7 @@ std::wstring EngineRunnerScript(const std::wstring& repository,
 
 #include "policy_bundle.h"
 #include "native_adapter.h"
+#include "hn_builder_windows.h"
 
 // The settings UI (docs/design/sumi-indicator-settings.md, the 辞書 and
 // behavior-flag tabs) stores the user dictionary path/save-batch size and
@@ -867,22 +868,10 @@ void LoadDictionaryServerConfig(DictionaryServerConfig* config) {
 }
 
 // ---------------------------------------------------------------------------
-// Built-in (host-local) SKK dictionaries -- see
-// DictionaryServerConfig::dictionary_files above for the motivating field
-// incident. One std::unordered_map per configured file, populated once by
-// LoadBuiltinDictionariesThread() and never mutated again: `ready` is the
-// single publish point (std::atomic<bool>, release/acquire), so once a
-// reader observes ready == true it is guaranteed to see every map exactly
-// as the loader thread left it, and no lock is needed for the read side
-// at all -- concurrent LookupDictionary() calls from different
-// ServeClient() threads (each already serialized through g_engine_mutex
-// for everything else, but that is incidental here, not required) just
-// do plain unordered_map lookups against immutable data.
-struct BuiltinDictionaryState {
-  std::atomic<bool> ready{false};
-  std::vector<std::unordered_map<std::string, std::string>> maps;
-};
-BuiltinDictionaryState g_builtin_dictionary;
+// Complete immutable generations; each lookup holds one publication lease.
+hn_builder::Publisher g_builtin_dictionary;
+std::atomic<bool> g_builtin_loading{false};
+std::atomic<uint64_t> g_builtin_generation{0};
 
 // Parses one already-loaded SKK-JISYO file's raw bytes into `*map`.
 // Format: ";;"-prefixed lines are comments and skipped; every other
@@ -904,21 +893,7 @@ void StripDictionaryLineBreaks(std::string* text) {
 
 void ParseSkkJisyo(std::string_view contents,
                    std::unordered_map<std::string, std::string>* map) {
-  size_t line_start = 0;
-  while (line_start <= contents.size()) {
-    size_t line_end = contents.find('\n', line_start);
-    if (line_end == std::string_view::npos) line_end = contents.size();
-    std::string line(contents.substr(line_start, line_end - line_start));
-    StripDictionaryLineBreaks(&line);
-    line_start = line_end + 1;
-
-    if (line.empty() || line.substr(0, 2) == ";;") continue;
-    const size_t space = line.find(' ');
-    if (space == std::string_view::npos) continue;
-    const size_t slash = line.find('/', space);
-    if (slash == std::string_view::npos) continue;
-    (*map)[std::string(line.substr(0, space))] = std::string(line.substr(slash));
-  }
+  hn_builder::ParseReference(contents, *map);
 }
 
 // Reads `path` in full and hands it to ParseSkkJisyo(). Returns false (map
@@ -973,18 +948,11 @@ bool LoadDictionaryFile(const std::wstring& path,
   return true;
 }
 
-// Runs once on its own detached background thread (started in wmain()
-// right after the engine child is up), so file I/O and parsing a
-// multi-hundred-thousand-line dictionary never block pipe serving. Splits
-// `files_spec` on ';', loads each file's map in priority order, and only
-// publishes g_builtin_dictionary.ready after every file has been
-// attempted -- a lookup that arrives before that simply skips the
-// built-in tier (LookupDictionary() checks the flag first) and falls
-// through to the external server exactly as if dictionary_files had never
-// been set. A file that fails to load leaves an empty map in its slot
-// (logged, not fatal) rather than skipping the slot entirely, so the
-// remaining files keep their priority order.
-void LoadBuiltinDictionariesThread(std::wstring files_spec) {
+// Background IO preserves configured file order. The reference loader keeps
+// its original empty-slot behavior on file failure; builder rebuilds retain
+// the old generation on any failure and never publish a partial result.
+void LoadBuiltinDictionariesThread(std::wstring files_spec,
+                                  std::wstring runtime, std::wstring repository) {
   std::vector<std::wstring> paths;
   size_t start = 0;
   while (start <= files_spec.size()) {
@@ -994,33 +962,88 @@ void LoadBuiltinDictionariesThread(std::wstring files_spec) {
     start = end + 1;
   }
 
-  std::vector<std::unordered_map<std::string, std::string>> maps;
-  maps.reserve(paths.size());
-  for (const std::wstring& path : paths) {
-    const auto started = std::chrono::steady_clock::now();
-    std::unordered_map<std::string, std::string> map;
-    size_t entry_count = 0;
-    const bool ok = LoadDictionaryFile(path, &map, &entry_count);
-    const long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - started).count();
-    if (ok) {
-      std::fwprintf(stderr,
-                    L"ddskk-engine-host: loaded dictionary %ls (%zu entries, "
-                    L"%lld ms)\n",
-                    path.c_str(), entry_count, elapsed_ms);
-    } else {
-      std::fwprintf(stderr,
-                    L"ddskk-engine-host: failed to load dictionary %ls (%lu)\n",
-                    path.c_str(), static_cast<unsigned long>(GetLastError()));
+  const auto reference = [&] {
+    hn_builder::Maps maps;
+    maps.reserve(paths.size());
+    for (const std::wstring& path : paths) {
+      const auto started = std::chrono::steady_clock::now();
+      std::unordered_map<std::string, std::string> map;
+      size_t entry_count = 0;
+      const bool ok = LoadDictionaryFile(path, &map, &entry_count);
+      const long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - started).count();
+      if (ok) {
+        std::fwprintf(stderr,
+                      L"ddskk-engine-host: loaded dictionary %ls (%zu entries, "
+                      L"%lld ms)\n",
+                      path.c_str(), entry_count, elapsed_ms);
+      } else {
+        std::fwprintf(stderr,
+                      L"ddskk-engine-host: failed to load dictionary %ls (%lu)\n",
+                      path.c_str(), static_cast<unsigned long>(GetLastError()));
+      }
+      maps.push_back(std::move(map));
     }
-    maps.push_back(std::move(map));
+    return maps;
+  };
+  const auto mode = hn_builder_windows::Mode();
+  const bool compatible = mode == hn_builder::Mode::Reference ||
+      policy_bundle::Compatible(runtime, repository);
+  if (!compatible) {
+    const bool retain = g_builtin_dictionary.HasGeneration();
+    LogEvent(std::string("builder-fallback reason=incompatible-bundle action=") + (retain ? "retain" : "cpp"));
+    if (retain) return;
   }
+  const auto fault = hn_builder_windows::Fault();
+  hn_builder_windows::FileInput input(paths, fault == L"overlong");
+  hn_builder_windows::Channel channel(repository, g_child_job, fault);
+  const auto generation = ++g_builtin_generation;
+  hn_builder::BuildResult result;
+  try {
+    result = hn_builder::Build(input, channel, reference, g_builtin_dictionary,
+        {mode, compatible, generation});
+  } catch (const std::exception&) {
+    channel.Retire();
+    const bool retain = g_builtin_dictionary.HasGeneration();
+    LogEvent(std::string("builder-fallback reason=exception action=") + (retain ? "retain" : "cpp"));
+    if (!retain) g_builtin_dictionary.Publish(generation, reference());
+    return;
+  }
+  if (!result.ok) {
+    const auto reason = result.error == "start" && !channel.StartReason().empty()
+        ? channel.StartReason() : result.error;
+    LogEvent("builder-fallback reason=" + reason +
+        " generation=" + std::to_string(generation) +
+        (result.fallback ? " action=cpp" : " action=retain") +
+        (fault == L"midstream" ? " fault=midstream" : ""));
+  }
+  if (result.compared) {
+    const auto counts = [](const std::vector<size_t>& values) {
+      std::string text;
+      for (auto value : values) { if (!text.empty()) text += ','; text += std::to_string(value); }
+      return text;
+    };
+    LogEvent(std::string("builder-shadow ") + (result.comparison.equal ? "match" : "mismatch") +
+        " files=" + std::to_string(result.comparison.files) +
+        " builder-counts=" + counts(result.comparison.left_counts) +
+        " cpp-counts=" + counts(result.comparison.right_counts));
+  }
+  if (mode != hn_builder::Mode::Reference && result.published)
+    LogEvent("builder-publish generation=" + std::to_string(generation));
+}
 
-  g_builtin_dictionary.maps = std::move(maps);
-  // Release pairs with LookupDictionary()'s acquire load below: everything
-  // written above (every map) must be visible to any thread that observes
-  // ready == true afterward.
-  g_builtin_dictionary.ready.store(true, std::memory_order_release);
+bool QueueBuiltinDictionaries(const std::wstring& files_spec,
+                             const std::wstring& runtime, const std::wstring& repository) {
+  bool idle = false;
+  if (!g_builtin_loading.compare_exchange_strong(idle, true)) return false;
+  try {
+    std::thread([files_spec, runtime, repository] {
+      try { LoadBuiltinDictionariesThread(files_spec, runtime, repository); }
+      catch (const std::exception&) { LogEvent("builder-fallback reason=exception action=retain"); }
+      g_builtin_loading = false;
+    }).detach();
+  } catch (...) { g_builtin_loading = false; return false; }
+  return true;
 }
 
 // Merges `midasi`'s candidate list across every loaded built-in
@@ -1031,7 +1054,7 @@ void LoadBuiltinDictionariesThread(std::wstring files_spec) {
 // only the first-seen copy, annotation included, is kept). Returns an
 // empty string if no configured file has `midasi` at all.
 std::string MergeBuiltinCandidates(const std::string& midasi,
-    const std::vector<std::unordered_map<std::string, std::string>>& maps = g_builtin_dictionary.maps) {
+    const hn_builder::Maps& maps) {
   std::vector<std::string> ordered_candidates;  // full text, first-occurrence order
   std::vector<std::string> seen_keys;           // dedup key: text before ';'
   for (const auto& map : maps) {
@@ -1092,14 +1115,17 @@ std::string MergeBuiltinCandidates(const std::string& midasi,
 
 // Cached preview paths never wait for policy IO. Provider transactions pass
 // their remaining deadline; source acquisition stays in the native host.
-std::string HnMergeBuiltins(const std::string& midasi, ULONGLONG deadline = 0) {
-  if (!native_adapter::shadow.ByteMode(hn3::Operation::Builtins)) return MergeBuiltinCandidates(midasi);
+std::string HnMergeBuiltins(const std::string& midasi,
+                          const std::shared_ptr<const hn_builder::Generation>& lease,
+                          ULONGLONG deadline = 0) {
+  if (!lease) return {};
+  if (!native_adapter::shadow.ByteMode(hn3::Operation::Builtins)) return MergeBuiltinCandidates(midasi, lease->maps);
   std::vector<std::string> tails;
-  for (const auto& map : g_builtin_dictionary.maps) {
+  for (const auto& map : lease->maps) {
     const auto it = map.find(midasi); if (it != map.end()) tails.push_back(it->second);
   }
   return native_adapter::shadow.Bytes(hn3::Operation::Builtins, tails, deadline,
-      [&] { return MergeBuiltinCandidates(midasi); });
+      [&] { return MergeBuiltinCandidates(midasi, lease->maps); });
 }
 
 bool DecodeHexBytes(std::string_view encoded, std::string* decoded) {
@@ -1125,12 +1151,13 @@ bool DecodeHexBytes(std::string_view encoded, std::string* decoded) {
 std::string PreviewBuiltinDictionary(std::string_view request) {
   constexpr std::string_view prefix = "PREVIEW ";
   std::string midasi;
+  const auto lease = g_builtin_dictionary.Lease();
   if (!request.starts_with(prefix) ||
       !DecodeHexBytes(request.substr(prefix.size()), &midasi) ||
-      !g_builtin_dictionary.ready.load(std::memory_order_acquire)) {
+      !lease) {
     return "PREVIEW -";
   }
-  const std::string candidates = HnMergeBuiltins(midasi);
+  const std::string candidates = HnMergeBuiltins(midasi, lease);
   return candidates.empty() ? "PREVIEW -" : "PREVIEW " + candidates;
 }
 // ---------------------------------------------------------------------------
@@ -1577,7 +1604,8 @@ std::string LookupDictionary(const std::string& midasi, ULONGLONG deadline = 0) 
       (native_adapter::shadow.ByteMode(hn3::Operation::Builtins) ? hn3::kMergeDeadlineMs : 200);
   const bool debug = GetEnvironmentVariableW(L"DDSKK_HOST_DEBUG", nullptr, 0) > 0;
   const double lookup_started = debug ? ProfileMilliseconds() : 0;
-  const std::string files = g_builtin_dictionary.ready.load(std::memory_order_acquire) ? HnMergeBuiltins(midasi, deadline) : "";
+  const auto lease = g_builtin_dictionary.Lease();
+  const std::string files = HnMergeBuiltins(midasi, lease, deadline);
   if (debug) {
     std::fprintf(stderr, "dictionary-source name=builtin-index ms=%.6f\n",
                  ProfileMilliseconds()-lookup_started);
@@ -1714,8 +1742,9 @@ std::string OracleReplay(std::string_view encoded) {
           fields, GetTickCount64()+hn3::kMergeDeadlineMs,
           [&] { return quote ? QuoteEngineString(fields[0]) : EngineDictionaryReply(fields[0]); }, &managed);
     } else if (name == "parsed-entry") {
-      if (fields.size()!=1 || !g_builtin_dictionary.ready.load(std::memory_order_acquire)) throw std::runtime_error("parsed arity/readiness");
-      for (const auto& map : g_builtin_dictionary.maps) {
+      const auto lease = g_builtin_dictionary.Lease();
+      if (fields.size()!=1 || !lease) throw std::runtime_error("parsed arity/readiness");
+      for (const auto& map : lease->maps) {
         const auto found = map.find(fields[0]); if (found != map.end()) { result = found->second; break; }
       }
     } else if (name.starts_with("startup-") && !name.starts_with("startup-operation-")) {
@@ -3106,6 +3135,10 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     } else if (engine_request == "HN3 TEST SHADOW") {
       response = g_pipe_name.starts_with(L"\\\\.\\pipe\\ddskk-test-") && native_adapter::shadow.TestShadow()
           ? "OK HN3 SHADOW" : "ERR HN3 TEST";
+    } else if (engine_request == "HN BUILDER REBUILD") {
+      response = !hn_builder_windows::HarnessDiagnostics() ? "ERR HN BUILDER DISABLED" :
+          QueueBuiltinDictionaries(g_dictionary_server.config.dictionary_files, g_executable, g_repository)
+          ? "OK HN BUILDER REBUILD" : "ERR HN BUILDER BUSY";
     } else if (engine_request == "DIAG CHILD-PID") {
       std::lock_guard<std::mutex> lock(g_engine_mutex);
       response = "PID " + std::to_string(g_child.process ? GetProcessId(g_child.process) : 0);
@@ -3370,13 +3403,11 @@ int wmain(int argc, wchar_t** argv) {
   // incident rationale). Started here, detached, so multi-hundred-
   // thousand-line file parsing never blocks pipe serving below: a lookup
   // that arrives before it finishes just skips this tier
-  // (BuiltinDictionaryState::ready / LookupDictionary()) and falls
+  // (null generation lease / LookupDictionary()) and falls
   // through to the external server exactly as if dictionary_files were
   // never configured.
   if (!g_dictionary_server.config.dictionary_files.empty()) {
-    std::thread(LoadBuiltinDictionariesThread,
-               g_dictionary_server.config.dictionary_files)
-        .detach();
+    QueueBuiltinDictionaries(g_dictionary_server.config.dictionary_files, argv[1], repository);
   }
 
   // Self-heal the same SkkServStartCommand field incident this early,

@@ -1,0 +1,43 @@
+{
+  "contract": "hn-builder-v1",
+  "frozen": true,
+  "version": 1,
+  "byte_order": "little-endian",
+  "header_bytes": 40,
+  "negotiation": {
+    "ready": "HNB READY version=1\n",
+    "rule": "Require this exact READY before requests on a dedicated builder stdio stream. No HP2/HN3 sharing, eval, or implicit capability upgrade."
+  },
+  "header": [
+    ["magic", 0, 4, "ASCII HNBQ request or HNBR reply"],
+    ["body_length", 4, 4, "uint32 bytes after offset 8"],
+    ["version", 8, 2, "uint16 exactly 1"],
+    ["status", 10, 2, "uint16 request=0; reply=0 OK, 1 parser error, 2 result too large"],
+    ["generation", 12, 8, "uint64 opaque echoed identity"],
+    ["file_index", 20, 4, "uint32 configured file position, echoed"],
+    ["batch_seq", 24, 4, "uint32 per-file sequence starting at 0, echoed"],
+    ["flags", 28, 4, "uint32 request bit 0 = first line of file; reply=0; reject other bits"],
+    ["count", 32, 4, "uint32 request line count or reply record count"],
+    ["payload_length", 36, 4, "uint32 all payload bytes including length words"]
+  ],
+  "fields": {
+    "offset": 40,
+    "request": "Repeated uint32 byte length followed by a complete line, excluding its LF delimiter. CR bytes are retained for parsing. Native strips exactly one UTF-8 BOM at file start before batching.",
+    "reply": "Repeated uint32 midasi length, midasi bytes, uint32 tail length, tail bytes in input order. Skipped lines produce no record; duplicates remain ordered for native last-key-wins accumulation.",
+    "bytes": "Opaque octets, including NUL and non-UTF-8 bytes, matching the C++ reference parser. No padding or newline terminator.",
+    "validation": "Lengths and count consume the payload exactly. Request lines contain no LF and fit the line cap. Reply key+tail fits the line cap; midasi has no space/CR/LF, tail starts with slash and has no CR/LF. Nonzero reply status requires zero count and empty payload. A reply has no more records than requested lines."
+  },
+  "limits": {
+    "line_bytes": 65536,
+    "line_definition": "Raw line bytes after removal of one leading file BOM and before removal of CR; LF delimiter excluded. Reject the whole generation above this limit, including comments and malformed lines.",
+    "payload_bytes": 262144,
+    "reply_payload_bytes": 524288,
+    "payload_definition": "Includes every uint32 length word. Reply allowance covers the additional length word per parsed record without rejecting a full batch of short valid lines.",
+    "count": 65536,
+    "outstanding_requests": 1,
+    "batch_timeout_ms": 10000
+  },
+  "fences": "Require reply generation/file_index/batch_seq echoes. Any transport, status, timeout, bounds, truncation, or echo failure aborts the generation and retires the child stream by terminating, closing handles and discarding late bytes before reuse. Publish complete immutable generations only; leases preserve old maps. Initial failure uses the C++ loader; rebuild failure retains the old generation.",
+  "parser": "Remove all CR/LF, skip empty and semicolon-semicolon comments, use first space and first following slash, preserve key/tail bytes, and accumulate last key wins. The first-line flag marks the file's first batch, not every batch. Native has already removed one BOM; a second BOM is data and must not be removed again by the child parser.",
+  "ownership": "Native owns file IO, batching, accumulation, comparison, publication and process lifetime. Child keeps only current generation and reclaim counter between batches. One batch in flight is a structure guarantee, not memory evidence. Windows/bundle/child integration is Phase B."
+}

@@ -13,7 +13,9 @@ import tempfile
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCES = ('host-policy.el', 'host-native-skk.el', 'host-native-startup.el')
+SOURCES = ('host-policy.el', 'host-native-skk.el', 'host-native-startup.el',
+           'host-native-index.el')
+INDEX_FUNCTIONS = ['host-native-parse-jisyo-line', 'host-native-parse-jisyo-batch']
 DIRS = ('lisp', 'src', 'scripts', 'packages/nl-ffi/src', 'packages/nl-prelude/src')
 
 
@@ -33,23 +35,34 @@ def validate_counts(native, total, refused):
 
 
 def self_test():
+    checks = 0
+
+    def check(condition, message=''):
+        nonlocal checks
+        checks += 1
+        if not condition:
+            raise AssertionError(message)
+
     validate_counts(1, 2, [dict(name='fixture-refused', error='template refusal')])
+    check(True)
     try:
         validate_counts(0, 2, [dict(name=n, error='refused') for n in ('a', 'b')])
     except ValueError:
-        pass
+        check(True)
     else:
         raise AssertionError('all-refused bundle accepted')
     emacs = shutil.which('emacs')
     if not emacs:
-        print('PASS HN bundle counts all-refused rejected; SKIP stub driver: no Emacs')
+        print(f'PASS HN bundle counts checks={checks}; SKIP stub driver: no Emacs')
         return
     with tempfile.TemporaryDirectory(prefix='hn-bundle-self-') as directory:
         work = Path(directory)
         for name in SOURCES:
             (work / name).write_text('', encoding='utf-8')
         driver = work / 'driver.el'
-        driver.write_text(driver_source(work, work, {SOURCES[0]: ['fixture-native', 'fixture-refused']}),
+        functions = {SOURCES[0]: ['fixture-native', 'fixture-refused'],
+                     'host-native-index.el': INDEX_FUNCTIONS}
+        driver.write_text(driver_source(work, work, functions),
                           encoding='utf-8', newline='\n')
         stub = work / 'stub.el'
         stub.write_text("""(provide 'nelisp-native-cache)
@@ -59,36 +72,51 @@ def self_test():
 (defun nelisp-native-template-select-target () nil)
 (defun fixture-native () 'interpreted)
 (defun fixture-refused () 'interpreted)
-(defun nelisp-bytecode-native-consumer-read-elc-functions (_) '((fixture-native . fixture-native) (fixture-refused . fixture-refused)))
+(defun host-native-parse-jisyo-line () 'interpreted)
+(defun host-native-parse-jisyo-batch () 'interpreted)
+(defun host-policy-serve () (princ "HN-STUB-POLICY\n"))
+(defun host-native-index-serve () (princ "HN-STUB-INDEX\n"))
+(defun nelisp-bytecode-native-consumer-read-elc-functions (_)
+  '((fixture-native . fixture-native) (fixture-refused . fixture-refused)
+    (host-native-parse-jisyo-line . host-native-parse-jisyo-line)
+    (host-native-parse-jisyo-batch . host-native-parse-jisyo-batch)))
 (defun nelisp-native-cache-compile (f)
   (when (or (getenv "HN_STUB_ALL_REFUSED") (eq f 'fixture-refused))
     (error "Template fixture refusal")))
 (defun nelisp-native-cache-load (_) (unless (getenv "HN_STUB_LOAD_FAIL") (lambda () 'native)))
 """, encoding='utf-8', newline='\n')
         env = dict(os.environ, HOME=str(work))
-        for key in ('HN_STUB_ALL_REFUSED', 'HN_STUB_LOAD_FAIL'):
+        for key in ('HN_STUB_ALL_REFUSED', 'HN_STUB_LOAD_FAIL', 'DDSKK_HOST_BUNDLE_ENTRY'):
             env.pop(key, None)
 
         def run(mode, extra_env=None, assertion=None):
+            launch = work / 'launch.el'
+            launch.write_text((f'(setq hn-bundle-{mode}-mode t)\n' if mode else '') +
+                              f'(load {literal(driver)} nil t t)\n' +
+                              (assertion or ''), encoding='utf-8')
             command = [emacs, '-Q', '--batch', '--init-directory', str(work), '-l', str(stub),
-                       '--eval', f'(setq hn-bundle-{mode}-mode t)', '-l', str(driver)]
-            if assertion:
-                command += ['--eval', assertion]
+                       '--load', str(launch)]
             return subprocess.run(command, env=dict(env, **(extra_env or {})),
                                   capture_output=True, timeout=20)
 
         compiled = run('compile')
-        assert compiled.returncode == 0, compiled.stderr.decode('utf-8', 'replace')
-        assert b'HN-BUNDLE-REFUSED fixture-refused\t' in compiled.stdout
+        check(compiled.returncode == 0, compiled.stderr.decode('utf-8', 'replace'))
+        check(b'HN-BUNDLE-REFUSED fixture-refused\t' in compiled.stdout)
         refusal = re.search(rb'HN-BUNDLE-REFUSED fixture-refused\t([^\r\n]*)', compiled.stdout)[1]
-        assert ''.join(chr(int(c)) for c in refusal.split(b',')) == 'Template fixture refusal'
-        loaded = run('verify', assertion="(unless (and (eq (fixture-native) 'native) (eq (fixture-refused) 'interpreted) host-policy-native-p) (error \"installation mismatch\"))")
-        assert loaded.returncode == 0, loaded.stderr.decode('utf-8', 'replace')
-        assert b'HN-BUNDLE-LOADED native=1' in loaded.stdout
-        assert run('verify', {'HN_STUB_LOAD_FAIL': '1'}).returncode != 0
+        check(''.join(chr(int(c)) for c in refusal.split(b',')) == 'Template fixture refusal')
+        loaded = run('verify', assertion="(unless (and (eq (fixture-native) 'native) (eq (fixture-refused) 'interpreted) (eq (host-native-parse-jisyo-line) 'native) (eq (host-native-parse-jisyo-batch) 'native) host-policy-native-p) (error \"installation mismatch\"))")
+        check(loaded.returncode == 0, loaded.stderr.decode('utf-8', 'replace'))
+        check(b'HN-BUNDLE-LOADED native=3' in loaded.stdout)
+        for entry, marker in ((None, b'HN-STUB-POLICY'), ('policy', b'HN-STUB-POLICY'),
+                              ('index', b'HN-STUB-INDEX')):
+            result = run(None, {'DDSKK_HOST_BUNDLE_ENTRY': entry} if entry else {})
+            check(result.returncode == 0 and marker in result.stdout, result.stderr)
+        check(run(None, {'DDSKK_HOST_BUNDLE_ENTRY': 'invalid'}).returncode != 0)
+        check(run('verify', {'HN_STUB_LOAD_FAIL': '1'}).returncode != 0)
         all_refused = run('compile', {'HN_STUB_ALL_REFUSED': '1'})
-        assert all_refused.returncode != 0 and b'Zero native functions compiled' in all_refused.stderr
-    print('PASS HN bundle self-test partial native/interpreted install; all-refused and fresh-load failure rejected; stacks=0 compiler=stub')
+        check(all_refused.returncode != 0 and b'Zero native functions compiled' in all_refused.stderr)
+    print('PASS HN bundle self-test index source/functions and policy/index entries; partial install; '
+          f'all-refused, fresh-load and invalid-entry rejected; checks={checks} stacks=0 compiler=stub')
 
 
 def driver_source(work, src, functions):
@@ -136,7 +164,10 @@ def driver_source(work, src, functions):
   (setq host-policy-native-p t)
   (if hn-bundle-verify-mode
       (princ (format "HN-BUNDLE-LOADED native=%s\\n" hn-bundle-native-count))
-    (host-policy-serve)))
+    (let ((entry (getenv "DDSKK_HOST_BUNDLE_ENTRY")))
+      (cond ((equal entry "index") (host-native-index-serve))
+            ((or (not entry) (equal entry "policy")) (host-policy-serve))
+            (t (error "Unknown bundle entry: %s" entry))))))
 """
     return setup
 
@@ -168,8 +199,9 @@ def build(destination):
     for name in SOURCES:
         path = work / name
         path.write_bytes((ROOT / 'engine' / name).read_bytes())
-        functions[name] = [f for f in re.findall(r'^\(defun ([^\s()]+)', path.read_text('utf-8'), re.M)
-                           if f != 'host-policy-serve']
+        functions[name] = (INDEX_FUNCTIONS if name == 'host-native-index.el' else
+                           [f for f in re.findall(r'^\(defun ([^\s()]+)', path.read_text('utf-8'), re.M)
+                            if f != 'host-policy-serve'])
     expression = """(progn
       (require 'nelisp-bytecode-compiler-input-dialect)
       (unless (eq (plist-get (nelisp-bytecode-compiler-input-dialect) :status) 'pinned)
@@ -201,7 +233,10 @@ def build(destination):
     refused = []
     native_count = 0
     for mode, marker in [('compile', b'HN-BUNDLE-COMPILED'), ('verify', b'HN-BUNDLE-LOADED')]:
-        output = run(command + ['--eval', f'(setq hn-bundle-{mode}-mode t)', '-l', str(driver)])
+        launch = work / f'{mode}.el'
+        launch.write_text(f'(setq hn-bundle-{mode}-mode t)\n(load {literal(driver)} nil t t)\n',
+                          encoding='utf-8', newline='\n')
+        output = run(command + ['--load', str(launch)])
         if marker not in output:
             raise RuntimeError('missing ' + marker.decode())
         if mode == 'compile':

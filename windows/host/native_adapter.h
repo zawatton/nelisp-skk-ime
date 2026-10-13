@@ -81,6 +81,10 @@ class ShadowPolicy {
   static constexpr size_t kFrame = 4096, kRequests = 64, kBytes = 131072;
   ~ShadowPolicy() { Stop(); }
   bool Enabled() const { return enabled_; }
+  static bool BuilderCommand(const std::wstring& repository, std::wstring& command) {
+    std::string summary;
+    return BundleCommand(repository, command, summary, true);
+  }
   void Reject() { ++dropped_; }
   void Start(const std::wstring& runtime, const std::wstring& repository, HANDLE job) {
     wchar_t enabled[8]{};
@@ -747,8 +751,12 @@ class ShadowPolicy {
     BCryptCloseAlgorithmProvider(algorithm, 0); return result;
   }
   bool NativeCommand(std::wstring& command) {
+    return BundleCommand(repository_, command, bundle_summary_, false);
+  }
+  static bool BundleCommand(const std::wstring& repository, std::wstring& command,
+                            std::string& bundle_summary, bool index) {
     const auto runtime = Environment(L"DDSKK_HOST_POLICY_RUNTIME");
-    bundle_summary_.clear();
+    bundle_summary.clear();
     const auto bundle = Environment(L"DDSKK_HOST_POLICY_BUNDLE");
     if (runtime.empty() && bundle.empty()) return false;
     try {
@@ -781,10 +789,16 @@ class ShadowPolicy {
           std::filesystem::path(roles['D']).lexically_normal() != (std::filesystem::path(bundle) / L"driver.el").lexically_normal())
         throw std::runtime_error("manifest runtime/companion/driver mismatch");
       for (const auto* name : {L"host-policy", L"host-native-skk", L"host-native-startup"}) {
-        for (const auto& path : {std::filesystem::path(repository_) / L"engine" / (std::wstring(name) + L".el"),
+        for (const auto& path : {std::filesystem::path(repository) / L"engine" / (std::wstring(name) + L".el"),
                                std::filesystem::path(bundle) / (std::wstring(name) + L".el"),
                                std::filesystem::path(bundle) / (std::wstring(name) + L".elc")})
           if (!pinned.contains(path.lexically_normal().wstring())) throw std::runtime_error("missing source/bytecode pin");
+      }
+      if (index) {
+        for (const auto& path : {std::filesystem::path(repository) / L"engine/host-native-index.el",
+                               std::filesystem::path(bundle) / L"host-native-index.el",
+                               std::filesystem::path(bundle) / L"host-native-index.elc"})
+          if (!pinned.contains(path.lexically_normal().wstring())) throw std::runtime_error("missing index source/bytecode pin");
       }
       if (!pinned.contains((std::filesystem::path(bundle) / L"manifest.json").lexically_normal().wstring()))
         throw std::runtime_error("missing compiler/generation manifest pin");
@@ -793,9 +807,9 @@ class ShadowPolicy {
           !pinned.contains((std::filesystem::path(bundle) / L"compiled.el").lexically_normal().wstring()))
         throw std::runtime_error("missing bundle report/state pin");
       std::ifstream report(std::filesystem::path(roles['B']), std::ios::binary);
-      if (!std::getline(report, bundle_summary_) || bundle_summary_.size() > 32768)
+      if (!std::getline(report, bundle_summary) || bundle_summary.size() > 32768)
         throw std::runtime_error("invalid bundle report");
-      std::istringstream summary(bundle_summary_);
+      std::istringstream summary(bundle_summary);
       std::string tag, native, interpreted, refused, extra;
       summary >> tag >> native >> interpreted >> refused;
       const auto count = [](const std::string& token, const std::string& prefix) {
