@@ -82,6 +82,9 @@ class EngineClient {
   std::optional<uint64_t> LearnLocal(const std::string& id, const std::string& key,
                   const std::string& candidate, DWORD timeout_ms = 1500, const std::string& okuri = {});
   std::optional<EngineState> RegisterLocal(const std::u32string& keys, DWORD timeout_ms = 5000);
+  // Completion metadata uses registration STATE fields: reading, word and
+  // okuri (in pending_romaji). It never describes an editor/document state.
+  std::optional<EngineState> RegistrationLearning(DWORD timeout_ms = 1500);
   std::optional<EngineState> SyncKeys(const std::u32string& keys,
                                      DWORD timeout_ms = 1500);
   const std::string& last_response() const { return last_response_; }
