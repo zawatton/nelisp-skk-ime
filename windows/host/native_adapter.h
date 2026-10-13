@@ -3,6 +3,9 @@
 #pragma once
 #include "hn3_channel.h"
 #include <memory>
+#include <bcrypt.h>
+#include <filesystem>
+#include <sstream>
 
 namespace native_adapter {
 inline std::atomic<uint64_t> next_engine_epoch{0}, engine_epoch{0}, publication_generation{0};
@@ -423,6 +426,117 @@ class ShadowPolicy {
   std::mutex mutex_; std::condition_variable changed_;
   std::deque<Observation> queue_; std::thread worker_;
   std::wstring runtime_, repository_; HANDLE job_ = nullptr;
+  bool native_attempt_ = false, interpreted_retry_ = false;
+  std::string bundle_summary_;
+  static std::wstring Environment(const wchar_t* name) {
+    const DWORD size = GetEnvironmentVariableW(name, nullptr, 0);
+    if (!size) return {};
+    std::wstring value(size, 0);
+    const DWORD used = GetEnvironmentVariableW(name, value.data(), size);
+    if (!used || used >= size) return {};
+    value.resize(used); return value;
+  }
+  static std::wstring BundlePath(const std::string& text) {
+    if (text.empty() || text.find_first_of("\r\n\t\"") != std::string::npos) return {};
+    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (!size) return {};
+    std::wstring path(size, 0);
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), path.data(), size);
+    return std::filesystem::path(path).is_absolute() ? path : std::wstring{};
+  }
+  static std::string BundleHash(const std::wstring& path) {
+    std::ifstream stream(std::filesystem::path(path), std::ios::binary);
+    BCRYPT_ALG_HANDLE algorithm = nullptr; BCRYPT_HASH_HANDLE hash = nullptr;
+    if (!stream || BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return {};
+    std::string result;
+    if (BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) >= 0) {
+      std::array<char, 65536> buffer{}; bool ok = true;
+      while (stream) {
+        stream.read(buffer.data(), buffer.size());
+        if (stream.gcount() && BCryptHashData(hash, reinterpret_cast<PUCHAR>(buffer.data()), static_cast<ULONG>(stream.gcount()), 0) < 0) { ok = false; break; }
+      }
+      std::array<unsigned char, 32> digest{};
+      if (ok && stream.eof() && BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) >= 0) {
+        const char* hex = "0123456789abcdef";
+        for (auto byte : digest) { result += hex[byte >> 4]; result += hex[byte & 15]; }
+      }
+      BCryptDestroyHash(hash);
+    }
+    BCryptCloseAlgorithmProvider(algorithm, 0); return result;
+  }
+  bool NativeCommand(std::wstring& command) {
+    const auto runtime = Environment(L"DDSKK_HOST_POLICY_RUNTIME");
+    bundle_summary_.clear();
+    const auto bundle = Environment(L"DDSKK_HOST_POLICY_BUNDLE");
+    if (runtime.empty() && bundle.empty()) return false;
+    try {
+      if (runtime.empty() || bundle.empty()) throw std::runtime_error("both runtime and bundle required");
+      std::ifstream manifest(std::filesystem::path(bundle) / L"manifest.tsv", std::ios::binary);
+      std::string line;
+      if (!std::getline(manifest, line) || line != "HN-BUNDLE-1") throw std::runtime_error("manifest header");
+      std::map<char, std::wstring> roles; std::vector<std::wstring> dirs;
+      std::unordered_set<std::wstring> pinned; size_t hashes = 0;
+      while (std::getline(manifest, line)) {
+        if (line.size() > 32768 || line.size() < 4 || line[1] != '\t') throw std::runtime_error("manifest row");
+        const auto tab = line.find('\t', 2);
+        if (tab == std::string::npos) throw std::runtime_error("manifest fields");
+        const auto path = BundlePath(line.substr(tab + 1));
+        if (path.empty()) throw std::runtime_error("manifest path");
+        if (line[0] == 'L') {
+          if (line.substr(2, tab - 2) != "-" || !std::filesystem::is_directory(path)) throw std::runtime_error("load directory");
+          if (std::find(dirs.begin(), dirs.end(), path) != dirs.end()) throw std::runtime_error("duplicate load directory");
+          dirs.push_back(path); continue;
+        }
+        if (std::string("RCSDBH").find(line[0]) == std::string::npos ||
+            line.substr(2, tab - 2).size() != 64 || BundleHash(path) != line.substr(2, tab - 2))
+          throw std::runtime_error("manifest hash mismatch");
+        ++hashes;
+        if (!pinned.insert(std::filesystem::path(path).lexically_normal().wstring()).second) throw std::runtime_error("duplicate pin");
+        if (line[0] != 'H' && !roles.emplace(line[0], path).second) throw std::runtime_error("duplicate role");
+      }
+      if (!manifest.eof() || hashes < 15 || dirs.size() != 5 || roles.size() != 5 ||
+          roles['R'] != runtime || roles['C'] != runtime + L".cold" || roles['S'] != runtime + L".native-startup.el" ||
+          std::filesystem::path(roles['D']).lexically_normal() != (std::filesystem::path(bundle) / L"driver.el").lexically_normal())
+        throw std::runtime_error("manifest runtime/companion/driver mismatch");
+      for (const auto* name : {L"host-policy", L"host-native-skk", L"host-native-startup"}) {
+        for (const auto& path : {std::filesystem::path(repository_) / L"engine" / (std::wstring(name) + L".el"),
+                               std::filesystem::path(bundle) / (std::wstring(name) + L".el"),
+                               std::filesystem::path(bundle) / (std::wstring(name) + L".elc")})
+          if (!pinned.contains(path.lexically_normal().wstring())) throw std::runtime_error("missing source/bytecode pin");
+      }
+      if (!pinned.contains((std::filesystem::path(bundle) / L"manifest.json").lexically_normal().wstring()))
+        throw std::runtime_error("missing compiler/generation manifest pin");
+      if (std::filesystem::path(roles['B']).lexically_normal() !=
+          (std::filesystem::path(bundle) / L"bundle-report.txt").lexically_normal() ||
+          !pinned.contains((std::filesystem::path(bundle) / L"compiled.el").lexically_normal().wstring()))
+        throw std::runtime_error("missing bundle report/state pin");
+      std::ifstream report(std::filesystem::path(roles['B']), std::ios::binary);
+      if (!std::getline(report, bundle_summary_) || bundle_summary_.size() > 32768)
+        throw std::runtime_error("invalid bundle report");
+      std::istringstream summary(bundle_summary_);
+      std::string tag, native, interpreted, refused, extra;
+      summary >> tag >> native >> interpreted >> refused;
+      const auto count = [](const std::string& token, const std::string& prefix) {
+        if (!token.starts_with(prefix) || token.size() == prefix.size() ||
+            token.find_first_not_of("0123456789", prefix.size()) != std::string::npos)
+          throw std::runtime_error("invalid bundle count");
+        return std::stoull(token.substr(prefix.size()));
+      };
+      if (tag != "HN-BUNDLE" || (summary >> extra) || count(native, "native=") == 0 ||
+          !refused.starts_with("refused=") || refused.size() == 8)
+        throw std::runtime_error("invalid bundle report/zero native functions");
+      const auto names = refused.substr(8);
+      const auto refusals = names == "-" ? 0 : 1 + std::count(names.begin(), names.end(), ',');
+      if (count(interpreted, "interpreted=") != static_cast<unsigned long long>(refusals))
+        throw std::runtime_error("bundle refusal count mismatch");
+      command = L"\"" + runtime + L"\" --cold-load-from \"" + roles['C'] + L"\"";
+      for (const auto& dir : dirs) command += L" -L \"" + dir + L"\"";
+      command += L" -l \"" + roles['D'] + L"\"";
+      return true;
+    } catch (const std::exception& error) {
+      LogEvent(std::string("policy-native-refused reason=") + error.what()); return false;
+    }
+  }
   HANDLE process_ = nullptr, input_ = nullptr, output_ = nullptr;
   uint64_t epoch_ = 0, request_ = 0;
   static std::string Digits(uint64_t value, size_t width) {
@@ -488,6 +602,8 @@ class ShadowPolicy {
     si.StartupInfo.hStdError = out_write;
     PROCESS_INFORMATION pi{};
     std::wstring command = L"\"" + runtime_ + L"\" --load engine/host-policy.el";
+    native_attempt_ = !interpreted_retry_ && NativeCommand(command);
+    interpreted_retry_ = false;
     const bool started = updated && CreateProcessW(nullptr, command.data(), nullptr, nullptr,
         TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW |
         BELOW_NORMAL_PRIORITY_CLASS, nullptr, repository_.c_str(), &si.StartupInfo, &pi);
@@ -523,7 +639,16 @@ class ShadowPolicy {
     DWORD backoff = 1000;
     while (!stop_ && !g_stopping) {
       const auto start = GetTickCount64(); std::string reply;
-      if (!Launch() || !Line(reply, 60000) || (reply != "HP2 READY" && reply != "HP2 READY HN3=1")) {
+      const bool launched = Launch();
+      const bool ready = launched && Line(reply, 60000);
+      const bool native_ready = reply == "HP2 READY HN3=1 native=1";
+      if (!ready || (reply != "HP2 READY" && reply != "HP2 READY HN3=1" && reply != "HP2 READY HN3=1 native=0" && !native_ready) ||
+          (native_attempt_ && !native_ready)) {
+        if (native_attempt_) {
+          LogEvent("policy-native-refused reason=load-or-ready-failed");
+          interpreted_retry_ = true;
+          LogDecisions(); Retire(); continue;
+        }
         if (!reply.empty() && reply != "HP2 READY" && reply != "HP2 READY HN3=1")
           LogEvent("policy-fallback native reason=incompatible-policy-ready-protocol");
         LogDecisions(); LogEvent("policy-start-failed"); Retire();
@@ -534,8 +659,9 @@ class ShadowPolicy {
         backoff = (std::min)(DWORD{30000}, backoff * 2); continue;
       }
       backoff = 1000; seeded_engine = ~uint64_t{0};
-      { std::lock_guard lock(mutex_); healthy_ = true; hn3_capable_ = reply == "HP2 READY HN3=1"; changed_.notify_all(); }
-      LogEvent("policy-ready startup_ms=" + std::to_string(GetTickCount64() - start));
+      { std::lock_guard lock(mutex_); healthy_ = true; hn3_capable_ = reply.starts_with("HP2 READY HN3=1"); changed_.notify_all(); }
+      if (native_ready) LogEvent(bundle_summary_);
+      LogEvent("policy-ready startup_ms=" + std::to_string(GetTickCount64() - start) + " native=" + (native_ready ? "1" : "0"));
       LogEvent("policy-decision-accounting v=1");
       while (!stop_ && !g_stopping) {
         LogDecisions();

@@ -2,6 +2,8 @@
 ;; This process has no engine, public pipe, publication or learning API.
 ;; Inputs are bounded decimal value fields; never read/eval IPC as Lisp.
 
+(defvar host-policy-native-p nil "Set only after the private bundle loads all callables.")
+
 (defun host-policy-decision (kind a b c)
   "Compute a policy decision from copied native policy inputs."
   (cond ((= kind 1) (if (or (= a 0) (= b 1)) a 0)) ; runner availability
@@ -180,34 +182,71 @@ Metadata slots 8..10 hold prefix end and the raw kind's start/end indices."
 
 (defun host-policy-hn3-startup (fields)
   "Reconstruct the copied typed snapshot; never read/eval payloads."
-  (let* ((take (lambda () (unless fields (error "HN3 snapshot tail"))
-                       (prog1 (car fields) (setq fields (cdr fields)))))
-         (boolean (lambda () (= (host-policy-hn3-number (funcall take) 1) 1)))
-         (requested (funcall boolean)) (id (funcall take))
-         (framework (funcall boolean)) (native (funcall boolean))
-         (registry-present (funcall boolean)) (expansion (funcall boolean))
-         (expanded (funcall take))
-         (n (host-policy-hn3-number (funcall take) 6))
-         (prior nil) (inherited nil) (registry nil))
-    (while (> n 0) (push (funcall take) prior) (setq n (1- n)))
-    (setq n (host-policy-hn3-number (funcall take) 7))
+  (let* ((requested (= (host-policy-hn3-number (prog1 (car fields)
+						 (unless fields (error "HN3 snapshot tail"))
+						 (setq fields (cdr fields))) 1) 1)) (id (prog1 (car fields)
+											  (unless fields (error "HN3 snapshot tail"))
+											  (setq fields (cdr fields))))
+						 (framework (= (host-policy-hn3-number (prog1 (car fields)
+											 (unless fields (error "HN3 snapshot tail"))
+											 (setq fields (cdr fields))) 1) 1)) (native (= (host-policy-hn3-number (prog1 (car fields)
+											 (unless fields (error "HN3 snapshot tail"))
+											 (setq fields (cdr fields))) 1) 1))
+						 (registry-present (= (host-policy-hn3-number (prog1 (car fields)
+												(unless fields (error "HN3 snapshot tail"))
+												(setq fields (cdr fields))) 1) 1)) (expansion (= (host-policy-hn3-number (prog1 (car fields)
+												(unless fields (error "HN3 snapshot tail"))
+												(setq fields (cdr fields))) 1) 1))
+						 (expanded (prog1 (car fields)
+							     (unless fields (error "HN3 snapshot tail"))
+							     (setq fields (cdr fields))))
+						 (n (host-policy-hn3-number (prog1 (car fields)
+									      (unless fields (error "HN3 snapshot tail"))
+									      (setq fields (cdr fields))) 6))
+						 (prior nil) (inherited nil) (registry nil))
+    (while (> n 0) (push (prog1 (car fields)
+			   (unless fields (error "HN3 snapshot tail"))
+			   (setq fields (cdr fields))) prior) (setq n (1- n)))
+    (setq n (host-policy-hn3-number (prog1 (car fields)
+				      (unless fields (error "HN3 snapshot tail"))
+				      (setq fields (cdr fields))) 7))
     (while (> n 0)
-      (let* ((name (funcall take)) (value (funcall take))
-             (units (host-policy-hn3-number (funcall take) 262144)))
+      (let* ((name (prog1 (car fields)
+		     (unless fields (error "HN3 snapshot tail"))
+		     (setq fields (cdr fields)))) (value (prog1 (car fields)
+		     (unless fields (error "HN3 snapshot tail"))
+		     (setq fields (cdr fields))))
+		     (units (host-policy-hn3-number (prog1 (car fields)
+						      (unless fields (error "HN3 snapshot tail"))
+						      (setq fields (cdr fields))) 262144)))
         (push (list name value units) inherited)) (setq n (1- n)))
-    (setq n (host-policy-hn3-number (funcall take) 7))
+    (setq n (host-policy-hn3-number (prog1 (car fields)
+				      (unless fields (error "HN3 snapshot tail"))
+				      (setq fields (cdr fields))) 7))
     (while (> n 0)
-      (let* ((name (funcall take)) (present (funcall boolean))
-             (type (host-policy-hn3-number (funcall take) 4294967295))
-             (size (host-policy-hn3-number (funcall take) 4294967295))
-             (text (funcall take)) (dword (host-policy-hn3-number (funcall take) 4294967295)))
+      (let* ((name (prog1 (car fields)
+		     (unless fields (error "HN3 snapshot tail"))
+		     (setq fields (cdr fields)))) (present (= (host-policy-hn3-number (prog1 (car fields)
+											(unless fields (error "HN3 snapshot tail"))
+											(setq fields (cdr fields))) 1) 1))
+		     (type (host-policy-hn3-number (prog1 (car fields)
+						     (unless fields (error "HN3 snapshot tail"))
+						     (setq fields (cdr fields))) 4294967295))
+		     (size (host-policy-hn3-number (prog1 (car fields)
+						     (unless fields (error "HN3 snapshot tail"))
+						     (setq fields (cdr fields))) 4294967295))
+		     (text (prog1 (car fields)
+			     (unless fields (error "HN3 snapshot tail"))
+			     (setq fields (cdr fields)))) (dword (host-policy-hn3-number (prog1 (car fields)
+											   (unless fields (error "HN3 snapshot tail"))
+											   (setq fields (cdr fields))) 4294967295)))
         (push (cons name (list :present present :type type :size size :text text :dword dword)) registry))
       (setq n (1- n)))
     (when fields (error "HN3 snapshot excess"))
     (let* ((snapshot (list :requested-present requested :requested-id id
-                          :framework-available framework :native-entry native
-                          :registry-present registry-present :expansion-ok expansion :expanded-path expanded
-                          :prior-imported (nreverse prior) :inherited (nreverse inherited) :registry (nreverse registry)))
+                           :framework-available framework :native-entry native
+                           :registry-present registry-present :expansion-ok expansion :expanded-path expanded
+                           :prior-imported (nreverse prior) :inherited (nreverse inherited) :registry (nreverse registry)))
            (selection (host-native-select-engine snapshot))
            (plan (host-native-child-env-plan snapshot))
            (imports (plist-get plan :imported)) (ops (plist-get plan :ops))
@@ -263,8 +302,11 @@ Metadata slots 8..10 hold prefix end and the raw kind's start/end indices."
 
 (defun host-policy-serve ()
   "Serve unchanged HP2 numeric frames and negotiated HN3 byte envelopes."
-  (load "engine/host-native-skk.el" nil t t)
-  (load "engine/host-native-startup.el" nil t t)
+  ;; The private bundle driver installs every native function before entering
+  ;; here. Reloading the sources would overwrite those authenticated callables.
+  (unless host-policy-native-p
+    (load "engine/host-native-skk.el" nil t t)
+    (load "engine/host-native-startup.el" nil t t))
   (let* ((pending "") (bytes nil)
          (key (or (getenv "NATIVEIME_REGISTRY_KEY") ""))
          (pause-kind (and (equal (getenv "DDSKK_HARNESS_DIAGNOSTICS") "1")
@@ -288,7 +330,11 @@ Metadata slots 8..10 hold prefix end and the raw kind's start/end indices."
     (host-policy-hn3-utf8 (encode-coding-string "warm" 'utf-8))
     (host-policy-hn3-put 262143 4)
     (when (fboundp 'garbage-collect) (garbage-collect))
-    (nelisp--write-stdout-bytes "HP2 READY HN3=1\n")
+    (nelisp--write-stdout-bytes
+     (if host-policy-native-p
+         "HP2 READY HN3=1 native=1\n"
+       (if (getenv "DDSKK_HOST_POLICY_BUNDLE")
+           "HP2 READY HN3=1 native=0\n" "HP2 READY HN3=1\n")))
     ;; A bounded read avoids the old 4096-byte scratch allocation. The native
     ;; adapter owns one outstanding correlation ID and retires timed-out IPC.
     (while (setq bytes (read-stdin-bytes 4096))

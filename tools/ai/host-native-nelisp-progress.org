@@ -34,7 +34,12 @@ cmd: python tools/ai/probe-host-native-nelisp.py
 
 ** S1.3 End to end: private unchanged host and supplied native runtime reproduce frozen SKK replies and TSF/Emacs baseline
 #+NOTE: All five existing policies ON; capture C++ baseline before changes, zero callback waits and owned-PID leftovers. Design plus microbench cannot pass this criterion.
-pending
+#+REQUIRES: HN_IME_RUNTIME,HN_NATIVE_RUNTIME,HN_NELISP_SRC
+#+NOTE: HN9 coordinator-only gate; offline pinned GNU bytecode/template bundle preparation under LOCALAPPDATA precedes private stack qualification. A supplied DDSKK_HOST_POLICY_BUNDLE avoids recompilation; preparation counts toward the six-minute gate bound and must leave the stack budget. Native READY and all manifest pins required; fallback is a gate failure. Worker runs only build, offline units and dry negative controls, never stacks. Native compilation and E2E qualification remain unrun without supplied runtimes/source.
+#+TIMEOUT: 375
+cmd: pwsh -NoProfile -File windows/test-host/test-hn-e2e-baseline.ps1 -Runtime "$HN_IME_RUNTIME" -BuildDir build/w
+
+#+NOTE: Two short sequential private stack phases capture C++ baseline with policy runtime unset, then native policy child; all five ON, native merge/startup OFF, exact three documents and learning barriers in each, zero callback waits, owned-PID leftovers=[].
 
 * S2 Frozen semantic and transport contracts
 ** S2.1 String dedup decision compiles and native output matches its interpreted oracle
@@ -103,7 +108,12 @@ cmd: python tools/ai/check-hn-policy.py --native && pwsh -NoProfile -File window
 #+NOTE: HN8 DDSKK_HOST_NATIVE_STARTUP=1 (default OFF; =2 SHADOW) sends a copied typed inherited/registry/expansion/framework/native-entry/prior-import snapshot through the fixed resident policy child before selection/spawn. Startup response contains runner/entry enums, unchanged child ID and allowlisted set/remove operations only. Native reads, expansion, Unicode conversion, command construction, child environment sorting and process creation remain native. Retained C++ startup fallback shares imported provenance; initial bootstrap is bounded by 60 s and warm plans by 1 s. Host engine ID is never rewritten by the child-only operation. SHADOW compares canonical typed plans and uses C++.
 #+NOTE: New one-stack HN8 coordinator gate asserts initial startup HN3 plus SHADOW startup on private reload. No hosts/stacks, live registry/IME changes, user dictionaries, commit or native cache compilation were run in this worker lane. Full S4.3 fault/pressure/latency and native startup qualification remain pending; missing supplied NeLisp runtime/source prevented interpreted replay here.
 #+NOTE: Include 3 s GC, wrong/late frames, kill/restart, interpreted-unavailable modes and simultaneous multi-client pressure; no callback wait or lost acknowledged learning.
-pending
+#+REQUIRES: HN_IME_RUNTIME,HN_NATIVE_RUNTIME,HN_NELISP_SRC
+#+NOTE: HN9 coordinator-only gate; offline pinned GNU bytecode/template bundle preparation under LOCALAPPDATA precedes private stack qualification. A supplied DDSKK_HOST_POLICY_BUNDLE avoids recompilation; preparation counts toward the six-minute gate bound and must leave the stack budget. Native READY and all manifest pins required; fallback is a gate failure. Worker runs only build, offline units and dry negative controls, never stacks. Native compilation and E2E qualification remain unrun without supplied runtimes/source.
+#+TIMEOUT: 375
+cmd: pwsh -NoProfile -File windows/test-host/test-hn-e2e-startup.ps1 -Runtime "$HN_IME_RUNTIME" -BuildDir build/w
+
+#+NOTE: Exact seven documents, six acknowledged learning barriers, private reload via HN3, owned policy suspend for 3 s during conversion, late discard and kill/restart; four concurrent private clients/32 exact replies. No existing fenced HN3 frame-injection hook: explicitly skipped. Stack phase <360 s, callback waits=0, unchanged 20 ms watchdog, owned-PID leftovers=[].
 
 * S5 Retirement and rollback
 ** S5.1 Duplicate native algorithms are absent from production and never evaluated during qualified workloads
@@ -117,3 +127,6 @@ pending
 ** S5.3 End to end: retired-path private bundle completes TSF/Emacs conversion and learning under pressure then rolls back with exact durable recovery
 #+NOTE: Run unchanged public contracts, IPC/resource/callback deadlines and private bundle cycle; record zero native-algorithm calls, zero ACK loss, exact reply goldens and zero owned-PID leaks.
 pending
+
+#+NOTE: HN9b worker: host-policy-hn3-startup consumes FIELDS inline without closures, preserving its docstring, result fields and tail/excess errors. Bundle preparation catches per-function template errors, retains refused interpreted owners and pins compiled.el plus bundle-report.txt (new B TSV role); fresh-load failure for a compiled function and zero native callables still fail. manifest.json and the bundle report carry refusal names/errors and native/interpreted counts. HP2/HN3 frames and native READY remain unchanged; the host logs HN-BUNDLE native=N interpreted=M refused=name,... after successful native READY. S1.3/S4.3 accept partial refusals, require positive native counts, and include refusal lists in reports.
+#+NOTE: HN9b offline validation: python -B tools/ai/hn-native-bundle.py --self-test PASS using GNU Emacs stub cache functions (partial install, interpreted retention, all-refused rejection, compiled fresh-load failure); S1.3 --self-test PASS 10 rejected controls; S4.3 --self-test PASS 21 rejected controls. GNU Emacs host-policy ERT PASS 16/16 after setting a temporary HOME/--init-directory (first attempt failed opening inaccessible user home); HN3 dispatcher PASS 38 checks; temporary batch comparison against the closure-based startup owner PASS 156 synthetic result/tail/excess/typed cases. C++ compile-only hn3-adapter-unit Release target PASS (binary not run). No native compiler, LOCALAPPDATA bundle build, user dictionary, IME/host stack or commit was run. Coordinator compilation and real S1.3/S4.3 qualification remain outstanding.
