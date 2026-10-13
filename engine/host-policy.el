@@ -309,6 +309,10 @@ Metadata slots 8..10 hold prefix end and the raw kind's start/end indices."
     (load "engine/host-native-startup.el" nil t t))
   (let* ((pending "") (bytes nil)
          (key (or (getenv "NATIVEIME_REGISTRY_KEY") ""))
+         (old-only (and (equal (getenv "DDSKK_HARNESS_DIAGNOSTICS") "1")
+                        (>= (length key) 24)
+                        (equal (substring key 0 24) "Software\\NativeIME-test-")
+                        (equal (getenv "DDSKK_HOST_POLICY_TEST_HP2_ONLY") "1")))
          (pause-kind (and (equal (getenv "DDSKK_HARNESS_DIAGNOSTICS") "1")
                           (>= (length key) 24)
                           (equal (substring key 0 24) "Software\\NativeIME-test-")
@@ -331,10 +335,11 @@ Metadata slots 8..10 hold prefix end and the raw kind's start/end indices."
     (host-policy-hn3-put 262143 4)
     (when (fboundp 'garbage-collect) (garbage-collect))
     (nelisp--write-stdout-bytes
-     (if host-policy-native-p
+     (if old-only "HP2 READY\n"
+       (if host-policy-native-p
          "HP2 READY HN3=1 native=1\n"
        (if (getenv "DDSKK_HOST_POLICY_BUNDLE")
-           "HP2 READY HN3=1 native=0\n" "HP2 READY HN3=1\n")))
+           "HP2 READY HN3=1 native=0\n" "HP2 READY HN3=1\n"))))
     ;; A bounded read avoids the old 4096-byte scratch allocation. The native
     ;; adapter owns one outstanding correlation ID and retires timed-out IPC.
     (while (setq bytes (read-stdin-bytes 4096))
@@ -347,6 +352,7 @@ Metadata slots 8..10 hold prefix end and the raw kind's start/end indices."
       (let ((advance t))
         (while (and advance (>= (length pending) 4))
           (let ((hn3 (equal (substring pending 0 4) "HN3Q")) (size 23))
+            (when (and old-only hn3) (error "HP2-only peer received HN3"))
             (when hn3
               (if (< (length pending) 8) (setq advance nil)
                 (setq size (+ 8 (host-policy-hn3-get pending 4 4)))

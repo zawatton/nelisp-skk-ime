@@ -208,6 +208,76 @@ std::wstring SingletonMutexName(const std::wstring& pipe_name) {
   return L"Local\\ddskk-engine-host-" + SanitizeForMutexName(pipe_name);
 }
 
+// Compile-time IO seam: Replay=false emits direct Win32 calls, no hook branch.
+namespace startup_replay {
+struct Value { DWORD type; std::vector<BYTE> bytes; };
+struct Snapshot {
+  std::map<std::wstring, std::wstring> env;
+  std::map<std::wstring, Value> registry;
+  std::vector<const wchar_t*> imported;
+  std::vector<std::wstring> operations;
+  std::wstring expanded;
+  bool key = false, framework = false, expansion = false;
+};
+inline thread_local Snapshot* current = nullptr;
+template<bool R> DWORD Env(LPCWSTR name, LPWSTR out, DWORD capacity) {
+  if constexpr (!R) return GetEnvironmentVariableW(name, out, capacity);
+  else {
+    const auto it = current->env.find(name);
+    if (it == current->env.end()) { SetLastError(ERROR_ENVVAR_NOT_FOUND); return 0; }
+    SetLastError(ERROR_SUCCESS);
+    const auto n = static_cast<DWORD>(it->second.size());
+    if (!out || capacity <= n) return n + 1;
+    std::copy(it->second.begin(), it->second.end(), out); out[n] = 0; return n;
+  }
+}
+template<bool R> BOOL Set(LPCWSTR name, LPCWSTR value) {
+  if constexpr (!R) return SetEnvironmentVariableW(name, value);
+  else {
+    current->operations.push_back(std::wstring(value ? L"set:" : L"remove:") + name + (value ? L"=" + std::wstring(value) : L""));
+    if (value) current->env[name] = value; else current->env.erase(name); return TRUE;
+  }
+}
+template<bool R> LSTATUS Open(HKEY root, LPCWSTR name, DWORD options, REGSAM access, PHKEY key) {
+  if constexpr (!R) return RegOpenKeyExW(root, name, options, access, key);
+  else { *key = reinterpret_cast<HKEY>(1); return current->key ? ERROR_SUCCESS : ERROR_FILE_NOT_FOUND; }
+}
+template<bool R> LSTATUS Query(HKEY key, LPCWSTR name, LPDWORD reserved, LPDWORD type, LPBYTE out, LPDWORD size) {
+  if constexpr (!R) return RegQueryValueExW(key, name, reserved, type, out, size);
+  else {
+    const auto it = current->registry.find(name);
+    if (it == current->registry.end()) return ERROR_FILE_NOT_FOUND;
+    if (type) *type = it->second.type;
+    const auto n = static_cast<DWORD>(it->second.bytes.size());
+    if (*size < n) { *size = n; return ERROR_MORE_DATA; }
+    *size = n; std::memcpy(out, it->second.bytes.data(), n); return ERROR_SUCCESS;
+  }
+}
+template<bool R> LSTATUS CloseKey(HKEY key) {
+  if constexpr (!R) return RegCloseKey(key); else return ERROR_SUCCESS;
+}
+template<bool R> DWORD Attributes(LPCWSTR path) {
+  if constexpr (!R) return GetFileAttributesW(path);
+  else return current->framework ? FILE_ATTRIBUTE_NORMAL : INVALID_FILE_ATTRIBUTES;
+}
+template<bool R> DWORD Expand(LPCWSTR in, LPWSTR out, DWORD capacity) {
+  if constexpr (!R) return ExpandEnvironmentStringsW(in, out, capacity);
+  else {
+    if (!current->expansion) return 0;
+    const auto n = static_cast<DWORD>(current->expanded.size()+1);
+    if (out && capacity >= n) std::copy_n(current->expanded.c_str(), n, out); return n;
+  }
+}
+}
+#define GetEnvironmentVariableW startup_replay::Env<Replay>
+#define SetEnvironmentVariableW startup_replay::Set<Replay>
+#define RegOpenKeyExW startup_replay::Open<Replay>
+#define RegQueryValueExW startup_replay::Query<Replay>
+#define RegCloseKey startup_replay::CloseKey<Replay>
+#define GetFileAttributesW startup_replay::Attributes<Replay>
+#define ExpandEnvironmentStringsW startup_replay::Expand<Replay>
+#define HN_STARTUP_OWNER(name) name<Replay>
+template<bool Replay = false>
 bool UseNativeEntry() {
   wchar_t value[16]{};
   const DWORD size =
@@ -227,6 +297,7 @@ constexpr wchar_t kFrameworkRunner[] = L"framework/nelisp-ime-stdio.el";
 // value the settings UI writes, then the historical default -- the same
 // env-first order as PipeName()/UseNativeEntry() above, so a harness can
 // exercise an engine without touching the live configuration.
+template<bool Replay = false>
 std::wstring ConfiguredEngineId(bool use_environment = true) {
   wchar_t value[64]{};
   const DWORD size = GetEnvironmentVariableW(L"NELISP_IME_ENGINE", value, 64);
@@ -262,6 +333,7 @@ bool IsDdskkEngineId(const std::wstring& id) {
          _wcsicmp(id.c_str(), L"passthrough") == 0;
 }
 
+template<bool Replay = false>
 bool FileExists(const std::wstring& path) {
   const DWORD attributes = GetFileAttributesW(path.c_str());
   return attributes != INVALID_FILE_ATTRIBUTES &&
@@ -276,10 +348,14 @@ bool FileExists(const std::wstring& path) {
 // UI offered an engine the running stack could not serve, the user
 // selected it, and conversion stopped working entirely. A configured
 // engine that cannot be launched must degrade to the one that always can.
+template<bool Replay = false>
 std::wstring EngineRunnerScript(const std::wstring& repository,
                                 const std::wstring& id) {
+#ifndef HN_STARTUP_OWNER
+#define HN_STARTUP_OWNER(name) name
+#endif
   if (IsDdskkEngineId(id)) return kDdskkRunner;
-  if (!FileExists(repository + L"\\framework\\nelisp-ime-stdio.el")) {
+  if (!HN_STARTUP_OWNER(FileExists)(repository + L"\\framework\\nelisp-ime-stdio.el")) {
     std::fwprintf(stderr,
                   L"ddskk-engine-host: engine \"%ls\" needs %ls, which this "
                   L"repository does not provide; falling back to DDSKK\n",
@@ -288,6 +364,15 @@ std::wstring EngineRunnerScript(const std::wstring& repository,
   }
   return kFrameworkRunner;
 }
+
+#undef GetEnvironmentVariableW
+#undef SetEnvironmentVariableW
+#undef RegOpenKeyExW
+#undef RegQueryValueExW
+#undef RegCloseKey
+#undef GetFileAttributesW
+#undef ExpandEnvironmentStringsW
+#undef HN_STARTUP_OWNER
 
 #include "native_adapter_transport.h"
 
@@ -311,6 +396,15 @@ std::wstring EngineRunnerScript(const std::wstring& repository,
 // these env vars directly for isolation (private jisyo, specific behavior
 // flags under test, etc.), and leaving an already-set value alone keeps
 // every one of them working unchanged.
+#define GetEnvironmentVariableW startup_replay::Env<Replay>
+#define SetEnvironmentVariableW startup_replay::Set<Replay>
+#define RegOpenKeyExW startup_replay::Open<Replay>
+#define RegQueryValueExW startup_replay::Query<Replay>
+#define RegCloseKey startup_replay::CloseKey<Replay>
+#define GetFileAttributesW startup_replay::Attributes<Replay>
+#define ExpandEnvironmentStringsW startup_replay::Expand<Replay>
+#define HN_STARTUP_OWNER(name) name<Replay>
+template<bool Replay = false>
 void ApplyEngineEnvFromRegistry(std::vector<const wchar_t*>* provenance = nullptr) {
   // Only explicit inherited overrides stay pinned. Values imported on a
   // previous spawn must be refreshed (or removed) for ENGINE RELOAD.
@@ -384,6 +478,15 @@ void ApplyEngineEnvFromRegistry(std::vector<const wchar_t*>* provenance = nullpt
   RegCloseKey(key);
 }
 
+#undef GetEnvironmentVariableW
+#undef SetEnvironmentVariableW
+#undef RegOpenKeyExW
+#undef RegQueryValueExW
+#undef RegCloseKey
+#undef GetFileAttributesW
+#undef ExpandEnvironmentStringsW
+#undef HN_STARTUP_OWNER
+
 // HN3 startup carries OS-read values only. The policy returns enums and
 // allowlisted environment operations, never paths to execute or commands.
 const wchar_t* kStartupRegistry[] = {L"Engine", L"UserJisyoPath", L"UserJisyoBatch",
@@ -402,6 +505,15 @@ bool HnWide(const std::string& text, std::wstring& value) {
   value.resize(n);
   return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), value.data(), n) == n;
 }
+#define GetEnvironmentVariableW startup_replay::Env<Replay>
+#define SetEnvironmentVariableW startup_replay::Set<Replay>
+#define RegOpenKeyExW startup_replay::Open<Replay>
+#define RegQueryValueExW startup_replay::Query<Replay>
+#define RegCloseKey startup_replay::CloseKey<Replay>
+#define GetFileAttributesW startup_replay::Attributes<Replay>
+#define ExpandEnvironmentStringsW startup_replay::Expand<Replay>
+#define HN_STARTUP_OWNER(name) name<Replay>
+template<bool Replay = false>
 std::wstring StartupEnvironment(const wchar_t* name, bool* present = nullptr) {
   SetLastError(ERROR_SUCCESS);
   const auto size = GetEnvironmentVariableW(name, nullptr, 0);
@@ -411,10 +523,14 @@ std::wstring StartupEnvironment(const wchar_t* name, bool* present = nullptr) {
   return value.data();
 }
 struct StartupPlan { std::wstring id, runner; bool native = false; };
-StartupPlan HnStartup(const std::wstring& repository, const std::wstring* requested, ULONGLONG deadline) {
+template<bool Replay = false>
+StartupPlan HnStartup(const std::wstring& repository, const std::wstring* requested, ULONGLONG deadline, bool* managed = nullptr) {
   std::lock_guard serial(g_startup_mutex);
-  const bool framework = FileExists(repository + L"\\framework\\nelisp-ime-stdio.el");
-  const bool native = UseNativeEntry();
+  auto& imported_state = [&]() -> std::vector<const wchar_t*>& {
+    if constexpr (Replay) return startup_replay::current->imported; else return g_startup_imported;
+  }();
+  const bool framework = HN_STARTUP_OWNER(FileExists)(repository + L"\\framework\\nelisp-ime-stdio.el");
+  const bool native = HN_STARTUP_OWNER(UseNativeEntry)();
   HKEY key = nullptr;
   const bool registry = RegOpenKeyExW(HKEY_CURRENT_USER, NativeImeRegistryKey().c_str(), 0, KEY_READ, &key) == ERROR_SUCCESS;
   struct Value { bool present = false; DWORD type = 0, size = 0, dword = 0; std::wstring text; };
@@ -439,12 +555,12 @@ StartupPlan HnStartup(const std::wstring& repository, const std::wstring* reques
   }
   std::vector<std::string> fields = {requested ? "1" : "0", requested ? WideToUtf8(*requested) : "",
       framework ? "1" : "0", native ? "1" : "0", registry ? "1" : "0", expansion ? "1" : "0",
-      WideToUtf8(expanded), std::to_string(g_startup_imported.size())};
-  for (auto name : g_startup_imported) fields.push_back(WideToUtf8(name));
+      WideToUtf8(expanded), std::to_string(imported_state.size())};
+  for (auto name : imported_state) fields.push_back(WideToUtf8(name));
   std::vector<std::string> inherited;
   size_t inherited_count = 0;
   for (auto name : kStartupEnvironment) {
-    bool present = false; const auto value = StartupEnvironment(name, &present);
+    bool present = false; const auto value = HN_STARTUP_OWNER(StartupEnvironment)(name, &present);
     if (present) { ++inherited_count; inherited.push_back(WideToUtf8(name)); inherited.push_back(WideToUtf8(value)); inherited.push_back(std::to_string(value.size())); }
   }
   fields.push_back(std::to_string(inherited_count)); fields.insert(fields.end(), inherited.begin(), inherited.end());
@@ -457,23 +573,23 @@ StartupPlan HnStartup(const std::wstring& repository, const std::wstring* reques
   }
   StartupPlan fallback;
   auto native_plan = [&] {
-    fallback.id = requested ? *requested : ConfiguredEngineId();
-    fallback.runner = EngineRunnerScript(repository, fallback.id);
+    fallback.id = requested ? *requested : HN_STARTUP_OWNER(ConfiguredEngineId)();
+    fallback.runner = HN_STARTUP_OWNER(EngineRunnerScript)(repository, fallback.id);
     fallback.native = native && fallback.runner == kDdskkRunner;
-    const auto prior = g_startup_imported;
-    ApplyEngineEnvFromRegistry(&g_startup_imported);
+    const auto prior = imported_state;
+    HN_STARTUP_OWNER(ApplyEngineEnvFromRegistry)(&imported_state);
     hn3::Frame reply; reply.reply = true; reply.operation = hn3::Operation::Startup;
     reply.fields = {fallback.runner == kDdskkRunner ? "ddskk" : "framework", fallback.native ? "native" : "load",
-        WideToUtf8(fallback.id), std::to_string(g_startup_imported.size()), std::to_string(prior.size()+g_startup_imported.size()+1)};
-    for (auto name : g_startup_imported) reply.fields.push_back(WideToUtf8(name));
+        WideToUtf8(fallback.id), std::to_string(imported_state.size()), std::to_string(prior.size()+imported_state.size()+1)};
+    for (auto name : imported_state) reply.fields.push_back(WideToUtf8(name));
     for (auto name : prior) { reply.fields.push_back("remove"); reply.fields.push_back(WideToUtf8(name)); reply.fields.push_back(""); }
-    for (auto name : g_startup_imported) { reply.fields.push_back("set"); reply.fields.push_back(WideToUtf8(name)); reply.fields.push_back(WideToUtf8(StartupEnvironment(name))); }
+    for (auto name : imported_state) { reply.fields.push_back("set"); reply.fields.push_back(WideToUtf8(name)); reply.fields.push_back(WideToUtf8(HN_STARTUP_OWNER(StartupEnvironment)(name))); }
     reply.fields.push_back("set"); reply.fields.push_back("NELISP_IME_ENGINE"); reply.fields.push_back(WideToUtf8(fallback.id));
     return hn3::Encode(reply);
   };
-  const auto wire = native_adapter::shadow.Bytes(hn3::Operation::Startup, fields, deadline, native_plan);
+  const auto wire = native_adapter::shadow.Bytes<Replay>(hn3::Operation::Startup, fields, deadline, native_plan, managed);
   hn3::Frame reply;
-  auto reject = [&] { native_adapter::PolicyCounters::Native(native_adapter::PolicyKind::Startup); native_plan(); return fallback; };
+  auto reject = [&] { if constexpr (Replay) { if (managed) *managed = false; } native_adapter::PolicyCounters::Native(native_adapter::PolicyKind::Startup); native_plan(); return fallback; };
   if (!hn3::Decode(wire, reply) || !reply.reply || reply.operation != hn3::Operation::Startup || reply.status || reply.fields.size() < 5) return reject();
   const auto& f = reply.fields;
   StartupPlan plan;
@@ -513,10 +629,18 @@ StartupPlan HnStartup(const std::wstring& repository, const std::wstring* reques
   }
   if (!child_id) return reject();
   for (const auto& op : operations) SetEnvironmentVariableW(op.name, op.remove ? nullptr : op.value.c_str());
-  g_startup_imported = std::move(imported);
+  imported_state = std::move(imported);
   LogEvent("hn3-startup-selection runner=" + f[0] + " entry=" + f[1] + " engine=" + f[2]);
   return plan;
 }
+#undef GetEnvironmentVariableW
+#undef SetEnvironmentVariableW
+#undef RegOpenKeyExW
+#undef RegQueryValueExW
+#undef RegCloseKey
+#undef GetFileAttributesW
+#undef ExpandEnvironmentStringsW
+#undef HN_STARTUP_OWNER
 
 bool StartChild(const std::wstring& engine, const std::wstring& repository,
                 Child* child, const std::wstring& id, bool warming = false) {
@@ -906,10 +1030,11 @@ void LoadBuiltinDictionariesThread(std::wstring files_spec) {
 // suffix (so "候補;何か" and "候補;別の注釈" count as the same candidate;
 // only the first-seen copy, annotation included, is kept). Returns an
 // empty string if no configured file has `midasi` at all.
-std::string MergeBuiltinCandidates(const std::string& midasi) {
+std::string MergeBuiltinCandidates(const std::string& midasi,
+    const std::vector<std::unordered_map<std::string, std::string>>& maps = g_builtin_dictionary.maps) {
   std::vector<std::string> ordered_candidates;  // full text, first-occurrence order
   std::vector<std::string> seen_keys;           // dedup key: text before ';'
-  for (const auto& map : g_builtin_dictionary.maps) {
+  for (const auto& map : maps) {
     const auto it = map.find(midasi);
     if (it == map.end()) continue;
     const std::string& raw = it->second;  // "/cand1/cand2;ann/cand3/"
@@ -1518,6 +1643,134 @@ std::string EngineDictionaryReply(const std::string& reply) {
     start = slash + 1;
   }
   return result + ')';
+}
+
+
+// Binary file handoff keeps oversized frozen inputs off the bounded public pipe.
+// Paths are confined to an explicitly configured private artifact directory.
+bool OracleReplayEnabled() {
+  wchar_t value[2]{};
+  return GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", value, 2) == 1 && value[0] == L'1' &&
+      NativeImeRegistryKey().starts_with(L"Software\\NativeIME-test-") &&
+      PipeName().starts_with(L"\\\\.\\pipe\\ddskk-test-");
+}
+std::string OracleHex(std::string_view data) {
+  std::string out;
+  for (unsigned char c : data) { out += "0123456789abcdef"[c >> 4]; out += "0123456789abcdef"[c & 15]; }
+  return out;
+}
+std::string OracleWide(const std::wstring& text) {
+  return std::string(reinterpret_cast<const char*>(text.data()), text.size()*2);
+}
+std::wstring OracleReadWide(std::string_view bytes) {
+  if (bytes.size()%2) throw std::runtime_error("odd UTF16");
+  std::wstring out(bytes.size()/2, 0); std::memcpy(out.data(), bytes.data(), bytes.size()); return out;
+}
+std::string OracleReplay(std::string_view encoded) {
+  if (!OracleReplayEnabled()) return "ERR HN ORACLE DISABLED";
+  try {
+    std::string path_bytes;
+    if (!DecodeHexBytes(encoded, &path_bytes)) return "ERR HN ORACLE PATH";
+    std::wstring path;
+    if (!HnWide(path_bytes, path)) return "ERR HN ORACLE PATH";
+    wchar_t directory[32768]{};
+    if (!GetEnvironmentVariableW(L"DDSKK_HOST_ORACLE_DIR", directory, 32768)) return "ERR HN ORACLE PATH";
+    const auto root = std::filesystem::canonical(directory);
+    const auto input = std::filesystem::canonical(path);
+    if (input.parent_path() != root || input.extension() != L".request") return "ERR HN ORACLE PATH";
+    if (std::filesystem::file_size(input) > 1048576) return "ERR HN ORACLE SIZE";
+    std::ifstream file(input, std::ios::binary);
+    std::string data((std::istreambuf_iterator<char>(file)), {});
+    size_t at = 0;
+    auto field = [&]() {
+      if (at+4 > data.size()) throw std::runtime_error("field header");
+      const auto n = hn3::Get(data, at, 4); at += 4;
+      if (n > data.size()-at) throw std::runtime_error("field length");
+      auto out = data.substr(at, static_cast<size_t>(n)); at += static_cast<size_t>(n); return out;
+    };
+    const auto name = field();
+    std::vector<std::string> fields;
+    while (at < data.size()) { if (fields.size() >= 4096) throw std::runtime_error("field count"); fields.push_back(field()); }
+    static std::mutex serial; std::lock_guard lock(serial);
+    static startup_replay::Snapshot snapshot;
+    std::string result;
+    std::vector<std::wstring> operations;
+    bool managed = false;
+    if (name.starts_with("builtin-")) {
+      std::vector<std::unordered_map<std::string, std::string>> maps;
+      std::vector<std::string> tails;
+      const bool missing = name.starts_with("builtin-missing-");
+      for (const auto& raw : fields) { maps.push_back({{"key", raw}}); if (!missing) tails.push_back(raw); }
+      result = native_adapter::shadow.Bytes<true>(hn3::Operation::Builtins, tails, GetTickCount64()+hn3::kMergeDeadlineMs,
+          [&] { return MergeBuiltinCandidates(missing ? "missing" : "key", maps); }, &managed);
+    } else if (name.starts_with("server-")) {
+      if (fields.size()!=2) throw std::runtime_error("server arity");
+      result = native_adapter::shadow.Bytes<true>(hn3::Operation::Server, fields, GetTickCount64()+hn3::kMergeDeadlineMs,
+          [&] { return MergeServerReply(fields[0], fields[1]); }, &managed);
+    } else if (name.starts_with("engine-") || name.starts_with("quote-")) {
+      if (fields.size()!=1) throw std::runtime_error("relay arity");
+      const bool quote = name.starts_with("quote-");
+      result = native_adapter::shadow.Bytes<true>(quote ? hn3::Operation::Quote : hn3::Operation::Dictionary,
+          fields, GetTickCount64()+hn3::kMergeDeadlineMs,
+          [&] { return quote ? QuoteEngineString(fields[0]) : EngineDictionaryReply(fields[0]); }, &managed);
+    } else if (name == "parsed-entry") {
+      if (fields.size()!=1 || !g_builtin_dictionary.ready.load(std::memory_order_acquire)) throw std::runtime_error("parsed arity/readiness");
+      for (const auto& map : g_builtin_dictionary.maps) {
+        const auto found = map.find(fields[0]); if (found != map.end()) { result = found->second; break; }
+      }
+    } else if (name.starts_with("startup-") && !name.starts_with("startup-operation-")) {
+      if (fields.size()<2 || fields[0].size()!=5) throw std::runtime_error("snapshot shape");
+      if (name != "startup-2" && name != "startup-3") snapshot.imported.clear();
+      snapshot.env.clear(); snapshot.registry.clear(); snapshot.operations.clear();
+      snapshot.key=fields[0][0]=='1'; snapshot.framework=fields[0][2]=='1'; snapshot.expansion=fields[0][4]=='1';
+      snapshot.expanded=OracleReadWide(fields[1]);
+      for (size_t i=2; i<fields.size(); ++i) {
+        const auto& raw=fields[i]; const bool env=raw.starts_with("env:");
+        if (!env && !raw.starts_with("reg:")) throw std::runtime_error("snapshot tag");
+        size_t pos=4;
+        for (; pos<raw.size(); pos+=2) if (raw[pos]==(env ? '=' : ':')) break;
+        if (pos>=raw.size()) throw std::runtime_error("snapshot name");
+        const auto key=OracleReadWide(std::string_view(raw).substr(4,pos-4));
+        if (env) snapshot.env[key]=OracleReadWide(std::string_view(raw).substr(pos+1));
+        else {
+          const auto end=raw.find(':',pos+1); if (end==raw.npos) throw std::runtime_error("snapshot type");
+          const auto type=std::stoul(raw.substr(pos+1,end-pos-1));
+          snapshot.registry[key]={static_cast<DWORD>(type), std::vector<BYTE>(raw.begin()+end+1,raw.end())};
+        }
+      }
+      struct Scope { Scope(startup_replay::Snapshot& value) { startup_replay::current=&value; }
+        ~Scope() { startup_replay::current=nullptr; } } scope(snapshot);
+      StartupPlan plan;
+      if (native_adapter::shadow.ByteMode(hn3::Operation::Startup)) {
+        plan=HnStartup<true>(L"public-fixture", nullptr, GetTickCount64()+hn3::kMergeDeadlineMs, &managed);
+      } else {
+        plan.id=ConfiguredEngineId<true>(); plan.runner=EngineRunnerScript<true>(L"public-fixture",plan.id);
+        plan.native=UseNativeEntry<true>() && plan.runner==kDdskkRunner;
+        ApplyEngineEnvFromRegistry<true>(&snapshot.imported);
+      }
+      // Serialize the selected child environment exactly as StartChild does.
+      // This is a byte projection, not another selection/import owner.
+      std::vector<std::wstring> entries;
+      for (const auto& [key,value] : snapshot.env) if (_wcsicmp(key.c_str(),L"NELISP_IME_ENGINE")!=0) entries.push_back(key+L"="+value);
+      entries.push_back(L"NELISP_IME_ENGINE="+plan.id);
+      std::sort(entries.begin(),entries.end(),[](const auto& a,const auto& b) { return _wcsicmp(a.c_str(),b.c_str())<0; });
+      std::wstring block;
+      for (const auto& entry : entries) { block+=entry; block.push_back(0); } block.push_back(0);
+      result=OracleWide(plan.id)+"|"+OracleWide(plan.runner)+"|"+(plan.native ? "native" : "load")+"|"+OracleWide(block);
+      operations=snapshot.operations;
+    } else return "ERR HN ORACLE CASE";
+    std::string output;
+    auto put=[&](const std::string& value) { hn3::Put(output,value.size(),4); output+=value; };
+    put(result); hn3::Put(output,operations.size(),4);
+    for (const auto& op : operations) put(OracleWide(op));
+    if (std::filesystem::exists(input.wstring()+L".reply")) return "ERR HN ORACLE EXISTS";
+    std::ofstream reply(input.wstring()+L".reply",std::ios::binary|std::ios::trunc);
+    reply.write(output.data(),output.size()); reply.close();
+    if (!reply) return "ERR HN ORACLE WRITE";
+    LogEvent("hn-oracle-owner case="+name+" owner="+(managed ? "elisp" : "cpp"));
+    return managed ? "OK HN ORACLE elisp" : "OK HN ORACLE cpp";
+  } catch (const native_adapter::ReplayUnavailable&) { return "ERR HN ORACLE UNAVAILABLE"; }
+    catch (const std::exception&) { return "ERR HN ORACLE INPUT"; }
 }
 
 // STATE2 is private to the host/engine link. Each body field is a decimal
@@ -2845,6 +3098,11 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     } else if (engine_request.starts_with("POLICY TEST NOVEL ")) {
       response = g_pipe_name.starts_with(L"\\\\.\\pipe\\ddskk-test-")
           ? native_adapter::shadow.TestNovelFallback(engine_request.substr(std::string_view("POLICY TEST NOVEL ").size())) : "ERR POLICY NOVEL DISABLED";
+    } else if (engine_request == "HN ORACLE READY") {
+      response = !OracleReplayEnabled() ? "ERR HN ORACLE DISABLED" :
+          native_adapter::shadow.ReplayReady() ? "OK HN ORACLE READY" : "ERR HN ORACLE UNAVAILABLE";
+    } else if (engine_request.starts_with("HN ORACLE ")) {
+      response = OracleReplay(engine_request.substr(10));
     } else if (engine_request == "HN3 TEST SHADOW") {
       response = g_pipe_name.starts_with(L"\\\\.\\pipe\\ddskk-test-") && native_adapter::shadow.TestShadow()
           ? "OK HN3 SHADOW" : "ERR HN3 TEST";

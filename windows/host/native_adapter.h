@@ -71,6 +71,10 @@ struct Observation {
   bool policy_seed = false; // Bounded rule lattice stays warm before its first caller.
 };
 
+struct ReplayUnavailable : std::runtime_error {
+  ReplayUnavailable() : std::runtime_error("HN3 replay owner unavailable") {}
+};
+
 class ShadowPolicy {
   friend struct ShadowPolicyTest;
  public:
@@ -116,6 +120,10 @@ class ShadowPolicy {
     const auto configured = byte_modes_[op == hn3::Operation::Startup ? 1 : 0];
     return configured && test_shadow_.load() ? 2 : configured;
   }
+  bool ReplayReady() {
+    std::lock_guard lock(mutex_);
+    return healthy_ && hn3_capable_;
+  }
   bool TestShadow() {
     wchar_t value[2]{};
     const auto key = NativeImeRegistryKey();
@@ -123,25 +131,48 @@ class ShadowPolicy {
         !key.starts_with(L"Software\\NativeIME-test-") || !byte_modes_[0] || !byte_modes_[1]) return false;
     test_shadow_ = true; LogEvent("hn3-test-shadow-enabled"); return true;
   }
+  static bool HarnessOldOnlyPeer() {
+    wchar_t value[2]{};
+    return HarnessDiagnostics() &&
+        GetEnvironmentVariableW(L"DDSKK_HOST_POLICY_TEST_HP2_ONLY", value, 2) == 1 && value[0] == L'1';
+  }
   // Only provider/background workers and startup may pass a positive deadline.
   // Preview/cached callers pass zero: memo lookup plus a bounded try-lock queue.
-  template<class NativeResult>
+  template<bool Diagnostic = false, class NativeResult>
   std::string Bytes(hn3::Operation op, const std::vector<std::string>& fields,
-                    ULONGLONG deadline, NativeResult native_result) {
+                    ULONGLONG deadline, NativeResult native_result, bool* managed = nullptr) {
     const auto kind = op == hn3::Operation::Startup ? PolicyKind::Startup : PolicyKind::Merge;
     const auto mode = ByteMode(op);
+    if constexpr (Diagnostic) { if (managed) *managed = false; }
     if (!mode) return native_result();
-    auto fallback = [&] { PolicyCounters::Native(kind); return native_result(); };
+    const char* reason = "admission-bounds";
+    auto fallback = [&] {
+      LogEvent("hn3-fallback owner=cpp operation=" + std::to_string(static_cast<unsigned>(op)) + " reason=" + reason);
+      if constexpr (Diagnostic) {
+        // The private gate must never certify a transient fallback as elisp.
+        // Oversized inputs intentionally retain the production native owner.
+        if (mode == 1 && std::string_view(reason) != "admission-bounds") throw ReplayUnavailable();
+      }
+      PolicyCounters::Native(kind); return native_result();
+    };
     hn3::Frame frame; frame.operation = op; frame.fields = fields;
     frame.engine_epoch = engine_epoch.load(); frame.generation = publication_generation.load();
     const auto key = hn3::Encode(frame);
-    if (key.empty()) return fallback();
+    if (key.empty() || key.size() > hn3::kQueueBytes) return fallback();
+    reason = "lock-contention";
     std::shared_ptr<ByteRequest> work;
     std::string result; bool answered = false;
     {
       std::unique_lock lock(mutex_, std::defer_lock);
       if (deadline) lock.lock(); else (void)lock.try_lock();
       if (lock.owns_lock()) {
+        if constexpr (Diagnostic) {
+          if (deadline && !healthy_ && !stop_) {
+            changed_.wait_for(lock, std::chrono::milliseconds(deadline > GetTickCount64() ? deadline - GetTickCount64() : 0),
+                [&] { return stop_ || (healthy_ && hn3_capable_); });
+          }
+        }
+        reason = stop_ ? "stopped" : !healthy_ ? "policy-not-ready" : !hn3_capable_ ? "hn3-not-negotiated" : "queue-saturated";
         const auto found = byte_memo_.find(key);
         if (healthy_ && hn3_capable_ && found != byte_memo_.end()) { result = found->second; answered = true; }
         else if (healthy_ && hn3_capable_ && byte_queue_.size() < hn3::kRequests && key.size() <= hn3::kQueueBytes - byte_queued_) {
@@ -167,12 +198,15 @@ class ShadowPolicy {
           if (work->done && work->valid) { result = work->result; answered = true; }
           else work->cancelled = true;
         }
+        if (work && !answered) reason = work->done ? "invalid-or-stale-reply" : deadline ? "caller-deadline" : "memo-miss-queued";
       }
     }
     if (!answered) return fallback();
+    if constexpr (Diagnostic) { if (managed) *managed = mode == 1; }
     if (mode == 1) PolicyCounters::Managed(kind);
     LogEvent("hn3-answer operation=" + std::to_string(static_cast<unsigned>(op)));
     if (mode == 2) {
+      reason = "shadow-mode";
       const auto expected = fallback();
       LogEvent(std::string("hn3-shadow ") + (expected == result ? "match" : "mismatch") +
           " operation=" + std::to_string(static_cast<unsigned>(op)));
@@ -379,6 +413,7 @@ class ShadowPolicy {
     const auto wire = hn3::Encode(f);
     std::string header, tail; hn3::Frame reply;
     const char* step = "write";
+    if (!wire.empty() && HarnessDiagnostics()) LogEvent("hn3-wire-request operation=" + std::to_string(static_cast<unsigned>(f.operation)));
     bool valid = !wire.empty() && TimedWriteAll(input_, wire, work->deadline);
     if (valid) { step = "read-header"; valid = ReadBytes(header, hn3::kHeader, work->deadline); }
     if (valid) {
@@ -390,11 +425,15 @@ class ShadowPolicy {
       if (valid) { step = "envelope-fence"; valid = outstanding.Accept(reply); }
     }
     outstanding.Retire();
+    const bool synchronized = valid;
     {
       std::lock_guard lock(mutex_);
       if (valid) {
         step = "caller-fence";
         valid = !work->cancelled && f.engine_epoch == engine_epoch.load() && f.generation == publication_generation.load();
+        if (!valid) LogEvent("hn3-caller-fence-discard cancelled=" + std::to_string(work->cancelled) +
+            " engine_epoch=" + std::to_string(f.engine_epoch) + " current_engine_epoch=" + std::to_string(engine_epoch.load()) +
+            " generation=" + std::to_string(f.generation) + " current_generation=" + std::to_string(publication_generation.load()));
       }
       work->done = true; work->valid = valid && !reply.status;
       if (work->valid) {
@@ -420,7 +459,9 @@ class ShadowPolicy {
         " operation=" + std::to_string(static_cast<unsigned>(f.operation)) + " step=" + step);
     // Never reuse a timed-out stream. Termination/handle close drains unread
     // late bytes; the next child has a different policy epoch.
-    return valid;
+    // A fully consumed, validated reply remains synchronized even when the
+    // caller's publication/engine fence moved. Reject its result, not the peer.
+    return synchronized;
   }
   bool enabled_ = false;
   std::array<bool, 5> switches_{};
@@ -780,6 +821,11 @@ class ShadowPolicy {
   }
   HANDLE process_ = nullptr, input_ = nullptr, output_ = nullptr;
   uint64_t epoch_ = 0, request_ = 0;
+  static std::string WireHex(std::string_view value) {
+    std::string out;
+    for (unsigned char c : value) { out += "0123456789abcdef"[c >> 4]; out += "0123456789abcdef"[c & 15]; }
+    return out;
+  }
   static std::string Digits(uint64_t value, size_t width) {
     std::string result(width, ' ');
     for (size_t i = width; i; --i) { result[i-1] += value & 63; value >>= 6; }
@@ -848,7 +894,7 @@ class ShadowPolicy {
     si.StartupInfo.hStdError = error_sink;
     PROCESS_INFORMATION pi{};
     std::wstring command = L"\"" + runtime_ + L"\" --load engine/host-policy.el";
-    native_attempt_ = !interpreted_retry_ && NativeCommand(command);
+    native_attempt_ = !HarnessOldOnlyPeer() && !interpreted_retry_ && NativeCommand(command);
     interpreted_retry_ = false;
     const bool started = updated && CreateProcessW(nullptr, command.data(), nullptr, nullptr,
         TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW |
@@ -915,6 +961,7 @@ class ShadowPolicy {
         // supervisor backoff is excluded from caller-policy retirement/coverage.
         backoff = (std::min)(DWORD{30000}, backoff * 2); continue;
       }
+      if (HarnessDiagnostics()) LogEvent("policy-ready-wire hex=" + WireHex(reply));
       backoff = 1000; seeded_engine = ~uint64_t{0};
       { std::lock_guard lock(mutex_); healthy_ = true; hn3_capable_ = reply.starts_with("HP2 READY HN3=1"); changed_.notify_all(); }
       if (native_ready) LogEvent(bundle_summary_);
@@ -1008,6 +1055,7 @@ class ShadowPolicy {
         if (!ValidReply(reply, prefix)) {
           LogEvent("policy-invalid-reply request=" + std::to_string(id)); break;
         }
+        if (HarnessDiagnostics()) LogEvent("policy-hp2-wire q=" + WireHex(frame) + " r=" + WireHex(reply + "\n"));
         const uint64_t decision = (reply[15] - 32) * 4096 +
             (reply[16] - 32) * 64 + reply[17] - 32;
         if (!ValidDecision(v.kind, decision)) { LogEvent("policy-invalid-decision"); break; }
