@@ -222,13 +222,28 @@ class ShadowPolicy {
     const auto key = Key(value);
     uint64_t result = 0;
     bool used = false;
+    // Caller diagnostics stay bounded and never write logs or wait on IPC.
+    unsigned miss = 0; // contention, unhealthy, absent, expired
+    uint64_t age = 0;
     {
       std::unique_lock lock(mutex_, std::try_to_lock);
       if (lock.owns_lock() && healthy_) {
+        miss = 2;
         const auto found = decisions_.find(key);
-        if (found != decisions_.end() && GetTickCount64() - found->second.at <= 30000) {
-          result = found->second.value; used = true;
+        if (found != decisions_.end()) {
+          age = GetTickCount64() - found->second.at;
+          miss = 3;
+          if (age <= 30000) { result = found->second.value; used = true; }
         }
+      } else if (lock.owns_lock()) miss = 1;
+    }
+    if (!used && HarnessDiagnostics()) {
+      const auto kind = static_cast<unsigned>(value.kind);
+      if (kind < misses_.size()) {
+        auto& row = misses_[kind][miss];
+        row.a = value.a; row.b = value.b; row.c = value.c;
+        row.engine = value.engine_epoch; row.age = age; row.tick = GetTickCount64();
+        ++row.count;
       }
     }
     if (used) PolicyCounters::Managed(value.kind);
@@ -353,8 +368,38 @@ class ShadowPolicy {
   std::array<bool, 5> switches_{};
   std::array<std::atomic<uint64_t>, 13> used_{}, fallback_{};
   std::array<std::atomic<uint64_t>, 13> divergent_{};
+  static bool HarnessDiagnostics() {
+    static const bool enabled = [] {
+      wchar_t value[2]{};
+      return GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", value, 2) == 1 && value[0] == L'1' &&
+          NativeImeRegistryKey().starts_with(L"Software\\NativeIME-test-");
+    }();
+    return enabled;
+  }
+  struct MissSample {
+    std::atomic<uint64_t> count{0}, a{0}, b{0}, c{0}, engine{0}, age{0}, tick{0};
+  };
+  std::array<std::array<MissSample, 4>, 13> misses_{};
   void LogDecisions() {
     PolicyCounters::Log();
+    if (HarnessDiagnostics()) {
+      const char* reasons[] = {"contention", "unhealthy", "absent", "expired"};
+      for (size_t kind = 1; kind < misses_.size(); ++kind) {
+        for (size_t reason = 0; reason < 4; ++reason) {
+          auto& row = misses_[kind][reason];
+          const auto count = row.count.exchange(0);
+          if (!count) continue;
+          // Last sample per kind/reason, approximate under concurrent callers.
+          LogEvent(std::string("policy-miss-detail reason=") + reasons[reason] +
+              " kind=" + std::to_string(kind) + " count=" + std::to_string(count) +
+              " engine=" + std::to_string(row.engine.load()) +
+              " a=" + std::to_string(row.a.load()) + " b=" + std::to_string(row.b.load()) +
+              " c=" + std::to_string(row.c.load()) + " age_ms=" + std::to_string(row.age.load()) +
+              " call_tick_ms=" + std::to_string(row.tick.load()) +
+              " log_tick_ms=" + std::to_string(GetTickCount64()));
+        }
+      }
+    }
     // Only the policy worker writes diagnostics; caller paths increment counters.
     for (size_t i = 1; i < used_.size(); ++i) {
       const auto used = used_[i].exchange(0), fallback = fallback_[i].exchange(0);
@@ -701,7 +746,10 @@ class ShadowPolicy {
           }
           v = queue_.front(); queue_.pop_front();
         }
+        const auto exchange_start = GetTickCount64();
         const auto id = ++request_;
+        if (HarnessDiagnostics()) LogEvent("policy-request request=" + std::to_string(id) +
+            " kind=" + std::to_string(static_cast<unsigned>(v.kind)) + " key=" + Key(v));
         const auto prefix = "HP2R" + Digits(id, 11);
         const auto frame = Frame(id, v);
         if (frame.empty()) {
@@ -736,7 +784,8 @@ class ShadowPolicy {
         const auto expected = prefix + Digits(v.native_decision, 3);
         ++completed_; changed_.notify_all();
         LogEvent(std::string("policy-compare ") + (reply == expected ? "match" : "mismatch") +
-            " request=" + std::to_string(id) + " kind=" + std::to_string(static_cast<unsigned>(v.kind)));
+            " request=" + std::to_string(id) + " kind=" + std::to_string(static_cast<unsigned>(v.kind)) +
+            (HarnessDiagnostics() ? " elapsed_ms=" + std::to_string(GetTickCount64() - exchange_start) : ""));
         if (!reply.starts_with(prefix)) break;
       }
       Retire();

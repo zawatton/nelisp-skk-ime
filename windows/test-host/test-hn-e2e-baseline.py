@@ -94,9 +94,14 @@ def check_phase(tsf, host, guard, native):
         raise AssertionError('acknowledged learning barrier')
     if not re.search(r'GUARD .*"leftovers": \[\]', guard):
         raise AssertionError('owned-PID cleanup missing')
-    if native and not re.search(r'policy-ready startup_ms=\d+ native=1', host):
+    # Counter native=N counts C++ evaluations, not native policy children.
+    ready = re.findall(r'policy-ready startup_ms=\d+ native=([01])\b', host)
+    if not ready:
+        raise AssertionError('missing policy-ready evidence')
+    if native and any(state != '1' for state in ready):
         raise AssertionError('native policy unavailable')
-    if not native and 'native=1' in host:
+    if not native and (any(state != '0' for state in ready) or 'HN-BUNDLE' in host or
+                       re.search(r'HP2 READY HN3=1 native=1\b', host)):
         raise AssertionError('baseline unexpectedly native')
     if any(int(ms) > 60000 for ms in re.findall(r'policy-ready startup_ms=(\d+)', host)):
         raise AssertionError('60 s policy startup budget')
@@ -112,6 +117,20 @@ def self_test():
     tsf += 'LOCAL_ACK id=fixture.1 sequence=1\nLOCAL_ACK id=fixture.2 sequence=2\n'
     host, guard = 'policy-ready startup_ms=1 native=1\nHN-BUNDLE native=11 interpreted=1 refused=host-policy-hn3-reply', 'GUARD {"leftovers": []}'
     check_phase(tsf, host, guard, True)
+    baseline = 'policy-ready startup_ms=5 native=0\n'
+    baseline += ''.join(f'policy-evaluations group={group} native=1 nelisp-selected=1\n'
+                        for group in GROUPS)
+    check_phase(tsf, baseline, guard, False)
+    baseline_bad = [baseline.replace('startup_ms=5 native=0', 'startup_ms=5 native=1'),
+                    baseline + '\nHN-BUNDLE native=11 interpreted=0 refused=-',
+                    baseline + '\nHP2 READY HN3=1 native=1',
+                    baseline.replace('policy-ready', 'missing-ready')]
+    for evidence in baseline_bad:
+        try:
+            check_phase(tsf, evidence, guard, False)
+        except AssertionError:
+            continue
+        raise AssertionError('native/missing baseline evidence accepted')
     bad = [(tsf, host.replace('HN-BUNDLE native=11', 'HN-BUNDLE native=0'), guard),
            (tsf, host.split('\n')[0], guard),
            (tsf.replace('仮名', 'wrong'), host, guard),
@@ -119,7 +138,7 @@ def self_test():
            (tsf.replace('mask=271', 'mask=0'), host, guard),
            (tsf.replace('total_us=1', 'total_us=20001'), host, guard),
            (tsf.replace('LOCAL_ACK_WAIT OK', 'LOCAL_ACK_WAIT TIMEOUT'), host, guard),
-           (tsf, host.replace('native=1', 'native=0'), guard), (tsf, host, ''),
+           (tsf, host.replace('startup_ms=1 native=1', 'startup_ms=1 native=0'), guard), (tsf, host, ''),
            (tsf.replace('sequence=2', 'sequence=0'), host, guard)]
     for args in bad:
         try:
@@ -127,7 +146,7 @@ def self_test():
         except AssertionError:
             continue
         raise AssertionError('bad evidence accepted')
-    print(f'PASS S1.3 checker negative_controls={len(bad)} stacks=0')
+    print(f'PASS S1.3 checker negative_controls={len(bad)+len(baseline_bad)} stacks=0')
 
 
 def main(args):

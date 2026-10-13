@@ -21,6 +21,36 @@ native_bundle = helpers.native_bundle
 pressure = helpers.pressure
 GROUPS = ('SOURCES', 'CACHE', 'RESTART', 'PUBLICATION', 'LEARNING')
 LABELS = ('COLD', 'WARM', 'HITS', 'EXPIRY', 'DOWN', 'RECOVER', 'FINAL')
+# HnStartup waits for the policy child before exposing the host pipe.
+POLICY_STARTUP_MS = 60000
+PIPE_WAIT_SEC = 65
+PREPARATION_SEC = 75
+COLD_LOAD_SEC = 45
+TSF_HOST_SEC = 220  # Starts after pipe readiness and the cold-load sleep.
+EVIDENCE_SEC = PREPARATION_SEC + PIPE_WAIT_SEC + COLD_LOAD_SEC + TSF_HOST_SEC
+HARNESS_EXIT_SEC = EVIDENCE_SEC + 15
+GATE_SEC = HARNESS_EXIT_SEC + 15
+
+
+def coverage_script():
+    conversion = 'K a n a SPACE ENTER SETTLE30000:'
+    # tsf-host rejects WAIT > 60000 without waiting. Preserve both 65 s
+    # windows so harness cleanup cannot interrupt replacement cold startup.
+    return ('a i SPACE WAIT3000 ENTER SETTLE30000:COLD WAIT60000 WAIT5000 ' +
+            conversion + 'WARM WAIT3000 ' + conversion + 'HITS WAIT33000 ' +
+            conversion + 'EXPIRY WAIT3000 ' + conversion + 'DOWN WAIT60000 WAIT5000 ' +
+            conversion + 'RECOVER WAIT3000 ' + conversion + 'FINAL WAITACK10000:6')
+
+
+def check_script_waits(script):
+    waits = []
+    for token in script.split():
+        if token.startswith('WAIT') and not token.startswith('WAITACK'):
+            match = re.fullmatch(r'WAIT([0-9]+)', token)
+            if not match or not 0 < int(match[1]) <= 60000:
+                raise AssertionError('unsupported TSF wait token: ' + token)
+            waits.append(int(match[1]))
+    return waits
 
 
 def private_key(pipe_name):
@@ -34,9 +64,22 @@ def private_key(pipe_name):
 def counters(text):
     result = {g: [int(n), int(m)] for g, n, m in re.findall(
         r'policy-evaluations group=(\w+) native=(\d+) nelisp-selected=(\d+)', text)}
-    if set(result) != set(GROUPS):
+    if not set(GROUPS).issubset(result):
         raise AssertionError('missing five-group counter samples')
-    return result
+    # STARTUP is separate from the five authoritative phase-delta groups.
+    return {g: result[g] for g in (*GROUPS, 'STARTUP') if g in result}
+
+
+def complete_counter_sample(text):
+    """Ignore a partially written batch; STARTUP terminates S4.3 samples."""
+    ends = list(re.finditer(r'^.*policy-evaluations group=STARTUP native=\d+ nelisp-selected=\d+\r?\n', text, re.M))
+    if not ends:
+        return None
+    end = ends[-1].end()
+    starts = list(re.finditer(r'^.*policy-evaluations group=SOURCES ', text[:end], re.M))
+    if not starts:
+        raise AssertionError('completed counter batch missing SOURCES')
+    return ends[-1].group(0), counters(text[starts[-1].start():end])
 
 
 def delta(before, after):
@@ -46,9 +89,22 @@ def delta(before, after):
     return result
 
 
+def check_replayed_ack(identity, reply):
+    operation, sequence = identity
+    # LOCAL persists one (operation, overlay sequence) watermark per client.
+    # Replaying an older operation echoes its ID with the latest durable
+    # sequence, including after engine reload or policy-child retirement.
+    match = re.fullmatch(rb'ACK ' + re.escape(operation.encode()) + rb' ([1-9]\d*)', reply)
+    if not match or int(match[1]) < int(sequence):
+        raise AssertionError('acknowledged learning ID/watermark lost: ' + operation +
+                             ' minimum_sequence=' + str(sequence) + ' reply=' + repr(reply))
+
+
 def check(tsf, host, samples, fetches, elapsed):
-    if elapsed >= 360:
-        raise AssertionError('runtime exceeded six minutes')
+    if elapsed >= GATE_SEC:
+        raise AssertionError('runtime exceeded gate budget')
+    if 'UnknownToken:' in tsf:
+        raise AssertionError('TSF rejected a scripted token')
     for i, label in enumerate(LABELS):
         document = 'あい' + '仮名' * i
         if not re.search(r'AFTER ' + label + r' BUF=\[' + document + r'\].*COMP=-', tsf):
@@ -64,15 +120,21 @@ def check(tsf, host, samples, fetches, elapsed):
     ack_ids = dict(re.findall(r'LOCAL_ACK id=(\S+) sequence=([1-9]\d*)', tsf))
     if len(ack_ids) < 6 or int(re.search(r'LOCAL_ACK_WAIT OK required=6 observed=(\d+)', tsf)[1]) < 6:
         raise AssertionError('missing unique acknowledged learning IDs')
-    if len(re.findall(r'policy-ready startup_ms=\d+ native=1', host)) < 2 or re.search(r'policy-ready startup_ms=\d+ native=0', host):
+    # Counter native=N counts C++ evaluations, not native policy children.
+    ready = re.findall(r'policy-ready startup_ms=\d+ native=([01])\b', host)
+    if len(ready) < 2 or any(state != '1' for state in ready):
         raise AssertionError('native child unavailable/refused')
     bundle = helpers.bundle_evidence(host, minimum=2)
-    if any(int(ms) > 60000 for ms in re.findall(r'policy-ready startup_ms=(\d+)', host)):
+    startup_ms = list(map(int, re.findall(r'policy-ready startup_ms=(\d+)', host)))
+    if any(ms > POLICY_STARTUP_MS for ms in startup_ms):
         raise AssertionError('60 s native policy startup budget')
     if 'hn3-answer operation=5' not in host or 'hn3-startup-selection runner=ddskk' not in host:
         raise AssertionError('startup did not use HN3')
     if host.index('hn3-answer operation=5') > host.index('child-start pid=') or host.count('hn3-answer operation=5') < 2:
         raise AssertionError('initial/reload startup HN3 missing')
+    startup = samples['FINAL'].get('STARTUP')
+    if startup is None or startup[0] != 0 or startup[1] < 2:
+        raise AssertionError('initial/reload native startup did not select NeLisp child decisions')
     for marker in ('policy-timeout-discard', 'policy-late-discard', 'policy-retire'):
         if marker not in host:
             raise AssertionError('missing fault evidence: ' + marker)
@@ -100,11 +162,42 @@ def check(tsf, host, samples, fetches, elapsed):
         raise AssertionError('missing real engine replacement')
     if fetches[1] <= fetches[0]:
         raise AssertionError('2 second negative cache did not expire/refetch')
-    return dict(bundle=bundle, phases=phases, callback_probes=len(rows), pipe_io=0, blocking_waits=0,
+    return dict(bundle=bundle, policy_ready_startup_ms=startup_ms, startup_counters=startup,
+                phases=phases, callback_probes=len(rows), pipe_io=0, blocking_waits=0,
                 callback_max_us=max(times), negative_cache_fetches=fetches, exact_documents=7)
 
 
 def self_test():
+    script = coverage_script()
+    waits = check_script_waits(script)
+    assert sum(waits) == 175000 and script.count('WAIT60000 WAIT5000') == 2
+    for invalid in ('WAIT65000', 'WAIT60001', 'WAITbad', 'WAIT0'):
+        try:
+            check_script_waits(script + ' ' + invalid)
+        except AssertionError:
+            continue
+        raise AssertionError('unsupported TSF wait accepted')
+    identity = ('0123456789abcdef0123456789abcdef.1', '1')
+    check_replayed_ack(identity, b'ACK ' + identity[0].encode() + b' 1')
+    # Three FIFO learnings for the same client advance the durable watermark;
+    # an old replay is still acknowledged without repeating its mutation.
+    check_replayed_ack(identity, b'ACK ' + identity[0].encode() + b' 3')
+    ack_controls = (b'', b'ERR LOCAL STORAGE',
+                    b'ACK different.1 3', b'ACK ' + identity[0].encode() + b' 0',
+                    b'ACK ' + identity[0].encode() + b' 3 extra',
+                    b'ACK ' + identity[0].encode() + b' 3\n')
+    for reply in ack_controls:
+        try:
+            check_replayed_ack(identity, reply)
+        except AssertionError:
+            continue
+        raise AssertionError('invalid replay ACK accepted')
+    try:
+        check_replayed_ack((identity[0], '3'), b'ACK ' + identity[0].encode() + b' 2')
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('regressed replay watermark accepted')
     tsf = '\n'.join('AFTER ' + label + ' BUF=[' + 'あい' + '仮名' * i + '] COMP=-'
                     for i, label in enumerate(LABELS))
     tsf += '\n' + '\n'.join(['CALLBACK_IO hooks=5 mask=271 pipe_io=0 blocking_waits=0'] * 20)
@@ -114,10 +207,37 @@ def self_test():
             ' policy-authoritative kind=3 count=1 policy-authoritative kind=7 count=1'
             ' replacement-published engine=ddskk')
     host += '\nHN-BUNDLE native=11 interpreted=1 refused=host-policy-hn3-reply\n' * 2
+    host += ''.join(f'policy-evaluations group={group} native={count} nelisp-selected=1\n'
+                    for group, count in zip(GROUPS, (0, 1, 0, 1, 0)))
+    assert set(counters(host)) == set(GROUPS)
+    assert complete_counter_sample(host) is None
+    host += 'policy-evaluations group=STARTUP native=0 nelisp-selected=2\n'
+    batch = complete_counter_sample(host)
+    assert batch[1]['STARTUP'] == [0, 2]
+    partial = host + 'policy-evaluations group=SOURCES native=999 nelisp-selected=999\n'
+    assert complete_counter_sample(partial) == batch
+    assert counters(partial)['SOURCES'] == [999, 999] # Negative control for old parser.
+    incomplete = host + 'policy-evaluations group=SOURCES native=999 nelisp-selected=999\n' + 'policy-evaluations group=STARTUP native=0 nelisp-selected=3\n'
+    try:
+        complete_counter_sample(incomplete)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('incomplete terminated batch accepted')
+    parsed = counters(host)
+    assert set(parsed) == set(GROUPS) | {'STARTUP'} and parsed['STARTUP'] == [0, 2]
     samples = {label: {g: [n, m] for g in GROUPS} for label, n, m in (
         ('ZERO', 0, 0), ('COLD', 1, 0), ('WARM', 2, 1), ('HITS', 2, 2),
         ('EXPIRY', 3, 3), ('DOWN', 4, 4), ('RECOVER', 5, 5), ('FINAL', 5, 6))}
-    check(tsf, host, samples, [1, 2], 1)
+    for label in LABELS:
+        samples[label]['STARTUP'] = [0, 1 if label == 'COLD' else 2]
+    assert PIPE_WAIT_SEC == 65 and PIPE_WAIT_SEC * 1000 > POLICY_STARTUP_MS
+    assert EVIDENCE_SEC == 405 and HARNESS_EXIT_SEC == 420 and GATE_SEC == 435
+    assert check(tsf, host, samples, [1, 2], 1)['policy_ready_startup_ms'] == [1, 1]
+    measured_host = host.replace('startup_ms=1', 'startup_ms=26000', 1)
+    assert check(tsf, measured_host, samples, [1, 2], 1)['policy_ready_startup_ms'] == [26000, 1]
+    assert check(tsf, host.replace('startup_ms=1', 'startup_ms=60000'),
+                 samples, [1, 2], GATE_SEC - 1)['policy_ready_startup_ms'] == [60000, 60000]
     pipe = chr(92) * 2 + '.' + chr(92) + 'pipe' + chr(92) + 'ddskk-test-012345abcdef'
     assert private_key(pipe) == 'Software' + chr(92) + 'NativeIME-test-012345abcdef'
     for invalid in (pipe.replace('ddskk-test-', 'ddskk-live-'), pipe.replace('.', 'X'), pipe + 'x'):
@@ -128,8 +248,13 @@ def self_test():
         raise AssertionError('non-private key accepted')
     bad = copy.deepcopy(samples); bad['HITS']['CACHE'][0] += 1
     mutations = [(tsf, host.replace('HN-BUNDLE native=11', 'HN-BUNDLE native=0'), samples, [1, 2], 1),
+                 (tsf + '\nHR UnknownToken:WAIT65000=80070057\n', host, samples, [1, 2], 1),
                  (tsf, host.replace('HN-BUNDLE', 'MISSING'), samples, [1, 2], 1),
-                 (tsf, host, bad, [1, 2], 1), (tsf, host.replace('native=1', 'native=0'), samples, [1, 2], 1), (tsf, host.replace('hn3-answer operation=5', ''), samples, [1, 2], 1),
+                 (tsf, host, bad, [1, 2], 1),
+                 (tsf, host.replace('startup_ms=1 native=1', 'startup_ms=1 native=0'), samples, [1, 2], 1),
+                 (tsf, host.replace('policy-ready startup_ms=1 native=1', 'missing-ready'), samples, [1, 2], 1),
+                 (tsf, host.replace('startup_ms=1 native=1', 'startup_ms=1 native=0', 1), samples, [1, 2], 1),
+                 (tsf, host.replace('hn3-answer operation=5', ''), samples, [1, 2], 1),
                  (tsf.replace('sequence=6', 'sequence=0'), host, samples, [1, 2], 1)]
     for marker in ('policy-authoritative kind=3 count=1',
                    'policy-authoritative kind=7 count=1', 'replacement-published engine='):
@@ -139,27 +264,37 @@ def self_test():
         (tsf.replace('blocking_waits=0', 'blocking_waits=1'), host, samples, [1, 2], 1),
         (tsf, host.replace('policy-late-discard', ''), samples, [1, 2], 1),
         (tsf, host, bad, [1, 2], 1), (tsf, host, samples, [1, 1], 1),
-        (tsf, host, samples, [1, 2], 360), ('', host, samples, [1, 2], 1),
+        (tsf, host, samples, [1, 2], GATE_SEC), ('', host, samples, [1, 2], 1),
+        (tsf, host.replace('startup_ms=1', 'startup_ms=60001', 1), samples, [1, 2], 1),
         (tsf.replace('LOCAL_ACK_WAIT OK', 'LOCAL_ACK_WAIT TIMEOUT'), host, samples, [1, 2], 1)])
+    for startup in (None, [1, 2], [0, 1]):
+        bad = copy.deepcopy(samples)
+        if startup is None:
+            del bad['FINAL']['STARTUP']
+        else:
+            bad['FINAL']['STARTUP'] = startup
+        mutations.append((tsf, host, bad, [1, 2], 1))
     for args in mutations:
         try:
             check(*args)
         except AssertionError:
             continue
         raise AssertionError('coverage negative control accepted')
-    try:
-        counters('')
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError('empty counters accepted')
-    print(f'PASS policy coverage checker negative_controls={len(mutations)+4} stacks=0')
+    counter_controls = [''] + [re.sub(r'policy-evaluations group=' + group + r' [^\n]*\n', '', host)
+                               for group in GROUPS]
+    for text in counter_controls:
+        try:
+            counters(text)
+        except AssertionError:
+            continue
+        raise AssertionError('missing authoritative counters accepted')
+    print(f'PASS policy coverage checker negative_controls={len(mutations)+3+len(counter_controls)} replay_ack_negative_controls={len(ack_controls)+1} wait_negative_controls=4 stacks=0')
 
 
 def main(args):
     started = time.monotonic()
     bundle = native_bundle()
-    if time.monotonic() - started > 75:
+    if time.monotonic() - started > PREPARATION_SEC:
         raise AssertionError('offline preparation consumed stack budget; prebuild DDSKK_HOST_POLICY_BUNDLE')
     spec = importlib.util.spec_from_file_location('contracts', Path(__file__).with_name('host-contracts.py'))
     transport = importlib.util.module_from_spec(spec); spec.loader.exec_module(transport)
@@ -214,11 +349,8 @@ def main(args):
             except Exception as error:
                 errors.append(str(error))
     server = threading.Thread(target=serve, daemon=True); server.start()
-    conversion = 'K a n a SPACE ENTER SETTLE30000:'
-    tokens = ('a i SPACE WAIT3000 ENTER SETTLE30000:COLD WAIT65000 ' +
-              conversion + 'WARM WAIT3000 ' + conversion + 'HITS WAIT33000 ' +
-              conversion + 'EXPIRY WAIT3000 ' + conversion + 'DOWN WAIT65000 ' +
-              conversion + 'RECOVER WAIT3000 ' + conversion + 'FINAL WAITACK10000:6')
+    tokens = coverage_script()
+    check_script_waits(tokens)
     bin_dir = ROOT / args.build_dir / 'Release'
     command = [sys.executable, '-B', str(Path(__file__).with_name('host-test-process-guard.py')),
         'run', '--root', str(ROOT), '--cleanup', '--', 'pwsh', '-NoProfile', '-File',
@@ -228,20 +360,22 @@ def main(args):
         '-CoreDllPath', str(bin_dir / 'ddskk-ime-core.dll'), '-TsfHostExe', str(bin_dir / 'tsf-host.exe'),
         '-LocalConversion', '1', '-SkkServEnable', '1', '-SkkServPort', env['DDSKK_SKKSERV_PORT'],
         '-ColdLoadSleepSec', str(args.cold_load_sleep_sec), '-SkipEngineWarmup',
-        '-PipeWaitTimeoutSec', '10', '-TsfHostTimeoutSec', '220', '-ArtifactDirectory', str(run / 'harness')]
+        '-PipeWaitTimeoutSec', str(PIPE_WAIT_SEC), '-TsfHostTimeoutSec', str(TSF_HOST_SEC),
+        '-ArtifactDirectory', str(run / 'harness')]
     job = transport.Job(); process = None; held = None; suspended = False
     samples = {'ZERO': {g: [0, 0] for g in GROUPS}}; cache_fetches = []
+    phase_markers = {}
     def text(path):
         return path.read_text('utf-8', errors='replace') if path.exists() else ''
     def host():
         return text(Path(str(host_path) + '.1')) + text(host_path)
     def tsf():
-        paths = list((run / 'harness').rglob('tsf.stdout.log'))
+        paths = list((run / 'harness').glob('*/tsf.stdout.log'))
         if len(paths) > 1:
             raise AssertionError('more than one private TSF stack')
         return text(paths[0]) if paths else ''
     def until(predicate, seconds=60):
-        end = min(started + 255, time.monotonic() + seconds)
+        end = min(started + EVIDENCE_SEC, time.monotonic() + seconds)
         while time.monotonic() < end:
             value = predicate()
             if value:
@@ -251,9 +385,19 @@ def main(args):
             time.sleep(.05)
         raise AssertionError('coverage evidence deadline')
     def snapshot(label):
-        # Worker logs at <=100 ms cadence; no callback waits for telemetry.
-        time.sleep(.5); samples[label] = counters(host())
+        # SETTLE covers TSF/provider idle, not independent learning/publication.
+        # Allow its tail to finish, then require a newly completed counter batch.
+        # LogDecisions runs often but PolicyCounters::Log samples only once/s.
+        time.sleep(1)
+        before = complete_counter_sample(host())
+        def fresh():
+            sample = complete_counter_sample(host())
+            return sample if sample and (not before or sample[0] != before[0]) else None
+        marker, samples[label] = until(fresh, 3)
         print('COUNTS ' + label + ' ' + json.dumps(samples[label]), flush=True)
+        phase_markers[label] = dict(counter_marker=marker.strip(),
+                                    elapsed_sec=time.monotonic() - started)
+        print('COUNTER_MARKER ' + label + ' ' + marker.strip(), flush=True)
     def request(data):
         pipe = transport.Pipe(pipe_name, timeout=2000)
         try:
@@ -282,13 +426,12 @@ def main(args):
     def replay_ack(identity):
         operation, sequence = identity
         wire = f'LOCAL LEARN {operation} 00304b00306a 004eee00540d'.encode()
-        expected = f'ACK {operation} {sequence}'.encode()
-        if request(wire) != expected:
-            raise AssertionError('acknowledged learning ID/sequence lost: ' + operation)
+        check_replayed_ack(identity, request(wire))
     try:
         process = job.spawn(command, env, gate_path)
-        pipe_name = until(lambda: (m.group(1) if (m := re.search(r'run-harness: pipe=(\S+)', text(gate_path))) else None), 10)
-        until(lambda: 'AFTER COLD ' in tsf(), 90); snapshot('COLD')
+        pipe_name = until(lambda: (m.group(1) if (m := re.search(r'run-harness: pipe=(\S+)', text(gate_path))) else None), PIPE_WAIT_SEC)
+        # The pipe identity is logged before host startup, not at pipe readiness.
+        until(lambda: 'AFTER COLD ' in tsf(), PIPE_WAIT_SEC + COLD_LOAD_SEC + 35); snapshot('COLD')
         server_miss(); time.sleep(.5); server_miss()
         # Cache's independent S3 comparison remains eagerly observed. Keep the
         # server disabled for steady local conversions so that observer is not
@@ -335,7 +478,7 @@ def main(args):
             replay_ack(identity)
         server_miss()
         until(lambda: 'AFTER FINAL ' in tsf(), 10); snapshot('FINAL')
-        process.wait(timeout=min(15, max(1, 265 - (time.monotonic() - started))))
+        process.wait(timeout=min(15, max(1, HARNESS_EXIT_SEC - (time.monotonic() - started))))
         if process.returncode or not re.search(r'GUARD .*"leftovers": \[\]', text(gate_path)):
             raise AssertionError('harness/owned cleanup failed')
         print('NOTE wrong/late HN3 injection skipped: no existing fenced frame-injection hook; HP2 late-discard exercised', flush=True)
@@ -346,6 +489,7 @@ def main(args):
         print('PASS S4.3 native startup ' + json.dumps(report), flush=True)
     finally:
         (run / 'samples.json').write_text(json.dumps(samples, indent=2) + '\n', encoding='utf-8')
+        (run / 'phase-markers.json').write_text(json.dumps(phase_markers, indent=2) + '\n', encoding='utf-8')
         if suspended:
             try:
                 suspend(True)
@@ -372,7 +516,7 @@ if __name__ == '__main__':
     parser.add_argument('--self-test', action='store_true')
     parser.add_argument('--runtime')
     parser.add_argument('--build-dir', default='build/w')
-    parser.add_argument('--cold-load-sleep-sec', type=int, choices=[45], default=45)
+    parser.add_argument('--cold-load-sleep-sec', type=int, choices=[COLD_LOAD_SEC], default=COLD_LOAD_SEC)
     args = parser.parse_args()
     try:
         if args.self_test:
