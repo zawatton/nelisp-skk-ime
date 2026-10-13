@@ -108,6 +108,45 @@ def delta(before, after):
     return result
 
 
+NOVEL_PHASES = ('cold', 'generation', 'restart')
+
+
+def novel_fixture():
+    return ''.join(
+        f'policy-request request={i} kind=8 key=8:1:{256+i}:1:0\n'
+        f'policy-compare match request={i} kind=8\n'
+        f'policy-novel phase={phase} key=8:1:{256+i}:1:0 native=1 first=1 answer=1 later=1\n'
+        for i, phase in enumerate(NOVEL_PHASES, 1))
+
+
+def check_novel_fallback(host):
+    evidence = {}
+    keys = set()
+    for phase in NOVEL_PHASES:
+        rows = re.findall(r'policy-novel phase=' + phase +
+            r' key=(8:\d+:\d+:1:0) native=(\d+) first=(\d+) answer=(\d+) later=(\d+)\b', host)
+        if len(rows) != 1 or rows[0][1:] != ('1', '1', '1', '1'):
+            raise AssertionError('missing deterministic novel-key fallback/answer/memo: ' + phase)
+        key = rows[0][0]
+        if key in keys or not 257 <= int(key.split(':')[2]) <= 262143:
+            raise AssertionError('novel key reused/seeded/out of range: ' + phase)
+        requests = re.findall(r'policy-request request=(\d+) kind=8 key=' + re.escape(key) + r'\b', host)
+        if not requests or not re.search(r'policy-compare match request=' + requests[0] + r' kind=8(?: elapsed_ms=\d+)?(?:\n|$)', host):
+            raise AssertionError('novel key missing matching child answer: ' + phase)
+        if host.index('policy-request request=' + requests[0] + ' kind=8 key=' + key) > host.index('policy-novel phase=' + phase):
+            raise AssertionError('novel evidence precedes child request: ' + phase)
+        keys.add(key)
+        evidence[phase] = dict(key=key, native=1, answer=1, memo=1)
+    return evidence
+
+
+def request_novel_fallback(request, phase):
+    reply = request(b'POLICY TEST NOVEL ' + phase.encode('ascii')).decode('ascii')
+    if not re.fullmatch(r'policy-novel phase=' + phase +
+                       r' key=8:\d+:\d+:1:0 native=1 first=1 answer=1 later=1', reply):
+        raise AssertionError('deterministic novel-key probe failed: ' + phase + ': ' + reply)
+
+
 def check(tsf, host, samples, fetches, elapsed):
     if elapsed >= 285:
         raise AssertionError('runtime exceeded 285 seconds')
@@ -136,7 +175,9 @@ def check(tsf, host, samples, fetches, elapsed):
     for name in ('steady', 'steady-recovered'):
         if any(n for n, _ in phases[name].values()) or not sum(m for _, m in phases[name].values()):
             raise AssertionError('steady hits evaluated native or selected no managed answers: ' + name)
-    for name in ('cold-miss', 'miss-generation', 'expiry', 'child-down'):
+    # Cold/reload/prefetch may answer before any caller; their deltas are observational.
+    novel = check_novel_fallback(host)
+    for name in ('expiry', 'child-down'):
         if not sum(n for n, _ in phases[name].values()):
             raise AssertionError('no native fallback evidence: ' + name)
     if any(not samples['FINAL'][g][1] for g in GROUPS):
@@ -153,7 +194,7 @@ def check(tsf, host, samples, fetches, elapsed):
         raise AssertionError('missing real engine replacement')
     if fetches[1] <= fetches[0]:
         raise AssertionError('2 second negative cache did not expire/refetch')
-    return dict(phases=phases, restart_callers=restart_callers, callback_probes=len(rows), pipe_io=0, blocking_waits=0,
+    return dict(novel_fallback=novel, phases=phases, restart_callers=restart_callers, callback_probes=len(rows), pipe_io=0, blocking_waits=0,
                 callback_max_us=max(times), negative_cache_fetches=fetches, exact_documents=7)
 
 
@@ -249,6 +290,7 @@ def self_test():
     samples = {label: {g: [n, m] for g in GROUPS} for label, n, m in (
         ('ZERO', 0, 0), ('COLD', 1, 0), ('WARM', 2, 1), ('HITS', 2, 2),
         ('EXPIRY', 3, 3), ('DOWN', 4, 4), ('RECOVER', 5, 5), ('FINAL', 5, 6))}
+    host += '\n' + novel_fixture()
     assert check(tsf, host, samples, [1, 2], 1)['restart_callers'] == {'3': 1, '7': 1}
     pipe = chr(92) * 2 + '.' + chr(92) + 'pipe' + chr(92) + 'ddskk-test-012345abcdef'
     assert private_key(pipe) == 'Software' + chr(92) + 'NativeIME-test-012345abcdef'
@@ -276,6 +318,28 @@ def self_test():
         (tsf, host, bad, [1, 2], 1), (tsf, host, samples, [1, 1], 1),
         (tsf, host, samples, [1, 2], 285), ('', host, samples, [1, 2], 1),
         (tsf.replace('LOCAL_ACK_WAIT OK', 'LOCAL_ACK_WAIT TIMEOUT'), host, samples, [1, 2], 1)])
+    # Seeds/prefetch winning all three ordinary miss phases is valid.
+    raced = copy.deepcopy(samples)
+    for label, n in (('COLD', 0), ('WARM', 0), ('HITS', 0),
+                     ('EXPIRY', 1), ('DOWN', 2), ('RECOVER', 2), ('FINAL', 2)):
+        for g in GROUPS:
+            raced[label][g][0] = n
+    check(tsf, host, raced, [1, 2], 1)
+    for phase in NOVEL_PHASES:
+        mutations.append((tsf, re.sub(r'policy-novel phase=' + phase + r'[^\n]*\n', '', host), raced, [1, 2], 1))
+    for old, new in (('native=1 first=1', 'native=0 first=1'),
+                     ('native=1 first=1', 'native=2 first=1'),
+                     ('answer=1 later=1', 'answer=0 later=1'),
+                     ('answer=1 later=1', 'answer=1 later=0'),
+                     ('policy-compare match request=1 kind=8', 'policy-compare match request=1 kind=8 keepalive=1'),
+                     ('8:1:257:1:0', '8:1:256:1:0')):
+        mutations.append((tsf, host.replace(old, new), raced, [1, 2], 1))
+    mutations.append((tsf, host.replace(novel_fixture(), ''), raced, [1, 2], 1))
+    for label, previous in (('EXPIRY', 'HITS'), ('DOWN', 'EXPIRY')):
+        missing = copy.deepcopy(samples)
+        for g in GROUPS:
+            missing[label][g][0] = missing[previous][g][0]
+        mutations.append((tsf, host, missing, [1, 2], 1))
     for args in mutations:
         try:
             check(*args)
@@ -289,6 +353,117 @@ def self_test():
     else:
         raise AssertionError('empty counters accepted')
     print(f'PASS policy coverage checker negative_controls={len(mutations)+4} counter_batch_controls={len(counter_controls)} snapshot_controls={len(LABELS)+1} final_wait_negative_controls={len(final_controls)} wait_negative_controls=4 named_deadline_controls={len(deadline_steps)} stacks=0')
+
+
+def hook_self_test():
+    """Compile the production hook/dispatch; fake replies only, no host stack."""
+    import subprocess
+    out = ROOT / 'build/w/policy-novel-unit'
+    out.mkdir(parents=True, exist_ok=True)
+    main_source = (ROOT / 'windows/host/main.cpp').read_text('utf-8')
+    start = main_source.index('    } else if (engine_request.starts_with("POLICY TEST NOVEL ")) {')
+    end = main_source.index('    } else if (engine_request == "HN3 TEST SHADOW") {', start)
+    dispatch = main_source[start:end].replace('    } else if', '    if', 1) + '    }\n'
+    cpp = r'''#define wmain host_program_main
+#include "HOST_MAIN"
+#undef wmain
+namespace { namespace native_adapter {
+struct ShadowPolicyTest {
+  static int Run(bool enabled, bool preseed, bool counters) {
+    auto& policy = shadow;
+    policy.enabled_ = true; policy.switches_[1] = true; policy.healthy_ = true;
+    engine_epoch = 1; publication_generation = 0;
+    if (preseed) policy.Remember({PolicyKind::Capacity, 1, 0, 257, 1, 0, 1}, 1);
+    std::atomic<bool> done{false};
+    std::thread child;
+    if (enabled) child = std::thread([&] {
+      while (!done) {
+        Observation value{}; bool have = false;
+        {
+          std::unique_lock lock(policy.mutex_);
+          policy.changed_.wait_for(lock, std::chrono::milliseconds(10), [&] {
+            return done || !policy.queue_.empty();
+          });
+          if (!policy.queue_.empty()) {
+            value = policy.queue_.front(); policy.queue_.pop_front(); have = true;
+          }
+        }
+        if (have) {
+          // HP2 round-trip inputs, independently decoded scalar/boolean fields.
+          const auto frame = policy.Frame(1, value);
+          const auto a = (frame[19]-32)*4096 + (frame[20]-32)*64 + frame[21]-32;
+          const auto answer = uint64_t{a < 256 || frame[17] != 32};
+          policy.Remember(value, answer); policy.changed_.notify_all();
+        }
+      }
+    });
+    int failures = 0;
+    unsigned i = 0;
+    for (const auto phase : {"cold", "generation", "restart"}) {
+      const std::string engine_request = std::string("POLICY TEST NOVEL ") + phase;
+      std::string response;
+      DISPATCH
+      const auto expected = std::string("policy-novel phase=") + phase + " key=8:1:" +
+          std::to_string(257 + i++) + ":1:0 native=1 first=1 answer=1 later=1";
+      if (response != (enabled ? expected : "ERR POLICY NOVEL DISABLED")) ++failures;
+    }
+    done = true; policy.changed_.notify_all();
+    if (child.joinable()) child.join();
+    if (PolicyCounters::native[1] != (enabled && counters ? 3 : 0) ||
+        PolicyCounters::nelisp[1] != (enabled && counters ? 3 : 0)) ++failures;
+    if (!enabled && (!policy.queue_.empty() || !policy.decisions_.empty() || !policy.recent_.empty())) ++failures;
+    std::printf("policy novel unit: enabled=%d counters=%d failures=%d stacks=0\n", enabled, counters, failures);
+    return failures ? 1 : 0;
+  }
+};
+} }
+int main(int argc, char** argv) {
+  if (argc != 5) return 2;
+  g_pipe_name = std::string(argv[1]) == "private" ? L"\\\\.\\pipe\\ddskk-test-unit" : L"\\\\.\\pipe\\ddskk-live";
+  return native_adapter::ShadowPolicyTest::Run(std::string(argv[2]) == "1",
+      std::string(argv[3]) == "preseed", std::string(argv[4]) == "1");
+}
+'''
+    (out / 'unit.cpp').write_text(cpp.replace('HOST_MAIN', (ROOT / 'windows/host/main.cpp').as_posix())
+                                 .replace('DISPATCH', dispatch), encoding='utf-8', newline='\n')
+    (out / 'CMakeLists.txt').write_text(
+        'cmake_minimum_required(VERSION 3.24)\nproject(policy_novel_unit LANGUAGES CXX)\n'
+        'add_executable(policy-novel-unit unit.cpp '
+        f'"{(ROOT / "windows/src/local_index.cpp").as_posix()}" '
+        f'"{(ROOT / "windows/src/engine_protocol.cpp").as_posix()}")\n'
+        'target_compile_features(policy-novel-unit PRIVATE cxx_std_20)\n'
+        'target_compile_definitions(policy-novel-unit PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)\n'
+        'target_compile_options(policy-novel-unit PRIVATE /utf-8)\n'
+        'target_link_libraries(policy-novel-unit PRIVATE ws2_32 advapi32 bcrypt)\n',
+        encoding='utf-8', newline='\n')
+    for command in (['cmake', '-S', str(out), '-B', str(out / 'build'), '-G',
+                     'Visual Studio 17 2022', '-A', 'x64'],
+                    ['cmake', '--build', str(out / 'build'), '--config', 'Release']):
+        result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120)
+        if result.returncode:
+            raise AssertionError('novel unit build failed:\n' + result.stdout + result.stderr)
+    executable = out / 'build/Release/policy-novel-unit.exe'
+    cases = [('private', None, True, False), ('private', '0', True, False),
+             ('private', '1', False, False), ('public', '1', True, False),
+             ('private', '1', True, True)]
+    for pipe, diagnostics, private_registry, enabled in cases:
+        for counters_on in ('0', '1'):
+            env = dict(os.environ, DDSKK_HOST_POLICY_COUNTERS=counters_on,
+                       NATIVEIME_REGISTRY_KEY='Software\\NativeIME-test-unit' if private_registry else 'Software\\NativeIME')
+            env.pop('DDSKK_HARNESS_DIAGNOSTICS', None)
+            if diagnostics is not None:
+                env['DDSKK_HARNESS_DIAGNOSTICS'] = diagnostics
+            result = subprocess.run([str(executable), pipe, str(int(enabled)), 'normal', counters_on],
+                                    env=env, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+            if result.returncode:
+                raise AssertionError('novel hook unit failed: ' + result.stdout + result.stderr)
+    result = subprocess.run([str(executable), 'private', '1', 'preseed', '1'],
+                            env=dict(os.environ, DDSKK_HOST_POLICY_COUNTERS='1', DDSKK_HARNESS_DIAGNOSTICS='1',
+                                     NATIVEIME_REGISTRY_KEY='Software\\NativeIME-test-unit'),
+                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+    if result.returncode != 1:
+        raise AssertionError('preseeded/no-first-fallback unit control accepted')
+    print('PASS policy novel hook cases=10 negative_controls=1 production_inert=8 harness_on=2 counters=unchanged stacks=0')
 
 
 def main(args):
@@ -415,14 +590,21 @@ def main(args):
         process = job.spawn(command, env, gate_path)
         pipe_name = until(lambda: (m.group(1) if (m := re.search(r'run-harness: pipe=(\S+)', text(gate_path))) else None), 10, step='harness pipe identity')
         until(lambda: 'AFTER COLD ' in tsf(), 90, step='AFTER COLD'); snapshot('COLD')
+        until(lambda: 'policy-ready' in host(), 60, step='novel cold policy-ready')
+        request_novel_fallback(request, 'cold')
         server_miss(step='cold server miss'); time.sleep(.5); server_miss(step='cold cached miss')
         # Cache's independent S3 comparison remains eagerly observed. Keep the
         # server disabled for steady local conversions so that observer is not
         # confused with authoritative CacheTtl/Capacity memo-hit evaluations.
         configure_server(False); server_miss(step='disabled server miss')
+        published = host().count('replacement-published engine=')
         if request(b'ENGINE RELOAD') != b'OK RELOADING':
             raise AssertionError('private engine reload failed')
-        until(lambda: 'AFTER WARM ' in tsf(), 70, step='AFTER WARM'); snapshot('WARM')
+        until(lambda: host().count('replacement-published engine=') > published, 65,
+              step='novel generation replacement-published')
+        request_novel_fallback(request, 'generation')
+        until(lambda: 'AFTER WARM ' in tsf(), 70, step='AFTER WARM')
+        snapshot('WARM')
         server_miss(step='steady seeded SOURCES hit') # Exercise a seeded SOURCES hit within the steady window.
         until(lambda: 'AFTER HITS ' in tsf(), 10, step='AFTER HITS'); snapshot('HITS')
         # Leave exact source/cache signatures idle beyond the policy memo's 30 s.
@@ -457,6 +639,7 @@ def main(args):
         until(lambda: 'policy-retire pid=' + str(policy_pid) in host(), 2, step='post-kill policy retire'); server_miss(step='post-kill server miss')
         until(lambda: 'AFTER DOWN ' in tsf(), 15, step='AFTER DOWN'); snapshot('DOWN')
         configure_server(False); server_miss(step='post-disable server miss')
+        request_novel_fallback(request, 'restart')
         until(lambda: 'AFTER RECOVER ' in tsf(), 70, step='AFTER RECOVER'); snapshot('RECOVER')
         server_miss(step='recovered seeded SOURCES hit')
         until(lambda: 'AFTER FINAL ' in tsf(), 10, step='AFTER FINAL'); snapshot('FINAL')
@@ -488,12 +671,15 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--self-test', action='store_true')
+    parser.add_argument('--self-test-hook', action='store_true')
     parser.add_argument('--runtime')
     parser.add_argument('--build-dir', default='build/w')
     parser.add_argument('--cold-load-sleep-sec', type=int, choices=[45], default=45)
     args = parser.parse_args()
     try:
-        if args.self_test:
+        if args.self_test_hook:
+            hook_self_test()
+        elif args.self_test:
             self_test()
         elif not args.runtime:
             parser.error('--runtime required for stack run')

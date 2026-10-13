@@ -1,5 +1,6 @@
 // Tests the production queue with no OS/registry setup or managed runtime.
 #include <windows.h>
+#include <source_location>
 // Negative control restores exactly the old stderr/stdout transport routing.
 static bool broken_stderr = false;
 static BOOL WINAPI PolicyUnitCreateProcessW(LPCWSTR application, LPWSTR command,
@@ -104,7 +105,11 @@ struct ShadowPolicyTest {
           policy.decisions_.at(ShadowPolicy::Key(key)).at == TransportClock(); })) return false;
       return memo_hit();
     };
-    bool pass = exercise();
+    // Caller history is now available before READY, so the worker can reseed
+    // before consuming the original queued observation. Finish that reply
+    // before advancing fake time; otherwise it refreshes at the new timestamp
+    // and the fixture incorrectly waits for an additional keep-alive reply.
+    bool pass = wait([&] { return policy.completed_ >= 1; }) && exercise();
     if (pass) {
       // Observe may legitimately drop on contention, including fault setup.
       // Retry only a rejected enqueue, never an accepted crash request.
@@ -125,11 +130,78 @@ struct ShadowPolicyTest {
         pass, native_calls, contention_calls);
     return pass ? 0 : 1;
   }
+  static int EpochUse(bool broken_coalescing) {
+    int checks = 0, failures = 0, native_calls = 0;
+    auto check = [&](bool pass, std::source_location where = std::source_location::current()) {
+      ++checks; if (!pass) { ++failures; std::printf("failed check line=%u\n", where.line()); }
+    };
+    // Both a memo hit and a miss can coincide with an already queued seed.
+    for (bool hit : {false, true}) {
+      ShadowPolicy policy;
+      policy.enabled_ = true; policy.switches_.fill(true); policy.healthy_ = true;
+      policy.memo_clock_ = Clock; engine_epoch = 1; now = 0;
+      Observation key{PolicyKind::Intent, 1, 0, 1, 1, 0, 0};
+      policy.Remember(key, 1);
+      for (now = 1000; now <= 57000; now += 1000) {
+        check(policy.Decide(key, [&] { ++native_calls; return uint64_t{0}; }) == 1);
+        for (const auto& input : policy.queue_) policy.Remember(input, 1);
+        policy.queue_.clear();
+      }
+      // A full memo of stale-epoch entries must not use the refresh budget
+      // or count as skipped work after publication.
+      for (size_t n = 0; n < ShadowPolicy::kRequests - 1; ++n) {
+        auto stale = key; stale.a = n + 2; stale.caller_used = true;
+        policy.Remember(stale, 1);
+      }
+      engine_epoch = 2; now = 70000; key.engine_epoch = 2;
+      policy.Observe(key); // Seed was queued before the sole current caller.
+      if (hit) policy.Remember(key, 1);
+      check(policy.Decide(key, [&] { ++native_calls; return uint64_t{0}; }) == (hit ? 1 : 0));
+      check(policy.queue_.size() == 1);
+      if (broken_coalescing) {
+        // Restore the old deduplication outcome: the sole caller's metadata
+        // was discarded and the seed reply remained inactive.
+        policy.queue_.front().caller_used = false;
+        policy.recent_.clear();
+        if (hit) policy.decisions_.at(ShadowPolicy::Key(key)).active = false;
+      }
+      for (const auto& input : policy.queue_) policy.Remember(input, 1);
+      policy.queue_.clear();
+      const auto before = native_calls;
+      unsigned refreshed = 0;
+      for (now = 75000; now <= 125000; now += 5000) {
+        for (const auto& input : policy.Keepalive()) {
+          check(input.engine_epoch == 2 && ShadowPolicy::Key(input) == ShadowPolicy::Key(key));
+          check(policy.KeepaliveCurrent(input));
+          check(policy.Remember(input, 1, true)); ++refreshed;
+        }
+      }
+      now = 126000; // 56 s after a single use; keep-alive keeps authority fresh.
+      check(refreshed == 2 && policy.keepalive_refreshed_ == 2);
+      check(policy.decisions_.size() == 1);
+      check(policy.Decide(key, [&] { ++native_calls; return uint64_t{0}; }) == 1);
+      check(native_calls == before);
+      check(policy.recent_.size() == 1 && policy.recent_.begin()->second.inputs.engine_epoch == 2);
+      std::printf("policy epoch-use unit: hit=%d refreshed=%u native_delta=%d\n", hit, refreshed, native_calls - before);
+    }
+    // With only stale entries, pruning contributes zero skipped work.
+    ShadowPolicy stale;
+    stale.enabled_ = true; stale.switches_.fill(true); stale.healthy_ = true;
+    stale.memo_clock_ = Clock; engine_epoch = 1; now = 0;
+    Observation key{PolicyKind::Intent, 1, 0, 1, 1, 0, 0};
+    key.caller_used = true; stale.Remember(key, 1);
+    engine_epoch = 2; now = 25000;
+    check(stale.Keepalive().empty() && stale.decisions_.empty() && stale.keepalive_skipped_ == 0);
+    std::printf("policy epoch-use unit: %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+  }
   static int Run(bool broken_keepalive, bool broken_reseed = false, bool broken_candidate = false) {
     ShadowPolicy policy;
     policy.enabled_ = true;
     int checks = 0, failures = 0;
-    auto check = [&](bool pass) { ++checks; if (!pass) ++failures; };
+    auto check = [&](bool pass, std::source_location where = std::source_location::current()) {
+      ++checks; if (!pass) { ++failures; std::printf("failed check line=%u\n", where.line()); }
+    };
     Observation v{PolicyKind::Config, 7, 9, 1, 1, 0, 1};
     v.context[0] = 'a'; v.context_size = 1;
     policy.Observe(v); v.context[0] = 'b';
@@ -250,16 +322,17 @@ struct ShadowPolicyTest {
     check(!live.Remember(pending.front(), 2, true)); // epoch changed during IPC
     now = 80000; check(live.Keepalive().empty() && live.decisions_.empty());
     engine_epoch = 7; now = 0; key.caller_used = true;
+    live.recent_.clear(); // Start an independent timeline after rewinding the clock.
     live.Remember(key, 2); key.caller_used = false;
     now = 600000; pending = live.Keepalive(); check(pending.size() == 1);
     check(child(pending.front()));
     check(live.decisions_.at(ShadowPolicy::Key(key)).last_used == 0);
     now = 625000; check(live.Keepalive().empty());
     // Seeds never used by a caller are not refreshed.
-    live.decisions_.clear(); now = 0; live.Remember(key, 2);
+    live.decisions_.clear(); live.recent_.clear(); now = 0; live.Remember(key, 2);
     now = 650000; check(live.Keepalive().empty());
     // Bound a full memo to 64 keys per 5 s; no second batch in that interval.
-    live.decisions_.clear(); live.keepalive_last_ = 0; now = 0;
+    live.decisions_.clear(); live.recent_.clear(); live.keepalive_last_ = 0; now = 0;
     key.caller_used = true;
     for (size_t n = 0; n < ShadowPolicy::kRequests; ++n) {
       key.a = n; live.Remember(key, 2);
@@ -302,7 +375,7 @@ struct ShadowPolicyTest {
     check(PolicyCounters::nelisp[3] == restart_managed && PolicyCounters::native[3] == restart_cpp);
     check(restarted.used_[9] == restart_used && restarted.completed_ == restart_completed);
     now = 41000; check(restarted.Decide(key, restart_fallback) == 1 && native_calls == restart_native);
-    check(restarted.recent_.at(ShadowPolicy::Key(key)).last_used == 0);
+    check(restarted.recent_.at(ShadowPolicy::Key(key)).last_used == 41000);
     // Explicit no-keepalive control uses the same restart/40 s timeline.
     ShadowPolicy no_refresh;
     no_refresh.enabled_ = true; no_refresh.switches_.fill(true); no_refresh.healthy_ = true;
@@ -369,6 +442,8 @@ int main(int argc, char** argv) {
     return native_adapter::ShadowPolicyTest::Transport();
   }
   const auto mode = argc > 1 ? std::string(argv[1]) : "normal";
+  if (mode == "epoch-use" || mode == "broken-coalescing")
+    return native_adapter::ShadowPolicyTest::EpochUse(mode == "broken-coalescing");
   return native_adapter::ShadowPolicyTest::Run(mode == "broken-keepalive",
       mode == "broken-reseed", mode == "broken-candidate");
 }

@@ -17,6 +17,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 from importlib.machinery import SourceFileLoader
 helpers = SourceFileLoader('hn_e2e_baseline', str(Path(__file__).with_name('test-hn-e2e-baseline.py'))).load_module()
+coverage = SourceFileLoader('hn_policy_coverage', str(Path(__file__).with_name('test-host-policy-coverage.py'))).load_module()
 native_bundle = helpers.native_bundle
 pressure = helpers.pressure
 GROUPS = ('SOURCES', 'CACHE', 'RESTART', 'PUBLICATION', 'LEARNING')
@@ -217,7 +218,9 @@ def check(tsf, host, samples, fetches, elapsed):
     for name in ('steady', 'steady-recovered'):
         if any(n for n, _ in phases[name].values()) or not sum(m for _, m in phases[name].values()):
             raise AssertionError('steady hits evaluated native or selected no managed answers: ' + name)
-    for name in ('cold-miss', 'miss-generation', 'expiry', 'child-down'):
+    # Seed/reseed/prefetch can satisfy ordinary miss phases before callers.
+    novel = coverage.check_novel_fallback(host)
+    for name in ('expiry', 'child-down'):
         if not sum(n for n, _ in phases[name].values()):
             raise AssertionError('no native fallback evidence: ' + name)
     if any(not samples['FINAL'][g][1] for g in GROUPS):
@@ -238,7 +241,7 @@ def check(tsf, host, samples, fetches, elapsed):
     keepalive_evidence = dict(samples=len(keepalive),
         refreshed=max((int(row[0]) for row in keepalive), default=0),
         skipped=max((int(row[1]) for row in keepalive), default=0))
-    return dict(bundle=bundle, policy_ready_startup_ms=startup_ms, startup_counters=startup,
+    return dict(novel_fallback=novel, bundle=bundle, policy_ready_startup_ms=startup_ms, startup_counters=startup,
                 keepalive=keepalive_evidence, restart_callers=restart_callers,
                 phases=phases, callback_probes=len(rows), pipe_io=0, blocking_waits=0,
                 callback_max_us=max(times), negative_cache_fetches=fetches, exact_documents=7)
@@ -381,6 +384,7 @@ def self_test():
         ('EXPIRY', 3, 3), ('DOWN', 4, 4), ('RECOVER', 5, 5), ('FINAL', 5, 6))}
     for label in LABELS:
         samples[label]['STARTUP'] = [0, 1 if label == 'COLD' else 2]
+    host += '\n' + coverage.novel_fixture()
     assert PIPE_WAIT_SEC == 65 and PIPE_WAIT_SEC * 1000 > POLICY_STARTUP_MS
     assert EVIDENCE_SEC == 405 and HARNESS_EXIT_SEC == 420 and GATE_SEC == 435
     assert check(tsf, host, samples, [1, 2], 1)['policy_ready_startup_ms'] == [1, 1]
@@ -436,6 +440,27 @@ def self_test():
         else:
             bad['FINAL']['STARTUP'] = startup
         mutations.append((tsf, host, bad, [1, 2], 1))
+    raced = copy.deepcopy(samples)
+    for label, n in (('COLD', 0), ('WARM', 0), ('HITS', 0),
+                     ('EXPIRY', 1), ('DOWN', 2), ('RECOVER', 2), ('FINAL', 2)):
+        for g in GROUPS:
+            raced[label][g][0] = n
+    check(tsf, host, raced, [1, 2], 1)
+    for phase in coverage.NOVEL_PHASES:
+        mutations.append((tsf, re.sub(r'policy-novel phase=' + phase + r'[^\n]*\n', '', host), raced, [1, 2], 1))
+    for old, new in (('native=1 first=1', 'native=0 first=1'),
+                     ('native=1 first=1', 'native=2 first=1'),
+                     ('answer=1 later=1', 'answer=0 later=1'),
+                     ('answer=1 later=1', 'answer=1 later=0'),
+                     ('policy-compare match request=1 kind=8', 'policy-compare match request=1 kind=8 keepalive=1'),
+                     ('8:1:257:1:0', '8:1:256:1:0')):
+        mutations.append((tsf, host.replace(old, new), raced, [1, 2], 1))
+    mutations.append((tsf, host.replace(coverage.novel_fixture(), ''), raced, [1, 2], 1))
+    for label, previous in (('EXPIRY', 'HITS'), ('DOWN', 'EXPIRY')):
+        missing = copy.deepcopy(samples)
+        for g in GROUPS:
+            missing[label][g][0] = missing[previous][g][0]
+        mutations.append((tsf, host, missing, [1, 2], 1))
     for args in mutations:
         try:
             check(*args)
@@ -604,14 +629,21 @@ def main(args):
         pipe_name = until(lambda: (m.group(1) if (m := re.search(r'run-harness: pipe=(\S+)', text(gate_path))) else None), PIPE_WAIT_SEC, step='harness pipe identity')
         # The pipe identity is logged before host startup, not at pipe readiness.
         until(lambda: 'AFTER COLD ' in tsf(), PIPE_WAIT_SEC + COLD_LOAD_SEC + 35, step='AFTER COLD'); snapshot('COLD')
+        until(lambda: 'policy-ready' in host(), 60, step='novel cold policy-ready')
+        coverage.request_novel_fallback(request, 'cold')
         server_miss(); time.sleep(.5); server_miss()
         # Cache's independent S3 comparison remains eagerly observed. Keep the
         # server disabled for steady local conversions so that observer is not
         # confused with authoritative CacheTtl/Capacity memo-hit evaluations.
         configure_server(False); server_miss()
+        published = host().count('replacement-published engine=')
         if request(b'ENGINE RELOAD') != b'OK RELOADING':
             raise AssertionError('private engine reload failed')
-        until(lambda: 'AFTER WARM ' in tsf(), 70, step='AFTER WARM'); snapshot('WARM')
+        until(lambda: host().count('replacement-published engine=') > published, 65,
+              step='novel generation replacement-published')
+        coverage.request_novel_fallback(request, 'generation')
+        until(lambda: 'AFTER WARM ' in tsf(), 70, step='AFTER WARM')
+        snapshot('WARM')
         server_miss() # Exercise a seeded SOURCES hit within the steady window.
         until(lambda: 'AFTER HITS ' in tsf(), 10, step='AFTER HITS'); snapshot('HITS')
         # Leave exact source/cache signatures idle beyond the policy memo's 30 s.
@@ -667,6 +699,7 @@ def main(args):
               step='replacement policy-ready')
         configure_server(False)
         server_miss(seconds=RESTART_WAIT_SEC, step='post-disable server miss')
+        coverage.request_novel_fallback(request, 'restart')
         until(lambda: 'AFTER RECOVER ' in tsf(), 70, step='AFTER RECOVER'); snapshot('RECOVER')
         for identity in acknowledged:
             replay_ack(identity)

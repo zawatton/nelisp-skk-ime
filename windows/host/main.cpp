@@ -2842,6 +2842,9 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
         if (switching || different) QueueReplacement(id);
         response = switching || different ? "OK SWITCHING " + id : "OK ENGINE " + id;
       }
+    } else if (engine_request.starts_with("POLICY TEST NOVEL ")) {
+      response = g_pipe_name.starts_with(L"\\\\.\\pipe\\ddskk-test-")
+          ? native_adapter::shadow.TestNovelFallback(engine_request.substr(std::string_view("POLICY TEST NOVEL ").size())) : "ERR POLICY NOVEL DISABLED";
     } else if (engine_request == "HN3 TEST SHADOW") {
       response = g_pipe_name.starts_with(L"\\\\.\\pipe\\ddskk-test-") && native_adapter::shadow.TestShadow()
           ? "OK HN3 SHADOW" : "ERR HN3 TEST";

@@ -181,14 +181,30 @@ class ShadowPolicy {
   }
   // Never wait for policy or IO. Contention and saturation drop diagnostics,
   // not native work. Fixed-size value objects cannot retain host pointers.
+  template<bool HarnessWait = false>
   void Observe(Observation value) {
     if (!enabled_) return;
     if (value.context_size > value.context.size()) { ++dropped_; return; }
-    std::unique_lock lock(mutex_, std::try_to_lock);
-    if (!lock.owns_lock() || queue_.size() >= kRequests ||
+    std::unique_lock lock(mutex_, std::defer_lock);
+    if constexpr (HarnessWait) lock.lock(); else (void)lock.try_lock();
+    if (!lock.owns_lock()) { ++dropped_; return; }
+    if (value.caller_used && Authoritative(value.kind)) RecordUse(value);
+    if (Authoritative(value.kind)) {
+      const auto queued = std::find_if(queue_.begin(), queue_.end(),
+          [&](const Observation& input) { return Key(input) == Key(value); });
+      if (queued != queue_.end()) {
+        // A single caller can share a queued Seed/prefetch answer. Preserve its
+        // recency even though no additional IPC request is needed.
+        if (value.caller_used) {
+          queued->caller_tick = queued->caller_used ?
+              (std::max)(queued->caller_tick, value.caller_tick) : value.caller_tick;
+          queued->caller_used = true;
+        }
+        return;
+      }
+    }
+    if (queue_.size() >= kRequests ||
         (queue_.size() + 1) * sizeof(Observation) > kBytes) { ++dropped_; return; }
-    if (Authoritative(value.kind) && std::any_of(queue_.begin(), queue_.end(),
-        [&](const Observation& queued) { return Key(queued) == Key(value); })) return;
     queue_.push_back(value); changed_.notify_one();
   }
   bool Authoritative(PolicyKind kind) const {
@@ -215,7 +231,7 @@ class ShadowPolicy {
   }
   // Exact input memoization, not speculative replay. A miss schedules copied
   // work and returns native immediately. try_lock also makes contention a miss.
-  template<class NativeDecision>
+  template<bool HarnessWait = false, class NativeDecision>
   uint64_t Decide(Observation value, NativeDecision native_decision, bool known_native = false) {
     if (!Authoritative(value.kind)) {
       value.native_decision = native_decision();
@@ -229,7 +245,9 @@ class ShadowPolicy {
     unsigned miss = 0; // contention, unhealthy, absent, expired
     uint64_t age = 0;
     {
-      std::unique_lock lock(mutex_, std::try_to_lock);
+      std::unique_lock lock(mutex_, std::defer_lock);
+      if constexpr (HarnessWait) lock.lock(); else (void)lock.try_lock();
+      if (lock.owns_lock()) RecordUse(value);
       if (lock.owns_lock() && healthy_) {
         miss = 2;
         const auto found = decisions_.find(key);
@@ -257,13 +275,46 @@ class ShadowPolicy {
     // expected value is the memo answer, not a freshly evaluated native oracle.
     // OFF/SHADOW and misses retain the original native comparison value.
     if (!known_native) value.native_decision = result;
-    Observe(value);
+    Observe<HarnessWait>(value);
     const auto kind = static_cast<unsigned>(value.kind);
     if (kind < used_.size()) {
       ++(used ? used_[kind] : fallback_[kind]);
       if (known_native && used && result != value.native_decision) ++divergent_[kind];
     }
     return result;
+  }
+  // Private control only. Ordinary Capacity callers/Seed use a=0 or 256;
+  // no prefetch creates these monotonically allocated, lossless HP2 inputs.
+  // HarnessWait instantiates blocking metadata locks only for this probe.
+  std::string TestNovelFallback(const std::string& phase) {
+    if (phase != "cold" && phase != "generation" && phase != "restart") return "ERR POLICY NOVEL PHASE";
+    if (!HarnessDiagnostics() || !Authoritative(PolicyKind::Capacity)) return "ERR POLICY NOVEL DISABLED";
+    static std::mutex probe_mutex;
+    static uint64_t next = 257;
+    std::lock_guard probe_lock(probe_mutex);
+    if (next > 262143) return "ERR POLICY NOVEL EXHAUSTED";
+    Observation value{PolicyKind::Capacity, engine_epoch.load(), publication_generation.load(), next++, 1, 0, 1};
+    unsigned native_calls = 0;
+    auto fallback = [&] {
+      ++native_calls; NativeEvaluation(value.kind);
+      return uint64_t{value.a < 256 || value.b != 0};
+    };
+    const auto first = Decide<true>(value, fallback);
+    uint64_t answer = 0;
+    {
+      std::unique_lock lock(mutex_);
+      if (!changed_.wait_for(lock, std::chrono::seconds(2), [&] {
+        const auto found = decisions_.find(Key(value));
+        if (!healthy_ || found == decisions_.end()) return false;
+        answer = found->second.value; return true;
+      })) return "ERR POLICY NOVEL ANSWER";
+    }
+    const auto later = Decide<true>(value, fallback);
+    const auto evidence = "policy-novel phase=" + phase + " key=" + Key(value) +
+        " native=" + std::to_string(native_calls) + " first=" + std::to_string(first) +
+        " answer=" + std::to_string(answer) + " later=" + std::to_string(later);
+    LogEvent(evidence);
+    return evidence;
   }
   // Eager observations are retained for the separate adapter equality tests.
   uint64_t Decide(const Observation& value) {
@@ -438,8 +489,28 @@ class ShadowPolicy {
   // Bounded copied caller history survives policy retirement, never authority.
   // Only a reply from the new READY child can recreate a usable memo entry.
   std::map<std::string, Decision> recent_;
+  // Called with mutex_ held. Caller history is independent of memo authority
+  // and queue admission; neither a hit nor a miss needs a reply to record use.
+  void RecordUse(const Observation& value) {
+    if (value.engine_epoch != engine_epoch.load()) return;
+    const auto key = Key(value);
+    auto found = decisions_.find(key);
+    if (found != decisions_.end()) {
+      auto& entry = found->second;
+      entry.last_used = entry.active ? (std::max)(entry.last_used, value.caller_tick) : value.caller_tick;
+      entry.active = true;
+      TrackRecent(key, entry);
+    } else {
+      TrackRecent(key, {value.native_decision, 0, value, value.caller_tick, true});
+    }
+  }
   void TrackRecent(const std::string& key, const Decision& entry) {
-    if (!entry.active) return;
+    const auto engine = engine_epoch.load();
+    if (!entry.active || entry.inputs.engine_epoch != engine) return;
+    for (auto it = recent_.begin(); it != recent_.end();) {
+      if (it->second.inputs.engine_epoch != engine) it = recent_.erase(it);
+      else ++it;
+    }
     if (recent_.size() >= kKeepaliveLimit && !recent_.contains(key)) {
       const auto oldest = std::min_element(recent_.begin(), recent_.end(),
           [](const auto& a, const auto& b) { return a.second.last_used < b.second.last_used; });
@@ -479,7 +550,7 @@ class ShadowPolicy {
         // Prefetch prepares the candidate before publication. A periodic sweep
         // must not delete its answer in the intervening warmup window.
         if (CandidateRestart(entry.inputs, engine)) { ++it; continue; }
-        ++keepalive_skipped_; it = decisions_.erase(it); continue;
+        it = decisions_.erase(it); continue;
       }
       if (!healthy_ || !entry.active || now - entry.last_used > kKeepaliveRecent ||
           !Authoritative(entry.inputs.kind) || now - entry.at < kKeepaliveAge ||
@@ -549,6 +620,11 @@ class ShadowPolicy {
     if (decisions_.size() >= kRequests && !decisions_.contains(Key(value)))
       decisions_.erase(decisions_.begin());
     auto& entry = decisions_[Key(value)];
+    const auto recent = recent_.find(Key(value));
+    if (recent != recent_.end() && recent->second.active) {
+      entry.last_used = entry.active ? (std::max)(entry.last_used, recent->second.last_used) : recent->second.last_used;
+      entry.active = true;
+    }
     if (reseed) { entry.last_used = recent_.at(Key(value)).last_used; entry.active = true; }
     entry.value = decision; entry.at = MemoNow(); entry.inputs = value;
     if (value.caller_used) {
@@ -837,13 +913,11 @@ class ShadowPolicy {
         if (seeded_engine != current_engine) {
           {
             std::lock_guard lock(mutex_);
-            // A warming engine can already have genuine restart answers. Keep
-            // only those tagged with the epoch being published; all other
-            // policy rules retain their original engine-change invalidation.
-            const auto restart = "3:" + std::to_string(current_engine) + ":";
-            const auto replacement = "7:" + std::to_string(current_engine) + ":";
+            // Keep answers already tagged with the published epoch, including
+            // caller replies that raced this sweep, plus future restart warmup.
+            // All stale rules retain engine-change invalidation.
             for (auto it = decisions_.begin(); it != decisions_.end();) {
-              if (it->first.starts_with(restart) || it->first.starts_with(replacement) ||
+              if (it->second.inputs.engine_epoch == current_engine ||
                   CandidateRestart(it->second.inputs, current_engine)) ++it;
               else it = decisions_.erase(it);
             }
@@ -874,7 +948,10 @@ class ShadowPolicy {
         bool keepalive = false;
         if (!keepalive_work.empty()) {
           v = keepalive_work.front(); keepalive_work.pop_front();
-          if (!KeepaliveCurrent(v, reseed)) { ++keepalive_skipped_; continue; }
+          if (!KeepaliveCurrent(v, reseed)) {
+            if (v.engine_epoch == engine_epoch.load()) ++keepalive_skipped_;
+            continue;
+          }
           keepalive = true;
         } else {
           std::unique_lock lock(mutex_);
@@ -919,7 +996,8 @@ class ShadowPolicy {
         const uint64_t decision = (reply[15] - 32) * 4096 +
             (reply[16] - 32) * 64 + reply[17] - 32;
         if (!ValidDecision(v.kind, decision)) { LogEvent("policy-invalid-decision"); break; }
-        if (!Remember(v, decision, keepalive, keepalive && reseed) && keepalive) ++keepalive_skipped_;
+        if (!Remember(v, decision, keepalive, keepalive && reseed) && keepalive &&
+            v.engine_epoch == engine_epoch.load()) ++keepalive_skipped_;
         const auto expected = prefix + Digits(v.native_decision, 3);
         if (!keepalive) ++completed_; changed_.notify_all();
         LogEvent(std::string("policy-compare ") + (reply == expected ? "match" : "mismatch") +
