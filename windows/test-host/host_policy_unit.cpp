@@ -4,7 +4,9 @@
 #undef wmain
 namespace { namespace native_adapter {
 struct ShadowPolicyTest {
-  static int Run() {
+  inline static uint64_t now = 0;
+  static uint64_t Clock() { return now; }
+  static int Run(bool broken_keepalive) {
     ShadowPolicy policy;
     policy.enabled_ = true;
     int checks = 0, failures = 0;
@@ -78,9 +80,87 @@ struct ShadowPolicyTest {
     check(!ShadowPolicy::ValidDecision(PolicyKind::Restart, 999));
     check(!ShadowPolicy::ValidDecision(PolicyKind::Cache, 2));
     check(!ShadowPolicy::ValidDecision(PolicyKind::Sources, 3));
+    // Fake clock and child: use production selection, fencing and memo commit.
+    // A differing child answer proves the 45 s call skips native evaluation.
+    ShadowPolicy live;
+    live.enabled_ = true; live.switches_.fill(true); live.healthy_ = true;
+    live.memo_clock_ = Clock; engine_epoch = 7; now = 0;
+    Observation key{PolicyKind::Sources, 7, 0, 1, 1, 0, 0};
+    int native_calls = 0, child_calls = 0;
+    auto fallback = [&] { ++native_calls; NativeEvaluation(key.kind); return uint64_t{0}; };
+    auto child = [&](const Observation& input) {
+      ++child_calls;
+      // The fake IPC callback can acquire the memo mutex: selection released it.
+      { std::unique_lock free(live.mutex_, std::try_to_lock); check(free.owns_lock()); }
+      check(ShadowPolicy::ValidDecision(input.kind, 2));
+      return live.Remember(input, 2, true);
+    };
+    key.caller_used = true; live.Remember(key, 2); key.caller_used = false;
+    check(live.Decide(key, fallback) == 2 && native_calls == 0);
+    live.queue_.clear();
+    const auto managed_before = PolicyCounters::nelisp[0].load();
+    const auto native_before = PolicyCounters::native[0].load();
+    const auto used_before = live.used_[2].load(), completed_before = live.completed_.load();
+    now = 19999; check(live.Keepalive().empty());
+    for (now = 25000; now <= 45000; now += 5000) {
+      for (const auto& input : broken_keepalive ? std::deque<Observation>{} : live.Keepalive()) {
+        check(live.KeepaliveCurrent(input)); check(child(input));
+      }
+    }
+    now = 45000;
+    check(child_calls == 2 && live.keepalive_refreshed_ == 2);
+    check(PolicyCounters::nelisp[0] == managed_before && PolicyCounters::native[0] == native_before);
+    check(live.used_[2] == used_before && live.completed_ == completed_before);
+    live.LogDecisions(); // Sample real private-harness refresh diagnostics.
+    check(live.Decide(key, fallback) == 2 && native_calls == 0);
+    // Negative control: the same timeline with worker keep-alive disabled.
+    ShadowPolicy disabled;
+    disabled.enabled_ = true; disabled.switches_.fill(true); disabled.healthy_ = true;
+    disabled.memo_clock_ = Clock; now = 0;
+    disabled.Remember(key, 2); check(disabled.Decide(key, fallback) == 2);
+    now = 45000; check(disabled.Decide(key, fallback) == 0 && native_calls == 1);
+    // Refresh does not extend caller recency, even after repeated child replies.
+    live.queue_.clear(); now = 65000;
+    auto pending = live.Keepalive(); check(pending.size() == 1);
+    live.healthy_ = false; check(!live.KeepaliveCurrent(pending.front()));
+    now = 70000; check(live.Keepalive().empty());
+    check(child_calls == 2); live.healthy_ = true;
+    now = 75000; pending = live.Keepalive(); check(pending.size() == 1);
+    engine_epoch = 8;
+    check(!live.KeepaliveCurrent(pending.front()));
+    check(!live.Remember(pending.front(), 2, true)); // epoch changed during IPC
+    now = 80000; check(live.Keepalive().empty() && live.decisions_.empty());
+    engine_epoch = 7; now = 0; key.caller_used = true;
+    live.Remember(key, 2); key.caller_used = false;
+    now = 600000; pending = live.Keepalive(); check(pending.size() == 1);
+    check(child(pending.front()));
+    check(live.decisions_.at(ShadowPolicy::Key(key)).last_used == 0);
+    now = 625000; check(live.Keepalive().empty());
+    // Seeds never used by a caller are not refreshed.
+    live.decisions_.clear(); now = 0; live.Remember(key, 2);
+    now = 650000; check(live.Keepalive().empty());
+    // Bound a full memo to 64 keys per 5 s; no second batch in that interval.
+    live.decisions_.clear(); live.keepalive_last_ = 0; now = 0;
+    key.caller_used = true;
+    for (size_t n = 0; n < ShadowPolicy::kRequests; ++n) {
+      key.a = n; live.Remember(key, 2);
+    }
+    now = 25000; pending = live.Keepalive();
+    check(pending.size() == ShadowPolicy::kKeepaliveLimit);
+    check(live.Keepalive().empty());
+    now = 29999; check(live.Keepalive().empty());
+    for (const auto& input : pending) check(child(input));
+    now = 30000; check(live.Keepalive().empty()); // all answers freshly committed
+    now = 50000; pending = live.Keepalive(); check(pending.size() == 64);
+    live.Timeout(pending.front());
+    check(!live.KeepaliveCurrent(pending.front()));
+    check(!live.Remember(pending.front(), 2, true)); // late reply cannot recreate a dropped key
     std::printf("policy adapter unit: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
   }
 };
 } }
-int main() { return native_adapter::ShadowPolicyTest::Run(); }
+int main(int argc, char** argv) {
+  if (argc > 2) g_log_path = std::filesystem::path(argv[2]).wstring();
+  return native_adapter::ShadowPolicyTest::Run(argc > 1 && std::string(argv[1]) == "broken-keepalive");
+}

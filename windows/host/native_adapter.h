@@ -66,6 +66,8 @@ struct Observation {
   uint64_t engine_epoch, publication_generation, a, b, c, native_decision;
   std::array<char, 1024> context{};
   size_t context_size = 0;
+  bool caller_used = false; // Set only by Decide, never by seed/keep-alive work.
+  uint64_t caller_tick = 0;
 };
 
 class ShadowPolicy {
@@ -219,6 +221,7 @@ class ShadowPolicy {
       value.native_decision = native_decision();
       Observe(value); return value.native_decision;
     }
+    value.caller_used = true; value.caller_tick = MemoNow();
     const auto key = Key(value);
     uint64_t result = 0;
     bool used = false;
@@ -231,7 +234,9 @@ class ShadowPolicy {
         miss = 2;
         const auto found = decisions_.find(key);
         if (found != decisions_.end()) {
-          age = GetTickCount64() - found->second.at;
+          found->second.last_used = value.caller_tick;
+          found->second.active = true;
+          age = MemoNow() - found->second.at;
           miss = 3;
           if (age <= 30000) { result = found->second.value; used = true; }
         }
@@ -383,6 +388,12 @@ class ShadowPolicy {
   void LogDecisions() {
     PolicyCounters::Log();
     if (HarnessDiagnostics()) {
+      const auto now = MemoNow();
+      if (now - keepalive_log_at_ >= 1000 && (keepalive_refreshed_ || keepalive_skipped_)) {
+        keepalive_log_at_ = now;
+        LogEvent("policy-keepalive refreshed=" + std::to_string(keepalive_refreshed_) +
+            " skipped=" + std::to_string(keepalive_skipped_));
+      }
       const char* reasons[] = {"contention", "unhealthy", "absent", "expired"};
       for (size_t kind = 1; kind < misses_.size(); ++kind) {
         for (size_t reason = 0; reason < 4; ++reason) {
@@ -411,7 +422,52 @@ class ShadowPolicy {
     }
   }
   bool healthy_ = false; // guarded by mutex_; cleared on timeout/crash/retirement
-  struct Decision { uint64_t value, at; };
+  // Only memo time is injectable; IPC deadlines always use the real clock.
+  uint64_t (*memo_clock_)() = nullptr;
+  uint64_t MemoNow() const { return memo_clock_ ? memo_clock_() : GetTickCount64(); }
+  static constexpr uint64_t kKeepaliveInterval = 5000, kKeepaliveAge = 20000,
+      kKeepaliveRecent = 600000;
+  static constexpr size_t kKeepaliveLimit = 64;
+  uint64_t keepalive_last_ = 0, keepalive_refreshed_ = 0, keepalive_skipped_ = 0, keepalive_log_at_ = 0;
+  struct Decision {
+    uint64_t value, at;
+    Observation inputs{};
+    uint64_t last_used = 0;
+    bool active = false;
+  };
+  // Worker-only selection. Copy under the lock, release it before any IPC.
+  std::deque<Observation> Keepalive() {
+    std::deque<Observation> work;
+    const auto now = MemoNow();
+    if (now - keepalive_last_ < kKeepaliveInterval) return work;
+    keepalive_last_ = now;
+    std::lock_guard lock(mutex_);
+    const auto engine = engine_epoch.load();
+    for (auto it = decisions_.begin(); it != decisions_.end();) {
+      auto& entry = it->second;
+      if (entry.inputs.engine_epoch != engine) {
+        ++keepalive_skipped_; it = decisions_.erase(it); continue;
+      }
+      if (!healthy_ || !entry.active || now - entry.last_used > kKeepaliveRecent ||
+          !Authoritative(entry.inputs.kind) || now - entry.at < kKeepaliveAge ||
+          work.size() >= kKeepaliveLimit) {
+        ++keepalive_skipped_; ++it; continue;
+      }
+      auto value = entry.inputs;
+      value.native_decision = entry.value; // Compare against the previous child answer.
+      value.caller_used = false;
+      work.push_back(value); ++it;
+    }
+    return work;
+  }
+  bool KeepaliveCurrent(const Observation& value) {
+    std::lock_guard lock(mutex_);
+    const auto found = decisions_.find(Key(value));
+    return healthy_ && value.engine_epoch == engine_epoch.load() &&
+        found != decisions_.end() && found->second.active &&
+        MemoNow() - found->second.last_used <= kKeepaliveRecent &&
+        MemoNow() - found->second.at >= kKeepaliveAge;
+  }
   std::map<std::string, Decision> decisions_;
   static std::string Key(const Observation& v) {
     // Policy algorithms are pure numeric functions: context is an audit label,
@@ -449,12 +505,22 @@ class ShadowPolicy {
     if (kind == PolicyKind::Sources || kind == PolicyKind::Order || kind == PolicyKind::Payload) return value <= 2;
     return value <= 1;
   }
-  void Remember(const Observation& value, uint64_t decision) {
-    if (!Authoritative(value.kind)) return;
+  bool Remember(const Observation& value, uint64_t decision, bool keepalive = false) {
+    if (!Authoritative(value.kind)) return false;
     std::lock_guard lock(mutex_);
+    // An epoch change during IPC must not resurrect a selected keep-alive key.
+    if (keepalive && (!healthy_ || value.engine_epoch != engine_epoch.load() ||
+        !decisions_.contains(Key(value)))) return false;
     if (decisions_.size() >= kRequests && !decisions_.contains(Key(value)))
       decisions_.erase(decisions_.begin());
-    decisions_[Key(value)] = {decision, GetTickCount64()};
+    auto& entry = decisions_[Key(value)];
+    entry.value = decision; entry.at = MemoNow(); entry.inputs = value;
+    if (value.caller_used) {
+      entry.last_used = entry.active ? (std::max)(entry.last_used, value.caller_tick) : value.caller_tick;
+      entry.active = true;
+    }
+    if (keepalive) ++keepalive_refreshed_;
+    return true;
   }
   void Timeout(const Observation& value) {
     std::lock_guard lock(mutex_); decisions_.erase(Key(value));
@@ -708,6 +774,7 @@ class ShadowPolicy {
       if (native_ready) LogEvent(bundle_summary_);
       LogEvent("policy-ready startup_ms=" + std::to_string(GetTickCount64() - start) + " native=" + (native_ready ? "1" : "0"));
       LogEvent("policy-decision-accounting v=1");
+      std::deque<Observation> keepalive_work;
       while (!stop_ && !g_stopping) {
         LogDecisions();
         const auto current_engine = engine_epoch.load();
@@ -725,8 +792,10 @@ class ShadowPolicy {
             }
           }
           { std::lock_guard lock(mutex_); byte_memo_.clear(); byte_memo_bytes_ = 0; }
+          keepalive_work.clear();
           seeded_engine = current_engine; Seed(current_engine);
         }
+        if (keepalive_work.empty()) keepalive_work = Keepalive();
         std::shared_ptr<ByteRequest> byte_work;
         {
           std::lock_guard lock(mutex_);
@@ -737,7 +806,12 @@ class ShadowPolicy {
           continue;
         }
         Observation v{};
-        {
+        bool keepalive = false;
+        if (!keepalive_work.empty()) {
+          v = keepalive_work.front(); keepalive_work.pop_front();
+          if (!KeepaliveCurrent(v)) { ++keepalive_skipped_; continue; }
+          keepalive = true;
+        } else {
           std::unique_lock lock(mutex_);
           changed_.wait_for(lock, std::chrono::milliseconds(100), [&] { return stop_ || !queue_.empty() || !byte_queue_.empty(); });
           if (queue_.empty()) {
@@ -753,7 +827,7 @@ class ShadowPolicy {
         const auto prefix = "HP2R" + Digits(id, 11);
         const auto frame = Frame(id, v);
         if (frame.empty()) {
-          Timeout(v); ++dropped_; ++completed_; changed_.notify_all();
+          Timeout(v); ++dropped_; if (!keepalive) ++completed_; changed_.notify_all();
           LogEvent("policy-fallback native reason=hp2-input-bounds"); continue;
         }
         // One outstanding frame, <4096 bytes, into an empty 4096-byte pipe.
@@ -763,7 +837,7 @@ class ShadowPolicy {
           // A slow refresh invalidates its signature, not independently
           // validated pure answers. Crash/retirement still clears everything.
           Timeout(v);
-          ++completed_; changed_.notify_all();
+          if (!keepalive) ++completed_; changed_.notify_all();
           LogEvent("policy-timeout-discard request=" + std::to_string(id));
           // Keep one outstanding ID while the paused child resumes; discard
           // its late response before writing anything else. Hard limit 5 s.
@@ -780,11 +854,12 @@ class ShadowPolicy {
         const uint64_t decision = (reply[15] - 32) * 4096 +
             (reply[16] - 32) * 64 + reply[17] - 32;
         if (!ValidDecision(v.kind, decision)) { LogEvent("policy-invalid-decision"); break; }
-        Remember(v, decision);
+        if (!Remember(v, decision, keepalive) && keepalive) ++keepalive_skipped_;
         const auto expected = prefix + Digits(v.native_decision, 3);
-        ++completed_; changed_.notify_all();
+        if (!keepalive) ++completed_; changed_.notify_all();
         LogEvent(std::string("policy-compare ") + (reply == expected ? "match" : "mismatch") +
             " request=" + std::to_string(id) + " kind=" + std::to_string(static_cast<unsigned>(v.kind)) +
+            (keepalive ? " keepalive=1" : "") +
             (HarnessDiagnostics() ? " elapsed_ms=" + std::to_string(GetTickCount64() - exchange_start) : ""));
         if (!reply.starts_with(prefix)) break;
       }

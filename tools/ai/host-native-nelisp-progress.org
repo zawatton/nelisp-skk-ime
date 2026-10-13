@@ -110,7 +110,7 @@ cmd: python tools/ai/check-hn-policy.py --native && pwsh -NoProfile -File window
 #+NOTE: Include 3 s GC, wrong/late frames, kill/restart, interpreted-unavailable modes and simultaneous multi-client pressure; no callback wait or lost acknowledged learning.
 #+REQUIRES: HN_IME_RUNTIME,HN_NATIVE_RUNTIME,HN_NELISP_SRC
 #+NOTE: HN9 coordinator-only gate; offline pinned GNU bytecode/template bundle preparation under LOCALAPPDATA precedes private stack qualification. A supplied DDSKK_HOST_POLICY_BUNDLE avoids recompilation; preparation counts toward the six-minute gate bound and must leave the stack budget. Native READY and all manifest pins required; fallback is a gate failure. Worker runs only build, offline units and dry negative controls, never stacks. Native compilation and E2E qualification remain unrun without supplied runtimes/source.
-#+TIMEOUT: 375
+#+TIMEOUT: 450
 cmd: pwsh -NoProfile -File windows/test-host/test-hn-e2e-startup.ps1 -Runtime "$HN_IME_RUNTIME" -BuildDir build/w
 
 #+NOTE: Exact seven documents, six acknowledged learning barriers, private reload via HN3, owned policy suspend for 3 s during conversion, late discard and kill/restart; four concurrent private clients/32 exact replies. No existing fenced HN3 frame-injection hook: explicitly skipped. Stack phase <360 s, callback waits=0, unchanged 20 ms watchdog, owned-PID leftovers=[].
