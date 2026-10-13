@@ -24,7 +24,27 @@ def main():
                             timeout=15, env=dict(os.environ, DDSKK_HOST_POLICY_COUNTERS="1"))
     if broken.returncode != 1:
         raise AssertionError("disabled keep-alive unexpectedly passed memo-hit checks")
-    print("PASS policy adapter keepalive fake_clock=1 fake_child=1 negative_control=disabled stacks=0")
+    env = dict(os.environ, DDSKK_HOST_POLICY_COUNTERS="1", DDSKK_HARNESS_DIAGNOSTICS="1",
+               NATIVEIME_REGISTRY_KEY="Software\\NativeIME-test-keepalive-unit")
+    # Keep this fixture independent of any coordinator's native bundle settings.
+    for name in ("DDSKK_HOST_POLICY_RUNTIME", "DDSKK_HOST_POLICY_BUNDLE"):
+        env.pop(name, None)
+    for mode, expected in (("broken-stderr", 1), ("transport", 0)):
+        log = out / f"{mode}.log"
+        log.unlink(missing_ok=True)
+        result = subprocess.run([str(out / "Release/host-policy-unit.exe"), mode, str(log)],
+                                timeout=20, env=env)
+        if result.returncode != expected:
+            raise AssertionError(f"{mode}: expected exit {expected}, got {result.returncode}")
+        evidence = log.read_text("utf-8")
+        if mode == "broken-stderr":
+            # Old routing consumes a partial READY plus stderr and stops on CR.
+            if "policy-ready-rejected line_complete=0 bytes=21 hex=48503220524566616b6520646961676e6f73746963" not in evidence:
+                raise AssertionError("old stderr routing did not reproduce partial READY")
+        elif evidence.count("policy-ready startup_ms=") != 2 or "keepalive=1" not in evidence or "policy-start-failed" in evidence:
+            raise AssertionError("missing clean READY/keepalive evidence across relaunch")
+    print("PASS policy adapter keepalive fake_clock=1 fake_child=1 ready_relaunch=1 "
+          "negative_control=disabled,old-stderr-routing stacks=0")
 
 if __name__ == "__main__":
     main()

@@ -688,9 +688,14 @@ class ShadowPolicy {
   bool Launch() {
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
     HANDLE in_read = nullptr, out_write = nullptr;
+    // stdout is the protocol transport. Runtime diagnostics on stderr must
+    // never become READY/HP2/HN3 bytes, including interpreted fallback starts.
+    HANDLE error_sink = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (error_sink == INVALID_HANDLE_VALUE) return false;
     if (!CreatePipe(&in_read, &input_, &security, 4096) ||
         !CreatePipe(&output_, &out_write, &security, 4096)) {
-      Close(in_read); Close(out_write); Retire(); return false;
+      Close(in_read); Close(out_write); Close(error_sink); Retire(); return false;
     }
     SetHandleInformation(input_, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(output_, HANDLE_FLAG_INHERIT, 0);
@@ -702,15 +707,15 @@ class ShadowPolicy {
     STARTUPINFOEXW si{}; si.StartupInfo.cb = sizeof(si);
     si.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
     if (!InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &bytes)) {
-      Close(in_read); Close(out_write); Retire(); return false;
+      Close(in_read); Close(out_write); Close(error_sink); Retire(); return false;
     }
-    HANDLE handles[] = {in_read, out_write};
+    HANDLE handles[] = {in_read, out_write, error_sink};
     const bool updated = UpdateProcThreadAttribute(si.lpAttributeList, 0,
         PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, sizeof(handles), nullptr, nullptr) != 0;
     si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     si.StartupInfo.hStdInput = in_read;
     si.StartupInfo.hStdOutput = out_write;
-    si.StartupInfo.hStdError = out_write;
+    si.StartupInfo.hStdError = error_sink;
     PROCESS_INFORMATION pi{};
     std::wstring command = L"\"" + runtime_ + L"\" --load engine/host-policy.el";
     native_attempt_ = !interpreted_retry_ && NativeCommand(command);
@@ -719,7 +724,7 @@ class ShadowPolicy {
         TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW |
         BELOW_NORMAL_PRIORITY_CLASS, nullptr, repository_.c_str(), &si.StartupInfo, &pi);
     DeleteProcThreadAttributeList(si.lpAttributeList);
-    Close(in_read); Close(out_write);
+    Close(in_read); Close(out_write); Close(error_sink);
     if (!started) { Retire(); return false; }
     if (!AssignProcessToJobObject(job_, pi.hProcess)) {
       TerminateProcess(pi.hProcess, 1); CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
@@ -746,6 +751,9 @@ class ShadowPolicy {
     return false;
   }
   void Run() {
+    // This worker exclusively owns launch, READY, every exchange and retire.
+    // Callers/prefetch only queue copied work; keep-alive runs below READY and
+    // uses the same serial exchange path, never a second transport thread.
     uint64_t seeded_engine = ~uint64_t{0};
     DWORD backoff = 1000;
     while (!stop_ && !g_stopping) {
@@ -755,6 +763,14 @@ class ShadowPolicy {
       const bool native_ready = reply == "HP2 READY HN3=1 native=1";
       if (!ready || (reply != "HP2 READY" && reply != "HP2 READY HN3=1" && reply != "HP2 READY HN3=1 native=0" && !native_ready) ||
           (native_attempt_ && !native_ready)) {
+        // Preserve bounded wire evidence without injecting control characters
+        // into logs. Distinguish a bad line from a failed/partial read.
+        std::string hex;
+        for (unsigned char ch : reply) {
+          hex += "0123456789abcdef"[ch >> 4]; hex += "0123456789abcdef"[ch & 15];
+        }
+        LogEvent("policy-ready-rejected line_complete=" + std::to_string(ready) +
+            " bytes=" + std::to_string(reply.size()) + " hex=" + hex);
         if (native_attempt_) {
           LogEvent("policy-native-refused reason=load-or-ready-failed");
           interpreted_retry_ = true;
