@@ -26,13 +26,36 @@ $cases = @(
   @{name='cancel-prefix'; inner='k'; quits=1},
   @{name='cancel-reading'; inner='A i'; quits=1},
   @{name='cancel-candidate'; inner='A i SPACE'; quits=2},
-  @{name='cancel-okuri'; inner='K a K u'; quits=2}
+  @{name='cancel-okuri'; inner='K a K u'; quits=2},
+  @{name='recursive-miss-ret'; inner='P i p i p i SPACE a i ENTER'; word='てあい'; childKeys='P i p i p i'; childWord='あい'; registrations=2},
+  @{name='recursive-exhaust-ret'; inner='A i SPACE SPACE s u ENTER'; word='てす'; childKeys='A i'; childWord='す'; registrations=2},
+  @{name='recursive-depth3-ret'; inner='P i p i p i SPACE s u P u p u p u SPACE t o ENTER ENTER'; word='てすと'; registrations=3},
+  @{name='recursive-miss-cancel'; inner='P i p i p i SPACE'; quits=2},
+  @{name='recursive-exhaust-cancel'; inner='A i SPACE SPACE'; quits=3},
+  @{name='recursive-depth3-cancel'; inner='P i p i p i SPACE P u p u p u SPACE'; quits=4}
+
 )
 function Checkpoint([string]$text, [string]$label) {
   $matches = [regex]::Matches($text, '(?m)^AFTER ' + [regex]::Escape($label) + ' BUF=\[(.*)\] SEL=.* COMP=(.*)$')
   if ($matches.Count -ne 1) { throw "Expected one checkpoint $label; got $($matches.Count)" }
   $match = $matches[0]
   return @($match.Groups[1].Value, $match.Groups[2].Value.Trim())
+}
+# Validate provider evidence separately from rendered checkpoint text: a
+# parked reading can otherwise resemble a completed depth-three word.
+function AssertWordProviderEvidence([string]$text, [string]$name, [int]$expected, [bool]$localLearning) {
+  if ($text -notmatch '(?m)^PROVIDER_SETTINGS engine=\S+ applied=1\b') {
+    throw "Provider settings never applied: $name"
+  }
+  if ($localLearning) {
+    $staged = [regex]::Matches($text, '(?m)^REGISTRATION_LEARNING queued=1(?:\s|$)').Count
+    if ($staged -ne $expected) { throw "Expected $expected confirmed registration learnings: $name got=$staged" }
+  }
+  $retained = $false
+  foreach ($event in [regex]::Matches($text, '(?m)^(?:PROVIDER_SETTINGS pending=1 conversion_retained=1|PROVIDER_SETTINGS conversion_resumed=1|LOCAL_FALLBACK resolved=candidate pending=0)\b')) {
+    $retained = $event.Value -eq 'PROVIDER_SETTINGS pending=1 conversion_retained=1'
+  }
+  if ($retained) { throw "Provider conversion retained but never resumed: $name" }
 }
 $saved = @{}
 foreach ($name in @('DDSKK_DICTIONARY_FILES','DDSKK_HARNESS_DIAGNOSTICS','NATIVEIME_TEST_KEYSTATE_AFTER_TEST','NATIVEIME_TEST_LOCAL_REMAP_DELAY_MS')) {
@@ -59,6 +82,9 @@ try {
         $tokens = 'CTX2 a i SPACE WAIT3000 ENTER CTX1 ' + $entry + 'SETTLE8000:REG t e ' + $case.inner + ' '
         if ($case.ContainsKey('word')) {
           $tokens += 'ENTER SETTLE8000:END APPCLEAR ' + $reading + ' SPACE SETTLE8000:LEARN ENTER SETTLE8000:REINSERT'
+          if ($case.ContainsKey('childKeys')) {
+            $tokens += ' APPCLEAR ' + $case.childKeys + ' SPACE ENTER SETTLE8000:CHILDLEARN'
+          }
         } else {
           for ($i=0; $i -lt $case.quits; $i++) {
             $tokens += "CTRLG SETTLE8000:INNER$i "
@@ -88,10 +114,15 @@ try {
         $text = Get-Content -LiteralPath $hostLog.FullName -Raw -Encoding UTF8
         if ($text -notmatch 'KEYSTATE_AFTER_TEST injected=1') { throw "Modifier-race negative control missing: $name" }
         $end = Checkpoint $text 'END'
+        if ($case.ContainsKey('word')) {
+          $expected = if ($case.ContainsKey('registrations')) { $case.registrations } else { 1 }
+          AssertWordProviderEvidence $text $name $expected ($local -eq 1)
+        }
         if ($local -eq 1) {
-          $staged = [regex]::Matches($text, '(?m)^REGISTRATION_LEARNING queued=1 ').Count
+          $staged = [regex]::Matches($text, '(?m)^REGISTRATION_LEARNING queued=1(?:\s|$)').Count
           if ($case.ContainsKey('word')) {
-            if ($staged -ne 1) { throw "Expected one confirmed registration learning: $name got=$staged" }
+            # Count every confirmed frame: outer plus confirmed inner ones.
+            # Candidate acceptance inside the editor is not a registration.
             if ($text -notmatch 'LOCAL_MAPPING delay_ms=4000 retained=1') { throw "Remap-delay negative control missing: $name" }
           } elseif ($staged -ne 0) { throw "Cancelled registration staged learning: $name" }
         }
@@ -100,6 +131,11 @@ try {
           $again = Checkpoint $text 'REINSERT'
           if ($again[0] -cne $case.word -or $again[1] -ne '-') { throw "Learning failed: $name" }
           $checks += 2
+          if ($case.ContainsKey('childWord')) {
+            $child = Checkpoint $text 'CHILDLEARN'
+            if ($child[0] -cne $case.childWord -or $child[1] -ne '-') { throw "Inner learning failed: $name" }
+            $checks++
+          }
         } else {
           if ($end[0] -ne '' -or $end[1] -ne '-') { throw "Cancelled text leaked: $name" }
           for ($i=0; $i -lt $case.quits; $i++) {

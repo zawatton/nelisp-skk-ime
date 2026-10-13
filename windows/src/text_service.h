@@ -163,6 +163,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   bool WaitForProviderSettings(ULONGLONG deadline); // same mutex, worker only
   bool TryLocalConversionFallback();
   void RetainProviderConversion();
+  bool ProviderConversionSettingsPending(bool settings_ready, bool provider_unavailable);
   void LoadApplicationSettings();
   void QueuePublishedState(const ddskk::EngineState* state);
   void FlushPublishedState();
@@ -252,7 +253,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   HRESULT ApplyLocalState(ITfContext* context, const ddskk::EngineState& state,
                           bool confirmation = false);
   HRESULT CommitLocal(ITfContext* context, bool confirmation = true);
-  void ObserveRegistrationLearning(const ddskk::EngineState& state);
+  void ObserveRegistrationLearning(const ddskk::EngineState& state,
+      const std::optional<ddskk::EngineState>& learning = std::nullopt);
   void CancelLocalRetry();
   void ScheduleLocalRetry();
   void RetryLocalConversion();
@@ -303,6 +305,8 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // so Ctrl+G restores its reading even after the worker has timed out.
   bool provider_conversion_active_ = false;
   bool provider_conversion_retry_ = false;
+  bool provider_conversion_registration_ = false;
+  size_t provider_conversion_skip_ = 0;
   void TraceOkuriCandidate(bool local);
   LONGLONG okuri_conversion_started_qpc_ = 0;
   uint64_t okuri_conversion_sequence_ = 0;

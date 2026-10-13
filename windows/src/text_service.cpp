@@ -316,6 +316,7 @@ struct TextService::ProviderResult {
   uint64_t key_sequence = 0;
   bool preview_only = false;
   bool settings_pending = false;
+  std::optional<ddskk::EngineState> registration_learning;
 };
 
 TextService::TextService() {
@@ -424,8 +425,13 @@ LRESULT CALLBACK TextService::ProviderWindowProc(HWND window, UINT message,
       KillTimer(window, 9); service->ReplayDeferredProviderKeys();
     } else if (!service->provider_pending_.load() && service->engine_.IsConnected() &&
                service->provider_settings_.load() == service->applied_provider_settings_.load()) {
-      if (service->BeginProviderConversion(service->realtime_frontend_.raw_keys())) {
+      if (service->BeginProviderConversion(service->realtime_frontend_.raw_keys(),
+          service->provider_conversion_registration_, service->provider_conversion_skip_)) {
         service->provider_conversion_retry_ = false;
+        if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
+          std::printf("PROVIDER_SETTINGS conversion_resumed=1\n");
+          std::fflush(stdout);
+        }
         KillTimer(window, 9);
         service->ShowProviderBusy(service->active_context_);
       }
@@ -519,7 +525,7 @@ void TextService::PrepareProviderReading() {
 
 bool TextService::BeginProviderConversion(const std::u32string& keys, bool registration, size_t skip,
                                           std::wstring preview_reading) {
-  if (!registration && !provider_pending_.load() &&
+  if (!registration && !skip && !provider_pending_.load() &&
       (provider_settings_.load() != applied_provider_settings_.load() || !engine_.IsConnected()) &&
       TryLocalConversionFallback()) return true;
   preparation_sequence_.fetch_add(1);
@@ -530,6 +536,8 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
   if (okuri_handoff_active_) okuri_handoff_keys_ = realtime_frontend_.raw_keys();
   provider_cleanup_pending_ = false;
   provider_conversion_active_ = true;
+  provider_conversion_registration_ = registration;
+  provider_conversion_skip_ = skip;
   provider_conversion_started_ = GetTickCount64();
   const auto key_sequence = key_sequence_;
   TracePhase(L"engine-lookup-request", key_sequence, L"engine");
@@ -537,7 +545,7 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   provider_pending_.store(true, std::memory_order_release);
   if (local_enabled_) {
-    provider_deadline_ = GetTickCount64() + 5000;
+    provider_deadline_ = GetTickCount64() + kModeReplayTimeoutMs * (skip + 2);
     SetTimer(provider_window_, 1, 50, nullptr);
   }
   const HWND destination = provider_window_;
@@ -584,10 +592,11 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
                static_cast<unsigned long long>(sequence), keys.size());
       std::optional<ddskk::EngineState> state;
       bool settings_ready = false;
+      bool provider_unavailable = false;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
         const ULONGLONG deadline = GetTickCount64() +
-            (registration ? kModeReplayTimeoutMs : kConversionTimeoutMs);
+            (registration || local_enabled_ ? kModeReplayTimeoutMs : kConversionTimeoutMs);
         // An unavailable selector is a transient worker condition, not an
         // empty conversion reply. Retain this request while it reconnects.
         // Selection retries belong to the background worker. A missing host
@@ -601,8 +610,17 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
                                  : engine_.ConvertKeys(keys, remaining);
           } else settings_ready = false;
         }
+        // A local miss can spend longer entering DDSKK's registration editor
+        // than an ordinary lookup. Retry entry once, never retry selection
+        // merely because a sent conversion returned no state.
+        if (settings_ready && !state && local_enabled_ && !registration)
+          state = engine_.RegisterLocal(keys, kModeReplayTimeoutMs);
         for (size_t n = 0; n < skip && state && state->mode == L"candidate"; ++n)
-          state = engine_.SendControl(ddskk::EngineControl::kConvert, kConversionTimeoutMs);
+          state = engine_.SendControl(ddskk::EngineControl::kConvert,
+              local_enabled_ ? kModeReplayTimeoutMs : kConversionTimeoutMs);
+        const auto error = engine_.ConnectionError();
+        provider_unavailable = !engine_.IsConnected() &&
+            (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND);
       }
       TracePhase(L"engine-lookup-end", key_sequence, L"engine", state ? S_OK : E_FAIL);
       DebugLog(L"Provider convert done seq=%llu state=%d raw=%hs",
@@ -616,7 +634,7 @@ bool TextService::BeginProviderConversion(const std::u32string& keys, bool regis
                     engine_.last_response().c_str());
         std::fflush(stdout);
       }
-      const bool settings_pending = !settings_ready || (!state && !registration);
+      const bool settings_pending = ProviderConversionSettingsPending(settings_ready, provider_unavailable);
       auto* result = new (std::nothrow) ProviderResult{this, sequence,
                                                        std::move(state), true, key_sequence, false, settings_pending};
       if (result == nullptr ||
@@ -663,7 +681,7 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   provider_pending_.store(true, std::memory_order_release);
   if (local_enabled_) {
-    provider_deadline_ = GetTickCount64() + 5000;
+    provider_deadline_ = GetTickCount64() + (registration_mode_ ? 10000 : 5000);
     SetTimer(provider_window_, 1, 50, nullptr);
   }
   const auto key_sequence = key_sequence_;
@@ -680,6 +698,7 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
       DelayTestProvider();
       DelayRegistrationProvider(registration);
       std::optional<ddskk::EngineState> state;
+      std::optional<ddskk::EngineState> registration_learning;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
         // A new conversion resets the engine session itself. If it acquired
@@ -687,7 +706,7 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
         const bool settings_ready = (apply_state ||
             sequence == provider_sequence_.load(std::memory_order_acquire)) && ApplyProviderSettings();
         if (settings_ready)
-          state = engine_.SendControl(control, kConversionTimeoutMs);
+          state = engine_.SendControl(control, registration ? kModeReplayTimeoutMs : kConversionTimeoutMs);
         if (test_failure_delay) {
           // Simulate a timed-out read after the engine accepted the control.
           // Recovery must not assume the old session stayed unchanged.
@@ -768,10 +787,13 @@ bool TextService::BeginProviderControl(ddskk::EngineControl control,
                       engine_.last_response().c_str());
           std::fflush(stdout);
         }
+        if (registration && bounded_recovery && control == ddskk::EngineControl::kCommit && state)
+          registration_learning = engine_.RegistrationLearning();
       }
       TracePhase(L"engine-lookup-end", key_sequence, L"engine", state ? S_OK : E_FAIL);
       auto* result = new (std::nothrow) ProviderResult{this, sequence,
                                                        std::move(state), apply_state, key_sequence};
+      if (result) result->registration_learning = std::move(registration_learning);
       if (result == nullptr ||
           !PostMessageW(destination, kProviderResultMessage, 0,
                         reinterpret_cast<LPARAM>(result))) {
@@ -802,7 +824,7 @@ bool TextService::BeginProviderKey(char32_t key, bool may_convert) {
       provider_sequence_.fetch_add(1, std::memory_order_acq_rel) + 1;
   provider_pending_.store(true, std::memory_order_release);
   if (local_enabled_) {
-    provider_deadline_ = GetTickCount64() + 5000;
+    provider_deadline_ = GetTickCount64() + (registration_mode_ ? 10000 : 5000);
     SetTimer(provider_window_, 1, 50, nullptr);
   }
   const auto key_sequence = key_sequence_;
@@ -818,7 +840,7 @@ bool TextService::BeginProviderKey(char32_t key, bool may_convert) {
       std::optional<ddskk::EngineState> state;
       {
         std::lock_guard<std::mutex> lock(provider_engine_mutex_);
-        if (ApplyProviderSettings()) state = engine_.SendKey(key, may_convert ? kConversionTimeoutMs
+        if (ApplyProviderSettings()) state = engine_.SendKey(key, registration ? kModeReplayTimeoutMs : may_convert ? kConversionTimeoutMs
                                                : kInteractiveTimeoutMs);
       }
       TracePhase(L"engine-lookup-end", key_sequence, L"engine", state ? S_OK : E_FAIL);
@@ -1076,7 +1098,7 @@ void TextService::ApplyProviderResult(ProviderResult* result) {
   }
   provider_conversion_active_ = false;
 
-  ObserveRegistrationLearning(*result->state);
+  ObserveRegistrationLearning(*result->state, result->registration_learning);
   // Also retain intermediate queued cycling replies: the next control must
   // recover from the latest engine selection even before it is rendered.
   provider_candidate_state_ = result->state->mode == L"candidate"
@@ -2597,7 +2619,10 @@ void TextService::StartProviderSettingsWorker() {
         {
           std::lock_guard<std::mutex> lock(provider_engine_mutex_);
           attempted = provider_settings_.load();
-          applied = ApplyProviderSettings(25);
+          // Cold OPEN/RESET/ENGINE SET cannot reliably fit the conversion
+          // worker's 25 ms probe. Allow completion off the TSF thread, while
+          // preserving the coalesced worker and backoff on failure.
+          applied = ApplyProviderSettings(1000);
           completed = applied;
         }
         if (applied || !provider_settings_.load()) break;
@@ -2627,7 +2652,15 @@ bool TextService::ApplyProviderSettings(DWORD timeout_ms) {
       connecting_provider_settings_ = desired;
     }
     EnsureEngineHost();
-    if (!engine_.SelectEngine(desired->engine, timeout_ms)) return false;
+    const auto started = GetTickCount64();
+    const bool selected = engine_.SelectEngine(desired->engine, timeout_ms);
+    if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
+      std::printf("PROVIDER_SETTINGS select=%d budget_ms=%lu elapsed_ms=%llu connected=%d connection_error=%lu engine=%s\n",
+                  selected ? 1 : 0, timeout_ms, GetTickCount64() - started,
+                  engine_.IsConnected() ? 1 : 0, engine_.ConnectionError(), desired->engine.c_str());
+      std::fflush(stdout);
+    }
+    if (!selected) return false;
     engine_.MarkNeedsResync();
     applied_provider_settings_.store(desired);
     if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
@@ -2654,6 +2687,7 @@ bool TextService::WaitForProviderSettings(ULONGLONG deadline) {
 
 bool TextService::TryLocalConversionFallback() {
   if (!local_enabled_ || !active_context_ || !realtime_frontend_.preedit()) return false;
+  if (provider_conversion_active_ && (provider_conversion_registration_ || provider_conversion_skip_)) return false;
   const auto captured = local_store_.Capture();
   if (!captured.available || !captured.index || !local_rule_snapshot_ ||
       captured.index->Rules() != local_rule_snapshot_->Rules()) return false;
@@ -2672,6 +2706,10 @@ bool TextService::TryLocalConversionFallback() {
   if (FAILED(result)) ScheduleLocalRetry();
   std::printf("LOCAL_FALLBACK resolved=candidate pending=0\n");
   return true;
+}
+
+bool TextService::ProviderConversionSettingsPending(bool settings_ready, bool provider_unavailable) {
+  return !settings_ready || provider_unavailable;
 }
 
 void TextService::RetainProviderConversion() {
@@ -3108,7 +3146,8 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       if (provider_conversion_retry_ && wparam == VK_SPACE) {
         auto keys = realtime_frontend_.raw_keys();
         if (realtime_frontend_.katakana()) keys.insert(keys.begin(), U'q');
-        if (BeginProviderConversion(keys)) provider_conversion_retry_ = false;
+        if (BeginProviderConversion(keys, provider_conversion_registration_, provider_conversion_skip_))
+          provider_conversion_retry_ = false;
         *eaten = TRUE; branch = L"provider-settings-retry";
         debug_exit(*eaten); return S_OK;
       }
@@ -4303,14 +4342,21 @@ void TextService::RetryLocalConversion() {
   } else local_conversion_.Reset();
 }
 
-void TextService::ObserveRegistrationLearning(const ddskk::EngineState& state) {
+void TextService::ObserveRegistrationLearning(const ddskk::EngineState& state,
+    const std::optional<ddskk::EngineState>& learning) {
+  if (learning && local_enabled_) {
+    const bool queued = local_store_.Learn(learning->registration_reading, learning->text,
+                                          learning->pending_romaji);
+    if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
+      std::printf("REGISTRATION_LEARNING queued=%d pending=%zu\n", queued ? 1 : 0, local_store_.Unsaved());
+  }
   if (state.mode == L"registration") {
     registration_reading_ = state.registration_reading;
     if (!registration_mode_) registration_okuri_ = realtime_frontend_.okuri_text();
     return;
   }
   if (!registration_mode_) return;
-  if (local_enabled_) {
+  if (local_enabled_ && !learning) {
     const bool queued = local_store_.LearnRegistration(state, registration_reading_, registration_okuri_);
     if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0))
       std::printf("REGISTRATION_LEARNING queued=%d pending=%zu\n", queued ? 1 : 0, local_store_.Unsaved());

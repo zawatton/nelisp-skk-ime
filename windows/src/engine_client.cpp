@@ -15,8 +15,10 @@
 
 #include "engine_client.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <sstream>
 #include <vector>
 
@@ -293,6 +295,7 @@ std::optional<std::string> EngineClient::RawTransact(const std::string& request,
   std::lock_guard<std::recursive_mutex> transaction_lock(transaction_mutex_);
   const HANDLE pipe = pipe_.load(std::memory_order_acquire);
   if (pipe == INVALID_HANDLE_VALUE) return std::nullopt;
+  const auto started = GetTickCount64();
   OVERLAPPED overlapped{};
   overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (overlapped.hEvent == nullptr) return std::nullopt;
@@ -335,9 +338,17 @@ std::optional<std::string> EngineClient::RawTransact(const std::string& request,
   // Whether WriteFile completed synchronously or is still pending, the
   // event is signaled on completion either way, so waiting here is safe
   // (and returns immediately in the synchronous case).
-  if (WaitForSingleObject(overlapped.hEvent, timeout_ms) != WAIT_OBJECT_0 ||
+  const DWORD write_wait = WaitForSingleObject(overlapped.hEvent, timeout_ms);
+  if (write_wait != WAIT_OBJECT_0 ||
       !GetOverlappedResult(pipe, &overlapped, &written, FALSE) ||
       written != request.size()) {
+    const DWORD error = write_wait == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
+    if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
+      std::printf("PROVIDER_IO phase=write wait=%lu error=%lu budget_ms=%lu elapsed_ms=%llu request=%.*s\n",
+                  write_wait, error, timeout_ms, GetTickCount64() - started,
+                  static_cast<int>(std::min<size_t>(160, request.find_first_of("\r\n"))), request.c_str());
+      std::fflush(stdout);
+    }
     cancel_pending_and_fail();
     return std::nullopt;
   }
@@ -351,8 +362,16 @@ std::optional<std::string> EngineClient::RawTransact(const std::string& request,
     fail_immediately();
     return std::nullopt;
   }
-  if (WaitForSingleObject(overlapped.hEvent, timeout_ms) != WAIT_OBJECT_0 ||
+  const DWORD read_wait = WaitForSingleObject(overlapped.hEvent, timeout_ms);
+  if (read_wait != WAIT_OBJECT_0 ||
       !GetOverlappedResult(pipe, &overlapped, &read, FALSE)) {
+    const DWORD error = read_wait == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
+    if (GetEnvironmentVariableW(L"DDSKK_HARNESS_DIAGNOSTICS", nullptr, 0)) {
+      std::printf("PROVIDER_IO phase=read wait=%lu error=%lu budget_ms=%lu elapsed_ms=%llu request=%.*s\n",
+                  read_wait, error, timeout_ms, GetTickCount64() - started,
+                  static_cast<int>(std::min<size_t>(160, request.find_first_of("\r\n"))), request.c_str());
+      std::fflush(stdout);
+    }
     cancel_pending_and_fail();
     return std::nullopt;
   }
@@ -507,6 +526,13 @@ std::optional<EngineState> EngineClient::RegisterLocal(const std::u32string& key
   request.replace(0, 21, "CONTROL REGISTER-KEYS ");
   const auto response = Transact(request, timeout_ms);
   return response ? ParseStateResponse(*response) : std::nullopt;
+}
+
+std::optional<EngineState> EngineClient::RegistrationLearning(DWORD timeout_ms) {
+  const auto response = Transact("REGISTRATION-LEARNING", timeout_ms);
+  constexpr std::string_view prefix = "REGISTRATION-LEARNED ";
+  if (!response || !response->starts_with(prefix)) return std::nullopt;
+  return ParseStateResponse("STATE registration 0 -1 " + response->substr(prefix.size()));
 }
 
 std::optional<EngineState> EngineClient::SyncKeys(const std::u32string& keys,

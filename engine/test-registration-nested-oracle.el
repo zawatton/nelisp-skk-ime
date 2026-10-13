@@ -119,3 +119,47 @@
           (skk-ime-session--with-buffer outer (keyboard-quit))
           (should (equal (plist-get (skk-ime-session-snapshot outer) :text) "")))
       (skk-ime-session-destroy outer))))
+
+(ert-deftest rg1-stock-recursive-registration ()
+  ;; Batch has no recursive command loop. Substitute only the input primitive;
+  ;; every level still runs stock skk-henkan-in-minibuff and skk-kakutei.
+  (dolist (exhaust '(nil t))
+    (dolist (cancel '(nil t))
+      (let ((buffer (get-buffer " *private.jisyo*")))
+        (when buffer
+          (with-current-buffer buffer (set-buffer-modified-p nil))
+          (kill-buffer buffer)))
+      (let ((outer (rg1-oracle-session)) (rg1-depth 0) (maximum 0))
+        (unwind-protect
+            (cl-letf (((symbol-function 'minibuffer-depth) (lambda () rg1-depth))
+                      ((symbol-function 'read-from-minibuffer)
+                       (lambda (&rest _)
+                         (let ((inner (rg1-oracle-session)))
+                           (setq rg1-depth (1+ rg1-depth))
+                           (setq maximum (max maximum rg1-depth))
+                           (unwind-protect
+                               (progn
+                                 (skk-ime-session-feed-string inner
+                                                             (if (= rg1-depth 1) "te" "su"))
+                                 (when (< rg1-depth 3)
+                                   (skk-ime-session-feed-string inner
+                                                               (if exhaust "Papapa" "Pipipi"))
+                                   (skk-ime-session-control inner 'convert)
+                                   (when exhaust (skk-ime-session-control inner 'convert)))
+                                 (when cancel (signal 'quit nil))
+                                 (skk-ime-session-control inner 'commit)
+                                 (plist-get (skk-ime-session-snapshot inner) :text))
+                             (setq rg1-depth (1- rg1-depth))
+                             (skk-ime-session-destroy inner))))))
+              (skk-ime-session-feed-string outer (if exhaust "Papapa" "Pipipi"))
+              (skk-ime-session-control outer 'convert)
+              (when exhaust (skk-ime-session-control outer 'convert))
+              (should (= maximum 3))
+              (if cancel
+                  (should (equal (plist-get (skk-ime-session-snapshot outer) :text)
+                                 (if exhaust "▼既存" "▽ぴぴぴ")))
+                (progn
+                  (skk-ime-session-control outer 'commit)
+                  (should (equal (plist-get (skk-ime-session-snapshot outer) :text)
+                                 "てすす")))))
+          (skk-ime-session-destroy outer))))))
