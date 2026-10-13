@@ -20,6 +20,13 @@ def main():
                        NATIVEIME_REGISTRY_KEY="Software\\NativeIME-test-keepalive-unit"))
         if "policy-keepalive refreshed=2 skipped=" not in log.read_text("utf-8"):
             raise AssertionError("missing private keep-alive diagnostics")
+    for mode, evidence in (("broken-reseed", "policy restart unit: reseed=0 native_calls=2"),
+                           ("broken-candidate", "reset_native=1")):
+        result = subprocess.run([str(out / "Release/host-policy-unit.exe"), mode],
+                                capture_output=True, text=True, timeout=15,
+                                env=dict(os.environ, DDSKK_HOST_POLICY_COUNTERS="1"))
+        if result.returncode != 1 or evidence not in result.stdout:
+            raise AssertionError(f"{mode}: regression control did not fail: {result.stdout}")
     broken = subprocess.run([str(out / "Release/host-policy-unit.exe"), "broken-keepalive"],
                             timeout=15, env=dict(os.environ, DDSKK_HOST_POLICY_COUNTERS="1"))
     if broken.returncode != 1:
@@ -41,10 +48,10 @@ def main():
             # Old routing consumes a partial READY plus stderr and stops on CR.
             if "policy-ready-rejected line_complete=0 bytes=21 hex=48503220524566616b6520646961676e6f73746963" not in evidence:
                 raise AssertionError("old stderr routing did not reproduce partial READY")
-        elif evidence.count("policy-ready startup_ms=") != 2 or "keepalive=1" not in evidence or "policy-start-failed" in evidence:
+        elif evidence.count("policy-ready startup_ms=") != 2 or "keepalive=1 reseed=1" not in evidence or "policy-start-failed" in evidence:
             raise AssertionError("missing clean READY/keepalive evidence across relaunch")
     print("PASS policy adapter keepalive fake_clock=1 fake_child=1 ready_relaunch=1 "
-          "negative_control=disabled,old-stderr-routing stacks=0")
+          "negative_control=disabled,reseed,candidate-pruning,old-stderr-routing stacks=0")
 
 if __name__ == "__main__":
     main()

@@ -224,9 +224,12 @@ def check(tsf, host, samples, fetches, elapsed):
         raise AssertionError('uncovered authoritative policy group')
     # RESTART aggregates two distinct caller policies. Neither seeded replies
     # nor policy-child supervision proves engine backoff/publication authority.
+    restart_callers = {}
     for kind in (3, 7):
-        if not re.search(r'policy-authoritative kind=' + str(kind) + r' count=[1-9]\d*', host):
+        counts = re.findall(r'policy-authoritative kind=' + str(kind) + r' count=([1-9]\d*)\b', host)
+        if not counts:
             raise AssertionError('uncovered restart caller kind=' + str(kind))
+        restart_callers[str(kind)] = sum(map(int, counts))
     if 'replacement-published engine=' not in host:
         raise AssertionError('missing real engine replacement')
     if fetches[1] <= fetches[0]:
@@ -236,7 +239,8 @@ def check(tsf, host, samples, fetches, elapsed):
         refreshed=max((int(row[0]) for row in keepalive), default=0),
         skipped=max((int(row[1]) for row in keepalive), default=0))
     return dict(bundle=bundle, policy_ready_startup_ms=startup_ms, startup_counters=startup,
-                keepalive=keepalive_evidence, phases=phases, callback_probes=len(rows), pipe_io=0, blocking_waits=0,
+                keepalive=keepalive_evidence, restart_callers=restart_callers,
+                phases=phases, callback_probes=len(rows), pipe_io=0, blocking_waits=0,
                 callback_max_us=max(times), negative_cache_fetches=fetches, exact_documents=7)
 
 
@@ -381,6 +385,7 @@ def self_test():
     assert EVIDENCE_SEC == 405 and HARNESS_EXIT_SEC == 420 and GATE_SEC == 435
     assert check(tsf, host, samples, [1, 2], 1)['policy_ready_startup_ms'] == [1, 1]
     assert check(tsf, host, samples, [1, 2], 1)['keepalive'] == dict(samples=0, refreshed=0, skipped=0)
+    assert check(tsf, host, samples, [1, 2], 1)['restart_callers'] == {'3': 1, '7': 1}
     evidence = host + 'policy-keepalive refreshed=2 skipped=4\npolicy-keepalive refreshed=5 skipped=7\n'
     assert check(tsf, evidence, samples, [1, 2], 1)['keepalive'] == dict(samples=2, refreshed=5, skipped=7)
     measured_host = host.replace('startup_ms=1', 'startup_ms=26000', 1)
@@ -405,6 +410,13 @@ def self_test():
                  (tsf, host.replace('startup_ms=1 native=1', 'startup_ms=1 native=0', 1), samples, [1, 2], 1),
                  (tsf, host.replace('hn3-answer operation=5', ''), samples, [1, 2], 1),
                  (tsf.replace('sequence=6', 'sequence=0'), host, samples, [1, 2], 1)]
+    # Replies (including keep-alive/reseed) cannot stand in for caller use.
+    # Keep this gate strict: HN9p fixes future-epoch pruning in the product.
+    for kind in (3, 7):
+        for reply in (f'policy-compare match request=1 kind={kind}',
+                      f'policy-compare match request=1 kind={kind} keepalive=1 reseed=1'):
+            mutations.append((tsf, host.replace(f'policy-authoritative kind={kind} count=1', reply),
+                              samples, [1, 2], 1))
     for marker in ('policy-authoritative kind=3 count=1',
                    'policy-authoritative kind=7 count=1', 'replacement-published engine='):
         mutations.append((tsf, host.replace(marker, ''), samples, [1, 2], 1))

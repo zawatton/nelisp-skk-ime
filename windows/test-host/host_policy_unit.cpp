@@ -57,8 +57,6 @@ struct ShadowPolicyTest {
     policy.repository_ = std::filesystem::current_path().wstring();
     policy.job_ = CreateJobObjectW(nullptr, nullptr);
     if (!policy.job_) return 2;
-    // Use production Launch/Run/Retire with an actual pipe-backed fake child.
-    policy.worker_ = std::thread([&] { policy.Run(); });
     auto wait = [&](auto predicate) {
       const auto deadline = GetTickCount64() + 5000;
       while (GetTickCount64() < deadline) {
@@ -67,38 +65,67 @@ struct ShadowPolicyTest {
       }
       return false;
     };
-    Observation key{PolicyKind::Sources, 7, 0, 1, 1, 0, 0};
-    int native_calls = 0;
-    auto fallback = [&] { ++native_calls; return uint64_t{0}; };
+    Observation key{PolicyKind::Sources, 7, 0, 2, 1, 0, 0}; // Outside Seed's inputs.
+    // Copied first caller observation; enqueue before starting the real worker
+    // so fixture setup cannot be dropped by its nonblocking queue contract.
+    key.caller_used = true;
+    policy.Observe(key);
+    key.caller_used = false;
+    // Use production Launch/Run/Retire with an actual pipe-backed fake child.
+    policy.worker_ = std::thread([&] { policy.Run(); });
+    int native_calls = 0, contention_calls = 0;
+    auto fallback = [&] {
+      ++native_calls;
+      // This real concurrent worker can win the caller's try-lock. Verify
+      // authority is fresh before treating a retry as fixture contention.
+      std::lock_guard lock(policy.mutex_);
+      const auto found = policy.decisions_.find(ShadowPolicy::Key(key));
+      if (policy.healthy_ && found != policy.decisions_.end() &&
+          TransportClock() - found->second.at <= 30000) ++contention_calls;
+      return uint64_t{0};
+    };
+    auto memo_hit = [&] {
+      const auto deadline = GetTickCount64() + 5000;
+      while (GetTickCount64() < deadline) {
+        if (policy.Decide(key, fallback) == 2) return native_calls == contention_calls;
+        if (native_calls != contention_calls) return false;
+        Sleep(5);
+      }
+      return false;
+    };
     auto exercise = [&] {
-      if (!wait([&] { return policy.healthy_ && policy.decisions_.contains(ShadowPolicy::Key(key)); })) return false;
-      if (policy.Decide(key, fallback) != 2 || native_calls) return false;
-      // Wait for the caller observation to finish before aging the memo.
-      if (!wait([&] { return policy.queue_.empty() &&
-          policy.decisions_.at(ShadowPolicy::Key(key)).inputs.caller_used; })) return false;
+      if (!wait([&] { return policy.healthy_ && policy.decisions_.contains(ShadowPolicy::Key(key)) &&
+          policy.decisions_.at(ShadowPolicy::Key(key)).active; })) return false;
       uint64_t refreshed = 0;
       { std::lock_guard lock(policy.mutex_); refreshed = policy.keepalive_refreshed_; }
       transport_now.fetch_add(25000);
       if (!wait([&] { return policy.keepalive_refreshed_ > refreshed &&
           policy.decisions_.contains(ShadowPolicy::Key(key)) &&
           policy.decisions_.at(ShadowPolicy::Key(key)).at == TransportClock(); })) return false;
-      return policy.Decide(key, fallback) == 2 && !native_calls;
+      return memo_hit();
     };
     bool pass = exercise();
     if (pass) {
-      policy.Observe({PolicyKind::Config, 7, 0, 1, 0, 0, 0});
+      // Observe may legitimately drop on contention, including fault setup.
+      // Retry only a rejected enqueue, never an accepted crash request.
+      for (;;) {
+        const auto dropped = policy.dropped_.load();
+        policy.Observe({PolicyKind::Config, 7, 0, 1, 0, 0, 0});
+        if (policy.dropped_ == dropped) break;
+        Sleep(5);
+      }
       pass = wait([&] { return !policy.healthy_ && policy.decisions_.empty(); });
       // Queue caller/prefetch work during relaunch. Neither can consume READY.
       policy.PrefetchRestart(7, 1000);
-      policy.Observe(key);
       pass = pass && exercise();
     }
     policy.Stop();
     Close(policy.job_);
-    std::printf("policy transport unit: ready_relaunch=%d native_calls=%d\n", pass, native_calls);
+    std::printf("policy transport unit: ready_relaunch=%d native_calls=%d contention_fallbacks=%d\n",
+        pass, native_calls, contention_calls);
     return pass ? 0 : 1;
   }
-  static int Run(bool broken_keepalive) {
+  static int Run(bool broken_keepalive, bool broken_reseed = false, bool broken_candidate = false) {
     ShadowPolicy policy;
     policy.enabled_ = true;
     int checks = 0, failures = 0;
@@ -247,6 +274,87 @@ struct ShadowPolicyTest {
     live.Timeout(pending.front());
     check(!live.KeepaliveCurrent(pending.front()));
     check(!live.Remember(pending.front(), 2, true)); // late reply cannot recreate a dropped key
+    // Retirement discards authority, but READY re-asks recent caller inputs.
+    // No callers execute between the old epoch and the use 40 s after READY.
+    ShadowPolicy restarted;
+    restarted.enabled_ = true; restarted.switches_.fill(true); restarted.healthy_ = true;
+    restarted.memo_clock_ = Clock; engine_epoch = 7; now = 0;
+    key = {PolicyKind::Intent, 7, 0, 1, 1, 2, 0}; // Not a Sources seed.
+    key.caller_used = true; restarted.Remember(key, 1); key.caller_used = false;
+    auto restart_fallback = [&] { ++native_calls; NativeEvaluation(key.kind); return uint64_t{0}; };
+    const auto restart_native = native_calls;
+    check(restarted.Decide(key, restart_fallback) == 1);
+    restarted.queue_.clear(); restarted.Invalidate();
+    check(restarted.decisions_.empty() && restarted.recent_.size() == 1);
+    now = 1000; restarted.healthy_ = true;
+    const auto restart_managed = PolicyCounters::nelisp[3].load();
+    const auto restart_cpp = PolicyCounters::native[3].load();
+    const auto restart_used = restarted.used_[9].load(), restart_completed = restarted.completed_.load();
+    auto reask = broken_reseed ? std::deque<Observation>{} : restarted.Keepalive(true);
+    check(reask.size() == 1);
+    for (const auto& input : reask) {
+      check(restarted.KeepaliveCurrent(input, true));
+      check(restarted.Remember(input, 1, true, true));
+    }
+    for (now = 6000; now <= 41000; now += 5000)
+      for (const auto& input : restarted.Keepalive())
+        check(restarted.Remember(input, 1, true));
+    check(PolicyCounters::nelisp[3] == restart_managed && PolicyCounters::native[3] == restart_cpp);
+    check(restarted.used_[9] == restart_used && restarted.completed_ == restart_completed);
+    now = 41000; check(restarted.Decide(key, restart_fallback) == 1 && native_calls == restart_native);
+    check(restarted.recent_.at(ShadowPolicy::Key(key)).last_used == 0);
+    // Explicit no-keepalive control uses the same restart/40 s timeline.
+    ShadowPolicy no_refresh;
+    no_refresh.enabled_ = true; no_refresh.switches_.fill(true); no_refresh.healthy_ = true;
+    no_refresh.memo_clock_ = Clock; now = 0; key.caller_used = true;
+    no_refresh.Remember(key, 1); key.caller_used = false;
+    no_refresh.Invalidate(); now = 1000; no_refresh.healthy_ = true;
+    now = 41000; check(no_refresh.Decide(key, restart_fallback) == 0);
+    std::printf("policy restart unit: reseed=%zu native_calls=%d\n", reask.size(), native_calls - restart_native);
+    restarted.queue_.clear(); now = 700000; restarted.Invalidate(); restarted.healthy_ = true;
+    check(restarted.Keepalive(true).empty()); // Recency expires across retirement.
+    // Reproduce the S4.3 candidate warmup crossing a periodic sweep.
+    // The reset caller runs only once after publication, unlike prefetch.
+    ShadowPolicy candidate;
+    candidate.enabled_ = true; candidate.switches_.fill(true); candidate.healthy_ = true;
+    candidate.memo_clock_ = Clock; engine_epoch = 7; now = 0;
+    candidate.PrefetchRestart(8, 1000);
+    for (const auto& input : candidate.queue_) candidate.Remember(input, input.native_decision);
+    candidate.queue_.clear(); now = 5000;
+    candidate.Keepalive();
+    if (broken_candidate) candidate.decisions_.clear(); // Old future-epoch pruning.
+    now = 6500; engine_epoch = 8;
+    Observation reset{PolicyKind::Restart, 8, 0, 1000, 1, 99, 0};
+    int reset_native = 0;
+    const auto reset_count = PolicyCounters::nelisp[2].load();
+    check(candidate.Decide(reset, [&] { ++reset_native; return uint64_t{2000}; }) == 1000);
+    check(reset_native == 0 && candidate.used_[3] == 1);
+    check(PolicyCounters::nelisp[2] == reset_count + (PolicyCounters::Enabled() ? 1 : 0));
+    check(candidate.Keepalive().empty()); // Under 5 s since last sweep.
+    engine_epoch = 9; now = 10000; candidate.Keepalive();
+    check(candidate.decisions_.empty()); // Old epochs still retire normally.
+    std::printf("policy candidate unit: warmup_ms=6500 reset_native=%d\n", reset_native);
+    ShadowPolicy bounded;
+    bounded.enabled_ = true; bounded.switches_.fill(true); bounded.healthy_ = true;
+    bounded.memo_clock_ = Clock; engine_epoch = 7; now = 0;
+    key = {PolicyKind::Sources, 7, 0, 1, 1, 0, 0};
+    bounded.Remember(key, 2); bounded.Invalidate(); bounded.healthy_ = true;
+    check(bounded.Keepalive(true).empty()); // Unused seeds have no restart history.
+    key.caller_used = true;
+    for (size_t n = 0; n < ShadowPolicy::kKeepaliveLimit + 8; ++n) {
+      key.a = n; bounded.Remember(key, 2);
+    }
+    check(bounded.recent_.size() == ShadowPolicy::kKeepaliveLimit);
+    bounded.Invalidate(); bounded.healthy_ = true; now = 1000;
+    auto bounded_reask = bounded.Keepalive(true);
+    check(bounded_reask.size() == ShadowPolicy::kKeepaliveLimit);
+    bounded.healthy_ = false;
+    check(!bounded.KeepaliveCurrent(bounded_reask.front(), true));
+    check(!bounded.Remember(bounded_reask.front(), 2, true, true));
+    bounded.healthy_ = true; engine_epoch = 8;
+    check(!bounded.KeepaliveCurrent(bounded_reask.front(), true));
+    check(!bounded.Remember(bounded_reask.front(), 2, true, true));
+    check(bounded.Keepalive(true).empty() && bounded.recent_.empty());
     std::printf("policy adapter unit: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
   }
@@ -260,5 +368,7 @@ int main(int argc, char** argv) {
     broken_stderr = std::string(argv[1]) == "broken-stderr";
     return native_adapter::ShadowPolicyTest::Transport();
   }
-  return native_adapter::ShadowPolicyTest::Run(argc > 1 && std::string(argv[1]) == "broken-keepalive");
+  const auto mode = argc > 1 ? std::string(argv[1]) : "normal";
+  return native_adapter::ShadowPolicyTest::Run(mode == "broken-keepalive",
+      mode == "broken-reseed", mode == "broken-candidate");
 }
