@@ -48,8 +48,8 @@ int main() {
   });
   g_dictionary_server.config_loaded = true;
   g_dictionary_server.config.enabled = 1; g_dictionary_server.config.port = 31101;
-  g_builtin_dictionary.maps = {{{"present", "/file/"}}};
-  g_builtin_dictionary.ready = true;
+  hn_builder::Maps dictionary_maps = {{{"present", "/file/"}}};
+  g_builtin_dictionary.Publish(1, dictionary_maps);
   g_server_cache.Start();
   check(LookupDictionary("present") == "1/file/server-extra/", "fixture file plus server");
   check(LookupDictionary("missing") == "1/server-only/", "fixture server-only");
@@ -88,7 +88,8 @@ int main() {
   SetEnvironmentVariableW(L"DDSKK_SKKSERV_ENABLE", L"0");
   check(LookupDictionary("present") == "1/file/", "config disables server and invalidates cache");
   const auto disabled_requests = fixture_requests.load();
-  g_builtin_dictionary.maps[0]["\xe3\x81\x8bk"] = "/written;note/hung/[ku/written/]/";
+  dictionary_maps[0]["\xe3\x81\x8bk"] = "/written;note/hung/[ku/written/]/";
+  g_builtin_dictionary.Publish(2, dictionary_maps);
   // The existing file relay removes bracket blocks; keep that exact base
   // behavior, including candidate annotations and the okuri-bearing key.
   check(LookupDictionary("\xe3\x81\x8bk") == "1/written;note/hung/",

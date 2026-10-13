@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
     SetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY",L"Software\\NativeIME");
     check(OracleReplay("not-a-path")=="ERR HN ORACLE DISABLED");
     SetEnvironmentVariableW(L"NATIVEIME_REGISTRY_KEY",L"Software\\NativeIME-test-unit");
-    check(startup_replay::current==nullptr && g_startup_imported.empty() && g_builtin_dictionary.maps.empty());
+    check(startup_replay::current==nullptr && g_startup_imported.empty() && !g_builtin_dictionary.HasGeneration());
     std::wstring directory, fixture;
     check(HnWide(argv[1],directory) && HnWide(argv[2],fixture));
     SetEnvironmentVariableW(L"DDSKK_HOST_ORACLE_DIR",directory.c_str());
@@ -137,14 +137,16 @@ int main(int argc, char** argv) {
     std::filesystem::remove(g_log_path);
     size_t count=0; std::unordered_map<std::string,std::string> map;
     check(LoadDictionaryFile(fixture,&map,&count));
-    g_builtin_dictionary.maps.push_back(std::move(map)); g_builtin_dictionary.ready=true;
-    const auto unchanged=g_builtin_dictionary.maps;
+    hn_builder::Maps dictionary_maps={std::move(map)};
+    g_builtin_dictionary.Publish(1,dictionary_maps);
+    const auto generation=g_builtin_dictionary.Lease();
+    const auto unchanged=generation->maps;
     std::ifstream source(fixture,std::ios::binary);
     const std::string contents((std::istreambuf_iterator<char>(source)),{});
     const auto local=ddskk::local::CompileSources({ddskk::local::ParseDictionary(contents,true).entries},7);
     const auto alpha=ddskk::local::SerializeCandidates(local.at(ddskk::local::VariantKey("alpha",'N')).candidates);
     std::fprintf(stderr,"DIAG compiled-index alpha_hex=%s frozen-builtin alpha_hex=%s\n",
-        OracleHex(alpha).c_str(),OracleHex(MergeBuiltinCandidates("alpha")).c_str());
+        OracleHex(alpha).c_str(),OracleHex(MergeBuiltinCandidates("alpha",generation->maps)).c_str());
     const auto env=StartupEnvironment(L"NELISP_IME_ENGINE");
     startup_replay::Snapshot fake; fake.env[L"NELISP_IME_ENGINE"]=L"private-sentinel";
     startup_replay::current=&fake;
@@ -156,11 +158,13 @@ int main(int argc, char** argv) {
       std::cout << OracleReplay(wire) << '\n';
       check(startup_replay::current==nullptr && g_startup_imported.empty());
       check(StartupEnvironment(L"NELISP_IME_ENGINE")==env);
-      check(g_builtin_dictionary.maps==unchanged);
+      const auto current=g_builtin_dictionary.Lease();
+      check(current==generation && current->maps==unchanged);
     }
     native_adapter::ShadowPolicyTest::OwnerSelection();
     native_adapter::ShadowPolicyTest::ManagedHooks(directory);
-    check(startup_replay::current==nullptr && g_startup_imported.empty() && g_builtin_dictionary.maps==unchanged);
+    const auto current=g_builtin_dictionary.Lease();
+    check(startup_replay::current==nullptr && g_startup_imported.empty() && current==generation && current->maps==unchanged);
     std::fprintf(stderr,"PASS oracle hook inertness checks=%d stacks=0 children=0\n",checks);
     return 0;
   } catch (const std::exception& e) { std::fprintf(stderr,"FAIL %s\n",e.what()); return 1; }

@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 #include "../../src/local_index.h"
+#include "../../host/hn_builder.h"
 
 namespace snapshot {
 struct Value { DWORD type; std::vector<BYTE> bytes; };
@@ -82,7 +83,6 @@ std::wstring NativeImeRegistryKey() { return L"synthetic-snapshot-only"; }
 void Close(HANDLE) { throw std::runtime_error("unexpected OS cleanup"); }
 constexpr wchar_t kDdskkRunner[]=L"engine/ddskk-engine-stdio.el";
 constexpr wchar_t kFrameworkRunner[]=L"framework/nelisp-ime-stdio.el";
-struct { std::vector<std::unordered_map<std::string,std::string>> maps; } g_builtin_dictionary;
 // Snapshot-only telemetry hook; decision lambdas stay unchanged.
 namespace native_adapter {
 enum class PolicyKind { Sources, CacheTtl, Capacity, Order, Restart, Replacement, Learning, Intent, Payload };
@@ -121,10 +121,10 @@ void Merges() {
     {"/"+std::string(262145,'x')+";large/","/small/"}
   };
   for (size_t i=0;i<cases.size();++i) {
-    g_builtin_dictionary.maps.clear();
-    for (const auto& raw:cases[i]) g_builtin_dictionary.maps.push_back({{"key",raw}});
-    Record("builtin-"+std::to_string(i),cases[i],MergeBuiltinCandidates("key"));
-    Record("builtin-missing-"+std::to_string(i),cases[i],MergeBuiltinCandidates("missing"));
+    hn_builder::Maps maps;
+    for (const auto& raw:cases[i]) maps.push_back({{"key",raw}});
+    Record("builtin-"+std::to_string(i),cases[i],MergeBuiltinCandidates("key",maps));
+    Record("builtin-missing-"+std::to_string(i),cases[i],MergeBuiltinCandidates("missing",maps));
     const auto files=cases[i].empty() ? "" : cases[i][0];
     const auto server=cases[i].size()<2 ? "" : cases[i][1];
     const auto merged=MergeServerReply(files,server);
