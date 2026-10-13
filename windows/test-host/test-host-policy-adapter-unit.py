@@ -26,7 +26,18 @@ def main():
         if f"hit={hit} refreshed=2 native_delta=0" not in epoch.stdout:
             raise AssertionError(f"missing epoch single-use evidence: {epoch.stdout}")
     print(epoch.stdout, end="")
+    refresh = subprocess.run([str(out / "Release/host-policy-unit.exe"), "memo-refresh"],
+                             check=True, capture_output=True, text=True, timeout=15)
+    for evidence in ("selected=1 age_ms=25000 native_calls=0",
+                     "policy identical-refresh unit: age_ms=25000 native_calls=0",
+                     "caller_first=0 stale_discard=1 late_discard=1",
+                     "caller_first=1 stale_discard=1 late_discard=1"):
+        if evidence not in refresh.stdout:
+            raise AssertionError(f"missing memo refresh evidence: {refresh.stdout}")
+    print(refresh.stdout, end="")
     for mode, evidence in (("broken-coalescing", "hit=0 refreshed=0 native_delta=1"),
+                           ("broken-seed-refresh", "selected=0 age_ms=50000 native_calls=1"),
+                           ("broken-refresh-age", "policy identical-refresh unit: age_ms=50000 native_calls=1"),
                            ("broken-reseed", "policy restart unit: reseed=0 native_calls=2"),
                            ("broken-candidate", "reset_native=1")):
         result = subprocess.run([str(out / "Release/host-policy-unit.exe"), mode],
@@ -58,7 +69,7 @@ def main():
         elif evidence.count("policy-ready startup_ms=") != 2 or "keepalive=1 reseed=1" not in evidence or "policy-start-failed" in evidence:
             raise AssertionError("missing clean READY/keepalive evidence across relaunch")
     print("PASS policy adapter keepalive fake_clock=1 fake_child=1 ready_relaunch=1 "
-          "negative_control=coalescing,disabled,reseed,candidate-pruning,old-stderr-routing stacks=0")
+          "negative_control=coalescing,seed-refresh,refresh-age,disabled,reseed,candidate-pruning,old-stderr-routing stacks=0")
 
 if __name__ == "__main__":
     main()

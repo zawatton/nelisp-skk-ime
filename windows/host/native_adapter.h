@@ -68,6 +68,7 @@ struct Observation {
   size_t context_size = 0;
   bool caller_used = false; // Set only by Decide, never by seed/keep-alive work.
   uint64_t caller_tick = 0;
+  bool policy_seed = false; // Bounded rule lattice stays warm before its first caller.
 };
 
 class ShadowPolicy {
@@ -193,6 +194,7 @@ class ShadowPolicy {
       const auto queued = std::find_if(queue_.begin(), queue_.end(),
           [&](const Observation& input) { return Key(input) == Key(value); });
       if (queued != queue_.end()) {
+        queued->policy_seed = queued->policy_seed || value.policy_seed;
         // A single caller can share a queued Seed/prefetch answer. Preserve its
         // recency even though no additional IPC request is needed.
         if (value.caller_used) {
@@ -552,7 +554,8 @@ class ShadowPolicy {
         if (CandidateRestart(entry.inputs, engine)) { ++it; continue; }
         it = decisions_.erase(it); continue;
       }
-      if (!healthy_ || !entry.active || now - entry.last_used > kKeepaliveRecent ||
+      if (!healthy_ || (!entry.inputs.policy_seed &&
+          (!entry.active || now - entry.last_used > kKeepaliveRecent)) ||
           !Authoritative(entry.inputs.kind) || now - entry.at < kKeepaliveAge ||
           work.size() >= kKeepaliveLimit) {
         ++keepalive_skipped_; ++it; continue;
@@ -569,8 +572,8 @@ class ShadowPolicy {
     const auto& entries = reseed ? recent_ : decisions_;
     const auto found = entries.find(Key(value));
     return healthy_ && value.engine_epoch == engine_epoch.load() &&
-        found != entries.end() && found->second.active &&
-        MemoNow() - found->second.last_used <= kKeepaliveRecent &&
+        found != entries.end() && (found->second.inputs.policy_seed ||
+        (found->second.active && MemoNow() - found->second.last_used <= kKeepaliveRecent)) &&
         (reseed || MemoNow() - found->second.at >= kKeepaliveAge);
   }
   std::map<std::string, Decision> decisions_;
@@ -584,7 +587,11 @@ class ShadowPolicy {
   }
   void Seed(uint64_t engine) {
     auto seed = [&](PolicyKind kind, uint64_t a, uint64_t b, uint64_t c, uint64_t expected) {
-      if (Authoritative(kind)) Observe({kind, engine, 0, a, b, c, expected});
+      if (Authoritative(kind)) {
+        Observation value{kind, engine, 0, a, b, c, expected};
+        value.policy_seed = true;
+        Observe(value);
+      }
     };
     for (uint64_t a = 0; a <= 1; ++a) for (uint64_t b = 0; b <= 1; ++b) {
       seed(PolicyKind::Sources, a, b, 0, !a ? 0 : (b ? 1 : 2));
@@ -613,6 +620,10 @@ class ShadowPolicy {
   bool Remember(const Observation& value, uint64_t decision, bool keepalive = false, bool reseed = false) {
     if (!Authoritative(value.kind)) return false;
     std::lock_guard lock(mutex_);
+    const auto engine = engine_epoch.load();
+    // Normal caller replies need the same engine fence as refresh replies.
+    // Only explicit Restart/Replacement warmup may precede publication.
+    if (!healthy_ || (value.engine_epoch != engine && !CandidateRestart(value, engine))) return false;
     // An epoch change during IPC must not resurrect a selected keep-alive key.
     if (keepalive && (!healthy_ || value.engine_epoch != engine_epoch.load() ||
         (reseed ? !recent_.contains(Key(value)) || MemoNow() - recent_.at(Key(value)).last_used > kKeepaliveRecent
@@ -626,7 +637,11 @@ class ShadowPolicy {
       entry.active = true;
     }
     if (reseed) { entry.last_used = recent_.at(Key(value)).last_used; entry.active = true; }
+    // Caller answers must not remove a lattice key's pre-use refresh status.
+    const bool policy_seed = entry.inputs.policy_seed || value.policy_seed;
+    // Every validated reply renews authority, even when its value is identical.
     entry.value = decision; entry.at = MemoNow(); entry.inputs = value;
+    entry.inputs.policy_seed = policy_seed;
     if (value.caller_used) {
       entry.last_used = entry.active ? (std::max)(entry.last_used, value.caller_tick) : value.caller_tick;
       entry.active = true;

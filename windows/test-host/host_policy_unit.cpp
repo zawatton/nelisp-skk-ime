@@ -195,6 +195,104 @@ struct ShadowPolicyTest {
     std::printf("policy epoch-use unit: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
   }
+  static int MemoRefresh(bool broken_seed, bool broken_age) {
+    int checks = 0, failures = 0;
+    auto check = [&](bool pass, std::source_location where = std::source_location::current()) {
+      ++checks; if (!pass) { ++failures; std::printf("failed check line=%u\n", where.line()); }
+    };
+    auto setup = [&](ShadowPolicy& policy) {
+      policy.enabled_ = true; policy.switches_.fill(true); policy.healthy_ = true;
+      policy.memo_clock_ = Clock; engine_epoch = 2; now = 0;
+    };
+    Observation key{PolicyKind::Intent, 2, 0, 1, 1, 0, 0};
+    // The official expired key was an unused lattice seed, not the repeatedly
+    // requested 9:2:1:0:0 key. Reproduce production Seed and keep-alive selection.
+    ShadowPolicy seeded; setup(seeded);
+    seeded.Seed(2);
+    for (const auto& input : seeded.queue_) check(seeded.Remember(input, input.native_decision));
+    seeded.queue_.clear();
+    auto& seed = seeded.decisions_.at(ShadowPolicy::Key(key));
+    check(seed.inputs.policy_seed && !seed.active && seed.at == 0);
+    if (broken_seed) {
+      // Restore the old selection: all never-used seeds were ineligible.
+      for (auto& [unused, entry] : seeded.decisions_) entry.inputs.policy_seed = false;
+    }
+    now = 25000;
+    auto work = seeded.Keepalive();
+    bool selected = false;
+    for (const auto& input : work) {
+      check(seeded.KeepaliveCurrent(input));
+      check(seeded.Remember(input, input.native_decision, true));
+      selected |= ShadowPolicy::Key(input) == ShadowPolicy::Key(key);
+    }
+    check(selected && seed.at == 25000 && !seed.active && seeded.recent_.empty());
+    now = 50000; int seed_native = 0;
+    check(seeded.Decide(key, [&] { ++seed_native; return uint64_t{1}; }) == 0);
+    check(seed_native == 0);
+    const auto seed_age = now - seed.at;
+    // A caller reply retains seed status, without inventing caller recency.
+    check(seeded.Remember(key, 0) && seed.inputs.policy_seed);
+    std::printf("policy seed-refresh unit: selected=%d age_ms=%llu native_calls=%d\n",
+        selected, static_cast<unsigned long long>(seed_age), seed_native);
+
+    // Required same-value timeline: t=0 answer, t=25 s identical answer,
+    // t=50 s use. The control suppresses only the timestamp renewal.
+    ShadowPolicy equal; setup(equal);
+    check(equal.Remember(key, 0));
+    now = 25000; check(equal.Remember(key, 0));
+    if (broken_age) equal.decisions_.at(ShadowPolicy::Key(key)).at = 0;
+    now = 50000; int native_calls = 0;
+    check(equal.Decide(key, [&] { ++native_calls; return uint64_t{1}; }) == 0);
+    const auto age = now - equal.decisions_.at(ShadowPolicy::Key(key)).at;
+    check(age == 25000 && native_calls == 0);
+    std::printf("policy identical-refresh unit: age_ms=%llu native_calls=%d\n",
+        static_cast<unsigned long long>(age), native_calls);
+    now = 75000; check(equal.Remember(key, 1));
+    now = 100000;
+    check(equal.Decide(key, [&] { ++native_calls; return uint64_t{0}; }) == 1);
+    check(native_calls == 0); // Different values also renew authority.
+
+    // A selected refresh is in flight when a caller finds the old answer
+    // expired. Exercise both reply orders through the production memo commit.
+    for (bool caller_first : {false, true}) {
+      ShadowPolicy race; setup(race);
+      auto used = key; used.caller_used = true;
+      check(race.Remember(used, 0));
+      now = 25000; auto pending = race.Keepalive();
+      check(pending.size() == 1 && race.KeepaliveCurrent(pending.front()));
+      now = 31000; int misses = 0;
+      check(race.Decide(key, [&] { ++misses; return uint64_t{1}; }) == 1);
+      check(misses == 1 && race.queue_.size() == 1);
+      const auto caller = race.queue_.front(); race.queue_.clear();
+      now = 32000;
+      check(caller_first ? race.Remember(caller, 0) : race.Remember(pending.front(), 0, true));
+      now = 33000;
+      check(caller_first ? race.Remember(pending.front(), 0, true) : race.Remember(caller, 0));
+      const auto& entry = race.decisions_.at(ShadowPolicy::Key(key));
+      check(entry.at == 33000 && entry.active && entry.last_used == 31000);
+      check(race.recent_.at(ShadowPolicy::Key(key)).last_used == 31000);
+      now = 58000;
+      check(race.Decide(key, [&] { ++misses; return uint64_t{1}; }) == 0 && misses == 1);
+      // Neither refresh nor ordinary caller replies can commit an old epoch.
+      const auto at = entry.at;
+      engine_epoch = 3;
+      check(!race.Remember(pending.front(), 1, true));
+      check(!race.Remember(caller, 1));
+      check(entry.at == at && entry.value == 0);
+      engine_epoch = 2; race.Timeout(key);
+      check(!race.Remember(pending.front(), 0, true) && race.decisions_.empty());
+      std::printf("policy refresh-race unit: caller_first=%d stale_discard=1 late_discard=1\n", caller_first);
+    }
+    // Seed coalescing preserves both warmup status and real caller metadata.
+    ShadowPolicy coalesced; setup(coalesced);
+    check(coalesced.Decide(key, [] { return uint64_t{0}; }) == 0);
+    coalesced.Seed(2);
+    const auto queued = std::find_if(coalesced.queue_.begin(), coalesced.queue_.end(),
+        [&](const Observation& input) { return ShadowPolicy::Key(input) == ShadowPolicy::Key(key); });
+    check(queued != coalesced.queue_.end() && queued->caller_used && queued->policy_seed);
+    std::printf("policy memo-refresh unit: %d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+  }
   static int Run(bool broken_keepalive, bool broken_reseed = false, bool broken_candidate = false) {
     ShadowPolicy policy;
     policy.enabled_ = true;
@@ -238,7 +336,7 @@ struct ShadowPolicyTest {
     check(ShadowPolicy::Frame(1, v).substr(19, 3) == "___");
     // A differing, valid managed answer must actually replace the native
     // branch; equality-only plumbing would fail this authority control.
-    policy.enabled_ = true; policy.switches_[0] = true; policy.healthy_ = true;
+    policy.enabled_ = true; policy.switches_[0] = true; policy.healthy_ = true; engine_epoch = 7;
     v = {PolicyKind::Sources, 7, 9, 1, 1, 0, 1};
     policy.Remember(v, 2);
     auto diagnostic = v; diagnostic.kind = PolicyKind::Config;
@@ -442,6 +540,8 @@ int main(int argc, char** argv) {
     return native_adapter::ShadowPolicyTest::Transport();
   }
   const auto mode = argc > 1 ? std::string(argv[1]) : "normal";
+  if (mode == "memo-refresh" || mode == "broken-seed-refresh" || mode == "broken-refresh-age")
+    return native_adapter::ShadowPolicyTest::MemoRefresh(mode == "broken-seed-refresh", mode == "broken-refresh-age");
   if (mode == "epoch-use" || mode == "broken-coalescing")
     return native_adapter::ShadowPolicyTest::EpochUse(mode == "broken-coalescing");
   return native_adapter::ShadowPolicyTest::Run(mode == "broken-keepalive",
