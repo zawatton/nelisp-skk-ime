@@ -5,6 +5,7 @@ Fault restart initially falls back to C++, then checks retention on rebuild.
 """
 import argparse
 import copy
+from datetime import datetime
 import importlib.util
 import json
 import math
@@ -21,6 +22,11 @@ ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).parent
 PUBLICATION = (r'\bbuilder-publish generation=(\d+) files=(\d+) entries=(\d+(?:,\d+)*)'
                r' source=(builder|cpp) native=([01]) ms=(\d+)\r?$')
+HOST_EVENT = re.compile(r'^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) host=\d+ (.*)$', re.MULTILINE)
+PUBLISH_WINDOW_SEC = 180
+PUBLISH_BOUND_SEC = 120
+# Add three initial publication windows and two rebuild windows to the legacy bound.
+WALL_BOUND_SEC = 400 + 3 * (PUBLISH_WINDOW_SEC - 45) + 2 * (PUBLISH_WINDOW_SEC - 30)
 
 
 def require(ok, reason):
@@ -79,6 +85,31 @@ def publications(host, expected, source, native, generations):
     return rows
 
 
+def publication_latency(host):
+    start = published = None
+    for stamp, event in HOST_EVENT.findall(host):
+        if start is None and re.search(r'\bbuilder-start\b', event):
+            start = datetime.strptime(stamp, '%Y-%m-%dT%H:%M:%S.%fZ')
+        if published is None and re.search(r'\bbuilder-publish generation=1\b', event):
+            published = datetime.strptime(stamp, '%Y-%m-%dT%H:%M:%S.%fZ')
+    require(start is not None, 'missing timestamped builder-start telemetry')
+    require(published is not None, 'missing timestamped generation-1 publication telemetry')
+    seconds = (published - start).total_seconds()
+    require(math.isfinite(seconds) and seconds >= 0, 'invalid builder publication latency')
+    require(seconds <= PUBLISH_BOUND_SEC,
+            f'builder publication latency {seconds:.3f} s exceeds {PUBLISH_BOUND_SEC} s bound')
+    return round(seconds, 3)
+
+
+def bounded_metric(evidence, label, name):
+    value = evidence.get(name)
+    require(isinstance(value, (int, float)) and math.isfinite(value) and value >= 0,
+            label + ': missing or invalid ' + name)
+    require(value <= PUBLISH_BOUND_SEC,
+            f'{label}: {name} {value:.6f} s exceeds {PUBLISH_BOUND_SEC} s bound')
+    return round(value, 3)
+
+
 def documents(tsf):
     return dict(re.findall(r'AFTER ([A-Z][A-Z0-9_]*) BUF=\[([^\r\n]*)\].*COMP=-', tsf))
 
@@ -91,7 +122,11 @@ def check_phase(label, evidence, expected):
             and 'policy-compare mismatch' not in host, label + ': shadow mismatch')
     docs = documents(tsf)
     require(docs.get('BASE') == 'BuilderLastBuilderSecondBuilderLarge', label + ': exact builder-only/last-wins/large commit')
+    rebuild_s = bounded_metric(evidence, label, 'rebuild_s') if label in ('ON', 'FAULT') else None
+    publish_s = None
     if label == 'ON':
+        publish_s = publication_latency(host)
+        require(evidence.get('publish_s') == publish_s, 'ON: publication latency evidence mismatch')
         publications(host, expected, 'builder', 1, [1, 2])
         prior = docs['BASE']
         for i in range(12):
@@ -141,12 +176,19 @@ def check_phase(label, evidence, expected):
     cached = tails(evidence['cached_ms'])
     require(cached['samples'] >= 200 and cached['p99'] <= 10 and cached['max'] <= 50, label + ': cached host p99/max ' + str(cached))
     require(re.search(r'GUARD .*"leftovers": \[\]', evidence['guard']), label + ': owned PID cleanup')
-    return dict(documents=len(docs), callback_max_us=max(times), callback_probes=len(probes), cached_host_ms=cached,
-                owner_counters=counters)
+    result = dict(documents=len(docs), callback_max_us=max(times), callback_probes=len(probes), cached_host_ms=cached,
+                  owner_counters=counters)
+    if publish_s is not None:
+        result['publish_s'] = publish_s
+    if rebuild_s is not None:
+        result['rebuild_s'] = rebuild_s
+    return result
 
 
 def check(evidence, expected, elapsed):
-    require(elapsed <= 400, '400 s wall bound exceeded')
+    require(isinstance(elapsed, (int, float)) and math.isfinite(elapsed) and elapsed >= 0,
+            'invalid wall duration')
+    require(elapsed <= WALL_BOUND_SEC, f'{WALL_BOUND_SEC} s wall bound exceeded')
     report = {label: check_phase(label, evidence[label], expected) for label in ('ON', 'FAULT', 'SHADOW')}
     local = list(map(int, re.findall(r'SPACE-CANDIDATE ms=\d+ seq=\d+ path=local us=(\d+)', evidence['SHADOW']['tsf'])))
     metric = tails([v/1000 for v in local]) if local else None
@@ -168,9 +210,13 @@ def self_test():
     native += ''.join(f'hn3-answer operation={op}\n' for op in (1, 2, 3))
     native += 'policy-evaluations group=MERGE native=3 nelisp-selected=3\npolicy-evaluations group=STARTUP native=1 nelisp-selected=1\n'
     pub = 'builder-publish generation=1 files=3 entries=2,2,50001 source=builder native=1 ms=1\n'
+    start = '2026-01-01T00:00:00.000Z host=42 builder-start pid=8\n'
+    on_pub = '2026-01-01T00:01:59.000Z host=42 ' + pub
     evidence = {label: dict(host=native, tsf=base, cached_ms=[1]*200,
                            overlap_samples=3, guard='GUARD {"leftovers": []}') for label in ('ON', 'FAULT', 'SHADOW')}
-    evidence['ON']['host'] += pub + pub.replace('generation=1', 'generation=2')
+    evidence['ON'].update(publish_s=119.0, rebuild_s=119.0)
+    evidence['FAULT']['rebuild_s'] = 119.0
+    evidence['ON']['host'] += start + on_pub + pub.replace('generation=1', 'generation=2')
     prior = 'BuilderLastBuilderSecondBuilderLarge'
     for i in range(12):
         prior += 'BuilderLast' if i < 6 else 'BuilderNew'
@@ -214,13 +260,26 @@ def self_test():
         cases.append(bad)
     bad = copy.deepcopy(evidence); bad['ON']['cached_ms'] = [51]*200; cases.append(bad)
     bad = copy.deepcopy(evidence); bad['ON']['overlap_samples'] = 0; cases.append(bad)
+    bad = copy.deepcopy(evidence); bad['ON']['host'] = bad['ON']['host'].replace(start, ''); cases.append(bad)
+    bad = copy.deepcopy(evidence); bad['ON']['host'] = bad['ON']['host'].replace(on_pub, ''); cases.append(bad)
+    bad = copy.deepcopy(evidence); bad['ON']['rebuild_s'] = 121.0; cases.append(bad)
     for bad in cases:
         try:
             check(bad, expected, 1)
         except AssertionError:
             continue
         raise AssertionError('negative control accepted')
-    print('PASS HN13 builder-e2e ' + json.dumps(dict(self_test=True, negative_controls=len(cases), stacks=0)), flush=True)
+    bad = copy.deepcopy(evidence)
+    bad['ON']['host'] = bad['ON']['host'].replace('00:01:59.000Z', '00:02:01.000Z')
+    bad['ON']['publish_s'] = 121.0
+    try:
+        check(bad, expected, 1)
+    except AssertionError as error:
+        require('builder publication latency 121.000 s exceeds 120 s bound' in str(error),
+                '121 s control failed for the wrong reason: ' + str(error))
+    else:
+        raise AssertionError('121 s publication latency accepted')
+    print('PASS HN13 builder-e2e ' + json.dumps(dict(self_test=True, negative_controls=len(cases)+1, stacks=0)), flush=True)
 
 
 def load_transport():
@@ -249,7 +308,9 @@ def main(args):
             check_phase(label, evidence[label], expected)
         report = check(evidence, expected, time.monotonic()-started)
         (run / 'receipt.json').write_text(json.dumps(report, indent=2), 'utf-8')
-        print('PASS HN13 builder-e2e ' + json.dumps(report), flush=True)
+        print(f'PASS HN13 builder-e2e ON publish_s={report["ON"]["publish_s"]:.3f} '
+              f'rebuild_s={report["ON"]["rebuild_s"]:.3f} '
+              f'FAULT rebuild_s={report["FAULT"]["rebuild_s"]:.3f} ' + json.dumps(report), flush=True)
     except Exception as error:
         (run / 'failure.json').write_text(json.dumps(dict(reason=str(error), elapsed_s=time.monotonic()-started,
                                                         completed_phases=list(evidence)), indent=2), 'utf-8')
@@ -264,11 +325,12 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
     phase = run / label; phase.mkdir()
     host_path, gate_path = phase / 'host.log', phase / 'gate.log'
     base = ' '.join([conversion('K a n a', 'FIRST'), conversion('K a n i', 'SECOND'), conversion('K a n u', 'BASE')])
+    # Keep TSF and its host alive until either rebuild can finish.
     if label == 'ON':
         tokens = base + ' WAIT1000 ' + ' '.join(conversion('K a n a', f'PRESSURE{i}') + ' WAIT250' for i in range(12))
-        tokens += ' WAIT15000 ' + conversion('K a n a', 'NEW') + ' WAIT5000'
+        tokens += f' WAIT{PUBLISH_WINDOW_SEC*1000} ' + conversion('K a n a', 'NEW') + ' WAIT5000'
     elif label == 'FAULT':
-        tokens = base + ' WAIT15000 ' + conversion('K a n a', 'RETAINED') + ' WAIT5000'
+        tokens = base + f' WAIT{PUBLISH_WINDOW_SEC*1000} ' + conversion('K a n a', 'RETAINED') + ' WAIT5000'
     else:
         tokens = base + ' WAIT5000 ' + conversion('K a n a', 'LOCAL1') + ' ' + conversion('K a n i', 'LOCAL2') + ' WAIT5000'
     env = dict(os.environ, DDSKK_HOST_NATIVE_MERGE='2' if label == 'SHADOW' else '1',
@@ -287,6 +349,7 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
         env['DDSKK_HOST_POLICY_' + group] = '1'
     listener = socket.socket(); stop = threading.Event(); server = None
     process = None; job = transport.Job(); pipe_name = None; errors = []; cache = []; overlap = 0
+    rebuild_s = None
     def read(path):
         return path.read_text('utf-8', errors='replace') if path.exists() else ''
     def host():
@@ -296,7 +359,7 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
         require(len(logs) <= 1, 'more than one private stack in phase')
         return read(logs[0]) if logs else ''
     def until(predicate, seconds, step):
-        deadline = min(started+380, time.monotonic()+seconds)
+        deadline = min(started+WALL_BOUND_SEC-20, time.monotonic()+seconds)
         while time.monotonic() < deadline:
             result = predicate()
             if result:
@@ -309,11 +372,11 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
                 raise AssertionError(step + ': harness exit=' + str(process.returncode) + '; see ' + str(gate_path))
             require(not errors, step + ': fixture error ' + str(errors))
             time.sleep(.03)
-        raise AssertionError(step + ': evidence deadline (400 s total bound)')
+        raise AssertionError(step + f': evidence deadline ({WALL_BOUND_SEC} s total bound)')
     def request(data):
         class BoundedPipe(transport.Pipe):
             def transfer(self, data=None, size=65536, timeout=30000):
-                return super().transfer(data, size, timeout=min(2000, max(1, int((started+385-time.monotonic())*1000))))
+                return super().transfer(data, size, timeout=min(2000, max(1, int((started+WALL_BOUND_SEC-15-time.monotonic())*1000))))
         pipe = BoundedPipe(pipe_name, timeout=2000)
         try:
             return pipe.request(data)
@@ -350,6 +413,9 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
         env['DDSKK_SKKSERV_PORT'] = str(port)
         server = threading.Thread(target=serve, daemon=True); server.start()
         binaries = ROOT / args.build_dir / 'Release'
+        host_wait_pattern = (r'builder-fallback .*generation=1 action=cpp fault=midstream\r?$' if label == 'FAULT'
+                             else r'builder-publish generation=1\b|builder-fallback')
+        tsf_timeout = 250 if label in ('ON', 'FAULT') else 100
         command = [sys.executable, '-B', str(HERE / 'host-test-process-guard.py'), 'run', '--root', str(ROOT), '--cleanup', '--',
                    'pwsh', '-NoProfile', '-File', str(HERE / 'run-harness.ps1'), '-Script', tokens,
                    '-EngineHostPath', str(binaries / 'ddskk-engine-host.exe'), '-EngineExecutablePath', args.runtime,
@@ -357,11 +423,13 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
                    '-CoreDllPath', str(binaries / 'ddskk-ime-core.dll'), '-TsfHostExe', str(binaries / 'tsf-host.exe'),
                    '-LocalConversion', '0', '-SkkServEnable', '1', '-SkkServPort', str(port),
                    '-ColdLoadSleepSec', str(args.cold_load_sleep_sec), '-SkipEngineWarmup', '-PipeWaitTimeoutSec', '65',
-                   '-TsfHostTimeoutSec', '100', '-ArtifactDirectory', str(phase / 'harness')]
+                   '-WaitHostLogPath', str(host_path), '-WaitHostLogPattern', host_wait_pattern,
+                   '-WaitHostLogTimeoutSec', str(PUBLISH_WINDOW_SEC-args.cold_load_sleep_sec),
+                   '-TsfHostTimeoutSec', str(tsf_timeout), '-ArtifactDirectory', str(phase / 'harness')]
         process = job.spawn(command, env, gate_path)
         pipe_name = until(lambda: m[1] if (m := re.search(r'run-harness: pipe=(\S+)', read(gate_path))) else None, 70, 'private pipe')
         require(re.fullmatch(r'\\\\\.\\pipe\\ddskk-test-[0-9a-f]{12}', pipe_name), 'refuse non-private pipe')
-        until(lambda: 'AFTER BASE ' in tsf(), 100, label + ' base TSF conversion')
+        until(lambda: 'AFTER BASE ' in tsf(), 100+PUBLISH_WINDOW_SEC, label + ' base TSF conversion')
         if label == 'ON':
             # Stop before pressure if the product cannot attest generation 1.
             publications(host(), expected, 'builder', 1, [1])
@@ -371,8 +439,9 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
             rebuild_start = time.monotonic()
             require(request(b'HN BUILDER REBUILD') == b'OK HN BUILDER REBUILD', 'private rebuild rejected')
             target = 'builder-publish generation=2' if label == 'ON' else 'action=retain'
-            until(lambda: target in host()[len(before):], 30, label + ' rebuild')
+            until(lambda: target in host()[len(before):], PUBLISH_WINDOW_SEC, label + ' rebuild')
             rebuild_end = time.monotonic()
+            rebuild_s = rebuild_end-rebuild_start
             # Real timestamped key events, not the number of scripted intentions.
             ticks = [int(t)/1e6 for t in re.findall(r'SCRIPTKEY token=SPACE .*?utc_us=(\d+)', tsf())]
             end_wall = time.time(); begin_wall = end_wall - (rebuild_end-rebuild_start)
@@ -389,9 +458,14 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
                                   (b'PREVIEW 00304b00306a', b'PREVIEW '), (b'DIAG CHILD-PID', b'PID ')]:
                 now = time.perf_counter(); reply = request(query); cache.append((time.perf_counter()-now)*1000)
                 require(reply.startswith(prefix), 'cached host reply mismatch')
-        process.wait(timeout=max(1, min(100, started+380-time.monotonic())))
+        process.wait(timeout=max(1, min(260 if label in ('ON', 'FAULT') else 100,
+                                        started+WALL_BOUND_SEC-20-time.monotonic())))
         require(process.returncode == 0, label + ': private harness exit=' + str(process.returncode))
         result = dict(host=host(), tsf=tsf(), guard=read(gate_path), cached_ms=cache, overlap_samples=overlap)
+        if label == 'ON':
+            result['publish_s'] = publication_latency(result['host'])
+        if rebuild_s is not None:
+            result['rebuild_s'] = rebuild_s
         (phase / 'evidence.json').write_text(json.dumps(result, indent=2), 'utf-8')
         return result
     finally:

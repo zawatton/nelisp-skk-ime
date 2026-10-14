@@ -42,6 +42,15 @@
 .PARAMETER ColdLoadSleepSec
   Extra sleep after the pipe appears, to clear the engine's cold load.
 
+.PARAMETER WaitHostLogPath
+  Host log to inspect after the cold-load sleep when the wait timeout is active.
+
+.PARAMETER WaitHostLogPattern
+  Regular expression that ends the active host-log wait.
+
+.PARAMETER WaitHostLogTimeoutSec
+  Maximum host-log wait in seconds. Zero disables the wait.
+
 .PARAMETER SkipEngineWarmup
   Skip the private conversion/RESET warm-up for cold-start reproductions.
 
@@ -95,6 +104,9 @@ param(
   # to ~12s (loaded machine); a 6s default let the first scripted keys race
   # the load and get swallowed, which read as false engine regressions.
   [int]$ColdLoadSleepSec = 12,
+  [string]$WaitHostLogPath = "",
+  [string]$WaitHostLogPattern = "",
+  [int]$WaitHostLogTimeoutSec = 0,
   [switch]$SkipEngineWarmup,
 
   [int]$PipeWaitTimeoutSec = 30,
@@ -324,6 +336,32 @@ if (-not [string]::IsNullOrWhiteSpace($repository)) { $hostArgs += "`"$repositor
 
   Write-Host "run-harness: pipe up; sleeping ${ColdLoadSleepSec}s for engine cold load..."
   Start-Sleep -Seconds $ColdLoadSleepSec
+  if ($WaitHostLogTimeoutSec -gt 0) {
+    if ([string]::IsNullOrWhiteSpace($WaitHostLogPath)) { throw 'WaitHostLogPath is required for an active wait' }
+    if ([string]::IsNullOrWhiteSpace($WaitHostLogPattern)) { throw 'WaitHostLogPattern is required for an active wait' }
+    $waitRegex = [regex]::new($WaitHostLogPattern, [Text.RegularExpressions.RegexOptions]::Multiline)
+    $waitWatch = [Diagnostics.Stopwatch]::StartNew()
+    while ($waitWatch.Elapsed.TotalSeconds -lt $WaitHostLogTimeoutSec) {
+      $waitText = $null
+      try {
+        $waitStream = [IO.File]::Open($WaitHostLogPath, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+          ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        try {
+          $waitReader = [IO.StreamReader]::new($waitStream, [Text.Encoding]::UTF8, $true, 4096, $true)
+          try { $waitText = $waitReader.ReadToEnd() } finally { $waitReader.Dispose() }
+        } finally { $waitStream.Dispose() }
+      } catch {
+        # The host can create, rotate, or briefly lock the log while publishing.
+      }
+      if ($null -ne $waitText -and $waitRegex.IsMatch($waitText)) {
+        $waitSeconds = $waitWatch.Elapsed.TotalSeconds.ToString('F1', [Globalization.CultureInfo]::InvariantCulture)
+        Write-Host "run-harness: host-log wait matched after ${waitSeconds}s"
+        break
+      }
+      Start-Sleep -Milliseconds 200
+    }
+    if ($null -eq $waitText -or -not $waitRegex.IsMatch($waitText)) { throw 'Host log wait timeout' }
+  }
   if (-not $SkipEngineWarmup) {
     # Prime the private engine before measuring keys. Lowercase ai + Space
     # is direct input in DDSKK and cannot warm its dictionary conversion.
