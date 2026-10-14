@@ -21,6 +21,7 @@ constexpr size_t kPayload = 262144;
 constexpr size_t kReplyPayload = 524288;
 constexpr size_t kLine = 65536;
 constexpr uint32_t kBatchTimeoutMs = 10000;
+constexpr uint32_t kReadyTimeoutMs = 65000;
 constexpr std::string_view kReady = "HNB READY version=1\n";
 constexpr uint32_t kFirstLine = 1;
 
@@ -537,8 +538,11 @@ inline BuildResult Build(Input& input, Channel& channel,
 
   if (!channel.Start()) return fail("start");
   std::string ready;
-  const IoResult ready_result = channel.ReadReady(ready, kBatchTimeoutMs);
-  if (ready_result != IoResult::Ok) return fail(IoError(ready_result));
+  const IoResult ready_result = channel.ReadReady(ready, kReadyTimeoutMs);
+  if (ready_result != IoResult::Ok) {
+    return fail(ready_result == IoResult::Timeout ? "ready-timeout"
+                                                 : IoError(ready_result));
+  }
   if (ready != kReady) return fail("ready");
 
   const size_t file_count = input.FileCount();

@@ -128,7 +128,7 @@ class FakeChannel final : public Channel {
   }
 
   IoResult ReadReady(std::string& ready, uint32_t timeout_ms) override {
-    timeouts.push_back(timeout_ms);
+    ready_timeouts.push_back(timeout_ms);
     if (fault == Fault::ReadyTimeout) return IoResult::Timeout;
     if (fault == Fault::ReadyTransport) return IoResult::Transport;
     ready = fault == Fault::ReadyText ? "HNB READY version=2\n"
@@ -180,6 +180,7 @@ class FakeChannel final : public Channel {
   int retires = 0;
   size_t exchanges = 0;
   std::vector<uint32_t> timeouts;
+  std::vector<uint32_t> ready_timeouts;
   std::vector<Request> requests;
 };
 
@@ -193,7 +194,8 @@ ReferenceLoader Loader(std::vector<std::string> files, int* calls = nullptr) {
 void TestCodec(Checks& t) {
   t.Check(kVersion == 1 && kHeader == 40 && kPayload == 262144 &&
               kReplyPayload == 524288 && kLine == 65536 &&
-              kBatchTimeoutMs == 10000 && kReady == "HNB READY version=1\n",
+              kBatchTimeoutMs == 10000 && kReadyTimeoutMs == 65000 &&
+              kReady == "HNB READY version=1\n",
           "constants");
 
   Request request;
@@ -578,7 +580,10 @@ void TestModesAndDriver(Checks& t) {
     t.Check(channel.requests.size() == 2 && channel.requests[0].flags == kFirstLine &&
                 channel.requests[1].flags == kFirstLine,
             "first-line-each-file");
-    t.Check(std::all_of(channel.timeouts.begin(), channel.timeouts.end(),
+    t.Check(channel.ready_timeouts == std::vector<uint32_t>{65000},
+            "driver-ready-timeout-budget");
+    t.Check(channel.timeouts.size() == channel.requests.size() &&
+                std::all_of(channel.timeouts.begin(), channel.timeouts.end(),
                         [](uint32_t value) { return value == kBatchTimeoutMs; }),
             "driver-timeout-budget");
   }
@@ -649,7 +654,7 @@ void TestFailures(Checks& t) {
   const std::vector<std::pair<Fault, const char*>> cases = {
       {Fault::Start, "start"},
       {Fault::ReadyText, "ready"},
-      {Fault::ReadyTimeout, "timeout"},
+      {Fault::ReadyTimeout, "ready-timeout"},
       {Fault::ReadyTransport, "transport"},
       {Fault::Timeout, "timeout"},
       {Fault::Transport, "transport"},
@@ -672,9 +677,17 @@ void TestFailures(Checks& t) {
                 result.error == token && calls == 1 && channel.retires == 1 &&
                 publisher.Lease()->maps == Reference(files),
             "initial-failure-fallback");
+    t.Check(channel.ready_timeouts == (fault == Fault::Start
+                ? std::vector<uint32_t>{} : std::vector<uint32_t>{65000}),
+            "failure-ready-timeout-budget");
     t.Check(std::all_of(channel.timeouts.begin(), channel.timeouts.end(),
                         [](uint32_t value) { return value == 10000; }),
             "failure-timeout-budget");
+    if (fault == Fault::ReadyTimeout || fault == Fault::Timeout) {
+      t.Check(channel.exchanges == (fault == Fault::ReadyTimeout ? 0 : 1) &&
+                  channel.timeouts.size() == static_cast<size_t>(channel.exchanges),
+              "timeout-phase");
+    }
   }
   {
     FakeInput input({Chunks(files[0], 3)});

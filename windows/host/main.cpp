@@ -953,6 +953,7 @@ bool LoadDictionaryFile(const std::wstring& path,
 // the old generation on any failure and never publish a partial result.
 void LoadBuiltinDictionariesThread(std::wstring files_spec,
                                   std::wstring runtime, std::wstring repository) {
+  const auto generation_started = std::chrono::steady_clock::now();
   std::vector<std::wstring> paths;
   size_t start = 0;
   while (start <= files_spec.size()) {
@@ -998,6 +999,20 @@ void LoadBuiltinDictionariesThread(std::wstring files_spec,
   hn_builder_windows::FileInput input(paths, fault == L"overlong");
   hn_builder_windows::Channel channel(repository, g_child_job, fault);
   const auto generation = ++g_builtin_generation;
+  const auto log_publication = [&](const char* source, bool native) {
+    const auto published = g_builtin_dictionary.Lease();
+    std::string entries;
+    for (const auto& map : published->maps) {
+      if (!entries.empty()) entries += ',';
+      entries += std::to_string(map.size());
+    }
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - generation_started).count();
+    LogEvent("builder-publish generation=" + std::to_string(published->id) +
+        " files=" + std::to_string(published->maps.size()) + " entries=" + entries +
+        " source=" + source + " native=" + (native ? "1" : "0") +
+        " ms=" + std::to_string(elapsed_ms));
+  };
   hn_builder::BuildResult result;
   try {
     result = hn_builder::Build(input, channel, reference, g_builtin_dictionary,
@@ -1006,7 +1021,10 @@ void LoadBuiltinDictionariesThread(std::wstring files_spec,
     channel.Retire();
     const bool retain = g_builtin_dictionary.HasGeneration();
     LogEvent(std::string("builder-fallback reason=exception action=") + (retain ? "retain" : "cpp"));
-    if (!retain) g_builtin_dictionary.Publish(generation, reference());
+    if (!retain) {
+      g_builtin_dictionary.Publish(generation, reference());
+      log_publication("cpp", false);
+    }
     return;
   }
   if (!result.ok) {
@@ -1028,8 +1046,10 @@ void LoadBuiltinDictionariesThread(std::wstring files_spec,
         " builder-counts=" + counts(result.comparison.left_counts) +
         " cpp-counts=" + counts(result.comparison.right_counts));
   }
-  if (mode != hn_builder::Mode::Reference && result.published)
-    LogEvent("builder-publish generation=" + std::to_string(generation));
+  if (result.published) {
+    const bool native = compatible && mode != hn_builder::Mode::Reference && !result.fallback;
+    log_publication(native && mode == hn_builder::Mode::Builder ? "builder" : "cpp", native);
+  }
 }
 
 bool QueueBuiltinDictionaries(const std::wstring& files_spec,

@@ -136,7 +136,7 @@ def real_child_check(binary, work, runtime):
                   b'repeat /old/\nembedded\rkey /ta\ril/\r\nrepeat /last/',
                 bom + b'\nfirst /after-bom-only/\nzero\0key /zero\0tail/']
     try:
-        check(take(len(b'HNB READY version=1\n'), 60) == b'HNB READY version=1\n', 'READY')
+        check(take(len(b'HNB READY version=1\n'), 65) == b'HNB READY version=1\n', 'READY')
         for file_index, contents in enumerate(fixtures):
             source = work / f'public-{file_index}.jisyo'
             source.write_bytes(contents)
