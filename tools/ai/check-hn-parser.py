@@ -4,8 +4,9 @@
 One fresh NeLisp replay process handles all batches (native preparation uses a
 separate compiler process). No dictionary-sized list/map is constructed in Lisp.
 Memory is bounded by builder-side periodic reclamation.
-An identically configured setup-only process measures the baseline OS peak working
-set; the 512 MiB cap applies to replay growth above it, not fixed startup cost.
+Current OS resident memory is sampled within the same process's replay phase;
+the 512 MiB cap applies to its peak above the replay start, not startup peaks.
+A held, fully written 64 MiB probe must add at least 48 MiB to prove sensitivity.
 Temporary data/cache live under LOCALAPPDATA; no production publication is tested.
 """
 import argparse
@@ -23,8 +24,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "engine/host-native-index.el"
 LINE_CAP = 64 * 1024
 BATCH_CAP = 256 * 1024
-# Bound parsing growth above the setup-only process peak to 512 MiB.
+# Bound current resident memory growth during the replay phase to 512 MiB.
 PARSE_GROWTH_CAP = 512 * 1024 * 1024
+PROBE_HOLD_SECONDS = 1.0
+PROBE_MIN_DELTA = 48 * 1024 * 1024
 
 
 class RejectLine(ValueError):
@@ -102,10 +105,10 @@ NATIVE_SETUP = r'''(require 'nelisp-native-cache)
 '''
 
 
-def run(command, env, deadline, measure=False):
-    """Capture output with an optional OS peak working set, not Lisp heap size."""
+def run(command, env, deadline, measure=None):
+    """Capture output and optionally timestamp phase markers and current RSS."""
     stop = threading.Event()
-    peak = [None]
+    samples, markers = [], {}
     with subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE) as process:
         def sample():
@@ -113,10 +116,10 @@ def run(command, env, deadline, measure=False):
                 import psutil
                 target = psutil.Process(process.pid)
                 while not stop.is_set():
-                    info = target.memory_info()
-                    value = getattr(info, "peak_wset", info.rss)
-                    peak[0] = max(peak[0] or 0, value)
-                    stop.wait(0.05)
+                    # psutil RSS is the current working set on Windows too.
+                    value = target.memory_info().rss
+                    samples.append((time.monotonic(), value))
+                    stop.wait(0.025)
             except ImportError:
                 # Standard-library Windows fallback when psutil is absent.
                 if os.name == "nt":
@@ -125,8 +128,8 @@ def run(command, env, deadline, measure=False):
                     class Counters(ctypes.Structure):
                         _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD)] + [
                             (name, ctypes.c_size_t) for name in
-                            ("peak", "working", "peak_paged", "paged", "peak_nonpaged",
-                             "nonpaged", "pagefile", "peak_pagefile")]
+                            ("PeakWorkingSetSize", "WorkingSetSize", "peak_paged", "paged",
+                             "peak_nonpaged", "nonpaged", "pagefile", "peak_pagefile")]
                     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
                     kernel.OpenProcess.restype = wintypes.HANDLE
                     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -141,8 +144,8 @@ def run(command, env, deadline, measure=False):
                                 info.cb = ctypes.sizeof(info)
                                 if not kernel.K32GetProcessMemoryInfo(handle, ctypes.byref(info), info.cb):
                                     break
-                                peak[0] = max(peak[0] or 0, info.peak)
-                                stop.wait(0.05)
+                                samples.append((time.monotonic(), info.WorkingSetSize))
+                                stop.wait(0.025)
                         finally:
                             kernel.CloseHandle(handle)
             except OSError:
@@ -150,14 +153,47 @@ def run(command, env, deadline, measure=False):
             except Exception:
                 # Optional telemetry must never determine parity.
                 pass
+        out_parts, err_parts, readers = [], [], []
+        if measure:
+            marker_lines = {measure + b" " + name.encode() + b"\n": name for name in
+                            ("REPLAY-START", "REPLAY-END", "PROBE-HELD")}
+
+            def read_stdout():
+                for line in iter(process.stdout.readline, b""):
+                    seen = time.monotonic()
+                    out_parts.append(line)
+                    if line in marker_lines:
+                        markers.setdefault(marker_lines[line], seen)
+
+            def read_stderr():
+                for chunk in iter(lambda: process.stderr.read(65536), b""):
+                    err_parts.append(chunk)
+
+            readers = [threading.Thread(target=read_stdout, daemon=True),
+                       threading.Thread(target=read_stderr, daemon=True)]
+            for reader in readers:
+                reader.start()
         thread = threading.Thread(target=sample, daemon=True) if measure else None
         if thread:
             thread.start()
         try:
-            out, err = process.communicate(timeout=max(0.01, deadline-time.monotonic()))
+            timeout = max(0.01, deadline-time.monotonic())
+            if measure:
+                process.wait(timeout=timeout)
+                for reader in readers:
+                    reader.join()
+                out, err = b"".join(out_parts), b"".join(err_parts)
+            else:
+                out, err = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as error:
             process.kill()  # Only the owned validation child.
-            partial, _ = process.communicate()
+            if measure:
+                process.wait()
+                for reader in readers:
+                    reader.join()
+                partial = b"".join(out_parts)
+            else:
+                partial, _ = process.communicate()
             frames = re.findall(rb" BEGIN (\d+) (\d+) ([0-9.]+)\n", partial)
             completed = partial.count(b" END\n")
             raise RuntimeError(f"deadline exceeded: completed_batches={completed} "
@@ -169,7 +205,35 @@ def run(command, env, deadline, measure=False):
         if process.returncode:
             raise RuntimeError(f"exit={process.returncode}: " +
                                (out + err).decode("utf-8", "replace")[-2500:])
-    return out, peak[0]
+    return out, {"samples": samples, "markers": markers} if measure else None
+
+
+def memory_metrics(telemetry):
+    """Measure replay growth and probe sensitivity, failing closed on missing data."""
+    samples, markers = telemetry["samples"], telemetry["markers"]
+    start, end, held = (markers.get(name) for name in
+                        ("REPLAY-START", "REPLAY-END", "PROBE-HELD"))
+    replay = [value for stamp, value in samples
+              if start is not None and end is not None and start <= stamp <= end]
+    probe = [value for stamp, value in samples
+             if held is not None and held <= stamp <= held + PROBE_HOLD_SECONDS]
+    # REPLAY-END precedes allocation; samples just before PROBE-HELD may
+    # already include some or all of the fully written probe.
+    before_probe = [value for stamp, value in samples if end is not None and stamp <= end]
+    initial = (min(samples, key=lambda item: abs(item[0] - start))[1]
+               if samples and start is not None else None)
+    peak = max(replay) if replay else None
+    growth = peak - initial if peak is not None and initial is not None else None
+    delta = max(probe) - before_probe[-1] if probe and before_probe else None
+    reason = None
+    if (not replay or not probe or not before_probe or growth is None or
+            not (start <= end <= held)):
+        reason = "missing-telemetry"
+    elif delta < PROBE_MIN_DELTA:
+        reason = "insensitive"
+    elif growth > PARSE_GROWTH_CAP:
+        reason = "growth-cap"
+    return initial, peak, growth, delta, len(replay), len(probe), reason
 
 
 def main(argv=None):
@@ -177,6 +241,10 @@ def main(argv=None):
     parser.add_argument("--native", action="store_true",
                         help="Compile then fresh-load template native callables")
     args = parser.parse_args(argv)
+    try:
+        leak_mib = max(0, int(os.environ.get("HN_PARSER_TEST_LEAK_MIB", "0")))
+    except ValueError:
+        leak_mib = 0
     started = time.monotonic()
     deadline = started + 410
     mode = "native" if args.native else "interpreted"
@@ -263,7 +331,10 @@ def main(argv=None):
         paths = ' '.join('(' + ('t' if first else 'nil') + ' ' +
                          literal(str(p).replace('\\', '/').encode()) + ')'
                          for first, p in files)
-        replay = r'''(let ((seq 0))
+        replay = r'''(defvar hn-parser-test-leaks nil)
+(let ((seq 0))
+  ;; The standalone byte writer writes directly to stdout, without buffering.
+  (nelisp--write-stdout-bytes "@TOKEN@ REPLAY-START\n")
   (host-native-index-reset-reclaim)
   (dolist (entry '(@PATHS@))
     (let ((input (with-temp-buffer (set-buffer-multibyte nil)
@@ -284,7 +355,19 @@ def main(argv=None):
           (princ (concat (car record) "\n" (cdr record) "\n"))))
       (princ "@TOKEN@ END\n"))
       (host-native-index-note-batch input-bytes))
+    ;; Opt-in negative control: retain one fully written string per batch.
+    (when (> @LEAK_MIB@ 0)
+      (push (make-string (* @LEAK_MIB@ 1024 1024) ?l) hn-parser-test-leaks))
     (setq seq (1+ seq))))
+(nelisp--write-stdout-bytes "@TOKEN@ REPLAY-END\n")
+(let ((probe (make-string (* 64 1024 1024) ?p)))
+  (nelisp--write-stdout-bytes "@TOKEN@ PROBE-HELD\n")
+  ;; sleep-for is unavailable in standalone; keep the block live while sampled.
+  (let ((until (+ (float-time) @PROBE_HOLD@)))
+    (while (< (float-time) until)))
+  (unless (= (aref probe (1- (length probe))) ?p)
+    (error "Memory probe touch failed"))
+  (setq probe nil))
 (unless (equal (host-native-parse-jisyo-line "em\nb\red /a\nb\r/") '("embed" . "/ab/"))
   (error "Embedded line break control failed"))
 (unless (equal (host-native-parse-jisyo-line
@@ -301,6 +384,7 @@ def main(argv=None):
   (error "Multibyte BOM/index control failed"))
 (princ "@TOKEN@ DONE\n")
 '''.replace('@PATHS@', paths).replace('@TOKEN@', token.decode()).replace(
+            '@LEAK_MIB@', str(leak_mib)).replace('@PROBE_HOLD@', str(PROBE_HOLD_SECONDS)).replace(
             '@BENCH_START@', str(next(i for i, meta in enumerate(batch_meta) if meta[0] == 2)))
         driver = work / "run.el"
         # Same filename in compiler and fresh reader: GNU #$ docstrings are
@@ -308,27 +392,26 @@ def main(argv=None):
         driver.write_text(';;; -*- lexical-binding: t; -*-\n' + setup +
                           '(cond ((string= (getenv "HN_PARSER_MODE") "compile")\n'
                           '       (princ "HN-PARSER-COMPILE-PASS\\n"))\n'
-                          '      ((string= (getenv "HN_PARSER_MODE") "baseline")\n'
-                          '       (princ "HN-PARSER-BASELINE-PASS\\n"))\n'
                           '      (t\n' + replay + '))\n', encoding="utf-8", newline="\n")
         if args.native:
             output, _ = run(command + ["-l", str(driver)], dict(env, HN_PARSER_MODE="compile"), deadline)
             print(output.decode("utf-8", "replace"), end="")
             if b"HN-PARSER-COMPILE-PASS\n" not in output:
                 raise RuntimeError("missing native compile marker")
-        baseline_output, baseline_peak = run(
-            command + ["-l", str(driver)], dict(env, HN_PARSER_MODE="baseline"), deadline, True)
-        if b"HN-PARSER-BASELINE-PASS\n" not in baseline_output:
-            raise RuntimeError("missing parser baseline marker")
         replay_started = time.monotonic()
-        output, peak = run(command + ["-l", str(driver)], dict(env, HN_PARSER_MODE="run"), deadline, True)
+        output, telemetry = run(command + ["-l", str(driver)], dict(env, HN_PARSER_MODE="run"), deadline, token)
         wall = time.monotonic() - replay_started
-        cursor, records, seconds = 0, [[], [], []], [0.0, 0.0, 0.0]
+        for name in ("REPLAY-START", "REPLAY-END", "PROBE-HELD"):
+            if output.count(token + b" " + name.encode() + b"\n") != 1:
+                raise RuntimeError(f"missing or duplicate phase marker {name}")
+        start_marker = token + b" REPLAY-START\n"
+        cursor = output.index(start_marker) + len(start_marker)
+        records, seconds = [[], [], []], [0.0, 0.0, 0.0]
         generated_count = 0
         for seq, (dataset, input_count) in enumerate(batch_meta):
             marker = token + f" BEGIN {seq} ".encode()
-            pos = output.find(marker, cursor)
-            if pos < 0:
+            pos = cursor
+            if not output.startswith(marker, pos):
                 raise RuntimeError(f"missing batch frame {seq}")
             end = output.index(b'\n', pos)
             fields = output[pos + len(marker):end].split()
@@ -349,15 +432,16 @@ def main(argv=None):
             if output[cursor:cursor+len(end_marker)] != end_marker:
                 raise RuntimeError(f"invalid record count/framing batch {seq}")
             cursor += len(end_marker)
-        if output[cursor:].strip() != token + b' DONE':
+        final_markers = token + b' REPLAY-END\n' + token + b' PROBE-HELD\n' + token + b' DONE\n'
+        if output[cursor:] != final_markers:
             raise RuntimeError("missing completion marker or extra output")
         actual, count = serialize(records[0])
         corrupted = bytearray(golden)
         corrupted[len(corrupted) // 2] ^= 1
         negative = not compare(actual, bytes(corrupted))
         oracle = compare(actual, golden)
-        growth = peak - baseline_peak if peak is not None and baseline_peak is not None else None
-        memory_ok = growth is not None and growth <= PARSE_GROWTH_CAP
+        initial, peak, growth, delta, replay_count, probe_count, memory_reason = memory_metrics(telemetry)
+        memory_ok = memory_reason is None
         passed = oracle and negative and memory_ok
         passed = passed and records[1] == edge_expected and generated_count == 50000
         if records[1] != edge_expected:
@@ -373,10 +457,14 @@ def main(argv=None):
               f"negative-control={'PASS (flipped-byte FAIL)' if negative else 'FAIL'} "
               f"edges={'PASS' if records[1] == edge_expected else 'FAIL'} "
               f"seconds={time.monotonic()-started:.3f} replay_s={wall:.3f} "
-              f"baseline_peak_working_set_bytes={baseline_peak if baseline_peak is not None else 'unavailable'} "
-              f"peak_working_set_bytes={peak if peak is not None else 'unavailable'} "
+              f"replay_start_bytes={initial if initial is not None else 'unavailable'} "
+              f"replay_peak_bytes={peak if peak is not None else 'unavailable'} "
               f"growth_bytes={growth if growth is not None else 'unavailable'} "
-              f"memory={'PASS' if memory_ok else 'FAIL'} growth_cap_bytes={PARSE_GROWTH_CAP}")
+              f"probe_delta_bytes={delta if delta is not None else 'unavailable'} "
+              f"samples_replay={replay_count} samples_probe={probe_count} "
+              f"memory={'PASS' if memory_ok else 'FAIL'} " +
+              (f"reason={memory_reason} " if memory_reason else "") +
+              f"growth_cap_bytes={PARSE_GROWTH_CAP}")
         print(f"HN-PARSER-BENCH mode={mode} public_lines=50000 records={generated_count} "
               f"parse_seconds={seconds[2]:.6f} lines/s={rate:.3f}" if rate is not None else
               f"HN-PARSER-BENCH mode={mode} lines/s=unavailable (timer resolution)")
@@ -391,8 +479,9 @@ if __name__ == "__main__":
         import sys
         mode = "native" if "--native" in sys.argv else "interpreted"
         print(f"HN-PARSER-FAIL mode={mode} bytes=unavailable records=unavailable "
-              f"seconds={time.monotonic()-invoked:.3f} baseline_peak_working_set_bytes=unavailable "
-              f"peak_working_set_bytes=unavailable growth_bytes=unavailable "
-              f"memory=FAIL growth_cap_bytes={PARSE_GROWTH_CAP} "
+              f"seconds={time.monotonic()-invoked:.3f} replay_start_bytes=unavailable "
+              f"replay_peak_bytes=unavailable growth_bytes=unavailable probe_delta_bytes=unavailable "
+              f"samples_replay=0 samples_probe=0 memory=FAIL reason=missing-telemetry "
+              f"growth_cap_bytes={PARSE_GROWTH_CAP} "
               f"error={error}")
         raise SystemExit(1)
