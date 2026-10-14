@@ -24,9 +24,16 @@ PUBLICATION = (r'\bbuilder-publish generation=(\d+) files=(\d+) entries=(\d+(?:,
                r' source=(builder|cpp) native=([01]) ms=(\d+)\r?$')
 HOST_EVENT = re.compile(r'^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) host=\d+ (.*)$', re.MULTILINE)
 PUBLISH_WINDOW_SEC = 180
-PUBLISH_BOUND_SEC = 120
+PUBLISH_BOUND_SEC = 180
+TSF_WAIT_MAX_MS = 60000  # tsf_host.cpp caps each WAIT token at 60000 ms.
 # Add three initial publication windows and two rebuild windows to the legacy bound.
-WALL_BOUND_SEC = 400 + 3 * (PUBLISH_WINDOW_SEC - 45) + 2 * (PUBLISH_WINDOW_SEC - 30)
+# Include 20 s TSF lead-ins for both rebuild waits.
+WALL_BOUND_SEC = 400 + 3 * (PUBLISH_WINDOW_SEC - 45) + 2 * (PUBLISH_WINDOW_SEC + 20 - 30)
+
+
+def wait_tokens(milliseconds):
+    return ' '.join(f'WAIT{min(TSF_WAIT_MAX_MS, milliseconds-offset)}'
+                    for offset in range(0, milliseconds, TSF_WAIT_MAX_MS))
 
 
 def require(ok, reason):
@@ -211,11 +218,11 @@ def self_test():
     native += 'policy-evaluations group=MERGE native=3 nelisp-selected=3\npolicy-evaluations group=STARTUP native=1 nelisp-selected=1\n'
     pub = 'builder-publish generation=1 files=3 entries=2,2,50001 source=builder native=1 ms=1\n'
     start = '2026-01-01T00:00:00.000Z host=42 builder-start pid=8\n'
-    on_pub = '2026-01-01T00:01:59.000Z host=42 ' + pub
+    on_pub = '2026-01-01T00:02:59.000Z host=42 ' + pub
     evidence = {label: dict(host=native, tsf=base, cached_ms=[1]*200,
                            overlap_samples=3, guard='GUARD {"leftovers": []}') for label in ('ON', 'FAULT', 'SHADOW')}
-    evidence['ON'].update(publish_s=119.0, rebuild_s=119.0)
-    evidence['FAULT']['rebuild_s'] = 119.0
+    evidence['ON'].update(publish_s=179.0, rebuild_s=179.0)
+    evidence['FAULT']['rebuild_s'] = 179.0
     evidence['ON']['host'] += start + on_pub + pub.replace('generation=1', 'generation=2')
     prior = 'BuilderLastBuilderSecondBuilderLarge'
     for i in range(12):
@@ -232,6 +239,11 @@ def self_test():
     evidence['SHADOW']['host'] += 'builder-shadow match files=3 builder-counts=2,2,50001 cpp-counts=2,2,50001\n'
     evidence['SHADOW']['tsf'] += 'SPACE-CANDIDATE ms=1 seq=1 path=local us=1000\n'
     check(evidence, expected, 1)
+    for label in ('NEW', 'RETAINED'):
+        tokens = wait_tokens((PUBLISH_WINDOW_SEC+20)*1000) + ' ' + conversion('K a n a', label) + ' WAIT5000'
+        waits = [int(ms) for ms in re.findall(r'\bWAIT(\d+)\b', tokens)]
+        require(waits and all(ms <= TSF_WAIT_MAX_MS for ms in waits), label + ': oversized TSF WAIT token')
+        require(sum(waits[:-1]) == (PUBLISH_WINDOW_SEC+20)*1000, label + ': short rebuild wait')
     cases = []
     for phase, field, old, new in [
         ('ON', 'tsf', 'AFTER PRESSURE0 BUF=[BuilderLastBuilderSecondBuilderLargeBuilderLast]', 'AFTER PRESSURE0 BUF=[]'),
@@ -262,7 +274,9 @@ def self_test():
     bad = copy.deepcopy(evidence); bad['ON']['overlap_samples'] = 0; cases.append(bad)
     bad = copy.deepcopy(evidence); bad['ON']['host'] = bad['ON']['host'].replace(start, ''); cases.append(bad)
     bad = copy.deepcopy(evidence); bad['ON']['host'] = bad['ON']['host'].replace(on_pub, ''); cases.append(bad)
-    bad = copy.deepcopy(evidence); bad['ON']['rebuild_s'] = 121.0; cases.append(bad)
+    for phase in ('ON', 'FAULT'):
+        bad = copy.deepcopy(evidence); bad[phase]['rebuild_s'] = 181.0; cases.append(bad)
+        bad = copy.deepcopy(evidence); del bad[phase]['rebuild_s']; cases.append(bad)
     for bad in cases:
         try:
             check(bad, expected, 1)
@@ -270,16 +284,17 @@ def self_test():
             continue
         raise AssertionError('negative control accepted')
     bad = copy.deepcopy(evidence)
-    bad['ON']['host'] = bad['ON']['host'].replace('00:01:59.000Z', '00:02:01.000Z')
-    bad['ON']['publish_s'] = 121.0
+    bad['ON']['host'] = bad['ON']['host'].replace('00:02:59.000Z', '00:03:01.000Z')
+    bad['ON']['publish_s'] = 181.0
     try:
         check(bad, expected, 1)
     except AssertionError as error:
-        require('builder publication latency 121.000 s exceeds 120 s bound' in str(error),
-                '121 s control failed for the wrong reason: ' + str(error))
+        require('builder publication latency 181.000 s exceeds 180 s bound' in str(error),
+                '181 s control failed for the wrong reason: ' + str(error))
     else:
-        raise AssertionError('121 s publication latency accepted')
-    print('PASS HN13 builder-e2e ' + json.dumps(dict(self_test=True, negative_controls=len(cases)+1, stacks=0)), flush=True)
+        raise AssertionError('181 s publication latency accepted')
+    print('PASS HN13 builder-e2e ' + json.dumps(dict(self_test=True, negative_controls=len(cases)+1,
+                                                  wait_controls=2, stacks=0)), flush=True)
 
 
 def load_transport():
@@ -312,8 +327,12 @@ def main(args):
               f'rebuild_s={report["ON"]["rebuild_s"]:.3f} '
               f'FAULT rebuild_s={report["FAULT"]["rebuild_s"]:.3f} ' + json.dumps(report), flush=True)
     except Exception as error:
-        (run / 'failure.json').write_text(json.dumps(dict(reason=str(error), elapsed_s=time.monotonic()-started,
-                                                        completed_phases=list(evidence)), indent=2), 'utf-8')
+        failure = dict(reason=str(error), elapsed_s=time.monotonic()-started, completed_phases=list(evidence))
+        try:
+            failure['publish_s'] = publication_latency((run / 'ON' / 'captured-host.log').read_text('utf-8'))
+        except (AssertionError, OSError):
+            pass
+        (run / 'failure.json').write_text(json.dumps(failure, indent=2), 'utf-8')
         raise
 
 
@@ -328,9 +347,9 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
     # Keep TSF and its host alive until either rebuild can finish.
     if label == 'ON':
         tokens = base + ' WAIT1000 ' + ' '.join(conversion('K a n a', f'PRESSURE{i}') + ' WAIT250' for i in range(12))
-        tokens += f' WAIT{PUBLISH_WINDOW_SEC*1000} ' + conversion('K a n a', 'NEW') + ' WAIT5000'
+        tokens += ' ' + wait_tokens((PUBLISH_WINDOW_SEC+20)*1000) + ' ' + conversion('K a n a', 'NEW') + ' WAIT5000'
     elif label == 'FAULT':
-        tokens = base + f' WAIT{PUBLISH_WINDOW_SEC*1000} ' + conversion('K a n a', 'RETAINED') + ' WAIT5000'
+        tokens = base + ' ' + wait_tokens((PUBLISH_WINDOW_SEC+20)*1000) + ' ' + conversion('K a n a', 'RETAINED') + ' WAIT5000'
     else:
         tokens = base + ' WAIT5000 ' + conversion('K a n a', 'LOCAL1') + ' ' + conversion('K a n i', 'LOCAL2') + ' WAIT5000'
     env = dict(os.environ, DDSKK_HOST_NATIVE_MERGE='2' if label == 'SHADOW' else '1',
@@ -415,6 +434,7 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
         binaries = ROOT / args.build_dir / 'Release'
         host_wait_pattern = (r'builder-fallback .*generation=1 action=cpp fault=midstream\r?$' if label == 'FAULT'
                              else r'builder-publish generation=1\b|builder-fallback')
+        # 250/260 s allow the 200 s TSF rebuild wait plus conversions and cleanup.
         tsf_timeout = 250 if label in ('ON', 'FAULT') else 100
         command = [sys.executable, '-B', str(HERE / 'host-test-process-guard.py'), 'run', '--root', str(ROOT), '--cleanup', '--',
                    'pwsh', '-NoProfile', '-File', str(HERE / 'run-harness.ps1'), '-Script', tokens,
