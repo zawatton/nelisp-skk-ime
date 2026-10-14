@@ -20,6 +20,9 @@ constexpr size_t kHeader = 40;
 constexpr size_t kPayload = 262144;
 constexpr size_t kReplyPayload = 524288;
 constexpr size_t kLine = 65536;
+// Native batching policy, below the contract count limit: keeps one batch of
+// short lines well inside kBatchTimeoutMs for an interpreted child.
+constexpr size_t kBatchLines = 1024;
 constexpr uint32_t kBatchTimeoutMs = 10000;
 constexpr uint32_t kReadyTimeoutMs = 65000;
 constexpr std::string_view kReady = "HNB READY version=1\n";
@@ -373,7 +376,8 @@ class LineBatcher {
 
   bool QueueLine(std::string line, const Emit& emit, std::string& error) {
     const size_t encoded = 4 + line.size();
-    if (!batch_.empty() && batch_bytes_ > kPayload - encoded &&
+    if (!batch_.empty() &&
+        (batch_bytes_ > kPayload - encoded || batch_.size() >= kBatchLines) &&
         !Flush(emit, error)) {
       return false;
     }

@@ -487,6 +487,17 @@ void TestBatcher(Checks& t) {
               batches[1].size() == 1 && first == std::vector<bool>({true, false}),
           "split-multibatch");
 
+  LineBatcher counted;
+  batches.clear();
+  first.clear();
+  error.clear();
+  std::string short_lines;
+  for (size_t i = 0; i < kBatchLines + 1; ++i) short_lines += "k /v/\n";
+  t.Check(kBatchLines == 1024 && counted.Feed(short_lines, true, emit, error) &&
+              batches.size() == 2 && batches[0].size() == kBatchLines &&
+              batches[1].size() == 1 && first == std::vector<bool>({true, false}),
+          "split-line-count-cap");
+
 #ifndef HN_BUILDER_NEGATIVE_SKIP_OVERLONG
   LineBatcher overlong;
   error.clear();

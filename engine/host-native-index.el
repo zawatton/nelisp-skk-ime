@@ -91,13 +91,22 @@ ordered records; accumulation, serialization and publication belong to native."
             offset (1+ offset) shift (+ shift 8) width (1- width)))
     value))
 
+(defvar host-native-index--u32-cache (make-vector 65537 nil)
+  "Encoded u32 strings for line, key and tail lengths up to 64 KiB.")
+
 (defun host-native-index--put (value width)
-  "Encode VALUE in WIDTH little-endian bytes."
-  (let ((bytes nil))
-    (while (> width 0)
-      (push (logand value 255) bytes)
-      (setq value (ash value -8) width (1- width)))
-    (apply #'unibyte-string (nreverse bytes))))
+  "Encode VALUE in WIDTH (2 or 4) little-endian bytes."
+  ;; Interpreted framing runs once per key and tail; avoid list building and
+  ;; reuse the immutable length strings, which concat always copies.
+  (if (= width 2)
+      (unibyte-string (logand value 255) (logand (ash value -8) 255))
+    (if (< value 65537)
+        (or (aref host-native-index--u32-cache value)
+            (aset host-native-index--u32-cache value
+                  (unibyte-string (logand value 255) (logand (ash value -8) 255)
+                                  (logand (ash value -16) 255) (logand (ash value -24) 255))))
+      (unibyte-string (logand value 255) (logand (ash value -8) 255)
+                      (logand (ash value -16) 255) (logand (ash value -24) 255)))))
 
 (defun host-native-index--reply (frame)
   "Validate and parse one HNBQ FRAME; native has already stripped the BOM."
@@ -125,7 +134,12 @@ ordered records; accumulation, serialization and publication belong to native."
         ;; Native byte slicing copies only this line, without walking FRAME's
         ;; prefix again for each character-indexed substring.
         (let ((line (funcall slice frame at (+ at n))))
-          (when (string-search "\n" line) (error "builder incomplete line"))
+          ;; NeLisp's public string-search is an interpreted prelude
+          ;; function (~5 ms/call); its byte primitive is ~100x faster.
+          (when (if (and (fboundp 'nelisp--string-search) (not (multibyte-string-p line)))
+                    (nelisp--string-search "\n" line 0)
+                  (string-search "\n" line))
+            (error "builder incomplete line"))
           (push line lines))
         (setq at (+ at n) count (1- count))))
     (unless (= at (length frame)) (error "builder trailing bytes"))
