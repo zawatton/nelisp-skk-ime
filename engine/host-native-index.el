@@ -134,8 +134,7 @@ ordered records; accumulation, serialization and publication belong to native."
         ;; Native byte slicing copies only this line, without walking FRAME's
         ;; prefix again for each character-indexed substring.
         (let ((line (funcall slice frame at (+ at n))))
-          ;; NeLisp's public string-search is an interpreted prelude
-          ;; function (~5 ms/call); its byte primitive is ~100x faster.
+          ;; Use the byte primitive for unibyte lines, like the parser.
           (when (if (and (fboundp 'nelisp--string-search) (not (multibyte-string-p line)))
                     (nelisp--string-search "\n" line 0)
                   (string-search "\n" line))
