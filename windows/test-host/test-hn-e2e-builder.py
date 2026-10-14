@@ -157,6 +157,10 @@ def check_phase(label, evidence, expected):
         require(docs.get('RETAINED') == docs['BASE'] + 'BuilderLast', 'old candidate not retained')
     else:
         publications(host, expected, 'cpp', 1, [1])
+        require(docs.get('LOCAL1') == 'BuilderLastBuilderSecondBuilderLargeBuilderLast',
+                'SHADOW: stable LOCAL1 reconfirmation')
+        require(docs.get('LOCAL2') == 'BuilderLastBuilderSecondBuilderLargeBuilderLastBuilderSecond',
+                'SHADOW: stable LOCAL2 reconfirmation')
         rows = re.findall(r'\bbuilder-shadow match files=(\d+) builder-counts=(\d+(?:,\d+)*) cpp-counts=(\d+(?:,\d+)*)\r?$', host, re.MULTILINE)
         require(len(rows) == 1 and int(rows[0][0]) == len(expected)
                 and [int(v) for v in rows[0][1].split(',')] == expected
@@ -197,6 +201,10 @@ def check(evidence, expected, elapsed):
             'invalid wall duration')
     require(elapsed <= WALL_BOUND_SEC, f'{WALL_BOUND_SEC} s wall bound exceeded')
     report = {label: check_phase(label, evidence[label], expected) for label in ('ON', 'FAULT', 'SHADOW')}
+    local_flags = re.findall(r'^LOCAL publication status=LOCAL (\d+) \d+ capabilities=\d+\r?$',
+                             evidence['SHADOW']['guard'], re.MULTILINE)
+    flags = int(local_flags[-1]) if local_flags else 0
+    require(flags & 1, f'local capability unavailable flags={flags}')
     local = list(map(int, re.findall(r'SPACE-CANDIDATE ms=\d+ seq=\d+ path=local us=(\d+)', evidence['SHADOW']['tsf'])))
     metric = tails([v/1000 for v in local]) if local else None
     require(metric is not None, 'missing local SPACE path=local telemetry (no proxy accepted)')
@@ -220,7 +228,9 @@ def self_test():
     start = '2026-01-01T00:00:00.000Z host=42 builder-start pid=8\n'
     on_pub = '2026-01-01T00:02:59.000Z host=42 ' + pub
     evidence = {label: dict(host=native, tsf=base, cached_ms=[1]*200,
-                           overlap_samples=3, guard='GUARD {"leftovers": []}') for label in ('ON', 'FAULT', 'SHADOW')}
+                           overlap_samples=3, guard=('LOCAL publication status=LOCAL 1 0 capabilities=1\n'
+                                                     'GUARD {"leftovers": []}'))
+                for label in ('ON', 'FAULT', 'SHADOW')}
     evidence['ON'].update(publish_s=179.0, rebuild_s=179.0)
     evidence['FAULT']['rebuild_s'] = 179.0
     evidence['ON']['host'] += start + on_pub + pub.replace('generation=1', 'generation=2')
@@ -237,8 +247,16 @@ def self_test():
     evidence['FAULT']['tsf'] += 'AFTER RETAINED BUF=[BuilderLastBuilderSecondBuilderLargeBuilderLast] COMP=-\n'
     evidence['SHADOW']['host'] = native.replace('hn3-answer', 'hn3-shadow match') + pub.replace('source=builder', 'source=cpp')
     evidence['SHADOW']['host'] += 'builder-shadow match files=3 builder-counts=2,2,50001 cpp-counts=2,2,50001\n'
+    evidence['SHADOW']['tsf'] += 'AFTER LOCAL1 BUF=[BuilderLastBuilderSecondBuilderLargeBuilderLast] COMP=-\n'
+    evidence['SHADOW']['tsf'] += 'AFTER LOCAL2 BUF=[BuilderLastBuilderSecondBuilderLargeBuilderLastBuilderSecond] COMP=-\n'
     evidence['SHADOW']['tsf'] += 'SPACE-CANDIDATE ms=1 seq=1 path=local us=1000\n'
     check(evidence, expected, 1)
+    for flags in (1, 3):
+        good = copy.deepcopy(evidence)
+        good['SHADOW']['guard'] = good['SHADOW']['guard'].replace(
+            'LOCAL publication status=LOCAL 1 0 capabilities=1',
+            f'LOCAL publication status=LOCAL {flags} 0 capabilities={flags}')
+        check(good, expected, 1)
     for label in ('NEW', 'RETAINED'):
         tokens = wait_tokens((PUBLISH_WINDOW_SEC+20)*1000) + ' ' + conversion('K a n a', label) + ' WAIT5000'
         waits = [int(ms) for ms in re.findall(r'\bWAIT(\d+)\b', tokens)]
@@ -264,6 +282,8 @@ def self_test():
         ('SHADOW', 'host', 'source=cpp native=1', 'source=cpp native=0'),
         ('SHADOW', 'host', 'builder-shadow match', 'builder-shadow mismatch'),
         ('SHADOW', 'host', 'cpp-counts=2,2,50001', 'cpp-counts=1,3,50001'),
+        ('SHADOW', 'tsf', 'AFTER LOCAL1 BUF=[BuilderLastBuilderSecondBuilderLargeBuilderLast]', 'AFTER LOCAL1 BUF=[]'),
+        ('SHADOW', 'tsf', 'AFTER LOCAL2 BUF=[BuilderLastBuilderSecondBuilderLargeBuilderLastBuilderSecond]', 'AFTER LOCAL2 BUF=[]'),
         ('SHADOW', 'tsf', 'path=local', 'path=other'),
         ('ON', 'tsf', 'blocking_waits=0', 'blocking_waits=1'),
         ('ON', 'tsf', 'total_us=1', 'total_us=20001')]:
@@ -293,8 +313,29 @@ def self_test():
                 '181 s control failed for the wrong reason: ' + str(error))
     else:
         raise AssertionError('181 s publication latency accepted')
-    print('PASS HN13 builder-e2e ' + json.dumps(dict(self_test=True, negative_controls=len(cases)+1,
-                                                  wait_controls=2, stacks=0)), flush=True)
+    capability_controls = 0
+    baseline_guard = evidence['SHADOW']['guard']
+    for flags, hide_local in [(0, False), (2, False), (None, False), (0, True)]:
+        bad = copy.deepcopy(evidence)
+        if flags is None:
+            bad['SHADOW']['guard'] = baseline_guard.replace(
+                'LOCAL publication status=LOCAL 1 0 capabilities=1\n', '')
+        else:
+            bad['SHADOW']['guard'] = baseline_guard + f'\nLOCAL publication status=LOCAL {flags} 0 capabilities={flags}'
+        if hide_local:
+            bad['SHADOW']['tsf'] = bad['SHADOW']['tsf'].replace('path=local', 'path=other')
+        try:
+            check(bad, expected, 1)
+        except AssertionError as error:
+            expected_reason = f'local capability unavailable flags={flags or 0}'
+            require(str(error) == expected_reason, 'capability control failed for the wrong reason: ' + str(error))
+            capability_controls += 1
+            continue
+        raise AssertionError('capability control accepted')
+    print('PASS HN13 builder-e2e ' + json.dumps(dict(self_test=True,
+                                                  negative_controls=len(cases)+1+capability_controls,
+                                                  capability_controls=capability_controls,
+                                                  positive_controls=2, wait_controls=2, stacks=0)), flush=True)
 
 
 def load_transport():
@@ -342,6 +383,7 @@ def conversion(reading, label):
 
 def run_phase(args, run, label, mode, fault, paths, expected, started, transport):
     phase = run / label; phase.mkdir()
+    harness = phase / 'harness'; harness.mkdir()
     host_path, gate_path = phase / 'host.log', phase / 'gate.log'
     base = ' '.join([conversion('K a n a', 'FIRST'), conversion('K a n i', 'SECOND'), conversion('K a n u', 'BASE')])
     # Keep TSF and its host alive until either rebuild can finish.
@@ -351,6 +393,7 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
     elif label == 'FAULT':
         tokens = base + ' ' + wait_tokens((PUBLISH_WINDOW_SEC+20)*1000) + ' ' + conversion('K a n a', 'RETAINED') + ' WAIT5000'
     else:
+        # Reconfirm stable front candidates without changing their order.
         tokens = base + ' WAIT5000 ' + conversion('K a n a', 'LOCAL1') + ' ' + conversion('K a n i', 'LOCAL2') + ' WAIT5000'
     env = dict(os.environ, DDSKK_HOST_NATIVE_MERGE='2' if label == 'SHADOW' else '1',
                DDSKK_HOST_NATIVE_STARTUP='2' if label == 'SHADOW' else '1', DDSKK_HOST_NATIVE_BUILDER=mode,
@@ -362,6 +405,11 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
     for key in ('DDSKK_HOST_POLICY_TEST_PAUSE_KIND', 'DDSKK_SKKSERV_START_COMMAND', 'DDSKK_HARNESS_LOCAL_CONVERSION',
                 'DDSKK_HOST_NATIVE_ENTRY', 'DDSKK_HOST_BUNDLE_ENTRY', 'DDSKK_HOST_BUILDER_TEST_FAULT'):
         env.pop(key, None)
+    if label == 'SHADOW':
+        env.pop('DDSKK_LEARN_DISABLED', None)
+        # Learning stays private: an inherited DDSKK_USER_JISYO would bypass LOCALAPPDATA.
+        env.update(LOCALAPPDATA=str(harness), TEMP=str(harness), TMP=str(harness),
+                   DDSKK_USER_JISYO=str(harness / 'skk-jisyo.utf8'))
     if fault:
         env['DDSKK_HOST_BUILDER_TEST_FAULT'] = fault
     for group in ('SOURCES', 'CACHE', 'RESTART', 'PUBLICATION', 'LEARNING'):
@@ -374,7 +422,7 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
     def host():
         return read(Path(str(host_path) + '.1')) + read(host_path)
     def tsf():
-        logs = list((phase / 'harness').rglob('tsf.stdout.log'))
+        logs = list(harness.rglob('tsf.stdout.log'))
         require(len(logs) <= 1, 'more than one private stack in phase')
         return read(logs[0]) if logs else ''
     def until(predicate, seconds, step):
@@ -445,7 +493,7 @@ def run_phase(args, run, label, mode, fault, paths, expected, started, transport
                    '-ColdLoadSleepSec', str(args.cold_load_sleep_sec), '-SkipEngineWarmup', '-PipeWaitTimeoutSec', '65',
                    '-WaitHostLogPath', str(host_path), '-WaitHostLogPattern', host_wait_pattern,
                    '-WaitHostLogTimeoutSec', str(PUBLISH_WINDOW_SEC-args.cold_load_sleep_sec),
-                   '-TsfHostTimeoutSec', str(tsf_timeout), '-ArtifactDirectory', str(phase / 'harness')]
+                   '-TsfHostTimeoutSec', str(tsf_timeout), '-ArtifactDirectory', str(harness)]
         process = job.spawn(command, env, gate_path)
         pipe_name = until(lambda: m[1] if (m := re.search(r'run-harness: pipe=(\S+)', read(gate_path))) else None, 70, 'private pipe')
         require(re.fullmatch(r'\\\\\.\\pipe\\ddskk-test-[0-9a-f]{12}', pipe_name), 'refuse non-private pipe')
