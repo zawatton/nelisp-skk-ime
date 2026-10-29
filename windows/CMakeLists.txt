@@ -122,6 +122,13 @@ target_compile_definitions(ddskk-realtime-frontend-test PRIVATE
   UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(ddskk-realtime-frontend-test PRIVATE /W4 /permissive- /utf-8)
 nativeime_test(ddskk-realtime-frontend-test)
+add_executable(ddskk-force-latin-frontend-test test/force_latin_frontend_test.cpp
+  src/realtime_frontend.cpp)
+target_include_directories(ddskk-force-latin-frontend-test PRIVATE src)
+target_compile_features(ddskk-force-latin-frontend-test PRIVATE cxx_std_20)
+target_compile_definitions(ddskk-force-latin-frontend-test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(ddskk-force-latin-frontend-test PRIVATE /W4 /permissive- /utf-8)
+nativeime_test(ddskk-force-latin-frontend-test)
 
 add_executable(nativeime-registry-settings-test test/registry_settings_test.cpp)
 target_include_directories(nativeime-registry-settings-test PRIVATE src)

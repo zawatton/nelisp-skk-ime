@@ -155,6 +155,20 @@ std::optional<EngineState> RealtimeFrontend::FeedAscii(char key, bool record, un
   // A custom carry rule can re-enter the same prefix without consuming input.
   // Yield to the provider instead of recursing forever on the TSF thread.
   if (steps == 32) return std::nullopt;
+  // Lowercase l confirms the current reading before switching to Latin.
+  // It is a mode command even inside a romaji prefix, never a small-kana key.
+  // Once already in ASCII Latin it belongs literally to the application.
+  if (record && key == 'l') {
+    if (latin_) return std::nullopt;
+    if (okuri_started_) CancelOkuri();
+    auto confirmed = Commit();
+    SetInputMode(L"latin");
+    if (confirmed) {
+      confirmed->mode = L"latin";
+      return confirmed;
+    }
+    return Snapshot();
+  }
   const bool upper = key >= 'A' && key <= 'Z';
   const char lower = static_cast<char>(std::tolower(static_cast<unsigned char>(key)));
 

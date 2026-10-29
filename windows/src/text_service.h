@@ -144,7 +144,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // own claim logic runs); does not re-check either. Shared by
   // OnTestKeyDown and OnKeyDown's direct-call fallback -- see both for
   // why the two must ask the identical question.
-  bool WouldClaimKey(WPARAM wparam, bool composing) const;
+  bool WouldClaimKey(WPARAM wparam, bool composing, const BYTE* event_state) const;
   HRESULT RequestStateEdit(const ddskk::EngineState& state);
   HRESULT ApplyDisplayAttribute(TfEditCookie edit_cookie, ITfContext* context,
                                 ITfRange* range, REFGUID guid);
@@ -283,6 +283,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
     bool ctrl_j = false;
     bool control = false;
     bool caps = false;
+    bool latin_switch = false;
   };
 
   LONG ref_count_ = 1;
@@ -381,6 +382,7 @@ class TextService final : public ITfTextInputProcessor, public ITfKeyEventSink,
   // Queued printable keys already have an exact translation; do not
   // translate their VK again against a later keyboard layout/modifier state.
   std::optional<char32_t> replay_codepoint_;
+  bool replaying_latin_switch_ = false;
 
   // Mirrors TSF's standard keyboard-open compartment.  External clients
   // such as Emacs' `w32-set-ime-open-status' change this value; false is

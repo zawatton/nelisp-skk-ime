@@ -1253,6 +1253,7 @@ void TextService::ReplayDeferredProviderKeys() {
     const DeferredProviderKey key = deferred_provider_keys_.front();
     deferred_provider_keys_.pop_front();
     if (registration_mode_ ||
+        (key.has_codepoint && key.codepoint == U'l' && !key.control && !key.ctrl_j) ||
         (local_enabled_ && kana_mode_ && !provider_composition_active_)) {
       // A late index must use the same local barriers as fresh typing. The
       // old replay loop sent every subsequent SPACE back to the provider,
@@ -1267,7 +1268,9 @@ void TextService::ReplayDeferredProviderKeys() {
       const auto scan = MapVirtualKeyW(static_cast<UINT>(key.virtual_key), MAPVK_VK_TO_VSC);
       tested_key_valid_ = false;
       const auto saved_replay = replay_codepoint_;
+      const bool saved_latin_switch = replaying_latin_switch_;
       replay_codepoint_ = key.has_codepoint ? std::optional<char32_t>(key.codepoint) : std::nullopt;
+      replaying_latin_switch_ = key.latin_switch;
       const bool saved_registration_dispatch = dispatching_registration_key_;
       dispatching_registration_key_ = registration_mode_;
       OnKeyDown(active_context_, key.virtual_key, (static_cast<LPARAM>(scan) << 16) | 1, &eaten);
@@ -1275,8 +1278,12 @@ void TextService::ReplayDeferredProviderKeys() {
           !provider_pending_.load(std::memory_order_acquire);
       dispatching_registration_key_ = saved_registration_dispatch;
       replay_codepoint_ = saved_replay;
+      replaying_latin_switch_ = saved_latin_switch;
       SetKeyboardState(saved);
       if (registration_retry) return; // Retry timer, never spin on worker-launch failure.
+      if (confirmation_pending_ || confirmation_replay_ || confirmation_delivery_pending_) {
+        ScheduleConfirmationReplay(); return;
+      }
       continue;
     }
     std::optional<ddskk::EngineState> state;
@@ -1440,6 +1447,10 @@ void TextService::ResumeConfirmedKeys() {
       (key.codepoint >= U'A' && key.codepoint <= U'Z')))
     keyboard[VK_CAPITAL] = ((key.codepoint >= U'A' && key.codepoint <= U'Z') != key.shift) ? 1 : 0;
   SetKeyboardState(keyboard);
+  const auto saved_replay = replay_codepoint_;
+  const bool saved_latin_switch = replaying_latin_switch_;
+  replay_codepoint_ = key.has_codepoint ? std::optional<char32_t>(key.codepoint) : std::nullopt;
+  replaying_latin_switch_ = key.latin_switch;
   replaying_confirmation_ = true;
   BOOL eaten = FALSE;
   const auto scan = MapVirtualKeyW(static_cast<UINT>(key.virtual_key), MAPVK_VK_TO_VSC);
@@ -1457,6 +1468,8 @@ void TextService::ResumeConfirmedKeys() {
     ApplyLocalState(active_context_, literal);
   }
   replaying_confirmation_ = false;
+  replay_codepoint_ = saved_replay;
+  replaying_latin_switch_ = saved_latin_switch;
   SetKeyboardState(saved);
   // One key per message; a deferred edit retains the barrier until release.
   ScheduleConfirmationReplay();
@@ -1929,7 +1942,7 @@ HRESULT TextService::OnSetFocus(BOOL foreground) {
 // claimed exactly like a bare "G" keystroke regardless of composing
 // state. Ctrl+J is NOT handled here: it has its own always-claimed
 // branch in both OnTestKeyDown and OnKeyDown, independent of composing.
-bool TextService::WouldClaimKey(WPARAM wparam, bool composing) const {
+bool TextService::WouldClaimKey(WPARAM wparam, bool composing, const BYTE* event_state) const {
   const bool control_down = tested_control_down_ || ControlDown();
   if (registration_mode_) {
     if (wparam == 'G' && control_down) return true;
@@ -1955,6 +1968,8 @@ bool TextService::WouldClaimKey(WPARAM wparam, bool composing) const {
   // Ctrl+G was handled immediately above.  Never reinterpret any other
   // Ctrl shortcut as a kana letter.
   if (control_down) return false;
+  if (event_state && ((event_state[VK_MENU] & 0x80) ||
+      (event_state[VK_LWIN] & 0x80) || (event_state[VK_RWIN] & 0x80))) return false;
   return (wparam >= 'A' && wparam <= 'Z') ||             // letters
          // The engine now inserts 0..9 and Japanese-layout Shift+digit
          // symbols literally, including while a kana composition is open.
@@ -2027,7 +2042,7 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM wparam, LPARAM lparam,
   // CorvusSKK's key ownership). See WouldClaimKey() for the full claim
   // predicate, shared with OnKeyDown's direct-call fallback.
   const bool composing = composition_ != nullptr || engine_pending_;
-  if (!WouldClaimKey(wparam, composing)) {
+  if (!WouldClaimKey(wparam, composing, tested_key_valid_ ? tested_keyboard_state_ : nullptr)) {
     *eaten = FALSE;
     debug_exit(0, -1);
     return S_OK;
@@ -2937,6 +2952,98 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
    * application untouched.  Previously direct KeyDown still translated a
    * digit/punctuation character and sent it to DDSKK, despite TestKeyDown
    * having declined it, so those ordinary editor keys disappeared. */
+  const bool force_latin = engine_id_ == "ddskk" && !registration_mode_ &&
+      (replaying_latin_switch_ || (ddskk_engine_ && keyboard_open_ && kana_mode_ && have_event_state &&
+      !(tested_control_down_ || ControlDown() || (event_state[VK_CONTROL] & 0x80)) &&
+      !(event_state[VK_MENU] & 0x80) && !(event_state[VK_LWIN] & 0x80) &&
+      !(event_state[VK_RWIN] & 0x80) && event_codepoint() == U'l'));
+  const auto latin_command = [&] {
+    // Capture the first mode command; following queued l keys are literals
+    // after that command, even if its asynchronous delivery is still pending.
+    const bool intent = replaying_latin_switch_ || std::none_of(
+        deferred_provider_keys_.begin(), deferred_provider_keys_.end(),
+        [](const DeferredProviderKey& key) { return key.latin_switch; });
+    return DeferredProviderKey{wparam, U'l', true, key_shift, false, false, key_caps, intent};
+  };
+  // Enter already queued behind a lookup is also a confirmation intent. Never
+  // drop it, or a confirmed edit/delivery, merely to change the following mode.
+  const bool queued_confirmation = force_latin && !replaying_confirmation_ &&
+      std::any_of(deferred_provider_keys_.begin(),
+      deferred_provider_keys_.end(), [](const DeferredProviderKey& key) {
+        return key.virtual_key == VK_RETURN || key.ctrl_j;
+      });
+  if (force_latin && !replaying_confirmation_ &&
+      (confirmation_pending_ || confirmation_replay_ || confirmation_delivery_pending_ || queued_confirmation)) {
+    deferred_provider_keys_.push_back(latin_command());
+    ScheduleConfirmationReplay();
+    *eaten = TRUE; branch = L"force-latin-after-confirmation";
+    debug_exit(*eaten); return S_OK;
+  }
+  if (force_latin && (provider_pending_.load(std::memory_order_acquire) ||
+                     provider_conversion_retry_)) {
+    // The pending result owns the selected word. Resolve it first; candidate
+    // replay then uses the existing asynchronous confirmation barrier.
+    deferred_provider_keys_.push_back(latin_command());
+    *eaten = TRUE; branch = L"force-latin-after-provider";
+    debug_exit(*eaten); return S_OK;
+  }
+  if (force_latin && (local_conversion_.active() || provider_composition_active_ ||
+                     realtime_frontend_.composing())) {
+    // Replayed l precedes keys still in this queue. Requeue the mode command
+    // at the front so following letters cannot overtake confirmation.
+    deferred_provider_keys_.push_front(latin_command());
+    HRESULT confirm = S_OK;
+    if (local_conversion_.active()) {
+      confirm = CommitLocal(context, true);
+    } else if (realtime_frontend_.composing() &&
+               (!provider_composition_active_ || realtime_frontend_.okuri_started()) &&
+               last_engine_mode_ != L"candidate") {
+      // Native-owned incomplete okuri is still a reading, not a candidate.
+      // Cancel only its formatting marker, then confirm the pending syllable.
+      if (realtime_frontend_.okuri_started()) realtime_frontend_.CancelOkuri();
+      const auto confirmed = realtime_frontend_.Commit();
+      provider_composition_active_ = false;
+      engine_.MarkNeedsResync();
+      if (confirmed) confirm = ApplyLocalState(context, *confirmed, true);
+    } else if (provider_composition_active_) {
+      if (BeginProviderControl(ddskk::EngineControl::kCommit)) confirmation_pending_ = true;
+      else { deferred_provider_keys_.pop_front(); confirm = E_FAIL; }
+    }
+    *eaten = TRUE; branch = L"force-latin-confirm";
+    debug_exit(*eaten, confirm, confirm); return S_OK;
+  }
+  if (force_latin) {
+    auto following_keys = replaying_confirmation_ ? std::move(deferred_provider_keys_)
+        : std::deque<DeferredProviderKey>{};
+    ITfRange* confirmed_anchor = replaying_confirmation_ ? confirmation_anchor_ : nullptr;
+    if (replaying_confirmation_) confirmation_anchor_ = nullptr;
+    CancelPendingProvider();
+    if (replaying_confirmation_) {
+      deferred_provider_keys_ = std::move(following_keys);
+      confirmation_anchor_ = confirmed_anchor;
+      confirmation_replay_ = !deferred_provider_keys_.empty();
+    } else {
+      // No confirmed transaction is pending on this branch: invalidate only
+      // previously queued unconfirmed edits before publishing empty Latin.
+      ++edit_generation_;
+    }
+    CancelLocalRetry();
+    local_store_.CancelServer();
+    local_conversion_.Reset(); local_okuri_snapshot_ = {};
+    local_server_next_ = local_server_menu_ = false;
+    provider_composition_active_ = false; provider_candidate_state_.reset();
+    engine_.MarkNeedsResync();
+    realtime_frontend_.SetInputMode(L"latin");
+    state = realtime_frontend_.RestorePreedit();
+    // Cleanup stays on the existing worker. Its reply never applies a stale
+    // candidate or changes the locally selected Latin mode.
+    ReleaseEngineConversion();
+    engine_pending_ = false; kana_mode_ = false; last_engine_mode_ = L"latin";
+    CloseCandidateUi();
+    const HRESULT edit = ApplyLocalState(context, *state);
+    *eaten = TRUE; branch = L"force-latin-l";
+    debug_exit(*eaten, S_OK, edit); return S_OK;
+  }
   if (local_conversion_retry_) {
     RetryLocalConversion(); CancelLocalRetry();
     if (local_conversion_.active() && wparam == VK_SPACE && !key_shift) {
@@ -2988,8 +3095,8 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
                            last_engine_mode_ == L"candidate" &&
                            wparam == 'Q' && key_shift;
   const bool claimed = registration_mode_
-      ? (ctrl_g || WouldClaimKey(wparam, true))
-      : (ctrl_j || (kana_mode_ && WouldClaimKey(wparam, composing)));
+      ? (ctrl_g || WouldClaimKey(wparam, true, have_event_state ? event_state : nullptr))
+      : (ctrl_j || (kana_mode_ && WouldClaimKey(wparam, composing, have_event_state ? event_state : nullptr)));
   tested_control_down_ = false;
   if (!ddskk_engine_ || !keyboard_open_ || !claimed) {
     branch = L"passthrough";
@@ -3710,7 +3817,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam
       // character is still swallowed, to avoid leaking raw ASCII the
       // engine was never given a chance to process.
       const bool key_composing = composition_ != nullptr || engine_pending_;
-      *eaten = WouldClaimKey(wparam, key_composing) ? TRUE : FALSE;
+      *eaten = WouldClaimKey(wparam, key_composing, have_event_state ? event_state : nullptr) ? TRUE : FALSE;
       debug_exit(*eaten);
       return S_OK;
     }
