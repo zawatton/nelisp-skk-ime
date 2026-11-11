@@ -11,7 +11,7 @@
 ;;                 GetLanguageProfileDescription must be L"NeLisp IME",
 ;;                 ITfCategoryMgr::EnumCategoriesInItem(our CLSID) must list the
 ;;                 six categories, and CoCreateInstance(our CLSID,
-;;                 ITfTextInputProcessor) must work (Activate/Deactivate S_OK,
+;;                 ITfTextInputProcessor) must work (Activate(NULL) E_INVALIDARG, Deactivate S_OK,
 ;;                 the Ex alias must resolve).
 ;;   absent mode   CoCreateInstance(our CLSID) must fail with
 ;;                 REGDB_E_CLASSNOTREG and no profile / category may remain.
@@ -217,7 +217,9 @@
                                              ,(nelisp-com-call '(ptr-read-u64 (data-addr cl_en) 0) 2)
                                            0)
                                          ,(nelisp-com-call 't0 2)
-                                         (if (or ,(nelisp-com-failed 'a) ,(nelisp-com-failed 'd))
+                                         ;; S3d: Activate(NULL, 0) is E_INVALIDARG like shim_service.cpp.
+                                         (if (or (/= (logand a 4294967295) 2147942487)
+                                                 ,(nelisp-com-failed 'd))
                                              41
                                            (if ,(nelisp-com-failed 'q) 42 0)))))))))))))
        (defun absent_class ()

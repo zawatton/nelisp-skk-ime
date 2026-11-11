@@ -137,15 +137,21 @@ echo "$COUT" | sed 's/^/   client: /'
 [ "$CRC" = 0 ] || fail "present client exit=$CRC (see check codes in shim-reg-client.el)"
 ok "client (real msctf): EnumLanguageProfiles lists CLSID/0x0411/profile; CoCreateInstance + Activate/Deactivate + Ex alias via registered class"
 
-# ---- S3b hosts load the new DLL (Activate must be S_OK; the placeholder TIP has
-# no ITfKeyEventSink yet, so the host stops with 'FAIL no ITfKeyEventSink' rc 4).
+# ---- host-wine loads the shim DLL.  Since S3d the TIP has a key sink, so the
+# host no longer stops with 'FAIL no ITfKeyEventSink' (exit 4).  There is no
+# ddskk-ime-core.dll next to the DLL and no CoreDll value, so the real Activate
+# fails with HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND)=8007007e; the host still
+# gets the sink, its scripted key calls return E_UNEXPECTED (no core) and are
+# ignored, and Deactivate is S_OK, so the host exits 0.  The full Activate/key
+# path is covered by shim-activate-e2e.sh.
 emacs_run -l host-wine.el --eval "(host-wine-build \"$WORK/host-wine.exe\")" \
   >"$WORK/hostbuild.log" 2>&1 || { tail -5 "$WORK/hostbuild.log" | cut -c1-300; fail "build host-wine"; }
 HOUT="$(cd "$WORK" && DDSKK_HARNESS_DLL_PATH="$WDLL" timeout 120 wine host-wine.exe a </dev/null 2>/dev/null)"; hrc=$?
 echo "$HOUT" | grep -q '^TIP_DIRECT loaded' || fail "host-wine did not load the shim: $HOUT"
-echo "$HOUT" | grep -q '^HR Activate=00000000' || fail "Activate != S_OK: $HOUT"
-[ "$hrc" = 4 ] || fail "host-wine exit=$hrc (expected 4: no ITfKeyEventSink yet)"
-ok "host-wine loads the shim DLL via DDSKK_HARNESS_DLL_PATH; Activate=S_OK (key sink arrives with S3d)"
+echo "$HOUT" | grep -q '^HR Activate=8007007e' || fail "Activate != HRESULT_FROM_WIN32(126) without a core: $HOUT"
+echo "$HOUT" | grep -q '^HR Deactivate=00000000' || fail "Deactivate != S_OK: $HOUT"
+[ "$hrc" = 0 ] || fail "host-wine exit=$hrc (expected 0: key sink present, no core)"
+ok "host-wine loads the shim DLL via DDSKK_HARNESS_DLL_PATH; no core -> Activate=8007007e, sink present, Deactivate=S_OK"
 
 # ================= 2. unregister
 regsvr "$MAIN" /u /s ddskk-ime.dll; rc=$?

@@ -1,0 +1,9 @@
+TIP_DIRECT loaded from DDSKK_HARNESS_DLL_PATH
+ITfKeystrokeMgr::AdviseKeyEventSink 7 P 1
+ITfCompartmentMgr::GetCompartment 58273aad
+HR Activate=00000000
+AFTER a text= comp=0
+AFTER b text= comp=0
+AFTER 1 text= comp=0
+ITfKeystrokeMgr::UnadviseKeyEventSink 7
+HR Deactivate=00000000

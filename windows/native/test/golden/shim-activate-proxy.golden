@@ -1,0 +1,24 @@
+TIP_DIRECT loaded from DDSKK_HARNESS_DLL_PATH
+HR Activate=00000000
+CORE tm_nonnull=1 cb_valid=1 pubseq=1 query_sink=00000000 tm_addref_ok=1
+WIN created=1 destroyed=0 timer=0
+KM advise=1 fg=1 tid_match=1 sink_is_tip=1
+WIN compartment=1
+HR Activate2=80070057
+FOCUS hr=00000000
+KEY slot=4 vk=41 hr=00000000 eaten=00000001 pair=1
+KEY slot=6 vk=41 hr=00000000 eaten=00000001 pair=1
+KEY slot=5 vk=41 hr=00000000 eaten=00000000 pair=0
+KEY slot=4 vk=41 hr=00000000 eaten=00000001 pair=1
+KEY slot=7 vk=41 hr=00000000 eaten=00000000 pair=0
+KEY slot=4 vk=31 hr=00000000 eaten=00000000 pair=0
+KEY slot=6 vk=31 hr=00000000 eaten=00000000 pair=1
+KEY slot=5 vk=31 hr=00000000 eaten=00000000 pair=0
+PRESERVED hr=00000000 eaten=00000000
+WIN created=1 destroyed=0 timer=1
+CORE create=1 destroy=0 activate=1 deactivate=0 ops=1,3,2,2,1,1 eaten=3
+HR Deactivate=00000000
+WIN created=1 destroyed=1 timer=1
+CORE create=1 destroy=1 activate=1 deactivate=1 ops=1,3,2,2,1,1 eaten=3
+KM unadvise=1
+REL tip=0
