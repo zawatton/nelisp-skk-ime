@@ -1,0 +1,15 @@
+S0 absent engine=ddskk ddskk=1 kana=1 debug=0 ms=bb8 ind=1 scale=64 col=2020c0,3b7f1b,c8a600,a85a1e,912c6a open_mode=restore app=settings-client.exe pub=0 reg=0 act=0
+S1 full engine=passthrough ddskk=0 kana=0 debug=1 ms=1388 ind=0 scale=96 col=0000ff,00ff00,ff0000,123456,ffffff open_mode=restore app=settings-client.exe pub=0 reg=0 act=0
+S1b ddskk+colors engine=ddskk ddskk=1 kana=0 debug=0 ms=bb8 ind=1 scale=64 col=0000ff,3b7f1b,c8a600,a85a1e,ffffff open_mode=restore app=settings-client.exe pub=0 reg=0 act=0
+S2 clamp-low engine=ddskk ddskk=1 kana=1 debug=0 ms=1 ind=1 scale=32 col=2020c0,3b7f1b,c8a600,a85a1e,912c6a open_mode=restore app=settings-client.exe pub=0 reg=0 act=0
+S2b clamp-high engine=ddskk ddskk=1 kana=1 debug=1 ms=ea60 ind=1 scale=12c col=2020c0,3b7f1b,c8a600,a85a1e,912c6a open_mode=restore app=settings-client.exe pub=0 reg=0 act=0
+S3a engine-key-1 engine=ddskk ddskk=1 kana=1 debug=0 ms=bb8 ind=1 scale=64 col=2020c0,3b7f1b,c8a600,a85a1e,912c6a open_mode=restore app=settings-client.exe pub=0 reg=0 act=0
+S3b engine-key-0 engine=ddskk ddskk=1 kana=0 debug=0 ms=bb8 ind=1 scale=64 col=2020c0,3b7f1b,c8a600,a85a1e,912c6a open_mode=restore app=settings-client.exe pub=0 reg=0 act=0
+S3c engine-key-wrongtype engine=ddskk ddskk=1 kana=0 debug=0 ms=bb8 ind=1 scale=64 col=2020c0,3b7f1b,c8a600,a85a1e,912c6a open_mode=restore app=settings-client.exe pub=0 reg=0 act=0
+S3d passthrough-engine-key engine=passthrough ddskk=0 kana=0 debug=0 ms=bb8 ind=1 scale=64 col=2020c0,3b7f1b,c8a600,a85a1e,912c6a open_mode=restore app=settings-client.exe pub=0 reg=0 act=0
+S4 color-edges engine=ddskk ddskk=1 kana=1 debug=0 ms=bb8 ind=1 scale=64 col=2020c0,000061,000000,ffffff,912c6a open_mode=restore app=settings-client.exe pub=0 reg=0 act=0
+S5 app-latin-publish engine=ddskk ddskk=1 kana=1 debug=0 ms=bb8 ind=1 scale=64 col=2020c0,3b7f1b,c8a600,a85a1e,912c6a open_mode=latin app=settings-client.exe pub=1 reg=1 act=1
+S5b app-latin-publish-notactivated engine=ddskk ddskk=1 kana=1 debug=0 ms=bb8 ind=1 scale=64 col=2020c0,3b7f1b,c8a600,a85a1e,912c6a open_mode=katakana app=settings-client.exe pub=1 reg=0 act=0
+S6 app-bogus engine=ddskk ddskk=1 kana=1 debug=0 ms=bb8 ind=1 scale=64 col=2020c0,3b7f1b,c8a600,a85a1e,912c6a open_mode=restore app=settings-client.exe pub=0 reg=0 act=0
+S7 app-wrongtypes engine=ddskk ddskk=1 kana=1 debug=0 ms=bb8 ind=1 scale=64 col=2020c0,3b7f1b,c8a600,a85a1e,912c6a open_mode=restore app=settings-client.exe pub=0 reg=0 act=0
+S8 app-other-exe engine=ddskk ddskk=1 kana=1 debug=0 ms=bb8 ind=1 scale=64 col=2020c0,3b7f1b,c8a600,a85a1e,912c6a open_mode=restore app=settings-client.exe pub=0 reg=0 act=0

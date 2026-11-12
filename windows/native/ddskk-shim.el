@@ -37,7 +37,9 @@
 ;;                              category (GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT)
 ;;   NELISP_SHIM_WRONG_SLOT=1   negative control: OnKeyDown forwards the
 ;;                              OnTestKeyDown operation to the core
-;;   NELISP_SHIM_TEST_EXPORTS=1 also export DdskkShimStat (test counters)
+;;   NELISP_SHIM_TEST_EXPORTS=1 also export DdskkShimStat (test counters) and
+;;                              DdskkShimPubLock (the publication lock callback)
+;;   NELISP_SHIM_NOLOCK=1       negative control: publication_lock is a no-op
 ;;   NELISP_SHIM_BAD_LANGID=1   negative control: AddLanguageProfile with
 ;;                              langid 0x0409 instead of 0x0411
 
@@ -77,7 +79,8 @@
 (defconst ddskk-shim-imports
   `(("kernel32.dll" "GetModuleHandleExW" "GetModuleFileNameW" "GetLastError"
      "GetFileAttributesW" "GetProcessHeap" "HeapAlloc" "HeapFree" "HeapReAlloc"
-     "LoadLibraryExW" "GetProcAddress" "FreeLibrary")
+     "LoadLibraryExW" "GetProcAddress" "FreeLibrary" "InitializeCriticalSection"
+     "EnterCriticalSection" "LeaveCriticalSection" "Sleep")
     ("advapi32.dll" "RegCreateKeyExW" "RegSetValueExW" "RegQueryValueExW"
      "RegCloseKey" "RegDeleteTreeW" "RegOpenKeyExW")
     ("ole32.dll" "CoCreateInstance")
@@ -481,6 +484,9 @@
                         (svc_sibling_path)))))
            (svc_sibling_path)))))))
 
+(defvar ddskk-shim--no-lock nil
+  "Non-nil builds the publication lock callback as a no-op (negative control).")
+
 (defun ddskk-shim--callback-forms ()
   "NativeImeCallbacks implementations (called by the core, Win64 ABI)."
   (let ((u32 ddskk-shim--u32) (maxn ddskk-shim--max-ending))
@@ -488,6 +494,8 @@
       (data-blob pub_cnt ,(make-list 8 0) data)
       (data-blob pub_flushed ,(make-list 8 0) data)
       (data-blob trk_tmp ,(make-list 8 0) data)
+      (data-blob pub_cs_flag ,(make-list 8 0) data)
+      (data-blob pub_cs ,(make-list 48 0) data)
       ;; Index of IDENTITY in the ending list of B, or 99.
       (defun end_find (b identity)
         (let ((i 0) (r 99) (n ,(ddskk-shim--f 'b 'nending)))
@@ -536,9 +544,27 @@
           (if (and (> d 0) (< d 2147483648))
               (+ 1 (atomic-fetch-add (data-addr pub_cnt) 1))
             (- (atomic-fetch-add (data-addr pub_cnt) -1) 1))))
-      ;; The C++ shim takes a process-wide mutex; S3d has no cross-thread
-      ;; publisher yet (S3e adds the watcher thread and a real lock).
-      (defun cb_publock (owner lock) 0)
+            ;; The C++ shim takes a process-wide std::mutex.  The critical section
+      ;; is initialised on first use (the shim has no DllMain); a thread that
+      ;; loses the race spins until the winner has finished the initialisation.
+      (defun pub_cs_init ()
+        (if (= (ptr-read-u64 (data-addr pub_cs_flag) 0) 2) 0
+          (if (= (atomic-compare-exchange (data-addr pub_cs_flag) 0 1) 1)
+              (seq (extern-call InitializeCriticalSection (data-addr pub_cs))
+                   (ptr-write-u64 (data-addr pub_cs_flag) 0 2)
+                   0)
+            (seq (while (/= (ptr-read-u64 (data-addr pub_cs_flag) 0) 2)
+                   (extern-call Sleep 0))
+                 0))))
+      (defun cb_publock (owner lock)
+        ,(if ddskk-shim--no-lock 0
+           `(seq (pub_cs_init)
+                 (if (/= (logand lock ,u32) 0)
+                     (extern-call EnterCriticalSection (data-addr pub_cs))
+                   (extern-call LeaveCriticalSection (data-addr pub_cs)))
+                 0)))
+      ;; Test export: the same callback, callable from a test client.
+      (defun DdskkShimPubLock (lock) (cb_publock 0 lock))
       (defun cb_pubflushed (owner value)
         (let ((v (logand value ,u32)))
           (seq (if (/= v 0) (ptr-write-u64 (data-addr pub_flushed) 0 v) 0)
@@ -893,16 +919,17 @@ are negative-control hooks."
             (ddskk-shim--tip-forms wrong-slot)
             (ddskk-shim--export-forms))))
 
-(cl-defun ddskk-shim-build (path &key hive drop-category langid wrong-slot test-exports)
+(cl-defun ddskk-shim-build (path &key hive drop-category langid wrong-slot test-exports no-lock)
   "Build the shim DLL at PATH."
   ;; nelisp-link--copy-aot-value recurses along every reloc list (proposed
   ;; nelisp fix: iterate); large units need a raised depth limit.
   (setq max-lisp-eval-depth (max max-lisp-eval-depth 100000))
+  (setq ddskk-shim--no-lock no-lock)
   (nelisp-com-build-dll
    path (ddskk-shim-forms :hive hive :drop-category drop-category :langid langid
                           :wrong-slot wrong-slot)
    :exports (if test-exports
-                (append ddskk-shim-exports '("DdskkShimStat"))
+                (append ddskk-shim-exports '("DdskkShimStat" "DdskkShimPubLock"))
               ddskk-shim-exports)
    :imports (append ddskk-shim-imports nil)
    :dll-name "ddskk-ime.dll"))
@@ -914,7 +941,8 @@ are negative-control hooks."
    :drop-category (equal (getenv "NELISP_SHIM_DROP_CATEGORY") "1")
    :langid (and (equal (getenv "NELISP_SHIM_BAD_LANGID") "1") #x0409)
    :wrong-slot (equal (getenv "NELISP_SHIM_WRONG_SLOT") "1")
-   :test-exports (equal (getenv "NELISP_SHIM_TEST_EXPORTS") "1")))
+   :test-exports (equal (getenv "NELISP_SHIM_TEST_EXPORTS") "1")
+   :no-lock (equal (getenv "NELISP_SHIM_NOLOCK") "1")))
 
 (provide 'ddskk-shim)
 ;;; ddskk-shim.el ends here
