@@ -39,6 +39,16 @@ target_compile_definitions(ddskk-engine-protocol-test PRIVATE UNICODE _UNICODE W
 target_compile_options(ddskk-engine-protocol-test PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME ddskk-engine-protocol-test COMMAND ddskk-engine-protocol-test)
 
+# S4.1: portable TLV encoder/decoder test (no Windows headers needed).
+add_executable(ddskk-engine-tlv-test
+  test/engine_tlv_test.cpp
+  src/engine_protocol.cpp)
+target_include_directories(ddskk-engine-tlv-test PRIVATE src)
+target_compile_features(ddskk-engine-tlv-test PRIVATE cxx_std_20)
+target_compile_options(ddskk-engine-tlv-test PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME ddskk-engine-tlv-test
+  COMMAND ddskk-engine-tlv-test ${CMAKE_CURRENT_SOURCE_DIR}/test/golden/tlv)
+
 add_executable(ddskk-engine-client-test
   test/engine_client_test.cpp
   src/engine_client.cpp
@@ -134,7 +144,7 @@ target_compile_options(ddskk-ime-config PRIVATE /W4 /permissive- /utf-8)
 target_link_libraries(ddskk-ime-config PRIVATE advapi32 user32)
 
 
-add_executable(ddskk-engine-host host/main.cpp)
+add_executable(ddskk-engine-host host/main.cpp src/engine_protocol.cpp)
 target_compile_features(ddskk-engine-host PRIVATE cxx_std_20)
 target_compile_definitions(ddskk-engine-host PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(ddskk-engine-host PRIVATE /W4 /permissive- /utf-8)

@@ -39,6 +39,9 @@
 #include <unordered_set>
 #include <vector>
 
+// S4.1: opt-in binary TLV reply variant (UNBUILT/UNTESTED on Windows until CI).
+#include "../src/engine_tlv.h"
+
 namespace {
 constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\ddskk-ime-v1";
 constexpr wchar_t kStateMapName[] = L"Local\\ddskk-ime-state-v1";
@@ -1368,6 +1371,7 @@ void RequestStop() {
 void ServeClient(HANDLE pipe, uint64_t client_id) {
   bool connected = true;
   std::unordered_set<std::string> client_sessions;
+  bool tlv_mode = false;  // S4.1: per-connection, set by "HELLO TLV 1"
   while (connected) {
     std::array<char, 8192> request_buffer{};
     DWORD read = 0;
@@ -1385,9 +1389,14 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
     std::string response;
     bool publish_response = true;
     const bool is_shutdown = request == "SHUTDOWN";
+    // S4.1: "HELLO TLV 1" switches this connection to TLV replies (reply to
+    // the HELLO itself stays text).  Never forwarded to the engine child.
+    const bool is_hello_tlv = request == "HELLO TLV 1";
     const bool is_preview = request.rfind("PREVIEW ", 0) == 0;
     if (is_shutdown) {
       response = "OK";
+    } else if (is_hello_tlv) {
+      response = "OK TLV 1";
     } else if (is_preview) {
       // Immutable built-in dictionary maps are safe to read without the
       // NeLisp transaction mutex. This path is a display preview only: it
@@ -1475,6 +1484,11 @@ void ServeClient(HANDLE pipe, uint64_t client_id) {
         }
       }
     }
+    // S4.1: when this connection negotiated TLV, every reply except the
+    // HELLO acknowledgement is re-framed; tlv_mode stays false otherwise, so
+    // the text path below writes `response' unchanged.
+    if (tlv_mode && !is_hello_tlv) response = ddskk::tlv::FromReplyLine(response);
+    if (is_hello_tlv) tlv_mode = true;
     DWORD written = 0;
     connected = WriteFile(pipe, response.data(), static_cast<DWORD>(response.size()),
                           &written, nullptr) && written == response.size();
