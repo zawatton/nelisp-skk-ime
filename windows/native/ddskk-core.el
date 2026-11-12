@@ -76,7 +76,8 @@
   (let ((extra '(("kernel32.dll" "GetProcessHeap" "HeapAlloc" "HeapFree")
                  ("user32.dll" "GetKeyState" "GetAsyncKeyState" "GetKeyboardState"
                   "ToUnicodeEx" "GetKeyboardLayout" "CharLowerBuffW")
-                 ("oleaut32.dll" "VariantClear")))
+                 ("oleaut32.dll" "VariantClear")
+                 ("ole32.dll" "CoCreateInstance")))
         (out nil))
     (dolist (entry (append ddskk-core-settings-imports extra))
       (let ((cell (assoc (car entry) out)))
@@ -106,7 +107,8 @@
   (needs_resync u32) (wide_latin u32) (n_open_change u32) (n_load u32)
   (ctrl_override u32) (shift_override u32)
   (variant (bytes 24 8)) (idw (array u16 40)) (kbstate (bytes 256 8))
-  (tbuf (array u16 8)))
+  (tbuf (array u16 8))
+  (caret_rect (array u32 4)) (reg_commit u32) (caret_valid u32) (refs u64))
 
 (defun ct--f (p f) (nelisp-com-field p 'DdskkTs f))
 (defun ct--s (p f v) (nelisp-com-set-field p 'DdskkTs f v))
@@ -488,7 +490,12 @@
 ;;; ---- lifecycle and Invoke -------------------------------------------------
 
 (defun ddskk-core--life-forms ()
-  `((defun ts_create (cb pstate)
+  `(;; Reference count of the DdskkTs memory: the shim's create reference plus one
+    ;; per live edit session (ts.cpp StateEditSession AddRef of the service).
+    (defun ct_ts_addref (ts) (seq (atomic-fetch-add ,(ct--a 'ts 'refs) 1) 0))
+    (defun ct_ts_release (ts)
+      (if (= (atomic-fetch-add ,(ct--a 'ts 'refs) -1) 1) (seq (DdskkTs_free ts) 0) 0))
+    (defun ts_create (cb pstate)
       (if (or (= cb 0) (= pstate 0)) ,nelisp-com-e-invalidarg
         (seq
          (ptr-write-u64 pstate 0 0)
@@ -517,6 +524,7 @@
                     ,(ct--s 'ts 'closed_mode 'cm)
                     ,(ct--s 'ts 'keyboard_open 1) ,(ct--s 'ts 'closed_kana 1)
                     ,(ct--s 'ts 'ddskk_engine 1)
+                    ,(ct--s 'ts 'refs 1)
                     (ct_install_hooks)
                     (ptr-write-u64 (data-addr core_last) 0 ts)
                     (ptr-write-u64 pstate 0 ts)
@@ -536,7 +544,7 @@
            (wbuf_free ,(ct--f 'ts 'closed_mode))
            (extern-call HeapFree hp 0 ,(ct--f 'ts 'cb))
            (if (= (ptr-read-u64 (data-addr core_last) 0) ts) (ptr-write-u64 (data-addr core_last) 0 0) 0)
-           (DdskkTs_free ts)
+           (ct_ts_release ts)
            0))))
     ;; Activate for the shim path (shim_.query_service is always set).
     (defun ts_activate (ts tm id)
@@ -718,13 +726,16 @@
       (let ((ts (ptr-read-u64 (data-addr core_last) 0)))
         (if (= ts 0) 4294967295 (ct_read_open ts fallback))))))
 
-(cl-defun ddskk-core-forms (&key test-exports bad-abi mutant hooks engine-client)
+(cl-defun ddskk-core-forms (&key test-exports bad-abi mutant hooks engine-client (edit t))
   "Return the AOT forms of the core DLL.
 TEST-EXPORTS adds the CoreProbe* functions, BAD-ABI reports ABI version 999,
 MUTANT is nil, `vk-table' or `open-inverted' (negative controls), HOOKS is an
 alist (SLOT . FUNCTION-SYMBOL) installed at ts_create.  ENGINE-CLIENT links
 the S3f engine client (ddskk-engine-client.el) and installs its engine-connect /
 engine-select hook adapters."
+  (when edit
+    (require 'ddskk-core-edit)
+    (setq hooks (append hooks '((on-composition-end . ced_on_term)))))
   (when engine-client
     (require 'ddskk-engine-client)
     (setq hooks (append hooks '((engine-connect . ec_hook_connect)
@@ -743,16 +754,19 @@ engine-select hook adapters."
    (ddskk-core--life-forms)
    (ddskk-core--api-forms bad-abi)
    (and test-exports (ddskk-core--probe-forms))
+   (and edit (ddskk-core-edit-forms :test-exports test-exports :mutant mutant))
    (and engine-client (append (ddskk-tlv-forms) (ddskk-engine-client-forms)))))
 
-(cl-defun ddskk-core-build (path &key test-exports bad-abi mutant hooks engine-client)
+(cl-defun ddskk-core-build (path &key test-exports bad-abi mutant hooks engine-client (edit t))
   "Build the core DLL PATH."
   (setq max-lisp-eval-depth (max max-lisp-eval-depth 100000))
   (nelisp-com-build-dll
    path (cl-subst 'ct_mod '% (ddskk-core-forms :test-exports test-exports :bad-abi bad-abi
                                                :mutant mutant :hooks hooks
-                                               :engine-client engine-client))
-   :exports (sort (append ddskk-core-exports (and test-exports ddskk-core-test-exports)) #'string<)
+                                               :engine-client engine-client :edit edit))
+   :exports (sort (append ddskk-core-exports (and test-exports ddskk-core-test-exports)
+                           (and test-exports edit (progn (require 'ddskk-core-edit) ddskk-core-edit-test-exports)))
+                   #'string<)
    :imports (if engine-client
                (progn (require 'ddskk-engine-client)
                       (let ((acc (mapcar (lambda (e) (cons (car e) (copy-sequence (cdr e))))
@@ -771,6 +785,7 @@ engine-select hook adapters."
                     :test-exports (equal (getenv "NELISP_CORE_TEST_EXPORTS") "1")
                     :bad-abi (equal (getenv "NELISP_CORE_BAD_ABI") "1")
                     :engine-client (equal (getenv "NELISP_CORE_ENGINE_CLIENT") "1")
+                    :edit (not (equal (getenv "NELISP_CORE_EDIT") "0"))
                     :mutant (let ((m (getenv "NELISP_CORE_MUTANT")))
                               (and m (not (string-empty-p m)) (intern m)))))
 

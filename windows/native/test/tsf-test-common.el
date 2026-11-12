@@ -80,7 +80,8 @@
     (written . 136) (kbs . 144) (kbsave . 152) (store-sink . 160)
     (n-lock . 168) (n-settext . 176) (n-getsel . 184) (n-gettext . 192)
     (n-ins . 200) (cookie . 208) (atom . 216) (uiid . 224) (rc . 232)
-    (kbscratch . 240) (tmp . 248) (ctxo . 256) (viewo . 264))
+    (kbscratch . 240) (tmp . 248) (ctxo . 256) (viewo . 264) (endsink . 272)
+    (cbo . 280) (api . 288) (state . 296))
   "Offsets of the 8-byte global slots in blob `hg'.")
 
 (defun tsf/g (k) `(ptr-read-u64 (data-addr hg) ,(cdr (assq k tsf/gofs))))
@@ -105,7 +106,7 @@
   (let ((g #'tsf/g) (gs #'tsf/gs))
     (append
      (list
-      `(data-blob hg ,(make-list 320 0) data)
+      `(data-blob hg ,(make-list 336 0) data)
       `(data-blob hexbuf ,(make-list 32 0) data)
       `(data-blob pathbuf ,(make-list 1040 0) data)
       `(data-blob tmpbuf ,(make-list 64 0) data)

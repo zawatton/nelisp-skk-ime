@@ -297,7 +297,14 @@
               (ptr-write-u64 pp 0 r) 0))))
     ("ShiftStart" (ec pnew) (x r) (seq ,(tsf/gs 'comps '(ptr-read-u64 pnew 16)) 0))
     ("ShiftEnd" (ec pnew) (x r) (seq ,(tsf/gs 'compe '(ptr-read-u64 pnew 24)) 0))
-    ("EndComposition" (ec) (x) (seq ,(tsf/gs 'comp 0) 0))))
+    ("EndComposition" (ec) (x)
+     (seq ,(tsf/gs 'comp 0)
+          ;; DDSKK_HARNESS-style hosts call the sink synchronously (ts.cpp 2840).
+          (let ((sk (ptr-read-u64 this 16)))
+            (if (and (/= sk 0) (/= ,(tsf/g 'endsink) 0))
+                ,(nelisp-com-call 'sk 3 'ec 'this)
+              0))
+          0))))
 
 (defun hm/prop-specs ()
   `(("GetType" (pguid) (-))
@@ -317,7 +324,8 @@
     ("GetScreenExt" (prc) (-))
     ("GetWnd" (phwnd) (-) (seq (ptr-write-u64 phwnd 0 0) 0))))
 
-(defun hm/forms ()
+(defun hm/object-forms ()
+  "Fake TSF objects (no entry point)."
   (append
    (list '(defun hm_pr (r)
             (if (= r 0) (ob_ch 48)
@@ -339,7 +347,11 @@
    (hm/class 'cmp `((IID_ITfComposition cp "ITfComposition" ,(hm/cmp-specs))) :state-size 16)
    (hm/class 'prop `((IID_ITfProperty pr "ITfProperty" ,(hm/prop-specs))))
    (hm/class 'view `((IID_ITfContextView vw "ITfContextView" ,(hm/view-specs))))
-   (hm/class 'cpt `((IID_ITfCompartment cpt "ITfCompartment" ,(hm/cpt-specs))) :state-size 16)
+   (hm/class 'cpt `((IID_ITfCompartment cpt "ITfCompartment" ,(hm/cpt-specs))) :state-size 16)))
+
+(defun hm/forms ()
+  (append
+   (hm/object-forms)
    `((defun st (n hr) (if (/= (logand hr 2147483648) 0)
                           (seq ,(tsf/p "FAIL step=") (ob_hex n) (ob_nl) (ob_flush) (extern-call ExitProcess n))
                         0))
