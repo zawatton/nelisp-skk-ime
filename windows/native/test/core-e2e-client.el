@@ -31,7 +31,7 @@
           '(("user32.dll" "LoadKeyboardLayoutW" "ActivateKeyboardLayout" "GetKeyState"))))
 
 (defun ce/cp (i) `(call-ptr (ptr-read-u64 (data-addr ce_fn) 0) ,i))
-(defun ce/cps (i v) `(call-ptr (ptr-read-u64 (data-addr ce_fn) 0) ,(+ (* 4096 (1+ i)) v)))
+(defun ce/cps (i v) `(call-ptr (ptr-read-u64 (data-addr ce_fn) 8) ,i ,v))
 
 (defun core-e2e-forms ()
   (let ((g #'tsf/g) (gs #'tsf/gs))
@@ -73,7 +73,10 @@
        (defun km_unadvise (this tid) (seq (atomic-fetch-add (+ (data-addr kmst) 8) 1) 0))
        ;; ---- helpers ----
        (defun gp (m name idx)
-         (let ((p (extern-call GetProcAddress m name))) (seq (ptr-write-u64 (data-addr ce_fn) idx p) 0)))
+         ;; A missing export must fail loudly (exit 90+slot), never become a call to 0.
+         (let ((p (extern-call GetProcAddress m name)))
+           (if (= p 0) (extern-call ExitProcess (+ 90 (/ idx 8)))
+             (seq (ptr-write-u64 (data-addr ce_fn) idx p) 0))))
        (defun resolve ()
          (if (> (extern-call GetEnvironmentVariableW (data-addr w_envcore) (data-addr pathbuf) 520) 0)
              (let ((m (extern-call LoadLibraryW (data-addr pathbuf))))

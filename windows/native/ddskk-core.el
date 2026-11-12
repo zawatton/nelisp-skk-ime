@@ -88,7 +88,7 @@
 
 (defconst ddskk-core-exports '("NativeImeGetCoreApi"))
 (defconst ddskk-core-test-exports
-  '("CoreProbe" "CoreProbeTranslate" "CoreProbeEngineId"
+  '("CoreProbe" "CoreProbeSet" "CoreProbeTranslate" "CoreProbeEngineId"
     "CoreProbeLabel" "CoreProbeReadOpen"))
 
 (nelisp-com-defstruct NativeImeSnapshot
@@ -666,7 +666,6 @@
   `((defun CoreProbe (idx)
       (let ((ts (ptr-read-u64 (data-addr core_last) 0)))
         (if (= ts 0) 4294967295
-          (if (>= idx 4096) (ct_probe_set_enc ts idx)
           (if (= idx 0) ,(ct--f 'ts 'keyboard_open)
             (if (= idx 1) ,(ct--f 'ts 'kana_mode)
               (if (= idx 2) ,(ct--f 'ts 'closed_kana)
@@ -681,15 +680,11 @@
                                 (if (= idx 11) ,(ct--f 'ts 'tested_ctrl)
                                   (if (= idx 12) (ct_quiescent_probe ts)
                                     (if (= idx 13) (if (= ,(ct--f 'ts 'tm) 0) 0 1)
-                                      4294967294))))))))))))))))))
+                                      4294967294)))))))))))))))))
     (defun ct_quiescent_probe (ts) (ts_quiescent ts))
     ;; idx: 0 kana 1 engine_pending 2 registration_mode 3 provider_active
     ;; 4 wide_latin 5 last_mode=candidate(1)/hiragana(0) 6 ctrl override
     ;; 7 shift override 8 closed_kana 9 engine_kind
-    (defun ct_probe_set_enc (ts idx)
-      (let ((f 0) (r idx))
-        (seq (while (>= r 8192) (seq (setq r (- r 4096)) (setq f (+ f 1))))
-             (ct_probe_set ts f (- r 4096)))))
     (defun ct_probe_set (ts idx v)
       (seq
            (if (= idx 0) ,(ct--s 'ts 'kana_mode '(logand v 1))
@@ -705,6 +700,9 @@
                              (if (= idx 9) ,(ct--s 'ts 'engine_kind '(logand v 7))
                                0))))))))))
            0))
+    (defun CoreProbeSet (idx v)
+      (let ((ts (ptr-read-u64 (data-addr core_last) 0)))
+        (if (= ts 0) 4294967295 (ct_probe_set ts idx v))))
     (defun CoreProbeTranslate (vk)
       (let ((ts (ptr-read-u64 (data-addr core_last) 0)))
         (if (= ts 0) 4294967295 (ct_translate ts vk 0))))

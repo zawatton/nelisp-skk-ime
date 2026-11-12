@@ -296,7 +296,7 @@
                    (seq ,(tsf/p "HR LoadLibraryW(DDSKK_HARNESS_DLL_PATH)=")
                         (ob_hexn (extern-call GetLastError) 8) (ob_nl) 0)
                  (let ((gco (extern-call GetProcAddress m (data-addr a_dgco))))
-                   (if (= gco 0) 0
+                   (if (= gco 0) (extern-call ExitProcess 90)
                      (let ((hr (call-ptr gco (data-addr g_clsid_tip) (data-addr g_iid_factory)
                                          (data-addr tmpbuf))))
                        (if (/= (logand hr 2147483648) 0)
