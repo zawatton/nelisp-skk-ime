@@ -1,0 +1,41 @@
+T 0 r=0 f=00000 v=- raw=-
+T 1 r=1 m=0 c=-1 t=- p=k f=10000 v=- raw=6b
+T 2 r=1 m=0 c=-1 t=304b p=- f=00000 v=- raw=-
+T 3 r=1 m=4 c=0 t=25bd p=k f=11000 v=- raw=4b
+T 4 r=1 m=4 c=0 t=25bd.304b p=- f=11000 v=304b raw=4b.61
+T 5 r=1 m=4 c=0 t=25bd.304b p=n f=11000 v=- raw=4b.61.6e
+T 6 r=1 m=4 c=0 t=25bd.304b.306a p=- f=11000 v=304b.306a raw=4b.61.6e.61
+T 7 r=1 m=4 c=0 t=25bd.304b.306a.002a p=s f=11000 v=- raw=4b.61.6e.61.53
+T 8 r=1 m=4 c=0 t=25bd.304b.306a.002a.3057 p=- f=11000 v=- raw=4b.61.6e.61.53.69
+T 9 r=1 m=4 c=0 t=25bd.304b.306a.002a.3057 p=m f=11000 v=- raw=4b.61.6e.61.53.69.6d
+T a r=1 m=4 c=0 t=25bd.304b.306a.002a.3057 p=- f=11000 v=- raw=4b.61.6e.61.53.69
+T b r=1 m=4 c=0 t=25bd.304b.306a.002a.3057 p=- f=11000 v=- raw=4b.61.6e.61.53.69
+T c r=1 m=4 c=0 t=25bd.30ab.30ca.002a.30b7 p=- f=11100 v=- raw=4b.61.6e.61.53.69
+T d r=1 m=1 c=-1 t=- p=- f=00100 v=- raw=-
+T e r=0 f=00000 v=- raw=-
+T f r=1 m=4 c=0 t=25bd p=k f=11000 v=- raw=4b
+T 10 r=1 m=4 c=0 t=25bd.304b p=- f=11000 v=304b raw=4b.61
+T 11 r=1 m=0 c=-1 t=30ab p=- f=00000 v=- raw=-
+T 12 r=1 m=1 c=-1 t=- p=n f=10100 v=- raw=6e
+T 13 r=1 m=1 c=-1 t=30f3 p=- f=00100 v=- raw=-
+T 14 r=0 f=00000 v=- raw=-
+T 15 r=1 m=0 c=-1 t=- p=k f=10000 v=- raw=6b
+T 16 r=1 m=0 c=-1 t=3063 p=k f=10000 v=- raw=6b.6b
+T 17 r=1 m=0 c=-1 t=3063.304b p=- f=00000 v=- raw=-
+T 18 r=1 m=2 c=-1 t=- p=- f=00010 v=- raw=-
+T 19 r=0 f=00010 v=- raw=61
+T 1a r=1 m=0 c=-1 t=- p=- f=00000 v=- raw=61
+T 1b r=1 m=3 c=-1 t=- p=- f=00001 v=- raw=-
+T 1c r=1 m=3 c=-1 t=ff41 p=- f=00001 v=- raw=-
+T 1d r=1 m=3 c=-1 t=3000 p=- f=00001 v=- raw=-
+T 1e r=1 m=0 c=-1 t=- p=- f=00000 v=- raw=-
+T 1f r=1 m=0 c=-1 t=3002 p=- f=00000 v=- raw=-
+T 20 r=1 m=0 c=-1 t=3001 p=- f=00000 v=- raw=-
+T 21 r=1 m=0 c=-1 t=30fc p=- f=00000 v=- raw=-
+T 22 r=0 f=00000 v=- raw=-
+T 23 r=0 f=00000 v=- raw=-
+T 24 r=1 m=4 c=0 t=25bd p=k f=11000 v=- raw=6b
+T 25 r=1 m=4 c=0 t=25bd.304b p=- f=11000 v=304b raw=6b.61
+T 26 r=1 m=4 c=0 t=25bd.304b.0071 p=- f=11000 v=304b.0071 raw=6b.61.71
+T 27 r=1 m=4 c=0 t=25bd.304b p=- f=11000 v=304b raw=6b.61
+T 28 r=1 m=0 c=-1 t=304b p=- f=00000 v=- raw=-
