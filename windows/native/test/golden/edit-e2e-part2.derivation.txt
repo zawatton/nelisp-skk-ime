@@ -1,0 +1,95 @@
+Derivation of golden/edit-e2e-part2.golden and golden/dai-e2e.golden (S3i part 2)
+===============================================================================
+C++ SOURCE: windows/src/text_service.cpp of THIS worktree (2723 lines, the
+origin/main version of 2026-08-22), plus windows/src/display_attribute.cpp and
+display_attribute.h.  Line numbers below are of that file.  NOTE: the comments
+in ddskk-core-edit.el (and the session-1 derivation) cite "ts.cpp 2919-3105"
+etc.; those numbers belong to the newer 3236-line version.  In this worktree
+ApplyEngineState is lines 2494-2646.  The goldens are derived from the lines
+quoted here and from engine-tlv.md; mock-only lines are marked [MOCK].
+The goldens were generated from a run (NELISP_TSF_UPDATE_GOLDEN) and then
+checked against the expectations below; they are not yet cross-checked on Windows.
+
+A. Caret shared-memory map (text_service.cpp 182-213, 2653-2666)
+  name   L"Local\\ddskk-ime-caret-v1"                         (182)
+  size   sizeof(SharedImeCaret) = LONG + RECT(16) + DWORD = 24 (183-187)
+  layout +0 sequence, +4 rect{left,top,right,bottom}, +20 process_id
+  write  sequence++ (odd), rect, process_id, sequence++ (even)  (208-212)
+  when   only from CaptureCaretRect after GetTextExt succeeded (2653-2666), which
+         runs once per applied state that reaches the caret tail (2555, 2611).
+  The client opens the mapping by name (OpenFileMappingW) in the same process.
+  Expected: one publication per ApplyEngineState with a successful GetTextExt:
+    after es-preedit-start            seq=2  (1 publication)
+    after es-commit-ends-composition  seq=6  (3 publications: preedit, candidate, commit)
+    after reg-target-commit           seq=c  (6: + reg-start, + reg-target-commit; the
+                                              bad-magic frame applies nothing)
+  rect = what GetTextExt returned [MOCK: fixed 10,20,30,40 = a,14,1e,28 hex];
+  pid_ok=1.
+
+B. EngineState -> apply view (ced_view_from_es; C++ ApplyEngineState 2494-2520)
+  direct_commit = composition_start < 0 && pending_romaji.empty() && no
+  composition && !registration_target (2499-2502); display = text + pending_romaji
+  (2509); candidate GUID when state.mode == "candidate".  Frames are built in
+  edit-part2-client.el from engine-tlv.md (tags 1 MODE, 2 CURSOR, 3 COMP, 4 TEXT,
+  5 PEND, 6 IDX; header 'DSTV', size, version 1, kind 1).
+    es-preedit-start    mode hiragana comp 0 text "▽か" pend "k":
+        GetSelection, StartComposition, SetText "▽かk" (3 units: e296bd e3818b 6b),
+        RegisterGUID d20e1086 (preedit), ... caret at end (3).
+    es-candidate        mode candidate: GetRange, SetText "▼漢字", RegisterGUID 937f739e.
+    es-commit-ends-composition  comp -1, pend empty, composition present: SetText
+        "漢字" in the composition range then TrackEnding / EndComposition
+        (2612-2630), composition released.
+    es-bad-magic        decoder rejects the frame: no edit session at all
+        [MOCK: the test export returns 0xfffffffc].
+  SEGMENTS: the worktree C++ (2723 lines) has NO segment handling in
+  ApplyEngineState and the TLV decoder skips tags 0x10/0x11; nseg is always 0.
+
+C. Registration target (text_service.cpp 2495-2496, 2521-2531, 2633-2645, 487-507)
+  registration_target = registration_commit_pending_ && registration_range_ (2495).
+  Sequence in the golden:
+    reg-start: ordinary preedit composition (comp 0, text "▽ひ").
+    reg-enter-modal: registration mode entered with a composition and no saved
+        range: composition_->GetRange(&registration_range_) (505-507).
+    reg-host-terminates: OnCompositionTerminated in registration mode: the range
+        is cleared with SetText(empty) and the composition released, the
+        registration range kept (modal branch of the C++ handler).
+    reg-leave-commit-pending: registration_commit_pending_ = true (487-489).
+    reg-target-commit: composition_ == null and registration_target: NO
+        GetSelection and NO StartComposition (2521-2531); range = registration_range_
+        (AddRef'd), SetText of display "登録", display attribute, caret selection,
+        GetTextExt; because composition_ is null the EndComposition tail is skipped
+        and the registration range is released and the flag cleared (2640-2645).
+  Final context refcount returns to 1 (ctx_refs line).
+
+D. DisplayAttributeInfo (display_attribute.cpp 21-48; text_service.cpp 2363-2378)
+  EnumDisplayAttributeInfo: *enumerator = nullptr; return E_NOTIMPL (null -> E_POINTER)
+    (80004001 / 80004003).  NO IEnumTfDisplayAttributeInfo class exists in this C++.
+  GetDisplayAttributeInfo: null out -> E_POINTER; other GUID -> E_INVALIDARG (80070057,
+    out null); Preedit/Candidate GUIDs -> new DisplayAttributeInfo.
+  Values (CreateDisplayAttributeInfo, display_attribute.cpp 38-48):
+    crText.type = TF_CT_NONE (0), crBk.type = TF_CT_NONE (0)
+    crLine = {TF_CT_COLORREF (2), RGB(70,110,210) = 0xD26E46}
+    candidate: lsStyle TF_LS_SQUIGGLE (4), fBoldLine 1, bAttr TF_ATTR_TARGET_CONVERTED (1)
+    preedit:   lsStyle TF_LS_SOLID (1),    fBoldLine 0, bAttr TF_ATTR_INPUT (0)
+    words (9 x u32, struct order): crText.type crText.val crBk.type crBk.val
+      lsStyle fBoldLine crLine.type crLine.cr bAttr
+      preedit  : 0,0,0,0,1,0,2,d26e46,0     candidate: 0,0,0,0,4,1,2,d26e46,1
+    descriptions "NeLisp IME preedit" (18) / "NeLisp IME candidate" (20) via
+    SysAllocString (BSTR length prefix: SysStringLen = 12 / 14 hex).
+    GetGUID returns guid_ (d20e1086-... / 937f739e-... little-endian bytes).
+    SetAttributeInfo replaces value_, Reset restores default_ (display_attribute.cpp 29-33).
+
+Implemented without a counterpart in this worktree's C++:
+  - ced_view_from_es is a new adapter (the C++ passes ddskk::EngineState directly).
+  - CoreApplyBytes / CoreSetRegistration / CoreEditProbe 9,10 are test-only exports.
+  - Segments (nseg > 0) remain test-only from session 1 (design doc, not this C++).
+
+STATUS at hand-off (honest): section A (caret map) is NOT verified.  In the
+native core CreateFileMappingW with the name Local\ddskk-ime-caret-v1 returns 0
+(the same call with a NULL name succeeds, and the same named call from the
+client EXE succeeds), so the client's OpenFileMappingW reports open=0 and the
+CMAP lines are excluded from golden/edit-e2e-part2.golden.  Cause not found
+(suspect: 6th stack argument of extern-call inside the DLL).  The negative
+controls bad-cmap-name / bad-cmap-layout therefore cannot yet be shown.
+Sections B, C (golden/edit-e2e-part2.golden) and D (golden/dai-e2e.golden) are
+exercised and match the expectations above.

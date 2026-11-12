@@ -40,14 +40,18 @@
 ;;    `ced_view_from_es' converts one.  Segments are not carried by the TLV
 ;;    decoder of S3f yet, so production always passes nseg = 0 until the segment
 ;;    tags are decoded (S3l); the segment branch is exercised by the test only.
-;;  * PublishCaretRect (shared-memory caret map) is NOT ported yet (session 2);
-;;    only the capture half runs (ts.caret_valid / caret_rect).
+;;  * PublishCaretRect (session 2) is ced_publish: same name / size / layout as
+;;    the C++; the sequence uses atomic-fetch-add (InterlockedIncrement) and the
+;;    mapping handle and view live in the ced_cmap data blob for the process life.
+;;  * `ced_view_from_es' (session 2) converts the S3f EngineState; the segment
+;;    tags are not decoded (nothing emits them), so nseg stays 0 in production.
 ;;  * AcknowledgeEndingComposition runs in the shim (ShimService::
 ;;    OnCompositionTerminated) before the core is invoked; the core only
 ;;    calls track_ending on the callbacks table.
 ;;
 ;; Mutants (NELISP_CORE_MUTANT): skip-end (never calls EndComposition) and
-;; wrong-guid (preedit text gets the candidate attribute GUID).
+;; wrong-guid (preedit text gets the candidate attribute GUID); session 2 adds
+;; bad-cmap-name (caret map renamed) and bad-cmap-layout (RECT at +8, not +4).
 
 ;;; Code:
 
@@ -55,7 +59,8 @@
 (require 'ddskk-core)
 
 (defconst ddskk-core-edit-test-exports
-  '("CoreApplyState" "CoreTerminate" "CoreEditProbe" "CoreEditSizes"))
+  '("CoreApplyState" "CoreTerminate" "CoreEditProbe" "CoreEditSizes"
+    "CoreApplyBytes" "CoreSetRegistration"))
 
 (nelisp-com-defstruct DdskkView
   (cand i64) (hascomp i64) (tptr ptr) (tlen i64) (pptr ptr) (plen i64)
@@ -68,7 +73,9 @@
 (defconst ced--es-sync-rw 7)
 (defconst ced--es-async-rw 14)
 
-(defun ced--blobs ()
+(defconst ced--cmap-size 24 "sizeof(SharedImeCaret): LONG sequence; RECT rect; DWORD process_id.")
+
+(defun ced--blobs (mutant)
   (append
    (nelisp-com-msctf-blobs '(IID_ITfEditSession IID_ITfContextComposition
                              IID_ITfCompositionSink IID_ITfCategoryMgr
@@ -78,11 +85,17 @@
          (nelisp-com-guid-blob 'g_ced_converted "{3a99e525-d473-49c8-b2ca-2a6116f0c9da}")
          (nelisp-com-wstr-blob 'w_ced_empty "")
          (nelisp-com-wstr-blob 'w_ced_candidate "candidate")
+         ;; kCaretMapName (text_service.cpp 182); the mutant renames it
+         (nelisp-com-wstr-blob 'w_ced_cmap (if (eq mutant 'bad-cmap-name)
+                                               "Local\\ddskk-ime-caret-v2"
+                                             "Local\\ddskk-ime-caret-v1"))
+         ;; [0] g_caret_map HANDLE, [8] g_caret_view pointer
+         (nelisp-com-zero-blob 'ced_cmap 16)
          (nelisp-com-zero-blob 'ced_last 16))))
 
 ;;; ---- small helpers ---------------------------------------------------------
 
-(defun ced--util-forms ()
+(defun ced--util-forms (mutant)
   `((defun ced_f (hr) (if (= (logand hr 2147483648) 0) 0 1))
     (defun ced_weq_n (p n lit)
       (let ((i 0) (ok 1))
@@ -105,7 +118,32 @@
     (defun ced_set_sel (ec ctx range sc)
       (seq (ptr-write-u64 sc 16 range) (ptr-write-u32 sc 24 0) (ptr-write-u32 sc 28 0)
            ,(nelisp-com-call 'ctx 6 'ec 1 '(+ sc 16))))
-    ;; CaptureCaretRect: ts.caret_valid / caret_rect (publish half: session 2).
+    ;; PublishCaretRect (ts.cpp 194-213): lazily create the process-local
+    ;; mapping Local\\ddskk-ime-caret-v1 (PAGE_READWRITE, 24 bytes, backed by the
+    ;; paging file), then sequence++ (odd) / rect / process id / sequence++ (even).
+    ;; Layout: +0 sequence, +4 RECT{left,top,right,bottom}, +20 process id.
+    (defun ced_publish (ts)
+      (seq
+       (if (/= (ptr-read-u64 (data-addr ced_cmap) 8) 0) 0
+         (let ((inv (- 0 1)) (nm (data-addr w_ced_cmap)))
+          (let ((h (extern-call CreateFileMappingW inv 0 4 0 ,ced--cmap-size nm)))
+           (seq (ptr-write-u64 (data-addr ced_cmap) 0 h)
+           (if (= h 0) 0
+             (let ((view (extern-call MapViewOfFile h 2 0 0 ,ced--cmap-size)))
+               (if (= view 0) (seq (extern-call CloseHandle h) 0)
+                 (seq (ptr-write-u64 (data-addr ced_cmap) 0 h)
+                      (ptr-write-u64 (data-addr ced_cmap) 8 view) 0))))))))
+       (let ((view (ptr-read-u64 (data-addr ced_cmap) 8)))
+         (if (= view 0) 0
+           (let ((pid (extern-call GetCurrentProcessId)))
+             (seq (atomic-fetch-add view 1)
+                  ,@(cl-loop for i below 4
+                             collect `(ptr-write-u32 view ,(+ (if (eq mutant 'bad-cmap-layout) 8 4) (* 4 i))
+                                                     (ptr-read-u32 ,(ct--a 'ts 'caret_rect) ,(* 4 i))))
+                  (ptr-write-u32 view 20 pid)
+                  (atomic-fetch-add view 1)
+                  0))))))
+    ;; CaptureCaretRect: ts.caret_valid / caret_rect, then PublishCaretRect.
     (defun ced_caret_rect (ts ec ctx range sc)
       (seq ,(ct--s 'ts 'caret_valid 0)
            (if (or (= ctx 0) (= range 0)) 0
@@ -120,6 +158,7 @@
                                       ,@(cl-loop for i below 4
                                                  collect `(ptr-write-u32 ,(ct--a 'ts 'caret_rect) ,(* 4 i)
                                                                          (ptr-read-u32 sc ,(+ 120 (* 4 i)))))
+                                      (ced_publish ts)
                                       0))))))))
              0)
            0))))
@@ -344,6 +383,29 @@
              ,(ced--vs 'v 'pptr 'pptr) ,(ced--vs 'v 'plen 'plen)
              ,(ced--vs 'v 'nseg 0) ,(ced--vs 'v 'sstart 0) ,(ced--vs 'v 'slen 0) 0)))))
 
+;;; ---- EngineState (S3f heap object) -> apply view -----------------------------
+
+(defun ced--es-forms ()
+  "ced_view_from_es and ced_request_es; need the S3f engine client linked in.
+The TLV decoder does not decode the reserved SEGMENT / ACTIVE_SEGMENT tags
+(0x0010 / 0x0011; engine-tlv.md says v1 hosts do not emit them and the text
+STATE has no segment field), so the adapter always yields nseg = 0."
+  `(;; mode == "candidate" (ts.cpp 2935 caller: state.mode), comp >= 0 -> hascomp.
+    (defun ced_view_from_es (v es)
+      (ced_view_fill v
+                     (ced_weq_n (ec_state_mode_ptr es) (ec_state_mode_len es)
+                                (data-addr w_ced_candidate))
+                     (ec_state_comp es)
+                     (ec_state_text_ptr es) (ec_state_text_len es)
+                     (ec_state_pend_ptr es) (ec_state_pend_len es)))
+    ;; RequestStateEdit for an engine reply: view -> copying session -> request.
+    (defun ced_request_es (ts ctx es flags)
+      (let ((v (DdskkView_alloc)))
+        (if (= v 0) 2147942414
+          (seq (ced_view_from_es v es)
+               (let ((r (ced_request_state ts ctx v flags)))
+                 (seq (DdskkView_free v) r))))))))
+
 ;;; ---- composition termination ------------------------------------------------
 
 (defun ced--term-forms ()
@@ -462,7 +524,7 @@
 
 ;;; ---- test exports ------------------------------------------------------------
 
-(defun ced--test-forms ()
+(defun ced--test-forms (engine-client)
   `(;; spec: u64 words [mode_w comp_start text_w pend_w nseg sstart slen]
     (defun CoreApplyState (tm ctx spec)
       (let ((ts (ptr-read-u64 (data-addr core_last) 0)))
@@ -483,11 +545,46 @@
                ,(ced--vs 'v 'slen '(ptr-read-u64 spec 48))
                (let ((r (ced_request_state ts ctx v ,ced--es-sync-rw)))
                  (seq (DdskkView_free v) (logand r 4294967295)))))))))
+    ;; Applies the engine reply frame BUF (N bytes, ddskk-tlv wire format): decode
+    ;; into a private EngineState, convert with ced_view_from_es, run the edit session.
+    (defun CoreApplyBytes (tm ctx buf n)
+      ,(if (not engine-client) 4294967293
+         `(let ((ts (ptr-read-u64 (data-addr core_last) 0)))
+            (if (= ts 0) 4294967295
+              (let ((es (ec_state_new)) (h (extern-call GetProcessHeap)))
+                (if (= es 0) 2147942414
+                  (let ((data (extern-call HeapAlloc h 8 (+ (* 2 n) 64))))
+                    (if (= data 0) (seq (ec_state_free es) 2147942414)
+                      (seq
+                       (ec_copy data 0 buf 0 n)
+                       ,(nelisp-com-set-field 'es 'DdskkEs 'data 'data)
+                       ,(nelisp-com-set-field 'es 'DdskkEs 'size 'n)
+                       (if (/= (tlv_decode data n (ec_state_tlv es)) 0)
+                           (seq (ec_state_free es) 4294967292)
+                         (seq
+                          (if (= ,(ct--f 'ts 'tm) 0)
+                              (seq ,(nelisp-com-call 'tm 1) ,(ct--s 'ts 'tm 'tm)) 0)
+                          (let ((r (ced_request_es ts ctx es ,ced--es-sync-rw)))
+                            (seq (ec_state_free es) (logand r 4294967295))))))))))))))
+    ;; Registration mode (ts.cpp 487-507): MODE 1 captures the composition range
+    ;; as registration_range (when none yet), MODE 0 + COMMIT 1 marks the commit
+    ;; pending (registration_commit_pending_).
+    (defun CoreSetRegistration (mode commit)
+      (let ((ts (ptr-read-u64 (data-addr core_last) 0)))
+        (if (= ts 0) 4294967295
+          (seq ,(ct--s 'ts 'registration_mode 'mode)
+               ,(ct--s 'ts 'reg_commit 'commit)
+               (if (and (/= mode 0) (= ,(ct--f 'ts 'registration_range) 0)
+                        (/= ,(ct--f 'ts 'composition) 0))
+                   (let ((comp ,(ct--f 'ts 'composition)))
+                     ,(nelisp-com-call 'comp 3 (ct--a 'ts 'registration_range)))
+                 0)
+               0))))
     (defun CoreTerminate (ctx settle)
       (let ((ts (ptr-read-u64 (data-addr core_last) 0)))
         (if (= ts 0) 4294967295 (ced_terminate_composition ts ctx settle))))
     ;; 0 composition set  1 last edit-session result  2 caret_valid  3..6 caret rect
-    ;; 7 composition pointer  8 ts.refs
+    ;; 7 composition pointer  8 ts.refs  9 caret-map handle  10 caret-map view
     (defun CoreEditProbe (idx)
       (let ((ts (ptr-read-u64 (data-addr core_last) 0)))
         (if (= ts 0) 4294967295
@@ -496,7 +593,11 @@
               (if (= idx 2) ,(ct--f 'ts 'caret_valid)
                 (if (and (>= idx 3) (<= idx 6)) (ptr-read-u32 ,(ct--a 'ts 'caret_rect) (* 4 (- idx 3)))
                   (if (= idx 7) ,(ct--f 'ts 'composition)
-                    (if (= idx 8) ,(ct--f 'ts 'refs) 4294967294)))))))))
+                    (if (= idx 8) ,(ct--f 'ts 'refs)
+                      (if (= idx 9) (ptr-read-u64 (data-addr ced_cmap) 0)
+                        (if (= idx 10) (ptr-read-u64 (data-addr ced_cmap) 8)
+                          (if (= idx 11) (ptr-read-u64 (data-addr ced_cmap) 16)
+                            (if (= idx 12) (logand (ptr-read-u64 (data-addr ced_cmap) 24) 4294967295) 4294967294)))))))))))))
     ;; struct sizes: 0 TF_SELECTION 1 TF_SELECTIONSTYLE 2 VARIANT(raw) 3 TF_DISPLAYATTRIBUTE
     (defun CoreEditSizes (idx)
       (if (= idx 0) ,(nelisp-com-struct-size 'TF_SELECTION)
@@ -504,10 +605,10 @@
           (if (= idx 2) 24
             (if (= idx 3) ,(nelisp-com-struct-size 'TF_DISPLAYATTRIBUTE) 4294967294)))))))
 
-(cl-defun ddskk-core-edit-forms (&key test-exports mutant)
+(cl-defun ddskk-core-edit-forms (&key test-exports mutant engine-client)
   "Return the AOT forms of the S3i edit-session module."
   (append
-   (ced--blobs)
+   (ced--blobs mutant)
    (nelisp-com-struct-forms 'DdskkView)
    (nelisp-com-class-forms
     'ces :fields '((ts ptr) (ctx ptr) (view ptr) (buf ptr)) :on-free 'ces_on_free
@@ -515,11 +616,12 @@
    (nelisp-com-class-forms
     'cts :fields '((comp ptr) (settle i64)) :on-free 'cts_on_free
     :interfaces `((:iid ,(nelisp-com-msctf-guid 'IID_ITfEditSession) :methods (cts_do))))
-   (ced--util-forms)
+   (ced--util-forms mutant)
    (ced--attr-forms)
    (ced--apply-forms mutant)
    (ced--term-forms)
-   (and test-exports (ced--test-forms))))
+   (and engine-client (progn (require 'ddskk-engine-client) (ced--es-forms)))
+   (and test-exports (ced--test-forms engine-client))))
 
 (provide 'ddskk-core-edit)
 ;;; ddskk-core-edit.el ends here

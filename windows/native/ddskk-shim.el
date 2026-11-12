@@ -108,6 +108,14 @@
 (defun ddskk-shim--call (obj slot &rest args)
   (apply #'nelisp-com-call obj slot args))
 
+(defvar ddskk-shim--bad-attr nil
+  "Negative control: crLine.cr of the display attributes is off by one blue step.")
+
+(defconst ddskk-shim-preedit-attr-guid "{d20e1086-bb65-46c3-8815-4456451be3b4}"
+  "GUID_DdskkPreeditAttribute (windows/src/guids.h).")
+(defconst ddskk-shim-candidate-attr-guid "{937f739e-7bf9-4860-9ceb-0ee3f36916a9}"
+  "GUID_DdskkCandidateAttribute (windows/src/guids.h).")
+
 (defun ddskk-shim--blobs ()
   "Return the data blobs of the shim."
   (append
@@ -118,7 +126,11 @@
               IID_ITfCompartmentEventSink GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)
             ddskk-shim-categories))
    (list (nelisp-com-guid-blob 'g_clsid ddskk-shim-clsid)
-         (nelisp-com-guid-blob 'g_profile ddskk-shim-profile-guid))
+         (nelisp-com-guid-blob 'g_profile ddskk-shim-profile-guid)
+         (nelisp-com-guid-blob 'g_dai_preedit ddskk-shim-preedit-attr-guid)
+         (nelisp-com-guid-blob 'g_dai_candidate ddskk-shim-candidate-attr-guid)
+         (nelisp-com-wstr-blob 'w_dai_preedit "NeLisp IME preedit")
+         (nelisp-com-wstr-blob 'w_dai_candidate "NeLisp IME candidate"))
    (cl-loop for (name str) in
             `((w_desc ,ddskk-shim-description)
               (w_native "Software\\NativeIME")
@@ -639,12 +651,22 @@ the OnTestKeyDown operation."
       (defun tip_change (this guid) (tip_dispatch (- this 32) 7 0 0 0 0 guid))
       ;; ---- ITfDisplayAttributeProvider (interface 4): attribute info objects
       ;; (display_attribute.cpp) arrive with the composition stages.
+      ;; TextService::EnumDisplayAttributeInfo (text_service.cpp 2363) is E_NOTIMPL
+      ;; with a null out pointer in the C++ source too; kept as is.
       (defun tip_enumdai (this ppenum)
         (if (= ppenum 0) ,nelisp-com-e-pointer
           (seq (ptr-write-u64 ppenum 0 0) ,nelisp-com-e-notimpl)))
+      ;; TextService::GetDisplayAttributeInfo (text_service.cpp 2370-2378).
       (defun tip_getdai (this guid ppinfo)
         (if (= ppinfo 0) ,nelisp-com-e-pointer
-          (seq (ptr-write-u64 ppinfo 0 0) ,nelisp-com-e-notimpl)))
+          (seq (ptr-write-u64 ppinfo 0 0)
+               (if (= guid 0) ,nelisp-com-e-invalidarg
+                 (let ((cand (if ,(nelisp-com-guid= 'guid 'g_dai_candidate) 1 0))
+                       (pre (if ,(nelisp-com-guid= 'guid 'g_dai_preedit) 1 0)))
+                   (if (and (= cand 0) (= pre 0)) ,nelisp-com-e-invalidarg
+                     (let ((o (dai_new)))
+                       (if (= o 0) ,nelisp-com-e-outofmemory
+                         (seq (dai_init o cand) (ptr-write-u64 ppinfo 0 o) 0)))))))))
       ;; ---- ITfFunctionProvider (interface 5, this = base + 48) ----
       (defun tip_gettype (this pguid)
         (if (= pguid 0) ,nelisp-com-e-pointer
@@ -885,6 +907,63 @@ the OnTestKeyDown operation."
      (ddskk-shim--callback-forms)
      (ddskk-shim--service-forms wrong-slot))))
 
+(defun ddskk-shim--dai-a (b f)
+  (nelisp-com-field-addr `(+ ,b ,(nelisp-com-state-offset 1)) 'dai_state f))
+
+(defun ddskk-shim--dai-forms ()
+  "DisplayAttributeInfo (display_attribute.cpp): an ITfDisplayAttributeInfo object.
+State: GUID halves, the description pointer (static UTF-16, as the C++
+`const wchar_t*'), default and current TF_DISPLAYATTRIBUTE (9 u32, 36 bytes:
+crText{type,value} 0, crBk 8, lsStyle 16, fBoldLine 20, crLine{type,cr} 24, bAttr 32)."
+  (let ((g #'nelisp-com-msctf-guid)
+        (cr-blue (+ 70 (* 110 256) (* (if ddskk-shim--bad-attr 211 210) 65536))))
+    (append
+     (nelisp-com-class-forms
+      'dai :fields '((g0 u64) (g1 u64) (desc ptr) (def (array u32 9)) (val (array u32 9)))
+      :interfaces `((:iid ,(funcall g 'IID_ITfDisplayAttributeInfo)
+                     :methods (dai_getguid dai_getdesc dai_getattr dai_setattr dai_reset))))
+     `((defun dai_copy9 (dst src)
+         (let ((i 0))
+           (seq (while (< i 9)
+                  (seq (ptr-write-u32 dst (* 4 i) (ptr-read-u32 src (* 4 i)))
+                       (setq i (+ i 1))))
+                0)))
+       ;; CreateDisplayAttributeInfo (display_attribute.cpp 44-54); the object is
+       ;; zeroed by HeapAlloc, so only the non-zero members are written.
+       (defun dai_init (o cand)
+         (let ((d ,(ddskk-shim--dai-a 'o 'def)))
+           (seq (ptr-write-u64 o ,(+ (nelisp-com-state-offset 1) 0)
+                               (ptr-read-u64 (if (= cand 1) (data-addr g_dai_candidate) (data-addr g_dai_preedit)) 0))
+                (ptr-write-u64 o ,(+ (nelisp-com-state-offset 1) 8)
+                               (ptr-read-u64 (if (= cand 1) (data-addr g_dai_candidate) (data-addr g_dai_preedit)) 8))
+                (ptr-write-u64 o ,(+ (nelisp-com-state-offset 1) 16)
+                               (if (= cand 1) (data-addr w_dai_candidate) (data-addr w_dai_preedit)))
+                (ptr-write-u32 d 16 (if (= cand 1) 4 1))
+                (ptr-write-u32 d 20 (if (= cand 1) 1 0))
+                (ptr-write-u32 d 24 2)
+                (ptr-write-u32 d 28 ,cr-blue)
+                (ptr-write-u32 d 32 (if (= cand 1) 1 0))
+                (dai_copy9 ,(ddskk-shim--dai-a 'o 'val) d)
+                0)))
+       (defun dai_getguid (this pguid)
+         (if (= pguid 0) ,nelisp-com-e-pointer
+           (seq (ptr-write-u64 pguid 0 ,(nelisp-com-class-field 'dai 'this 'g0))
+                (ptr-write-u64 pguid 8 ,(nelisp-com-class-field 'dai 'this 'g1))
+                0)))
+       (defun dai_getdesc (this pbstr)
+         (if (= pbstr 0) ,nelisp-com-e-pointer
+           (let ((s (extern-call SysAllocString ,(nelisp-com-class-field 'dai 'this 'desc))))
+             (seq (ptr-write-u64 pbstr 0 s)
+                  (if (= s 0) ,nelisp-com-e-outofmemory 0)))))
+       (defun dai_getattr (this pv)
+         (if (= pv 0) ,nelisp-com-e-pointer
+           (seq (dai_copy9 pv ,(ddskk-shim--dai-a 'this 'val)) 0)))
+       (defun dai_setattr (this pv)
+         (if (= pv 0) ,nelisp-com-e-pointer
+           (seq (dai_copy9 ,(ddskk-shim--dai-a 'this 'val) pv) 0)))
+       (defun dai_reset (this)
+         (seq (dai_copy9 ,(ddskk-shim--dai-a 'this 'val) ,(ddskk-shim--dai-a 'this 'def)) 0))))))
+
 (defun ddskk-shim--export-forms ()
   "The four exports."
   `((defun DllGetClassObject (rclsid riid ppv)
@@ -917,14 +996,16 @@ are negative-control hooks."
             (ddskk-shim--registry-forms hive)
             (ddskk-shim--tsf-forms (or langid ddskk-shim-langid) cats)
             (ddskk-shim--tip-forms wrong-slot)
+            (ddskk-shim--dai-forms)
             (ddskk-shim--export-forms))))
 
-(cl-defun ddskk-shim-build (path &key hive drop-category langid wrong-slot test-exports no-lock)
+(cl-defun ddskk-shim-build (path &key hive drop-category langid wrong-slot test-exports no-lock bad-attr)
   "Build the shim DLL at PATH."
   ;; nelisp-link--copy-aot-value recurses along every reloc list (proposed
   ;; nelisp fix: iterate); large units need a raised depth limit.
   (setq max-lisp-eval-depth (max max-lisp-eval-depth 100000))
   (setq ddskk-shim--no-lock no-lock)
+  (setq ddskk-shim--bad-attr bad-attr)
   (nelisp-com-build-dll
    path (ddskk-shim-forms :hive hive :drop-category drop-category :langid langid
                           :wrong-slot wrong-slot)
@@ -942,7 +1023,8 @@ are negative-control hooks."
    :langid (and (equal (getenv "NELISP_SHIM_BAD_LANGID") "1") #x0409)
    :wrong-slot (equal (getenv "NELISP_SHIM_WRONG_SLOT") "1")
    :test-exports (equal (getenv "NELISP_SHIM_TEST_EXPORTS") "1")
-   :no-lock (equal (getenv "NELISP_SHIM_NOLOCK") "1")))
+   :no-lock (equal (getenv "NELISP_SHIM_NOLOCK") "1")
+   :bad-attr (equal (getenv "NELISP_SHIM_BAD_ATTR") "1")))
 
 (provide 'ddskk-shim)
 ;;; ddskk-shim.el ends here

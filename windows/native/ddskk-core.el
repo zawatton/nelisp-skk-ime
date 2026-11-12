@@ -73,7 +73,8 @@
   "Hook slot names; slot N is word N of the `core_hooks' table.")
 
 (defconst ddskk-core-imports
-  (let ((extra '(("kernel32.dll" "GetProcessHeap" "HeapAlloc" "HeapFree")
+  (let ((extra '(("kernel32.dll" "GetProcessHeap" "HeapAlloc" "HeapFree" "CreateFileMappingW"
+                  "MapViewOfFile" "CloseHandle" "GetCurrentProcessId")
                  ("user32.dll" "GetKeyState" "GetAsyncKeyState" "GetKeyboardState"
                   "ToUnicodeEx" "GetKeyboardLayout" "CharLowerBuffW")
                  ("oleaut32.dll" "VariantClear")
@@ -754,7 +755,7 @@ engine-select hook adapters."
    (ddskk-core--life-forms)
    (ddskk-core--api-forms bad-abi)
    (and test-exports (ddskk-core--probe-forms))
-   (and edit (ddskk-core-edit-forms :test-exports test-exports :mutant mutant))
+   (and edit (ddskk-core-edit-forms :test-exports test-exports :mutant mutant :engine-client engine-client))
    (and engine-client (append (ddskk-tlv-forms) (ddskk-engine-client-forms)))))
 
 (cl-defun ddskk-core-build (path &key test-exports bad-abi mutant hooks engine-client (edit t))

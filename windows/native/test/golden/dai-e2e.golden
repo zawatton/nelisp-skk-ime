@@ -1,0 +1,19 @@
+=== preedit
+  get hr=00000000 info=1
+  guid=86100ed265bbc34688154456451be3b4
+  desc hr=00000000 len=12 text="4e654c69737020494d452070726565646974"
+  attr hr=00000000 0,0,0,0,1,0,2,d26e46,0
+  set hr=00000000 after-set lsStyle=2 reset hr=00000000 after-reset lsStyle=1
+=== candidate
+  get hr=00000000 info=1
+  guid=9e737f93f97b60489ceb0ee3f36916a9
+  desc hr=00000000 len=14 text="4e654c69737020494d452063616e646964617465"
+  attr hr=00000000 0,0,0,0,4,1,2,d26e46,1
+  set hr=00000000 after-set lsStyle=2 reset hr=00000000 after-reset lsStyle=4
+=== unknown-guid
+  get hr=80070057 info=0
+=== null-out
+  get hr=80004003
+=== enum
+  enum hr=80004001 out=0
+  enum-null hr=80004003

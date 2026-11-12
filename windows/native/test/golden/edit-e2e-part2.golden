@@ -1,0 +1,108 @@
+=== es-preedit-start
+ITfContext::RequestEditSession 0 P 7
+ITfContext::GetSelection 1001 ffffffff 1
+ITfContextComposition::StartComposition 1001 r[0,0] P
+ITfRange::SetText r[0,0] 1001 0 "e296bde3818b6b" 3
+ITfComposition::ShiftStart 1001 r[0,3]
+ITfComposition::ShiftEnd 1001 r[0,3]
+ITfCategoryMgr::RegisterGUID d20e1086
+ITfContext::GetProperty 34b45670
+ITfProperty::SetValue 1001 r[0,3] vt=3,val=101
+ITfRange::Clone r[0,3]
+ITfRange::Collapse r[0,3] 1001 0
+ITfRange::ShiftEnd r[0,0] 1001 3
+ITfRange::Collapse r[0,3] 1001 1
+ITfContext::SetSelection 1001 1
+ITfContext::GetActiveView
+ITfContextView::GetTextExt 1001 r[3,3]
+  request hr=00000000 edit hr=00000000
+  doc=e296bde3818b6b mock_comp=1 core_comp=1 refs=1 sel=3,3 caret=1,a,14,1e,28
+=== es-candidate
+ITfContext::RequestEditSession 0 P 7
+ITfComposition::GetRange
+ITfRange::SetText r[0,3] 1001 0 "e296bce6bca2e5ad97" 3
+ITfComposition::ShiftStart 1001 r[0,3]
+ITfComposition::ShiftEnd 1001 r[0,3]
+ITfCategoryMgr::RegisterGUID 937f739e
+ITfContext::GetProperty 34b45670
+ITfProperty::SetValue 1001 r[0,3] vt=3,val=102
+ITfRange::Clone r[0,3]
+ITfRange::Collapse r[0,3] 1001 0
+ITfRange::ShiftEnd r[0,0] 1001 3
+ITfRange::Collapse r[0,3] 1001 1
+ITfContext::SetSelection 1001 1
+ITfContext::GetActiveView
+ITfContextView::GetTextExt 1001 r[3,3]
+  request hr=00000000 edit hr=00000000
+  doc=e296bce6bca2e5ad97 mock_comp=1 core_comp=1 refs=1 sel=3,3 caret=1,a,14,1e,28
+=== es-commit-ends-composition
+ITfContext::RequestEditSession 0 P 7
+ITfComposition::GetRange
+ITfRange::SetText r[0,3] 1001 0 "e6bca2e5ad97" 2
+ITfComposition::ShiftStart 1001 r[0,2]
+ITfComposition::ShiftEnd 1001 r[0,2]
+ITfCategoryMgr::RegisterGUID d20e1086
+ITfContext::GetProperty 34b45670
+ITfProperty::SetValue 1001 r[0,2] vt=3,val=103
+ITfRange::Clone r[0,2]
+ITfRange::Collapse r[0,2] 1001 0
+ITfRange::ShiftEnd r[0,0] 1001 2
+ITfRange::Collapse r[0,2] 1001 1
+ITfContext::SetSelection 1001 1
+ITfContext::GetActiveView
+ITfContextView::GetTextExt 1001 r[2,2]
+CB track_ending flag=1
+ITfComposition::EndComposition 1001
+Sink::OnCompositionTerminated ec=1001 comp=P
+SINK acknowledged ending composition
+  request hr=00000000 edit hr=00000000
+  doc=e6bca2e5ad97 mock_comp=0 core_comp=0 refs=1 sel=2,2 caret=1,a,14,1e,28
+=== es-bad-magic
+  request hr=fffffffc edit hr=00000000
+  doc=e6bca2e5ad97 mock_comp=0 core_comp=0 refs=1 sel=2,2 caret=1,a,14,1e,28
+=== reg-start
+ITfContext::RequestEditSession 0 P 7
+ITfContext::GetSelection 1001 ffffffff 1
+ITfContextComposition::StartComposition 1001 r[2,2] P
+ITfRange::SetText r[2,2] 1001 0 "e296bde381b2" 2
+ITfComposition::ShiftStart 1001 r[2,4]
+ITfComposition::ShiftEnd 1001 r[2,4]
+ITfCategoryMgr::RegisterGUID d20e1086
+ITfContext::GetProperty 34b45670
+ITfProperty::SetValue 1001 r[2,4] vt=3,val=104
+ITfRange::Clone r[2,4]
+ITfRange::Collapse r[2,4] 1001 0
+ITfRange::ShiftEnd r[2,2] 1001 2
+ITfRange::Collapse r[2,4] 1001 1
+ITfContext::SetSelection 1001 1
+ITfContext::GetActiveView
+ITfContextView::GetTextExt 1001 r[4,4]
+  request hr=00000000 edit hr=00000000
+  doc=e6bca2e5ad97e296bde381b2 mock_comp=1 core_comp=1 refs=1 sel=4,4 caret=1,a,14,1e,28
+=== reg-enter-modal
+ITfComposition::GetRange
+  doc=e6bca2e5ad97e296bde381b2 mock_comp=1 core_comp=1 refs=1 sel=4,4 caret=1,a,14,1e,28
+=== reg-host-terminates
+Sink::OnCompositionTerminated ec=1001 comp=P
+ITfComposition::GetRange
+ITfRange::SetText r[2,4] 1001 0 "" 0
+SINK forwarded NI_COMPOSITION_END hr=00000000
+  doc=e6bca2e5ad97 mock_comp=0 core_comp=0 refs=1 sel=2,2 caret=1,a,14,1e,28
+=== reg-leave-commit-pending
+  doc=e6bca2e5ad97 mock_comp=0 core_comp=0 refs=1 sel=2,2 caret=1,a,14,1e,28
+=== reg-target-commit
+ITfContext::RequestEditSession 0 P 7
+ITfRange::SetText r[2,4] 1001 0 "e799bbe98cb2" 2
+ITfCategoryMgr::RegisterGUID d20e1086
+ITfContext::GetProperty 34b45670
+ITfProperty::SetValue 1001 r[2,4] vt=3,val=105
+ITfRange::Clone r[2,4]
+ITfRange::Collapse r[2,4] 1001 0
+ITfRange::ShiftEnd r[2,2] 1001 2
+ITfRange::Collapse r[2,4] 1001 1
+ITfContext::SetSelection 1001 1
+ITfContext::GetActiveView
+ITfContextView::GetTextExt 1001 r[4,4]
+  request hr=00000000 edit hr=00000000
+  doc=e6bca2e5ad97e799bbe98cb2 mock_comp=0 core_comp=0 refs=1 sel=4,4 caret=1,a,14,1e,28
+=== end ctx_refs=1
