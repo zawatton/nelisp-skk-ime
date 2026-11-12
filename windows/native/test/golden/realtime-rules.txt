@@ -1,0 +1,1296 @@
+# every rule key typed in preedit (Ka + key, QUIT), then katakana mode; 132 rules
+NEW pre
+FEED pre 4b
+FEED pre 61
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6b
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6b
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6b
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6b
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6b
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6b
+FEED pre 79
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6b
+FEED pre 79
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6b
+FEED pre 79
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 73
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 73
+FEED pre 68
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 73
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 73
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 73
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 73
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 73
+FEED pre 68
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 73
+FEED pre 68
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 73
+FEED pre 68
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 73
+FEED pre 79
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 73
+FEED pre 79
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 73
+FEED pre 79
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 74
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 63
+FEED pre 68
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 74
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 74
+FEED pre 73
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 74
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 74
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 74
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 63
+FEED pre 68
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 63
+FEED pre 68
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 63
+FEED pre 68
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6e
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6e
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6e
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6e
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6e
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6e
+FEED pre 79
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6e
+FEED pre 79
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6e
+FEED pre 79
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 68
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 68
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 66
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 68
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 68
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 68
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 68
+FEED pre 79
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 68
+FEED pre 79
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 68
+FEED pre 79
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6d
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6d
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6d
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6d
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6d
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6d
+FEED pre 79
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6d
+FEED pre 79
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6d
+FEED pre 79
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 79
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 79
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 79
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 72
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 72
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 72
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 72
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 72
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 72
+FEED pre 79
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 72
+FEED pre 79
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 72
+FEED pre 79
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 77
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 77
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 67
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 67
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 67
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 67
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 67
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 67
+FEED pre 79
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 67
+FEED pre 79
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 67
+FEED pre 79
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 7a
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6a
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 7a
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 7a
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 7a
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 7a
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6a
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6a
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6a
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 64
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 64
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 64
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 64
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 64
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 62
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 62
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 62
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 62
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 62
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 62
+FEED pre 79
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 62
+FEED pre 79
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 62
+FEED pre 79
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 70
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 70
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 70
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 70
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 70
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 70
+FEED pre 79
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 70
+FEED pre 79
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 70
+FEED pre 79
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 66
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 66
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 66
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 66
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 76
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 76
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 76
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 76
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 76
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 78
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 78
+FEED pre 69
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 78
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 78
+FEED pre 65
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 78
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 78
+FEED pre 79
+FEED pre 61
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 78
+FEED pre 79
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 78
+FEED pre 79
+FEED pre 6f
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 78
+FEED pre 74
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6c
+FEED pre 74
+FEED pre 73
+FEED pre 75
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6e
+FEED pre 6e
+QUIT pre
+FEED pre 4b
+FEED pre 61
+FEED pre 6e
+FEED pre 27
+QUIT pre
+NEW kata
+FEED kata 71
+FEED kata 61
+FEED kata 69
+FEED kata 75
+FEED kata 65
+FEED kata 6f
+FEED kata 6b
+FEED kata 61
+FEED kata 6b
+FEED kata 69
+FEED kata 6b
+FEED kata 75
+FEED kata 6b
+FEED kata 65
+FEED kata 6b
+FEED kata 6f
+FEED kata 6b
+FEED kata 79
+FEED kata 61
+FEED kata 6b
+FEED kata 79
+FEED kata 75
+FEED kata 6b
+FEED kata 79
+FEED kata 6f
+FEED kata 73
+FEED kata 61
+FEED kata 73
+FEED kata 68
+FEED kata 69
+FEED kata 73
+FEED kata 69
+FEED kata 73
+FEED kata 75
+FEED kata 73
+FEED kata 65
+FEED kata 73
+FEED kata 6f
+FEED kata 73
+FEED kata 68
+FEED kata 61
+FEED kata 73
+FEED kata 68
+FEED kata 75
+FEED kata 73
+FEED kata 68
+FEED kata 6f
+FEED kata 73
+FEED kata 79
+FEED kata 61
+FEED kata 73
+FEED kata 79
+FEED kata 75
+FEED kata 73
+FEED kata 79
+FEED kata 6f
+FEED kata 74
+FEED kata 61
+FEED kata 63
+FEED kata 68
+FEED kata 69
+FEED kata 74
+FEED kata 69
+FEED kata 74
+FEED kata 73
+FEED kata 75
+FEED kata 74
+FEED kata 75
+FEED kata 74
+FEED kata 65
+FEED kata 74
+FEED kata 6f
+FEED kata 63
+FEED kata 68
+FEED kata 61
+FEED kata 63
+FEED kata 68
+FEED kata 75
+FEED kata 63
+FEED kata 68
+FEED kata 6f
+FEED kata 6e
+FEED kata 61
+FEED kata 6e
+FEED kata 69
+FEED kata 6e
+FEED kata 75
+FEED kata 6e
+FEED kata 65
+FEED kata 6e
+FEED kata 6f
+FEED kata 6e
+FEED kata 79
+FEED kata 61
+FEED kata 6e
+FEED kata 79
+FEED kata 75
+FEED kata 6e
+FEED kata 79
+FEED kata 6f
+FEED kata 68
+FEED kata 61
+FEED kata 68
+FEED kata 69
+FEED kata 66
+FEED kata 75
+FEED kata 68
+FEED kata 75
+FEED kata 68
+FEED kata 65
+FEED kata 68
+FEED kata 6f
+FEED kata 68
+FEED kata 79
+FEED kata 61
+FEED kata 68
+FEED kata 79
+FEED kata 75
+FEED kata 68
+FEED kata 79
+FEED kata 6f
+FEED kata 6d
+FEED kata 61
+FEED kata 6d
+FEED kata 69
+FEED kata 6d
+FEED kata 75
+FEED kata 6d
+FEED kata 65
+FEED kata 6d
+FEED kata 6f
+FEED kata 6d
+FEED kata 79
+FEED kata 61
+FEED kata 6d
+FEED kata 79
+FEED kata 75
+FEED kata 6d
+FEED kata 79
+FEED kata 6f
+FEED kata 79
+FEED kata 61
+FEED kata 79
+FEED kata 75
+FEED kata 79
+FEED kata 6f
+FEED kata 72
+FEED kata 61
+FEED kata 72
+FEED kata 69
+FEED kata 72
+FEED kata 75
+FEED kata 72
+FEED kata 65
+FEED kata 72
+FEED kata 6f
+FEED kata 72
+FEED kata 79
+FEED kata 61
+FEED kata 72
+FEED kata 79
+FEED kata 75
+FEED kata 72
+FEED kata 79
+FEED kata 6f
+FEED kata 77
+FEED kata 61
+FEED kata 77
+FEED kata 6f
+FEED kata 67
+FEED kata 61
+FEED kata 67
+FEED kata 69
+FEED kata 67
+FEED kata 75
+FEED kata 67
+FEED kata 65
+FEED kata 67
+FEED kata 6f
+FEED kata 67
+FEED kata 79
+FEED kata 61
+FEED kata 67
+FEED kata 79
+FEED kata 75
+FEED kata 67
+FEED kata 79
+FEED kata 6f
+FEED kata 7a
+FEED kata 61
+FEED kata 6a
+FEED kata 69
+FEED kata 7a
+FEED kata 69
+FEED kata 7a
+FEED kata 75
+FEED kata 7a
+FEED kata 65
+FEED kata 7a
+FEED kata 6f
+FEED kata 6a
+FEED kata 61
+FEED kata 6a
+FEED kata 75
+FEED kata 6a
+FEED kata 6f
+FEED kata 64
+FEED kata 61
+FEED kata 64
+FEED kata 69
+FEED kata 64
+FEED kata 75
+FEED kata 64
+FEED kata 65
+FEED kata 64
+FEED kata 6f
+FEED kata 62
+FEED kata 61
+FEED kata 62
+FEED kata 69
+FEED kata 62
+FEED kata 75
+FEED kata 62
+FEED kata 65
+FEED kata 62
+FEED kata 6f
+FEED kata 62
+FEED kata 79
+FEED kata 61
+FEED kata 62
+FEED kata 79
+FEED kata 75
+FEED kata 62
+FEED kata 79
+FEED kata 6f
+FEED kata 70
+FEED kata 61
+FEED kata 70
+FEED kata 69
+FEED kata 70
+FEED kata 75
+FEED kata 70
+FEED kata 65
+FEED kata 70
+FEED kata 6f
+FEED kata 70
+FEED kata 79
+FEED kata 61
+FEED kata 70
+FEED kata 79
+FEED kata 75
+FEED kata 70
+FEED kata 79
+FEED kata 6f
+FEED kata 66
+FEED kata 61
+FEED kata 66
+FEED kata 69
+FEED kata 66
+FEED kata 65
+FEED kata 66
+FEED kata 6f
+FEED kata 76
+FEED kata 61
+FEED kata 76
+FEED kata 69
+FEED kata 76
+FEED kata 75
+FEED kata 76
+FEED kata 65
+FEED kata 76
+FEED kata 6f
+FEED kata 78
+FEED kata 61
+FEED kata 78
+FEED kata 69
+FEED kata 78
+FEED kata 75
+FEED kata 78
+FEED kata 65
+FEED kata 78
+FEED kata 6f
+FEED kata 78
+FEED kata 79
+FEED kata 61
+FEED kata 78
+FEED kata 79
+FEED kata 75
+FEED kata 78
+FEED kata 79
+FEED kata 6f
+FEED kata 78
+FEED kata 74
+FEED kata 75
+FEED kata 6e
+FEED kata 6e
+FEED kata 6e
+FEED kata 27
+NEW hira
+FEED hira 61
+FEED hira 69
+FEED hira 75
+FEED hira 65
+FEED hira 6f
+FEED hira 6b
+FEED hira 61
+FEED hira 6b
+FEED hira 69
+FEED hira 6b
+FEED hira 75
+FEED hira 6b
+FEED hira 65
+FEED hira 6b
+FEED hira 6f
+FEED hira 6b
+FEED hira 79
+FEED hira 61
+FEED hira 6b
+FEED hira 79
+FEED hira 75
+FEED hira 6b
+FEED hira 79
+FEED hira 6f
+FEED hira 73
+FEED hira 61
+FEED hira 73
+FEED hira 68
+FEED hira 69
+FEED hira 73
+FEED hira 69
+FEED hira 73
+FEED hira 75
+FEED hira 73
+FEED hira 65
+FEED hira 73
+FEED hira 6f
+FEED hira 73
+FEED hira 68
+FEED hira 61
+FEED hira 73
+FEED hira 68
+FEED hira 75
+FEED hira 73
+FEED hira 68
+FEED hira 6f
+FEED hira 73
+FEED hira 79
+FEED hira 61
+FEED hira 73
+FEED hira 79
+FEED hira 75
+FEED hira 73
+FEED hira 79
+FEED hira 6f
+FEED hira 74
+FEED hira 61
+FEED hira 63
+FEED hira 68
+FEED hira 69
+FEED hira 74
+FEED hira 69
+FEED hira 74
+FEED hira 73
+FEED hira 75
+FEED hira 74
+FEED hira 75
+FEED hira 74
+FEED hira 65
+FEED hira 74
+FEED hira 6f
+FEED hira 63
+FEED hira 68
+FEED hira 61
+FEED hira 63
+FEED hira 68
+FEED hira 75
+FEED hira 63
+FEED hira 68
+FEED hira 6f
+FEED hira 6e
+FEED hira 61
+FEED hira 6e
+FEED hira 69
+FEED hira 6e
+FEED hira 75
+FEED hira 6e
+FEED hira 65
+FEED hira 6e
+FEED hira 6f
+FEED hira 6e
+FEED hira 79
+FEED hira 61
+FEED hira 6e
+FEED hira 79
+FEED hira 75
+FEED hira 6e
+FEED hira 79
+FEED hira 6f
+FEED hira 68
+FEED hira 61
+FEED hira 68
+FEED hira 69
+FEED hira 66
+FEED hira 75
+FEED hira 68
+FEED hira 75
+FEED hira 68
+FEED hira 65
+FEED hira 68
+FEED hira 6f
+FEED hira 68
+FEED hira 79
+FEED hira 61
+FEED hira 68
+FEED hira 79
+FEED hira 75
+FEED hira 68
+FEED hira 79
+FEED hira 6f
+FEED hira 6d
+FEED hira 61
+FEED hira 6d
+FEED hira 69
+FEED hira 6d
+FEED hira 75
+FEED hira 6d
+FEED hira 65
+FEED hira 6d
+FEED hira 6f
+FEED hira 6d
+FEED hira 79
+FEED hira 61
+FEED hira 6d
+FEED hira 79
+FEED hira 75
+FEED hira 6d
+FEED hira 79
+FEED hira 6f
+FEED hira 79
+FEED hira 61
+FEED hira 79
+FEED hira 75
+FEED hira 79
+FEED hira 6f
+FEED hira 72
+FEED hira 61
+FEED hira 72
+FEED hira 69
+FEED hira 72
+FEED hira 75
+FEED hira 72
+FEED hira 65
+FEED hira 72
+FEED hira 6f
+FEED hira 72
+FEED hira 79
+FEED hira 61
+FEED hira 72
+FEED hira 79
+FEED hira 75
+FEED hira 72
+FEED hira 79
+FEED hira 6f
+FEED hira 77
+FEED hira 61
+FEED hira 77
+FEED hira 6f
+FEED hira 67
+FEED hira 61
+FEED hira 67
+FEED hira 69
+FEED hira 67
+FEED hira 75
+FEED hira 67
+FEED hira 65
+FEED hira 67
+FEED hira 6f
+FEED hira 67
+FEED hira 79
+FEED hira 61
+FEED hira 67
+FEED hira 79
+FEED hira 75
+FEED hira 67
+FEED hira 79
+FEED hira 6f
+FEED hira 7a
+FEED hira 61
+FEED hira 6a
+FEED hira 69
+FEED hira 7a
+FEED hira 69
+FEED hira 7a
+FEED hira 75
+FEED hira 7a
+FEED hira 65
+FEED hira 7a
+FEED hira 6f
+FEED hira 6a
+FEED hira 61
+FEED hira 6a
+FEED hira 75
+FEED hira 6a
+FEED hira 6f
+FEED hira 64
+FEED hira 61
+FEED hira 64
+FEED hira 69
+FEED hira 64
+FEED hira 75
+FEED hira 64
+FEED hira 65
+FEED hira 64
+FEED hira 6f
+FEED hira 62
+FEED hira 61
+FEED hira 62
+FEED hira 69
+FEED hira 62
+FEED hira 75
+FEED hira 62
+FEED hira 65
+FEED hira 62
+FEED hira 6f
+FEED hira 62
+FEED hira 79
+FEED hira 61
+FEED hira 62
+FEED hira 79
+FEED hira 75
+FEED hira 62
+FEED hira 79
+FEED hira 6f
+FEED hira 70
+FEED hira 61
+FEED hira 70
+FEED hira 69
+FEED hira 70
+FEED hira 75
+FEED hira 70
+FEED hira 65
+FEED hira 70
+FEED hira 6f
+FEED hira 70
+FEED hira 79
+FEED hira 61
+FEED hira 70
+FEED hira 79
+FEED hira 75
+FEED hira 70
+FEED hira 79
+FEED hira 6f
+FEED hira 66
+FEED hira 61
+FEED hira 66
+FEED hira 69
+FEED hira 66
+FEED hira 65
+FEED hira 66
+FEED hira 6f
+FEED hira 76
+FEED hira 61
+FEED hira 76
+FEED hira 69
+FEED hira 76
+FEED hira 75
+FEED hira 76
+FEED hira 65
+FEED hira 76
+FEED hira 6f
+FEED hira 78
+FEED hira 61
+FEED hira 78
+FEED hira 69
+FEED hira 78
+FEED hira 75
+FEED hira 78
+FEED hira 65
+FEED hira 78
+FEED hira 6f
+FEED hira 78
+FEED hira 79
+FEED hira 61
+FEED hira 78
+FEED hira 79
+FEED hira 75
+FEED hira 78
+FEED hira 79
+FEED hira 6f
+FEED hira 78
+FEED hira 74
+FEED hira 75
+FEED hira 6e
+FEED hira 6e
+FEED hira 6e
+FEED hira 27
