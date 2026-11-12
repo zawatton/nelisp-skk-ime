@@ -1,0 +1,72 @@
+# extracted from windows/test/realtime_frontend_test.cpp by extract-realtime-cases.py: 41 ops, 30 checks, 81 atoms
+NEW frontend
+FEED frontend 6b
+CHECK 18 @1:r=1 @1:t=- @1:p=k
+FEED frontend 61
+CHECK 20 @2:r=1 @2:t=304b @2:p=-
+CHECK 21 @2:composing=0
+FEED frontend 4b
+FEED frontend 61
+CHECK 25 @4:r=1 @4:m=4 @4:t=25bd.304b
+FEED frontend 6e
+FEED frontend 61
+FEED frontend 53
+CHECK 29 @7:r=1 @7:t=25bd.304b.306a.002a @7:p=s
+FEED frontend 69
+FEED frontend 6d
+CHECK 32 @9:r=1 @9:t=25bd.304b.306a.002a.3057 @9:p=m
+BS frontend
+CHECK 34 @10:r=1 @10:t=25bd.304b.306a.002a.3057 @10:p=-
+RESTORE frontend
+CHECK 36 @11:r=1 @11:m=4 @11:t=25bd.304b.306a.002a.3057
+KATA frontend
+CHECK 39 @12:r=1 @12:t=25bd.30ab.30ca.002a.30b7
+QUIT frontend
+CHECK 41 @13:r=1 @13:t=- @13:composing=0
+NEW q_conversion
+FEED q_conversion 4b
+FEED q_conversion 61
+CKATA q_conversion
+CHECK 47 @17:r=1 @17:t=30ab @17:c=-1
+CHECK 48 @17:composing=0 @17:katakana=0
+FEED frontend 6e
+COMMIT frontend
+CHECK 52 @19:r=1 @19:t=30f3 @19:c=-1
+NEW hiragana
+FEED hiragana 6b
+FEED hiragana 6b
+CHECK 57 @22:r=1 @22:t=3063 @22:p=k
+FEED hiragana 61
+CHECK 59 @23:r=1 @23:t=3063.304b
+FEED hiragana 6c
+CHECK 62 @24:r=1 @24:m=2 @24:latin=1
+FEED hiragana 61
+CHECK 64 @25:r=0
+HIRA hiragana
+CHECK 66 @26:r=1 @26:m=0 @26:latin=0
+FEED hiragana 4c
+CHECK 69 @27:r=1 @27:m=3 @27:wide=1
+FEED hiragana 61
+CHECK 71 @28:r=1 @28:t=ff41 @28:c=-1
+FEED hiragana 20
+CHECK 73 @29:r=1 @29:t=3000
+HIRA hiragana
+CHECK 75 @30:r=1 @30:m=0 @30:wide=0
+FEED hiragana 2e
+CHECK 78 @31:r=1 @31:t=3002
+FEED hiragana 2c
+CHECK 80 @32:r=1 @32:t=3001
+FEED hiragana 2d
+CHECK 82 @33:r=1 @33:t=30fc
+NEW continuous
+CONT continuous 1
+FEED continuous 6b
+CHECK 87 @36:r=1 @36:m=4 @36:t=25bd @36:p=k
+FEED continuous 61
+CHECK 90 @37:r=1 @37:t=25bd.304b @37:composing=1
+FEED continuous 71
+CHECK 92 @38:r=1 @38:t=25bd.304b.0071 @38:p=- @38:katakana=0
+BS continuous
+CHECK 95 @39:r=1 @39:t=25bd.304b @39:p=-
+COMMIT continuous
+CHECK 97 @40:r=1 @40:t=304b @40:c=-1

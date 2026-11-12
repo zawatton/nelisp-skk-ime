@@ -1,0 +1,166 @@
+TIP_DIRECT loaded from DDSKK_HARNESS_DLL_PATH
+HR Activate=00000000
+STATE initial open=1 kana=1 closed_kana=1 ddskk=1 kind=0 pending=0 hira=1 cand=0
+LABEL 304b 306a
+-- idle claim table (open, kana, ddskk)
+TKD vk=41 eaten=00000001
+TKD vk=42 eaten=00000001
+TKD vk=59 eaten=00000001
+TKD vk=5a eaten=00000001
+TKD vk=30 eaten=00000001
+TKD vk=31 eaten=00000001
+TKD vk=39 eaten=00000001
+TKD vk=ba eaten=00000001
+TKD vk=bb eaten=00000001
+TKD vk=c0 eaten=00000001
+TKD vk=c1 eaten=00000000
+TKD vk=da eaten=00000000
+TKD vk=db eaten=00000001
+TKD vk=df eaten=00000001
+TKD vk=e0 eaten=00000000
+TKD vk=e2 eaten=00000001
+TKD vk=20 eaten=00000000
+TKD vk=08 eaten=00000000
+TKD vk=0d eaten=00000000
+TKD vk=1b eaten=00000000
+TKD vk=25 eaten=00000000
+TKD vk=27 eaten=00000000
+TKD vk=26 eaten=00000000
+TKD vk=28 eaten=00000000
+TKD vk=2e eaten=00000000
+TKD vk=21 eaten=00000000
+TKD vk=75 eaten=00000000
+TKD vk=76 eaten=00000000
+TKD vk=70 eaten=00000000
+TKD vk=5b eaten=00000000
+TKD vk=60 eaten=00000000
+TKD vk=6f eaten=00000000
+-- ctrl chords idle
+C1S0 TKD vk=47 eaten=00000000
+C1S0 TKD vk=4a eaten=00000001
+C1S0 TKD vk=43 eaten=00000000
+C1S0 TKD vk=41 eaten=00000000
+C0S0 TKD vk=47 eaten=00000001
+C0S0 TKD vk=4a eaten=00000001
+C1S1 TKD vk=4a eaten=00000001
+C1S0 TKD vk=be eaten=00000000
+-- composing
+STATE composing open=1 kana=1 closed_kana=1 ddskk=1 kind=0 pending=1 hira=1 cand=0
+TKD vk=41 eaten=00000001
+TKD vk=20 eaten=00000001
+TKD vk=08 eaten=00000001
+TKD vk=0d eaten=00000001
+TKD vk=1b eaten=00000001
+TKD vk=25 eaten=00000001
+TKD vk=27 eaten=00000001
+TKD vk=26 eaten=00000000
+TKD vk=75 eaten=00000001
+TKD vk=76 eaten=00000001
+TKD vk=77 eaten=00000000
+TKD vk=79 eaten=00000000
+TKD vk=7a eaten=00000000
+TKD vk=2e eaten=00000000
+C0S1 TKD vk=25 eaten=00000000
+C0S1 TKD vk=27 eaten=00000000
+C1S0 TKD vk=47 eaten=00000001
+C1S0 TKD vk=4a eaten=00000001
+C1S0 TKD vk=43 eaten=00000000
+C1S0 TKD vk=41 eaten=00000000
+C0S0 TKD vk=47 eaten=00000001
+C0S0 TKD vk=4a eaten=00000001
+C1S1 TKD vk=4a eaten=00000001
+C1S0 TKD vk=be eaten=00000000
+-- wide latin idle space
+TKD vk=20 eaten=00000001
+TKD vk=08 eaten=00000000
+-- candidate mode (no realtime claim)
+STATE candidate open=1 kana=1 closed_kana=1 ddskk=1 kind=0 pending=0 hira=0 cand=1
+TKD vk=41 eaten=00000001
+C1S0 TKD vk=4a eaten=00000000
+TKD vk=31 eaten=00000001
+-- registration mode
+TKD vk=41 eaten=00000001
+TKD vk=20 eaten=00000001
+TKD vk=08 eaten=00000001
+TKD vk=2e eaten=00000001
+TKD vk=26 eaten=00000001
+TKD vk=75 eaten=00000001
+TKD vk=77 eaten=00000000
+TKD vk=21 eaten=00000000
+C1S0 TKD vk=47 eaten=00000001
+C1S0 TKD vk=43 eaten=00000000
+C1S0 TKD vk=4a eaten=00000000
+-- kana off
+STATE kana-off open=1 kana=0 closed_kana=1 ddskk=1 kind=0 pending=0 hira=1 cand=0
+LABEL 0053 004b
+TKD vk=41 eaten=00000000
+C1S0 TKD vk=4a eaten=00000001
+TKD vk=20 eaten=00000000
+-- lattice engine kind (composing arrows/F6-F10)
+TKD vk=25 eaten=00000001
+TKD vk=75 eaten=00000001
+TKD vk=79 eaten=00000001
+C0S1 TKD vk=25 eaten=00000001
+-- close via compartment
+SETVALUE 0 hr=00000000
+ONCHANGE hr=00000000
+STATE closed open=0 kana=1 closed_kana=1 ddskk=1 kind=0 pending=0 hira=1 cand=0
+LABEL 002d 002d
+TKD vk=41 eaten=00000000
+C1S0 TKD vk=4a eaten=00000000
+TKD vk=31 eaten=00000000
+SETVALUE 1 hr=00000000
+ONCHANGE hr=00000000
+STATE reopened open=1 kana=1 closed_kana=1 ddskk=1 kind=0 pending=0 hira=1 cand=0
+LABEL 304b 306a
+TKD vk=41 eaten=00000001
+-- close with kana off, reopen restores kana
+SETVALUE 0 hr=00000000
+ONCHANGE hr=00000000
+STATE closed-kana-off open=0 kana=0 closed_kana=0 ddskk=1 kind=0 pending=0 hira=1 cand=0
+SETVALUE 1 hr=00000000
+ONCHANGE hr=00000000
+STATE reopened-kana-off open=1 kana=0 closed_kana=0 ddskk=1 kind=0 pending=0 hira=1 cand=0
+TKD vk=41 eaten=00000000
+-- close while composing resets pending
+SETVALUE 0 hr=00000000
+ONCHANGE hr=00000000
+STATE closed-composing open=0 kana=1 closed_kana=1 ddskk=1 kind=0 pending=0 hira=1 cand=0
+SETVALUE 1 hr=00000000
+ONCHANGE hr=00000000
+STATE reopened open=1 kana=1 closed_kana=1 ddskk=1 kind=0 pending=0 hira=1 cand=0
+-- ReadKeyboardOpen fallback
+RO 1 1
+-- TranslateKey (US layout)
+TR vk=41 ctrl=0 shift=0 ch=00000061
+TR vk=41 ctrl=0 shift=1 ch=00000041
+TR vk=31 ctrl=0 shift=0 ch=00000031
+TR vk=31 ctrl=0 shift=1 ch=00000021
+TR vk=ba ctrl=0 shift=0 ch=0000003b
+TR vk=ba ctrl=0 shift=1 ch=0000003a
+TR vk=bb ctrl=0 shift=0 ch=0000003d
+TR vk=bb ctrl=0 shift=1 ch=0000002b
+TR vk=20 ctrl=0 shift=0 ch=00000020
+TR vk=75 ctrl=0 shift=0 ch=ffffffff
+TR vk=41 ctrl=1 shift=0 ch=00000001
+TR vk=30 ctrl=0 shift=1 ch=00000029
+-- key up / down / preserved
+TKD vk=4a eaten=00000001
+CTRLSNAP after TKD 1
+TKU eaten=00000000
+CTRLSNAP after TKU 0
+TKD vk=4a eaten=00000001
+KU eaten=00000000
+CTRLSNAP after KU 0
+  hr=80070057KD ctx=0 eaten=00000000
+PRESERVED hr=00000000 eaten=00000000
+-- engine id through NI_ENGINE_ID
+STATE lattice open=1 kana=1 closed_kana=1 ddskk=1 kind=1 pending=0 hira=1 cand=0
+TKD vk=25 eaten=00000001
+TKD vk=79 eaten=00000001
+STATE passthrough open=1 kana=0 closed_kana=1 ddskk=0 kind=3 pending=0 hira=1 cand=0
+TKD vk=41 eaten=00000000
+C1S0 TKD vk=4a eaten=00000000
+STATE ddskk open=1 kana=1 closed_kana=1 ddskk=1 kind=0 pending=0 hira=1 cand=0
+TKD vk=41 eaten=00000001
+HR Deactivate=00000000

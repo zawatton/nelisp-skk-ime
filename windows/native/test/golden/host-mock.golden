@@ -1,0 +1,16 @@
+TIP_DIRECT loaded from DDSKK_HARNESS_DLL_PATH
+ITfKeystrokeMgr::AdviseKeyEventSink 7 P 1
+HR Activate=00000000
+ITfContext::RequestEditSession 7 P 7
+ITfContext::GetSelection 1001 ffffffff 1
+ITfContextComposition::StartComposition 1001 r[0,0] P
+ITfRange::SetText r[0,0] 1001 0 "61" 1
+ITfComposition::EndComposition 1001
+AFTER a text=61 comp=0
+ITfContext::RequestEditSession 7 P 7
+ITfContext::GetSelection 1001 ffffffff 1
+ITfContextComposition::StartComposition 1001 r[1,1] P
+ITfRange::SetText r[1,1] 1001 0 "62" 1
+ITfComposition::EndComposition 1001
+AFTER b text=6162 comp=0
+HR Deactivate=00000000

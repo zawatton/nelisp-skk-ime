@@ -1,0 +1,31 @@
+How core-e2e.golden follows from windows/src/text_service.cpp (S3h)
+Defaults after Activate: keyboard_open_=true (compartment empty -> ReadKeyboardOpen fallback),
+kana_mode_=true, ddskk_engine_=true, engine_id_="ddskk", last_engine_mode_="hiragana",
+realtime claim = !provider_composition_active_ && mode != "candidate" && !registration_mode_.
+TKD lines = ITfKeyEventSink::OnTestKeyDown (OnTestKeyDown 1211-1275, WouldClaimKey 1162-1210).
+Prefix CxSy = Ctrl/Shift state set with SetKeyboardState (ControlDown(), GetKeyState(VK_SHIFT)).
+- idle: letters 41..5A, digits 30..39, OEM 0xBA-0xC0, 0xDB-0xDF, 0xE2 -> claimed (kana, realtime claim);
+  0xC1, 0xDA, 0xE0 are outside the ranges -> 0.  Space/Back/Return/Esc need composing (or wide_latin
+  for Space) -> 0.  Arrows/F6/F7 need composing -> 0.  Nav, F1, LWIN, numpad -> 0.
+- Ctrl chords: Ctrl+G only when composing (idle 0); Ctrl+J always claimed (realtime branch, line ~1235);
+  any other Ctrl chord -> 0 (WouldClaimKey "if (control_down) return false").
+- composing (engine_pending_): Space/Back/Return/Esc claimed; ddskk: Left/Right unshifted, F6, F7
+  claimed, Up/F8-F10/Delete not; Shift+Left/Right -> 0 (GetKeyState(VK_SHIFT)); Ctrl+G claimed.
+- wide_latin: Space claimed while idle; Backspace not.
+- candidate mode: realtime_claim false -> a letter is still claimed (eaten=TRUE after Connect attempt);
+  Ctrl+J then returns engine_.Connect() = false (no engine) -> 0.
+- registration mode: only Ctrl+G is claimed among chords; letters, digits, OEM_1..OEM_8, Space, Back,
+  Delete, Return, Esc, arrows, Home/End, F6, F7 claimed; PgUp (0x21), F8 not.
+- kana off: letters -> 0, Ctrl+J still claimed (checked before kana_mode_), label "SKK".
+- lattice kind: composing Left/Right (no shift test) and F6..F10 claimed, Shift+Left too.
+- compartment: SetValue(VT_I4) on the real wine compartment, then OnChange on the shim's sink ->
+  NI_COMPARTMENT -> ApplyKeyboardOpenChange: closing stores mode_before_close_kana_, claims nothing
+  (label "--"); reopening restores kana_mode_ from mode_before_close_kana_; closing while pending
+  clears engine_pending_ (engine Reset unavailable -> branch without state).
+- TR lines = TranslateKey (GetKeyboardState + ToUnicodeEx + GetKeyboardLayout) under the US layout
+  (00000409): a/A, 1/!, ;/:, =/+, space, F6 -> nullopt (ffffffff), Ctrl+A -> U+0001, Shift+0 -> ')'.
+- TKU/KU: OnTestKeyUp/OnKeyUp clear tested_control_down_ and eaten=FALSE; CTRLSNAP shows it.
+- KD ctx=0: OnKeyDown prologue returns E_INVALIDARG for a null context (hr=80070057), eaten FALSE.
+- PRESERVED: OnPreservedKey eaten=FALSE.
+- engine id: NI_ENGINE_ID writes HKCU\Software\NativeIME\Engine, FollowSettings reloads (kind 1 lattice,
+  3 passthrough: ddskk_engine_=false, kana_mode_=false -> nothing claimed).

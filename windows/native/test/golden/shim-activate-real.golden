@@ -1,0 +1,9 @@
+HR ActivateLanguageProfile=00000000
+REAL core_activate=1
+ADVISE hr=80070057
+CORE create=1 destroy=1 activate=1 deactivate=1 ops=0,0,0,0,0,0 eaten=0
+WIN created=0 destroyed=0 timer=0
+REAL no sink: Activate was rolled back
+HR ThreadMgr::Deactivate=00000000
+WIN created=0 destroyed=0 timer=0
+CORE create=1 destroy=1 activate=1 deactivate=1 ops=0,0,0,0,0,0 eaten=0

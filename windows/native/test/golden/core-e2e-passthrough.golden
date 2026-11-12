@@ -1,0 +1,7 @@
+TIP_DIRECT loaded from DDSKK_HARNESS_DLL_PATH
+HR Activate=00000000
+STATE initial open=1 kana=0 closed_kana=1 ddskk=0 kind=3 pending=0 hira=1 cand=0
+TKD vk=41 eaten=00000000
+TKD vk=31 eaten=00000000
+C1S0 TKD vk=4a eaten=00000000
+HR Deactivate=00000000

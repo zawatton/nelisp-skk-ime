@@ -16,9 +16,12 @@
 #include "engine_protocol.h"
 
 #include <charconv>
+#include <cstdint>
 #include <sstream>
 #include <vector>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 namespace ddskk {
 namespace {
