@@ -59,6 +59,7 @@
 ;;   NELISP_CORE_BAD_ABI=1       report ABI version 999
 ;;   NELISP_CORE_TEST_EXPORTS=1  add the CoreProbe* exports
 ;;   NELISP_CORE_MUTANT=vk-table|open-inverted   negative-control mutants
+;;   NELISP_CORE_ENGINE_CLIENT=1 link the S3f engine client (hooks engine-connect/select)
 
 ;;; Code:
 
@@ -719,11 +720,17 @@
       (let ((ts (ptr-read-u64 (data-addr core_last) 0)))
         (if (= ts 0) 4294967295 (ct_read_open ts fallback))))))
 
-(cl-defun ddskk-core-forms (&key test-exports bad-abi mutant hooks)
+(cl-defun ddskk-core-forms (&key test-exports bad-abi mutant hooks engine-client)
   "Return the AOT forms of the core DLL.
 TEST-EXPORTS adds the CoreProbe* functions, BAD-ABI reports ABI version 999,
 MUTANT is nil, `vk-table' or `open-inverted' (negative controls), HOOKS is an
-alist (SLOT . FUNCTION-SYMBOL) installed at ts_create."
+alist (SLOT . FUNCTION-SYMBOL) installed at ts_create.  ENGINE-CLIENT links
+the S3f engine client (ddskk-engine-client.el) and installs its engine-connect /
+engine-select hook adapters."
+  (when engine-client
+    (require 'ddskk-engine-client)
+    (setq hooks (append hooks '((engine-connect . ec_hook_connect)
+                                (engine-select . ec_hook_select)))))
   (append
    (nelisp-com-wstr-lib-forms)
    (ddskk-core-settings-forms)
@@ -737,16 +744,26 @@ alist (SLOT . FUNCTION-SYMBOL) installed at ts_create."
    (ddskk-core--select-forms)
    (ddskk-core--life-forms)
    (ddskk-core--api-forms bad-abi)
-   (and test-exports (ddskk-core--probe-forms))))
+   (and test-exports (ddskk-core--probe-forms))
+   (and engine-client (append (ddskk-tlv-forms) (ddskk-engine-client-forms)))))
 
-(cl-defun ddskk-core-build (path &key test-exports bad-abi mutant hooks)
+(cl-defun ddskk-core-build (path &key test-exports bad-abi mutant hooks engine-client)
   "Build the core DLL PATH."
   (setq max-lisp-eval-depth (max max-lisp-eval-depth 100000))
   (nelisp-com-build-dll
    path (cl-subst 'ct_mod '% (ddskk-core-forms :test-exports test-exports :bad-abi bad-abi
-                                               :mutant mutant :hooks hooks))
+                                               :mutant mutant :hooks hooks
+                                               :engine-client engine-client))
    :exports (sort (append ddskk-core-exports (and test-exports ddskk-core-test-exports)) #'string<)
-   :imports ddskk-core-imports
+   :imports (if engine-client
+               (progn (require 'ddskk-engine-client)
+                      (let ((acc (mapcar (lambda (e) (cons (car e) (copy-sequence (cdr e))))
+                                         ddskk-core-imports)))
+                        (dolist (e (ddskk-engine-client-all-imports) acc)
+                          (let ((c (assoc (car e) acc)))
+                            (if c (setcdr c (delete-dups (append (cdr c) (cdr e))))
+                              (setq acc (append acc (list e))))))))
+             ddskk-core-imports)
    :dll-name (file-name-nondirectory path))
   path)
 
@@ -755,6 +772,7 @@ alist (SLOT . FUNCTION-SYMBOL) installed at ts_create."
   (ddskk-core-build path
                     :test-exports (equal (getenv "NELISP_CORE_TEST_EXPORTS") "1")
                     :bad-abi (equal (getenv "NELISP_CORE_BAD_ABI") "1")
+                    :engine-client (equal (getenv "NELISP_CORE_ENGINE_CLIENT") "1")
                     :mutant (let ((m (getenv "NELISP_CORE_MUTANT")))
                               (and m (not (string-empty-p m)) (intern m)))))
 
